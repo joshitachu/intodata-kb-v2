@@ -17,12 +17,5 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_DB: intodata_kb
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: changeme
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-
-volumes:
-  qdrant_data:
-  postgres_data:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: voetbal123

@@ -27,6 +27,9 @@ class User(Base):
     )
     documents: Mapped[list["Document"]] = relationship(back_populates="uploaded_by_user")
     query_logs: Mapped[list["QueryLog"]] = relationship(back_populates="user")
+    conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class Role(Base):

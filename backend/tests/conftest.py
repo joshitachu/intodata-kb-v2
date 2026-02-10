@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.db.base import Base
 
 # Import all models so Base.metadata knows about them
-from src.db.models import User, Role, Document, QueryLog, IngestionJob  # noqa: F401
+from src.db.models import User, Role, Document, QueryLog, IngestionJob, Conversation, ConversationMessage  # noqa: F401
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

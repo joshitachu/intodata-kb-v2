@@ -13,8 +13,10 @@
 ```
 intodata-kb/
 ├── .claude/
-│   ├── context.md             # Current state, decisions
-│   └── progress.md            # Session logs
+│   ├── context.md             # Current state, blockers, next steps
+│   ├── progress.md            # High-level phase tracking
+│   ├── PROGRESS_LOG.md        # Detailed session-by-session log
+│   └── PROJECT_MEMORY.md      # Architecture decisions, patterns, gotchas
 ├── backend/
 │   ├── src/
 │   │   ├── api/routes/        # FastAPI endpoints
@@ -36,26 +38,97 @@ intodata-kb/
 - No LangChain (direct implementation, full control)
 - React (not Streamlit) for production-ready UX
 
+---
+
+## MANDATORY: Logging & Documentation Rules
+
+**These rules are non-negotiable. Every session MUST follow them.**
+
+### 1. Read Before Working
+
+At the **start of every session**, before writing any code, read these files:
+- `.claude/context.md` — current state, blockers, what to work on next
+- `.claude/progress.md` — high-level progress tracker
+- `.claude/PROGRESS_LOG.md` — detailed session history
+- `.claude/PROJECT_MEMORY.md` — architecture decisions, patterns, lessons learned
+
+### 2. Log Every Change
+
+After **every change** (bug fix, feature, refactor, config change — no matter how small), immediately update:
+
+#### `.claude/PROGRESS_LOG.md` — Append a new entry with:
+- **Date & time** of the change
+- **What was changed**: exact file(s) modified, with paths
+- **What was the problem**: the bug, error message, or missing feature — be specific
+- **What was the fix/change**: describe the exact code change made
+- **Why**: the reasoning behind the approach
+- **Root cause** (for bugs): what caused the issue in the first place
+- **Verification**: how you confirmed the fix works (tests run, manual check, etc.)
+
+Format:
+```markdown
+## Session: YYYY-MM-DD
+
+### [Fix/Feature/Refactor]: Short description
+
+- **Files changed**: `path/to/file.py` (lines X-Y)
+- **Problem**: Describe the error or missing behavior
+- **Root cause**: Why the problem existed
+- **Change**: Describe exactly what was added/modified/removed
+- **Why this approach**: Reasoning for the chosen solution
+- **Verification**: How it was confirmed working
+```
+
+#### `.claude/context.md` — Update:
+- Current state / status
+- Any new blockers
+- What should be done next
+
+#### `.claude/PROJECT_MEMORY.md` — Update if applicable:
+- New architecture decisions (add to the decisions table)
+- New lessons learned / gotchas (add to the gotchas section)
+- New completed tasks (add to the completed tasks table)
+
+#### `.claude/progress.md` — Update:
+- Check off completed items
+- Add new items if scope changed
+
+### 3. Never Skip Logging
+
+- A "quick fix" still gets logged. There are no exceptions.
+- If you fix a typo, log it. If you add an import, log it. If you change a config value, log it.
+- If you're unsure whether to log something, log it.
+- The log is the project's memory. Without it, we lose context between sessions.
+
+### 4. Log Format Rules
+
+- Use **specific file paths**, not vague descriptions ("updated the backend")
+- Include **error messages** verbatim when fixing bugs
+- Include **before/after** for non-obvious changes
+- Reference **related issues** if the change connects to a previous log entry
+
+---
+
 ## Code Style
 
 ### Python
 ```python
-# ✅ Always type hints
+# Always type hints
 def process(path: str) -> list[Chunk]:
     pass
 
-# ✅ Pydantic validation
+# Pydantic validation
 class Request(BaseModel):
     query: str = Field(..., min_length=3)
 
-# ✅ Never bare except
+# Never bare except
 try:
     result = operation()
 except SpecificError as e:
     logger.error(f"Failed: {e}", exc_info=True)
     raise
 
-# ✅ Async for I/O
+# Async for I/O
 async def fetch(url: str) -> dict:
     async with aiohttp.ClientSession() as session:
         async with session.post(url) as resp:
@@ -64,22 +137,22 @@ async def fetch(url: str) -> dict:
 
 ### TypeScript
 ```typescript
-// ✅ Never 'any', use 'unknown'
+// Never 'any', use 'unknown'
 function handle(data: unknown): void {
   if (isValid(data)) { /* ... */ }
 }
 
-// ✅ Explicit props
+// Explicit props
 interface Props {
   onSubmit: (query: string) => Promise<void>;
   isLoading: boolean;
 }
 
-// ✅ Zod for API validation
+// Zod for API validation
 const Schema = z.object({ answer: z.string() });
 type Response = z.infer<typeof Schema>;
 
-// ✅ Handle all states
+// Handle all states
 const { data, isLoading, error } = useQuery();
 return (
   <>
@@ -97,6 +170,9 @@ return (
 3. **RBAC**: Filter EVERY Qdrant query by user groups
 4. **Async**: Use async/await for all I/O operations
 5. **Testing**: Write tests before committing
+6. **Logging**: Log EVERY change to `.claude/PROGRESS_LOG.md` — no exceptions (see Logging rules above)
+7. **Context**: Read all `.claude/` files at session start, update them after every change
+8. **Specificity**: Always reference exact file paths, line numbers, and error messages in logs
 
 ## Multi-Agent Workflow
 
@@ -125,12 +201,6 @@ alembic revision -m "msg"            # Create migration
 pytest                               # Backend tests
 npm test                             # Frontend tests
 ```
-
-## Context System
-
-**Start every session**: Read `.claude/context.md` and `.claude/progress.md`
-
-**After work**: Update both files with decisions and completed tasks
 
 ## Environment
 ```bash
