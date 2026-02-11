@@ -85,12 +85,19 @@ async def search_similar(
     return sources
 
 
-def merge_sources_by_document(sources: list[Source]) -> list[DocumentSource]:
+def merge_sources_by_document(
+    sources: list[Source],
+    max_documents: int = 1,
+) -> list[DocumentSource]:
     """Merge chunk-level sources into document-level sources.
 
     Groups chunks by document_id, concatenates texts (sorted by chunk_index),
     keeps the highest score per document, sorts by score descending, and
     assigns sequential reference numbers starting at 1.
+
+    Args:
+        sources: Chunk-level search results.
+        max_documents: Maximum number of documents to return. Defaults to 1.
     """
     from collections import defaultdict
 
@@ -113,9 +120,9 @@ def merge_sources_by_document(sources: list[Source]) -> list[DocumentSource]:
             )
         )
 
-    # Sort by score descending, return only the top result
+    # Sort by score descending, limit to max_documents
     merged.sort(key=lambda d: d.score, reverse=True)
-    if merged:
-        merged[0].reference_number = 1
-        return [merged[0]]
-    return []
+    merged = merged[:max_documents]
+    for i, doc in enumerate(merged):
+        doc.reference_number = i + 1
+    return merged

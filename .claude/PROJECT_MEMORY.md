@@ -22,6 +22,11 @@
 | Context window | 4096 tokens | Fits ~16 chunks of 256 tokens | 2026-02-09 |
 | Source merging | Document-level (not chunk-level) | Users don't need chunk granularity; numbered refs enable clickable UI links | 2026-02-09 |
 | Markdown rendering | react-markdown + remark-gfm | Standard, lightweight, supports GFM tables/lists | 2026-02-09 |
+| Summarization | Map-reduce (not stuff-all-in-context) | top_k=3 can't summarize a 50-chunk document; map-reduce scales to any size | 2026-02-10 |
+| Document re-upload | Replace (not version) | Versioning adds UI complexity, storage costs; KB users always want latest version | 2026-02-10 |
+| Context-first chat | LLM [NEED_SEARCH] marker | No new intent actions; main LLM decides if context is sufficient or needs fresh search | 2026-02-10 |
+| Search reformulation | **Removed** — use cleaned_query directly | LLM reformulation added complexity without clear benefit; intent classifier already produces cleaned_query | 2026-02-10 |
+| [NEED_SEARCH] isolation | Separate CONTEXT_FIRST_SYSTEM_PROMPT + safety strip | Prevents marker from leaking into final responses shown to users | 2026-02-10 |
 
 ## Code Patterns
 
@@ -46,6 +51,11 @@
 | Fix frontend conversation 500s | 2026-02-09 | Cleared stale .next cache, added 204 handling in fastapiFetch, hardened useConversations error handling for non-JSON responses |
 | LLM query router | 2026-02-10 | Replaced regex intent classifier with LLM-based router (gemma3:4b). Routes search/respond + typo correction. 48 generation tests passing |
 | Retrieval config unification | 2026-02-10 | Unified top_k=3/threshold=0.4 across all defaults, silenced SQLAlchemy echo, added reasoning logs |
+| Map-reduce summarization | 2026-02-10 | QueryType enum (QA/SUMMARY), map-reduce pipeline for full-document summaries, integrated into both RAG chains. 140 tests passing |
+| Document re-upload replacement | 2026-02-10 | `_replace_existing_document()` deletes old Qdrant vectors + DB record when same filename is re-uploaded |
+| merge_sources max_documents | 2026-02-10 | Added `max_documents` param to `merge_sources_by_document()` (default=1). Fixed pre-existing test that assumed all docs returned |
+| Context-first chat | 2026-02-10 | Follow-ups answered from previous context (0 searches). LLM uses [NEED_SEARCH] marker for fallback. Replaced expand_query() with LLM-based reformulate_search_query(). 157 tests passing |
+| Fix [NEED_SEARCH] leak | 2026-02-10 | Separated CONTEXT_FIRST_SYSTEM_PROMPT from main prompt, added safety strip, removed reformulate_search_query(). 154 tests passing |
 
 ## Pending Tasks
 
@@ -53,6 +63,23 @@
 - [x] Backend Agent: RAG pipeline, API routes, RBAC — 48 tests passing
 - [x] Frontend Agent: Next.js app, route handlers, components — build passing
 - [ ] Integration Agent: Phase 2 (deferred)
+
+## Phase 3 — Future Issues (Documented for Later)
+
+| Priority | Issue | Approach | Effort |
+|----------|-------|----------|--------|
+| 1 | Paragraph-aware chunking | Split on `\n\n` first, merge small paragraphs to ~256 tokens | 0.5 day |
+| 2 | Query expansion glossary | Key-value table in PostgreSQL, expand abbreviations/jargon before embedding | 0.5 day |
+| 3 | Multi-hop query decomposition | Decompose complex queries into sub-queries, search each independently, merge results | 1 day |
+| 4 | Cross-encoder re-ranking | Re-rank initial results with cross-encoder for precision improvement | 1 day |
+| 5 | Section-aware chunking | Detect headers, keep sections together, add `section_title` to payload | 1-2 days |
+| 6 | Re-index CLI tool | Script to re-embed all documents (needed for any embedding/chunk change) | 0.5 day |
+
+**Multi-hop reasoning**: User asks "Compare X in doc A with Y in doc B" — current system does one search. Solution: decompose into sub-queries, search each independently, merge + deduplicate, then synthesize. Alternative: agentic RAG (LLM triggers follow-up searches mid-generation) — defer until Ollama tool-use matures.
+
+**Chunking strategy**: Current 256-token sliding window is mechanical. Tier 1: paragraph-aware (split on `\n\n`). Tier 2: section-aware (detect headers). Tier 3: format-specific (PDF pages, DOCX headings, PPTX slides). Any chunking change requires full re-ingestion.
+
+**Embedding drift / specialized vocab**: `nomic-embed-text` struggles with internal jargon. Options: (A) query expansion glossary (easiest, 80/20), (B) cross-encoder re-ranking, (C) fine-tuned embeddings (overkill), (D) model swap + re-index.
 
 ## Blockers
 
@@ -73,6 +100,8 @@ None currently.
 - Changing chunk size requires re-ingestion of all existing documents
 - Always use `res.text()` + `try { JSON.parse(...) } catch {}` for error responses — never assume error bodies are valid JSON (Next.js can return HTML error pages from webpack crashes)
 - `fastapiFetch` must check `res.status === 204` before calling `res.json()` — DELETE endpoints return empty bodies
+- When mocking `AsyncSession.execute()` for `select()` queries, the mock must return a sync `MagicMock` (not `AsyncMock`) for `.scalars().first()` chain since `execute()` is already awaited
+- Map-reduce: use `Semaphore(3)` for parallel LLM calls to avoid overwhelming local Ollama
 
 ## Environment
 
@@ -96,7 +125,7 @@ intodata-kb/
 │   │   ├── rbac/         # Auth, permissions
 │   │   ├── config.py     # Pydantic Settings
 │   │   └── schemas.py    # Request/response models
-│   ├── tests/            # 48 tests across all modules
+│   ├── tests/            # 157 tests across all modules
 │   ├── alembic/          # Database migrations
 │   └── pyproject.toml
 ├── frontend/

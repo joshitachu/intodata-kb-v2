@@ -22,23 +22,33 @@ class Action(str, Enum):
     RESPOND = "respond"
 
 
+class QueryType(str, Enum):
+    QA = "qa"
+    SUMMARY = "summary"
+
+
 @dataclass
 class QueryAnalysis:
     action: Action
     cleaned_query: str
+    query_type: QueryType = QueryType.QA
 
 
 ROUTER_PROMPT = (
     "You are a query router for a company knowledge base. "
     "Analyze the user's message and respond with ONLY a JSON object.\n\n"
     "Decide:\n"
-    '- "search" if the user is asking a question or requesting information '
+    '- "action": "search" if the user is asking a question or requesting information '
     "that could be in company documents\n"
-    '- "respond" if the user is just greeting, thanking, saying goodbye, '
+    '- "action": "respond" if the user is just greeting, thanking, saying goodbye, '
     "or making small talk\n\n"
+    "Also determine the query type:\n"
+    '- "query_type": "summary" if the user wants a summary, overview, or recap of a document '
+    "(e.g. 'summarize the HR policy', 'give me an overview of the onboarding guide')\n"
+    '- "query_type": "qa" for all other questions (specific facts, procedures, comparisons)\n\n'
     "Also fix any typos or grammatical issues in the query to improve search results.\n\n"
     "Respond with ONLY this JSON (no markdown, no explanation):\n"
-    '{"action": "search" or "respond", "cleaned_query": "corrected query text"}'
+    '{"action": "search" or "respond", "query_type": "qa" or "summary", "cleaned_query": "corrected query text"}'
 )
 
 
@@ -59,28 +69,39 @@ def _parse_router_response(raw: str, original_query: str) -> QueryAnalysis:
         data = json.loads(text)
         action_str = data.get("action", "search").lower().strip()
         cleaned = data.get("cleaned_query", original_query).strip()
+        query_type_str = data.get("query_type", "qa").lower().strip()
 
         action = Action.RESPOND if action_str == "respond" else Action.SEARCH
+        query_type = QueryType.SUMMARY if query_type_str == "summary" else QueryType.QA
 
         if not cleaned:
             cleaned = original_query
 
-        return QueryAnalysis(action=action, cleaned_query=cleaned)
+        return QueryAnalysis(action=action, cleaned_query=cleaned, query_type=query_type)
     except (json.JSONDecodeError, KeyError, AttributeError) as e:
         logger.warning(f"Router JSON parse failed: {e} | raw={raw!r}")
         return QueryAnalysis(action=Action.SEARCH, cleaned_query=original_query)
 
 
-async def analyze_query(query: str) -> QueryAnalysis:
+async def analyze_query(query: str, conversation_context: str | None = None) -> QueryAnalysis:
     """Route a user query using a small LLM.
 
     Returns a QueryAnalysis with:
     - action: SEARCH (needs retrieval) or RESPOND (chitchat, answer directly)
     - cleaned_query: typo-corrected/normalized version of the query
+    - conversation_context: optional recent conversation history to resolve
+      pronouns like 'it', 'that', 'the previous document'
     """
     stripped = query.strip()
     if not stripped:
         return QueryAnalysis(action=Action.RESPOND, cleaned_query=stripped)
+
+    user_content = stripped
+    if conversation_context:
+        user_content = (
+            f"Recent conversation:\n{conversation_context}\n\n"
+            f"Current message: {stripped}"
+        )
 
     try:
         client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
@@ -88,7 +109,7 @@ async def analyze_query(query: str) -> QueryAnalysis:
             model=settings.ollama_router_model,
             messages=[
                 {"role": "system", "content": ROUTER_PROMPT},
-                {"role": "user", "content": stripped},
+                {"role": "user", "content": user_content},
             ],
         )
         raw = response["message"]["content"]

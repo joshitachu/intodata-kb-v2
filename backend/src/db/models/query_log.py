@@ -20,3 +20,4 @@ class QueryLog(Base):
 
     # Relationships
     user: Mapped["User | None"] = relationship(back_populates="query_logs")
+                                                                

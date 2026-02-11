@@ -6,6 +6,7 @@ import pytest
 from src.generation.intent_classifier import (
     Action,
     QueryAnalysis,
+    QueryType,
     _parse_router_response,
     analyze_query,
 )
@@ -55,6 +56,27 @@ class TestParseRouterResponse:
         raw = '{"action": "respond"}'
         result = _parse_router_response(raw, "hi there")
         assert result.cleaned_query == "hi there"
+
+    def test_query_type_qa_default(self) -> None:
+        raw = '{"action": "search", "cleaned_query": "what is onboarding"}'
+        result = _parse_router_response(raw, "what is onboarding")
+        assert result.query_type == QueryType.QA
+
+    def test_query_type_summary_parsed(self) -> None:
+        raw = '{"action": "search", "query_type": "summary", "cleaned_query": "summarize the HR policy"}'
+        result = _parse_router_response(raw, "summarize the HR policy")
+        assert result.query_type == QueryType.SUMMARY
+        assert result.action == Action.SEARCH
+
+    def test_query_type_missing_defaults_to_qa(self) -> None:
+        raw = '{"action": "search", "cleaned_query": "some query"}'
+        result = _parse_router_response(raw, "some query")
+        assert result.query_type == QueryType.QA
+
+    def test_query_type_unknown_defaults_to_qa(self) -> None:
+        raw = '{"action": "search", "query_type": "banana", "cleaned_query": "query"}'
+        result = _parse_router_response(raw, "query")
+        assert result.query_type == QueryType.QA
 
 
 class TestAnalyzeQuery:
@@ -130,3 +152,48 @@ class TestAnalyzeQuery:
 
         assert result.action == Action.SEARCH
         assert result.cleaned_query == "test query"
+
+    @pytest.mark.asyncio
+    async def test_conversation_context_included_in_prompt(self) -> None:
+        """When conversation_context is provided, it should be prepended to the user message."""
+        mock_response = {
+            "message": {
+                "content": '{"action": "search", "query_type": "summary", "cleaned_query": "summarize The Quiet Revolution"}',
+            }
+        }
+        context = "user: is there a file about The Quiet Revolution?\nassistant: Yes, the file is The Quiet Revolution.pdf"
+        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.chat.return_value = mock_response
+            mock_cls.return_value = mock_client
+
+            result = await analyze_query("summarize it", conversation_context=context)
+
+        assert result.action == Action.SEARCH
+        assert result.query_type == QueryType.SUMMARY
+        assert result.cleaned_query == "summarize The Quiet Revolution"
+        # Verify context was included in the prompt
+        call_args = mock_client.chat.call_args
+        user_msg = call_args.kwargs["messages"][1]["content"]
+        assert "Recent conversation:" in user_msg
+        assert "The Quiet Revolution" in user_msg
+
+    @pytest.mark.asyncio
+    async def test_no_context_sends_plain_query(self) -> None:
+        """Without conversation_context, only the bare query is sent."""
+        mock_response = {
+            "message": {
+                "content": '{"action": "search", "cleaned_query": "what is onboarding"}',
+            }
+        }
+        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.chat.return_value = mock_response
+            mock_cls.return_value = mock_client
+
+            result = await analyze_query("what is onboarding")
+
+        call_args = mock_client.chat.call_args
+        user_msg = call_args.kwargs["messages"][1]["content"]
+        assert user_msg == "what is onboarding"
+        assert "Recent conversation:" not in user_msg

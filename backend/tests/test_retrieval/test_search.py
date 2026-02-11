@@ -122,13 +122,27 @@ def test_merge_sources_multiple_chunks_same_doc():
     assert merged[0].reference_number == 1
 
 
-def test_merge_sources_multiple_documents():
+def test_merge_sources_multiple_documents_default():
+    """Default max_documents=1 returns only the top-scoring document."""
     sources = [
         Source(document_id=1, filename="a.pdf", chunk_index=0, score=0.9, text="Doc A"),
         Source(document_id=2, filename="b.pdf", chunk_index=0, score=0.95, text="Doc B"),
         Source(document_id=3, filename="c.pdf", chunk_index=0, score=0.7, text="Doc C"),
     ]
     merged = merge_sources_by_document(sources)
+    assert len(merged) == 1
+    assert merged[0].filename == "b.pdf"
+    assert merged[0].reference_number == 1
+
+
+def test_merge_sources_multiple_documents_max_3():
+    """max_documents=3 returns all documents with correct reference numbers."""
+    sources = [
+        Source(document_id=1, filename="a.pdf", chunk_index=0, score=0.9, text="Doc A"),
+        Source(document_id=2, filename="b.pdf", chunk_index=0, score=0.95, text="Doc B"),
+        Source(document_id=3, filename="c.pdf", chunk_index=0, score=0.7, text="Doc C"),
+    ]
+    merged = merge_sources_by_document(sources, max_documents=3)
     assert len(merged) == 3
     # Sorted by score descending
     assert merged[0].filename == "b.pdf"
@@ -138,6 +152,19 @@ def test_merge_sources_multiple_documents():
     assert merged[0].reference_number == 1
     assert merged[1].reference_number == 2
     assert merged[2].reference_number == 3
+
+
+def test_merge_sources_max_documents_limits():
+    """max_documents=2 returns only top 2 out of 3."""
+    sources = [
+        Source(document_id=1, filename="a.pdf", chunk_index=0, score=0.9, text="Doc A"),
+        Source(document_id=2, filename="b.pdf", chunk_index=0, score=0.95, text="Doc B"),
+        Source(document_id=3, filename="c.pdf", chunk_index=0, score=0.7, text="Doc C"),
+    ]
+    merged = merge_sources_by_document(sources, max_documents=2)
+    assert len(merged) == 2
+    assert merged[0].filename == "b.pdf"
+    assert merged[1].filename == "a.pdf"
 
 
 def test_merge_sources_empty():

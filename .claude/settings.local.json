@@ -18,7 +18,13 @@
       "Bash(npm run build:*)",
       "Bash(dir:*)",
       "Bash(grep:*)",
-      "Bash(npx next build:*)"
+      "Bash(npx next build:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:docs.zeta-alpha.com)",
+      "WebFetch(domain:www.zeta-alpha.com)",
+      "WebFetch(domain:aiknowzone.com)",
+      "WebFetch(domain:qdrant.tech)",
+      "WebFetch(domain:apidog.com)"
     ]
   }
 }

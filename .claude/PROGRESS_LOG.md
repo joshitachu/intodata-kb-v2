@@ -1,5 +1,133 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-02-10 (Fix [NEED_SEARCH] Leak + Remove Reformulation)
+
+### [Fix]: [NEED_SEARCH] marker leaking into frontend UI
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` — Major changes (see below)
+  - `backend/tests/test_generation/test_conversational_rag.py` — Removed 4 tests, added 1, updated 3
+- **Problem**: `[NEED_SEARCH]` marker appeared in the frontend UI. The instruction to respond with `[NEED_SEARCH]` was in `CONVERSATIONAL_SYSTEM_PROMPT`, which was used for ALL LLM calls — including the final answer after search. The LLM could respond `[NEED_SEARCH]` on the second attempt, and it got saved as the assistant message.
+- **Root cause**: Single system prompt (`CONVERSATIONAL_SYSTEM_PROMPT`) contained the `[NEED_SEARCH]` instruction and was used for both the context-first attempt AND the final answer generation.
+- **Changes**:
+  1. **Removed `[NEED_SEARCH]` from `CONVERSATIONAL_SYSTEM_PROMPT`** — restored to "If the context does not contain enough information, say so clearly."
+  2. **Created `CONTEXT_FIRST_SYSTEM_PROMPT`** — identical to main prompt but with: "respond with exactly [NEED_SEARCH] and nothing else." Used only by `build_conversational_messages_with_context()`.
+  3. **Added safety strip in `run_conversational_rag()`** — `answer = answer.replace("[NEED_SEARCH]", "").strip()` before saving the assistant message.
+  4. **Deleted `reformulate_search_query()`** and `REFORMULATE_PROMPT` — search now uses `analysis.cleaned_query` directly (last user message).
+  5. **Updated 2 call sites** — summary path (line ~253) and QA search path (line ~285) now use `analysis.cleaned_query` instead of `await reformulate_search_query(...)`.
+  6. **Removed unused imports** — `ollama as ollama_lib`, `from src.config import settings`
+- **Why this approach**: Two-prompt separation ensures `[NEED_SEARCH]` is only available during the context-first attempt, never during final answer generation. Safety strip is a belt-and-suspenders defense. Reformulation removed for simplicity — the intent classifier's `cleaned_query` already handles typo correction.
+- **Test changes**:
+  - Deleted `TestReformulateSearchQuery` class (4 tests)
+  - Removed `reformulate_search_query` from imports
+  - Removed `mock_reform` patches from 3 integration tests
+  - Added `test_need_search_marker_stripped_from_final_response` — verifies `[NEED_SEARCH]` is never present in response content
+- **Verification**: 154 backend tests passing (was 157; removed 4 reformulation tests, added 1 safety test).
+
+## Session: 2026-02-10 (Context-First Chat + LLM Search Reformulation)
+
+### [Feature]: Context-first QA flow — try previous context before searching
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` — Major rewrite of QA branch
+  - `backend/tests/test_generation/test_conversational_rag.py` — 15 new tests (38 total in file)
+- **Problem**: Every chat message triggered a fresh semantic search, even follow-ups like "tell me more" or "what about X in that document?" when the LLM already had the context to answer.
+- **Root cause**: QA branch always called `search_similar()` unconditionally, regardless of whether previous sources existed in conversation history.
+- **Changes**:
+  1. **Deleted `expand_query()`** and `PRONOUN_PATTERNS` — replaced by `reformulate_search_query()` (see below)
+  2. **Added `get_previous_sources()`** — walks conversation messages in reverse, returns `list[DocumentSource]` from the most recent assistant message that has sources
+  3. **Added `needs_new_search()`** — checks if LLM response contains `[NEED_SEARCH]` marker
+  4. **Added `build_context_from_document_sources()`** — builds context string from `DocumentSource` objects (like `build_context()` but for document-level sources instead of chunk-level `Source` objects)
+  5. **Added `build_conversational_messages_with_context()`** — builds LLM messages from a pre-built context string (for context-first path)
+  6. **Updated `CONVERSATIONAL_SYSTEM_PROMPT`** — added instruction: "If the provided context does not contain enough information to answer the question, respond with exactly [NEED_SEARCH] and nothing else."
+  7. **Rewrote QA branch in `run_conversational_rag()`** — context-first flow:
+     - Has previous sources? → Try answering from previous context + history
+     - LLM answers well → return (0 searches)
+     - LLM responds `[NEED_SEARCH]` → fall through to search (1 search)
+     - No previous sources → search directly (1 search, same as before)
+  8. **Changed `document_sources` scoping** — initialized as `list[DocumentSource] = []` at top of function, removed the old `if not sources: document_sources = []` pattern
+- **Why this approach**: The LLM itself decides when it needs new information (via `[NEED_SEARCH]` marker). No new intent classifier actions, no hardcoded follow-up detection. Simple two-step logic that the LLM controls.
+- **Verification**: 157 backend tests passing (15 new). New tests cover: `get_previous_sources` (4 tests), `needs_new_search` (4 tests), `build_context_from_document_sources` (4 tests), `build_conversational_messages_with_context` (2 tests), context-first QA flow (3 integration tests: no-search, NEED_SEARCH fallback, direct search).
+
+### [Feature]: LLM-based search query reformulation (replaces expand_query)
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` — Added `reformulate_search_query()`, `REFORMULATE_PROMPT`
+  - `backend/tests/test_generation/test_conversational_rag.py` — 4 new tests for reformulator
+- **Problem**: `expand_query()` was dumb string concatenation: `"Context: {messages}. Current question: {query}"`. This produced noisy search queries that hurt vector similarity.
+- **Root cause**: Regex-based pronoun detection + string concatenation can't produce clean, focused search queries.
+- **Change**: Added `reformulate_search_query()` — calls the router model (`gemma3:4b`) with a prompt that resolves pronouns, strips conversational fluff, and outputs a concise 3-10 word search query. Falls back to original query on error or empty messages. Used in both QA search path and summary `resolve_document_id()` path.
+- **Why this approach**: Small LLM call (~200-500ms) produces much better search queries than string concatenation. Same model already loaded for intent classification, so minimal overhead.
+- **Verification**: 4 new tests: returns original on empty messages, calls router model correctly, falls back on error, falls back on empty LLM response.
+
+## Session: 2026-02-10 (Conversation Memory Fix — Pronoun Resolution)
+
+### [Fix]: Chat conversation memory — every message triggered blind semantic search
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` (lines 68-77) — `expand_query()` now uses last 4 messages (user + assistant) instead of only last 2 user messages. Assistant responses contain document names critical for resolving pronouns.
+  - `backend/src/generation/conversational_rag.py` (lines 213-216) — Summary path now calls `expand_query()` before `resolve_document_id()`, matching the QA path behavior.
+  - `backend/src/generation/conversational_rag.py` (lines 204-210) — Builds conversation context string from last 4 messages and passes it to `analyze_query()`.
+  - `backend/src/generation/intent_classifier.py` (line 86) — `analyze_query()` now accepts optional `conversation_context: str | None` parameter. When provided, prepends conversation context to the user message sent to the router LLM, enabling pronoun resolution (e.g., "summarize it" → "summarize The Quiet Revolution").
+  - `backend/tests/test_generation/test_intent_classifier.py` — Added 2 new tests: `test_conversation_context_included_in_prompt` and `test_no_context_sends_plain_query`.
+- **Problem**: When a user asked "is there a file about X?", got an answer, then said "summarize it", the system ran a vector search on "summarize it" with no context and matched the wrong document.
+- **Root cause**: Three issues: (1) `expand_query()` only used user messages, ignoring assistant responses that contained document names; (2) Summary path skipped `expand_query()` entirely; (3) Intent classifier received no conversation context, so `cleaned_query` couldn't resolve pronouns.
+- **Change**: (1) `expand_query()` now takes last 4 messages (both roles); (2) Summary path calls `expand_query()` before `resolve_document_id()`; (3) `analyze_query()` accepts optional conversation context string, prepended to the user message for the router LLM.
+- **Why this approach**: Assistant messages are the richest source of context (they contain exact document names, answers, etc.). Passing conversation context to the intent classifier allows the LLM to resolve "it" → "The Quiet Revolution" at classification time, before search even begins.
+- **Verification**: All 142 backend tests passing (including 2 new intent classifier tests).
+
+## Session: 2026-02-10 (Map-Reduce Summarization, Document Re-Upload, Phase 3 Docs)
+
+### [Feature]: Map-reduce summarization pipeline for full-document summaries
+
+- **Files changed**:
+  - `backend/src/generation/intent_classifier.py` — Added `QueryType` enum (`QA` | `SUMMARY`), `query_type` field to `QueryAnalysis` dataclass, updated `ROUTER_PROMPT` to classify query type, updated `_parse_router_response()` to parse `query_type` (defaults to `QA`)
+  - `backend/src/generation/map_reduce.py` (**new**) — Full map-reduce pipeline: `resolve_document_id()` (top_k=1 vector search to identify document), `retrieve_document_chunks()` (Qdrant scroll to get all chunks sorted by chunk_index), `map_summarize()` (summarize one batch), `reduce_summaries()` (combine all maps), `run_map_reduce()` (orchestrator with `asyncio.gather` + `Semaphore(3)`)
+  - `backend/src/generation/rag_chain.py` — Added `QueryType` import + `map_reduce` imports. After `analyze_query()`, branches on `query_type`: `SUMMARY` → `resolve_document_id()` → `run_map_reduce()`, `QA` → existing search path. Fallback: if `resolve_document_id()` returns None → no-results message.
+  - `backend/src/generation/conversational_rag.py` — Same branching pattern as rag_chain.py for summary queries in conversations.
+- **Problem**: Users asking "Summarize the HR policy document" only got 3 chunks via top_k=3, missing 90%+ of the document content.
+- **Root cause**: No mechanism to retrieve ALL chunks for a document; retrieval was designed for Q&A (best-N chunks), not summarization.
+- **Change**: Added intent classifier query type detection + full map-reduce pipeline that scrolls all document chunks, batches them (8 per batch), summarizes each batch in parallel (max 3 concurrent), then reduces all summaries into a coherent final answer.
+- **Why this approach**: Map-reduce scales to any document size. Semaphore(3) prevents overwhelming local Ollama. Single-batch documents skip the reduce step for efficiency.
+- **Verification**: 14 new tests in `test_map_reduce.py` (resolve, retrieve, map, reduce, batching, edge cases). All 140 tests passing.
+
+### [Feature]: Document re-upload replacement (staleness fix)
+
+- **Files changed**:
+  - `backend/src/ingestion/pipeline.py` — Added `_replace_existing_document()` helper that queries DB for same filename, deletes old Qdrant vectors via `delete_document_points()`, deletes old DB record. Called at start of `ingest_document()` before creating new Document record. Added `sqlalchemy.select` and `delete_document_points` imports.
+- **Problem**: Uploading "HR_Policy_v2.pdf" when "HR_Policy_v1.pdf" already exists with same filename creates duplicate vectors. Old chunks pollute search results.
+- **Root cause**: No check for existing documents at any step of the ingestion pipeline.
+- **Change**: Before creating a new Document record, check if a document with the same filename exists. If yes, delete old Qdrant vectors + old DB record, then proceed with fresh ingestion.
+- **Why this approach**: Replace (not version) — versioning adds UI complexity, storage costs. KB users always want the latest version. Logged replacement for auditing.
+- **Verification**: 2 new tests (no-existing, existing-is-deleted). All 140 tests passing.
+
+### [Fix]: merge_sources_by_document max_documents parameter
+
+- **Files changed**:
+  - `backend/src/retrieval/search.py` — Added `max_documents` parameter (default=1) to `merge_sources_by_document()`. Changed from hardcoded `[merged[0]]` return to `merged[:max_documents]` with loop to assign reference numbers.
+  - `backend/tests/test_retrieval/test_search.py` — Replaced `test_merge_sources_multiple_documents` (which expected 3 results but function returned 1) with 3 new tests: `test_merge_sources_multiple_documents_default` (1 result), `test_merge_sources_multiple_documents_max_3` (3 results), `test_merge_sources_max_documents_limits` (2 of 3).
+- **Problem**: Pre-existing test `test_merge_sources_multiple_documents` expected 3 documents but `merge_sources_by_document()` was hardcoded to return only 1 (the top result). Also, function was not flexible for future use cases.
+- **Root cause**: Function was modified to return top-1 only in the "strict docs-only RAG" session, but the old test was never updated.
+- **Change**: Added `max_documents` param, replaced hardcoded slice with configurable limit. Default=1 preserves existing behavior.
+- **Verification**: 3 new merge tests + all 140 tests passing.
+
+### [Fix]: Pipeline test mock for _replace_existing_document
+
+- **Files changed**: `backend/tests/test_ingestion/test_pipeline.py` — Updated `mock_db` fixture to include `db.delete = MagicMock()` and mock `db.execute` to return a result with `.scalars().first() → None` (no existing document). This prevents `AttributeError: 'coroutine' object has no attribute 'first'` when `_replace_existing_document()` calls `await db.execute(select(...))`.
+- **Problem**: `test_ingest_document_success` failed because `db.execute()` returned an `AsyncMock` coroutine, but `.scalars().first()` was called synchronously on the awaited result.
+- **Root cause**: `AsyncMock` auto-generates coroutines for all attribute access. Need a sync `MagicMock` for the `.scalars().first()` chain since `execute()` is already awaited.
+- **Verification**: All 4 pipeline tests passing.
+
+### [Docs]: Phase 3 future issues documented
+
+- **Files changed**: `.claude/PROJECT_MEMORY.md`, `.claude/progress.md`, `.claude/context.md`, `.claude/PROGRESS_LOG.md`
+- **Change**: Documented 3 future issues with proposed solutions and effort estimates:
+  1. **Multi-hop reasoning**: Query decomposition → parallel search → merge + synthesize
+  2. **Chunking strategy**: 3 tiers (paragraph-aware → section-aware → format-specific)
+  3. **Embedding drift**: 4 options (glossary → cross-encoder → fine-tune → model swap)
+- **Why**: These issues are real scaling concerns but require more design work. Documented so nothing gets lost.
+- **Verification**: All project tracking files updated consistently.
+
 ## Session: 2026-02-10 (Retrieval Config, Logging Overhaul & Reasoning Logs)
 
 ### [Feature]: Unify retrieval defaults to top_k=3, threshold=0.4

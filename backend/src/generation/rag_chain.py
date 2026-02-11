@@ -8,8 +8,9 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import QueryLog
-from src.generation.intent_classifier import Action, analyze_query
+from src.generation.intent_classifier import Action, QueryType, analyze_query
 from src.generation.llm_client import generate_answer
+from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import build_messages, build_no_results_messages
 from src.retrieval.search import merge_sources_by_document, search_similar
 from src.schemas import DocumentSource, QueryRequest, QueryResponse, Source
@@ -29,7 +30,10 @@ async def run_rag_query(
 
     # 1. Route query via LLM
     analysis = await analyze_query(request.query)
-    logger.info(f"Query: {request.query[:80]!r} | Action: {analysis.action.value} | Cleaned: {analysis.cleaned_query[:80]!r}")
+    logger.info(
+        f"Query: {request.query[:80]!r} | Action: {analysis.action.value} "
+        f"| Type: {analysis.query_type.value} | Cleaned: {analysis.cleaned_query[:80]!r}"
+    )
     sources: list[Source] = []
 
     if analysis.action == Action.RESPOND:
@@ -37,8 +41,20 @@ async def run_rag_query(
         logger.info("Skipping search (respond action)")
         messages = build_no_results_messages(request.query)
         answer = await generate_answer(messages)
+    elif analysis.query_type == QueryType.SUMMARY:
+        # SUMMARY — map-reduce pipeline for full-document summarization
+        logger.info("Summary query detected — resolving document")
+        resolved = await resolve_document_id(qdrant, analysis.cleaned_query, user_groups)
+        if resolved:
+            doc_id, filename = resolved
+            answer, doc_source = await run_map_reduce(qdrant, doc_id, filename, user_groups)
+            document_sources = [doc_source]
+        else:
+            logger.info("Could not resolve document for summary — falling back to no-results")
+            messages = build_no_results_messages(request.query)
+            answer = await generate_answer(messages)
     else:
-        # SEARCH — run search with cleaned query
+        # QA — run search with cleaned query
         sources = await search_similar(
             client=qdrant,
             query=analysis.cleaned_query,

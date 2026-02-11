@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 
 import tiktoken
@@ -10,8 +9,9 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage
-from src.generation.intent_classifier import Action, analyze_query
+from src.generation.intent_classifier import Action, QueryType, analyze_query
 from src.generation.llm_client import generate_answer
+from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import build_no_results_messages
 from src.retrieval.search import merge_sources_by_document, search_similar
 from src.schemas import DocumentSource, MessageResponse, Source
@@ -36,47 +36,80 @@ CONVERSATIONAL_SYSTEM_PROMPT = (
     "like 'it', 'that', 'the previous topic'."
 )
 
-# Pronouns that might refer to previous context
-PRONOUN_PATTERNS = [
-    r"\bit\b",
-    r"\bthis\b",
-    r"\bthat\b",
-    r"\bthese\b",
-    r"\bthose\b",
-    r"\bthey\b",
-    r"\bthem\b",
-]
+CONTEXT_FIRST_SYSTEM_PROMPT = (
+    "You are a helpful knowledge-base assistant for a company. "
+    "You have access to the conversation history and retrieved context. "
+    "Answer the user's question based ONLY on the provided context. "
+    "If the provided context does not contain enough information to answer "
+    "the question, respond with exactly [NEED_SEARCH] and nothing else.\n\n"
+    "## Formatting rules\n"
+    "- Use **markdown** in your answers: headings, bullet lists, bold, code blocks where appropriate.\n"
+    "- Cite sources using numbered references like [1], [2], etc. Only cite a source if you actually use information from it.\n"
+    "- Do NOT cite sources for basic questions unrelated to the knowledge base.\n\n"
+    "For follow-up questions, use conversation context to understand references "
+    "like 'it', 'that', 'the previous topic'."
+)
 
 
-def expand_query(query: str, messages: list[ConversationMessage]) -> str:
-    """Expand query with context from recent messages if it contains pronouns.
+def get_previous_sources(messages: list[ConversationMessage]) -> list[DocumentSource]:
+    """Get sources from the most recent assistant message that has them."""
+    for msg in reversed(messages):
+        if msg.role == "assistant" and msg.sources:
+            return [DocumentSource(**s) for s in msg.sources]
+    return []
 
-    If the query contains pronouns like 'it', 'that', etc., prepend the last
-    few user messages to help the retrieval understand the context.
+
+def needs_new_search(answer: str) -> bool:
+    """Check if the LLM response indicates it needs more information."""
+    return "[NEED_SEARCH]" in answer
+
+
+def build_context_from_document_sources(
+    doc_sources: list[DocumentSource],
+    max_tokens: int = MAX_CONTEXT_TOKENS,
+) -> str:
+    """Build context string from DocumentSource objects (previous sources)."""
+    enc = tiktoken.get_encoding(ENCODING_NAME)
+    parts: list[str] = []
+    total_tokens = 0
+
+    for ds in doc_sources:
+        header = f"[Reference {ds.reference_number}: {ds.filename}]"
+        block = f"{header}\n{ds.text}\n"
+        block_tokens = len(enc.encode(block))
+
+        if total_tokens + block_tokens > max_tokens:
+            break
+        parts.append(block)
+        total_tokens += block_tokens
+
+    return "\n".join(parts)
+
+
+def build_conversational_messages_with_context(
+    query: str,
+    context: str,
+    history: list[ConversationMessage],
+) -> list[dict[str, str]]:
+    """Build chat messages for the context-first attempt.
+
+    Uses CONTEXT_FIRST_SYSTEM_PROMPT which includes the [NEED_SEARCH] instruction,
+    so the LLM can signal when it needs fresh search results.
     """
-    if not messages:
-        return query
+    messages: list[dict[str, str]] = []
+    messages.append({"role": "system", "content": CONTEXT_FIRST_SYSTEM_PROMPT})
 
-    # Check if query contains pronouns
-    query_lower = query.lower()
-    has_pronoun = any(re.search(pattern, query_lower) for pattern in PRONOUN_PATTERNS)
+    if context:
+        messages.append({
+            "role": "system",
+            "content": f"Retrieved context:\n{context}",
+        })
 
-    if not has_pronoun:
-        return query
+    history_messages = truncate_history(history)
+    messages.extend(history_messages)
 
-    # Get the last 2 user messages for context
-    recent_user_messages = [
-        m.content for m in messages if m.role == "user"
-    ][-2:]
-
-    if not recent_user_messages:
-        return query
-
-    # Prepend context
-    context_prefix = " ".join(recent_user_messages)
-    expanded = f"Context: {context_prefix}. Current question: {query}"
-    logger.debug(f"Expanded query: {expanded}")
-    return expanded
+    messages.append({"role": "user", "content": query})
+    return messages
 
 
 def truncate_history(
@@ -183,14 +216,13 @@ async def run_conversational_rag(
     top_k: int = 3,
     threshold: float = 0.4
 ) -> MessageResponse:
-    """Run the conversational RAG pipeline.
+    """Run the conversational RAG pipeline with context-first search.
 
-    1. Expand query using conversation context (handle pronouns)
-    2. Retrieve fresh sources (always re-retrieve, topics may change)
-    3. Build prompt with history + context
-    4. Generate answer
-    5. Save both user message and assistant response
-    6. Auto-generate title if first message
+    Flow:
+    1. Route query via intent classifier
+    2. For QA: try answering from previous sources first
+    3. If LLM responds with [NEED_SEARCH] or no previous sources → search
+    4. Save messages and return response
 
     Returns the assistant's response as a MessageResponse.
     """
@@ -200,66 +232,100 @@ async def run_conversational_rag(
     existing_messages = list(conversation.messages)
     has_history = len(existing_messages) > 0
 
-    # 1. Route query via LLM
-    analysis = await analyze_query(query)
-    sources: list[Source] = []
+    # 1. Route query via LLM (with conversation context for pronoun resolution)
+    conversation_context = None
+    if has_history:
+        recent = existing_messages[-4:]  # last 2 exchanges
+        conversation_context = "\n".join(
+            f"{m.role}: {m.content}" for m in recent
+        )
+    analysis = await analyze_query(query, conversation_context=conversation_context)
+    document_sources: list[DocumentSource] = []
 
     if analysis.action == Action.RESPOND:
         # Chitchat — skip search, respond via unified no-results prompt
         history = truncate_history(existing_messages) if has_history else None
         messages = build_no_results_messages(query, history=history)
         answer = await generate_answer(messages)
-    else:
-        # SEARCH — run search pipeline with cleaned query
-        # 2. Expand query using conversation context
-        search_query = expand_query(analysis.cleaned_query, existing_messages)
-
-        # 3. Retrieve fresh sources
-        sources = await search_similar(
-            client=qdrant,
-            query=search_query,
-            user_groups=user_groups,
-            top_k=top_k,
-            threshold=threshold,
-        )
-
-        # 4. Build prompt with history + context + current query
-        if sources:
-            logger.info("--- Retrieved Chunks ---")
-            for i, s in enumerate(sources, 1):
-                logger.info(f"  #{i} [{s.filename}] score={s.score:.4f}")
-
-            logger.info("--- LLM Input Preview ---")
-            for i, s in enumerate(sources, 1):
-                preview = s.text[:100].replace("\n", " ")
-                logger.info(f"  Chunk {i}: {preview!r}...")
-
-            enc = tiktoken.get_encoding(ENCODING_NAME)
-            total_context_tokens = sum(len(enc.encode(s.text)) for s in sources)
-            logger.info(
-                f"Logic trace: Retrieved {len(sources)} chunks; "
-                f"Threshold {threshold} met; Sending ~{total_context_tokens} context tokens to LLM"
-            )
-
-            document_sources = merge_sources_by_document(sources)
-            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_conversational_messages(
-                query, sources, existing_messages, reference_numbers=ref_map,
-            )
-            answer = await generate_answer(messages)
+    elif analysis.query_type == QueryType.SUMMARY:
+        # SUMMARY — map-reduce pipeline for full-document summarization
+        logger.info("Summary query detected in conversation — resolving document")
+        resolved = await resolve_document_id(qdrant, analysis.cleaned_query, user_groups)
+        if resolved:
+            doc_id, filename = resolved
+            answer, doc_source = await run_map_reduce(qdrant, doc_id, filename, user_groups)
+            document_sources = [doc_source]
         else:
-            # No results — let LLM respond helpfully
+            logger.info("Could not resolve document for summary — falling back to no-results")
             history = truncate_history(existing_messages) if has_history else None
             messages = build_no_results_messages(query, history=history)
             answer = await generate_answer(messages)
+    else:
+        # QA — try context-first, search only if needed
+        previous_doc_sources = get_previous_sources(existing_messages)
+
+        if previous_doc_sources:
+            # Try answering from previous context + history
+            logger.info("Trying to answer from previous context (no search)")
+            context = build_context_from_document_sources(previous_doc_sources)
+            llm_messages = build_conversational_messages_with_context(
+                query, context, existing_messages
+            )
+            answer = await generate_answer(llm_messages)
+
+            if not needs_new_search(answer):
+                # LLM answered from context — done, no search needed
+                document_sources = previous_doc_sources
+            else:
+                # LLM needs more info — fall through to search
+                logger.info("[NEED_SEARCH] detected — running semantic search")
+                previous_doc_sources = []  # clear so we enter search below
+
+        if not previous_doc_sources:
+            # Search path (first message, or LLM requested search)
+            sources = await search_similar(
+                client=qdrant,
+                query=analysis.cleaned_query,
+                user_groups=user_groups,
+                top_k=top_k,
+                threshold=threshold,
+            )
+
+            if sources:
+                logger.info("--- Retrieved Chunks ---")
+                for i, s in enumerate(sources, 1):
+                    logger.info(f"  #{i} [{s.filename}] score={s.score:.4f}")
+
+                logger.info("--- LLM Input Preview ---")
+                for i, s in enumerate(sources, 1):
+                    preview = s.text[:100].replace("\n", " ")
+                    logger.info(f"  Chunk {i}: {preview!r}...")
+
+                enc = tiktoken.get_encoding(ENCODING_NAME)
+                total_context_tokens = sum(len(enc.encode(s.text)) for s in sources)
+                logger.info(
+                    f"Logic trace: Retrieved {len(sources)} chunks; "
+                    f"Threshold {threshold} met; Sending ~{total_context_tokens} context tokens to LLM"
+                )
+
+                document_sources = merge_sources_by_document(sources)
+                ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+                llm_messages = build_conversational_messages(
+                    query, sources, existing_messages, reference_numbers=ref_map,
+                )
+                answer = await generate_answer(llm_messages)
+            else:
+                # No results — let LLM respond helpfully
+                history = truncate_history(existing_messages) if has_history else None
+                llm_messages = build_no_results_messages(query, history=history)
+                answer = await generate_answer(llm_messages)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
-    # Build document-level sources (empty for chitchat/no-results)
-    if not sources:
-        document_sources = []
+    # Safety: strip any [NEED_SEARCH] marker that leaked into the final answer
+    answer = answer.replace("[NEED_SEARCH]", "").strip()
 
-    # 4. Save user message
+    # Save user message
     user_msg = ConversationMessage(
         conversation_id=conversation.id,
         role="user",
@@ -267,7 +333,7 @@ async def run_conversational_rag(
     )
     db.add(user_msg)
 
-    # 5. Save assistant message
+    # Save assistant message
     sources_data = [s.model_dump() for s in document_sources] if document_sources else None
     assistant_msg = ConversationMessage(
         conversation_id=conversation.id,
@@ -278,7 +344,7 @@ async def run_conversational_rag(
     )
     db.add(assistant_msg)
 
-    # 6. Auto-generate title if this is the first message pair
+    # Auto-generate title if this is the first message pair
     if len(existing_messages) == 0 and not conversation.title:
         conversation.title = query[:50] + "..." if len(query) > 50 else query
 

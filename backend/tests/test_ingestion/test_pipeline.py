@@ -3,13 +3,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.ingestion.pipeline import ingest_document
+from src.ingestion.pipeline import _replace_existing_document, ingest_document
 
 
 @pytest.fixture
 def mock_db():
     db = AsyncMock(spec=AsyncSession)
     db.add = MagicMock()
+    db.delete = MagicMock()
 
     # Make flush assign an id to the first added object (Document)
     call_count = 0
@@ -25,6 +26,14 @@ def mock_db():
                 obj._id_set = True
 
     db.flush = mock_flush
+
+    # Mock db.execute to return no existing document (for _replace_existing_document)
+    mock_result = MagicMock()
+    mock_scalars = MagicMock()
+    mock_scalars.first.return_value = None
+    mock_result.scalars.return_value = mock_scalars
+    db.execute.return_value = mock_result
+
     return db
 
 
@@ -79,3 +88,49 @@ async def test_ingest_document_failure(mock_db, mock_qdrant):
             db=mock_db,
             qdrant=mock_qdrant,
         )
+
+
+class TestReplaceExistingDocument:
+    @pytest.mark.asyncio
+    async def test_no_existing_document_does_nothing(self) -> None:
+        """When no document with the filename exists, nothing is deleted."""
+        mock_db = AsyncMock(spec=AsyncSession)
+        mock_qdrant = AsyncMock()
+
+        # Simulate no matching document
+        mock_result = MagicMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = None
+        mock_result.scalars.return_value = mock_scalars
+        mock_db.execute.return_value = mock_result
+
+        await _replace_existing_document("new_doc.pdf", mock_db, mock_qdrant)
+
+        mock_db.delete.assert_not_called()
+        mock_db.flush.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_document_is_deleted(self) -> None:
+        """When a document with the same filename exists, it is deleted."""
+        mock_db = AsyncMock(spec=AsyncSession)
+        mock_qdrant = AsyncMock()
+
+        # Simulate existing document
+        existing_doc = MagicMock()
+        existing_doc.id = 42
+        existing_doc.chunk_count = 15
+
+        mock_result = MagicMock()
+        mock_scalars = MagicMock()
+        mock_scalars.first.return_value = existing_doc
+        mock_result.scalars.return_value = mock_scalars
+        mock_db.execute.return_value = mock_result
+
+        with patch("src.ingestion.pipeline.delete_document_points", new_callable=AsyncMock) as mock_delete_points:
+            await _replace_existing_document("existing.pdf", mock_db, mock_qdrant)
+
+        # Should have deleted Qdrant vectors
+        mock_delete_points.assert_called_once_with(mock_qdrant, 42)
+        # Should have deleted DB record
+        mock_db.delete.assert_called_once_with(existing_doc)
+        mock_db.flush.assert_called_once()

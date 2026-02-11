@@ -7,14 +7,47 @@ from pathlib import Path
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from src.db.models import Document, IngestionJob
 from src.ingestion.chunker import chunk_text
 from src.ingestion.metadata import extract_metadata
 from src.ingestion.parser import parse_file
 from src.retrieval.embedder import embed_texts
-from src.retrieval.vector_store import ensure_collection, upsert_chunks
+from src.retrieval.vector_store import delete_document_points, ensure_collection, upsert_chunks
 
 logger = logging.getLogger(__name__)
+
+
+async def _replace_existing_document(
+    filename: str,
+    db: AsyncSession,
+    qdrant: AsyncQdrantClient,
+) -> None:
+    """Check if a document with the same filename exists, and if so, delete it.
+
+    Removes both the Qdrant vectors and the database record for the old document.
+    """
+    result = await db.execute(
+        select(Document).where(Document.filename == filename)
+    )
+    existing = result.scalars().first()
+    if existing is None:
+        return
+
+    old_id = existing.id
+    old_chunks = existing.chunk_count
+    logger.info(
+        f"Replacing existing document '{filename}' "
+        f"(id={old_id}, {old_chunks} chunks) with new version"
+    )
+
+    # Delete old vectors from Qdrant
+    await delete_document_points(qdrant, old_id)
+
+    # Delete old DB record (cascades to IngestionJob via relationship)
+    await db.delete(existing)
+    await db.flush()
 
 
 async def ingest_document(
@@ -27,9 +60,15 @@ async def ingest_document(
 ) -> tuple[Document, IngestionJob]:
     """Full ingestion pipeline: parse → metadata → chunk → embed → store.
 
+    If a document with the same filename already exists, it is replaced
+    (old vectors deleted from Qdrant, old DB record removed).
+
     Returns the created Document and IngestionJob records.
     """
     ext = Path(filename).suffix.lower().lstrip(".")
+
+    # 0. Replace existing document if same filename exists
+    await _replace_existing_document(filename, db, qdrant)
 
     # 1. Create document record
     meta = extract_metadata(file_bytes, filename)
