@@ -1,0 +1,244 @@
+You are analyzing a Talend integration project. Your task is to produce a **Data Quality & Validation Analysis** — a comprehensive catalog of all validation rules, null handling patterns, data quality checks, and data cleansing logic embedded in the integration.
+
+## Talend Context
+Data quality logic in Talend is implemented across multiple components and patterns:
+- **tMap expressions**: The primary location for data cleansing and validation. Look for:
+  - Null checks: `row1.field == null ? defaultValue : row1.field` or `row1.field != null ? row1.field : 0`
+  - String trimming: `StringHandling.TRIM(row1.field)` removes leading/trailing whitespace
+  - String casing: `StringHandling.UPCASE()` or `StringHandling.DOWNCASE()` for standardization
+  - Type coercion: `Integer.parseInt(row1.field)`, `new BigDecimal(row1.field)`, `TalendDate.parseDate()`
+  - Default values: expressions that replace missing/invalid data with defaults
+  - Data cleansing: `StringHandling.EREPLACE(row1.field, "[^a-zA-Z0-9]", "", 0)` removes special characters
+  - Length truncation: `row1.field.substring(0, 50)` enforces field length limits
+- **tMap filter expressions**: Row-level validation that rejects invalid rows. Look for:
+  - Range checks: `row1.Amount > 0 && row1.Amount < 1000000`
+  - Mandatory field checks: `row1.CustomerID != null && !row1.CustomerID.isEmpty()`
+  - Pattern validation: `row1.Email.matches(".*@.*\\..*")`
+  - Date range validation: `row1.OrderDate.after(minDate) && row1.OrderDate.before(maxDate)`
+- **tFilterRow**: Explicit filtering component with conditions that validate data and route valid/invalid rows to different outputs
+- **tSchemaComplianceCheck**: Validates that incoming data matches expected schema (data types, nullability, length)
+- **tAssert**: Component that enforces assertions — job fails if the assertion is false (e.g., "COUNT(*) must be > 0")
+- **SQL validation**: WHERE clauses in source queries that filter out invalid data at the source (e.g., `WHERE IsDeleted = 0 AND Status IN ('A','P')`)
+- **Java routines**: Custom validation functions like `Routines.DataValidation.isValidEmail(String)`, `Routines.DataCleansing.cleanPhoneNumber(String)`
+- **tJavaRow/tJava**: Inline Java code that performs complex validation or data cleansing
+- **Reject links**: tMap reject outputs route rows that fail lookup joins or filters — these rejected rows are often logged or written to error tables
+
+## What to Extract
+
+1. **Validation rules**: For every validation check in the code:
+   - Rule ID (unique identifier)
+   - Job and component where the rule is implemented
+   - Rule type (null_check, range_check, format_validation, mandatory_field, type_validation, referential_integrity, etc.)
+   - Rule description in plain English
+   - Expression or condition that implements the rule
+   - Severity (CRITICAL = job should fail, HIGH = row rejected, MEDIUM = warning logged, LOW = default value applied)
+   - Action taken when validation fails (reject row, log warning, apply default, halt job)
+
+2. **Null handling patterns**: For every column, document how null values are handled:
+   - Is null allowed?
+   - If null is not allowed, what happens? (reject row, replace with default, fail job)
+   - What default value is used?
+   - Is the default value business-meaningful or a technical placeholder (e.g., "N/A", "UNKNOWN", 0, empty string)?
+
+3. **Data cleansing transformations**: For every data cleansing operation:
+   - Column affected
+   - Cleansing operation (trim, uppercase, remove special characters, truncate, standardize format, etc.)
+   - Reason for cleansing (inferred or documented)
+   - Job and component
+
+4. **Type coercion risks**: Identify cases where data types are converted and may cause data loss or errors:
+   - String to Integer: may fail if string contains non-numeric characters
+   - Decimal to Integer: precision loss
+   - Date to String: format assumptions
+   - String to Date: parsing errors if format is wrong
+   - Large number types to smaller types: overflow risk
+
+5. **Referential integrity checks**: Identify lookup joins that enforce relationships:
+   - Which tables are joined?
+   - What happens to rows that fail the join? (reject, log, accept with null foreign key values)
+   - Is the join INNER (enforces integrity) or LEFT OUTER (allows orphans)?
+
+6. **Data quality metrics**: Infer or compute:
+   - What percentage of rows are expected to pass validation?
+   - Which validations are most frequently violated (if logs or reject outputs are visible)?
+   - Are there redundant validations (same rule implemented in multiple places)?
+   - Are there missing validations (e.g., no null check on a critical field)?
+
+7. **Quality gates**: Identify components that act as quality gates (tAssert, tStatCatcher, job-level checks):
+   - What condition must be met for the job to succeed?
+   - What happens if the condition fails?
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "validation_rules": [
+    {
+      "rule_id": "DQ-001",
+      "job_name": "BRA_VBR_RAW_0.1",
+      "component": "tMap_1",
+      "rule_type": "null_check",
+      "column": "Amount",
+      "description": "Order amount must not be null — null values are replaced with 0 to ensure downstream calculations don't fail",
+      "expression": "row1.Amount != null ? row1.Amount : 0",
+      "severity": "MEDIUM",
+      "action_on_failure": "Replace null with default value (0)",
+      "business_justification": "Downstream aggregations require numeric values — nulls would cause SUM() to return null"
+    },
+    {
+      "rule_id": "DQ-002",
+      "job_name": "BRA_VBR_RAW_0.1",
+      "component": "tMap_1",
+      "rule_type": "range_check",
+      "column": "Amount",
+      "description": "Order amount must be positive — zero or negative amounts are rejected as invalid",
+      "expression": "row1.Amount > 0",
+      "severity": "HIGH",
+      "action_on_failure": "Reject row (row does not propagate to output)",
+      "business_justification": "Business rule: orders with zero or negative amounts are data errors and should not be processed"
+    },
+    {
+      "rule_id": "DQ-003",
+      "job_name": "BRA_VBR_CLEAN_0.1",
+      "component": "tFilterRow_1",
+      "rule_type": "format_validation",
+      "column": "Email",
+      "description": "Email address must contain '@' and '.' to be considered valid",
+      "expression": "row1.Email.matches(\".*@.*\\\\..*\")",
+      "severity": "MEDIUM",
+      "action_on_failure": "Route to error output (tLogRow_Error)",
+      "business_justification": "Invalid email addresses cannot be used for customer communications"
+    }
+  ],
+  "null_handling_patterns": [
+    {
+      "column": "CustomerName",
+      "table": "dbo.VW_SalesOrders",
+      "nullable_in_source": true,
+      "null_handling": "Replaced with 'UNKNOWN' if null",
+      "default_value": "UNKNOWN",
+      "jobs": ["BRA_VBR_RAW_0.1"],
+      "business_meaning": "UNKNOWN indicates missing customer data — these records may need manual review"
+    },
+    {
+      "column": "OrderDate",
+      "table": "dbo.VW_SalesOrders",
+      "nullable_in_source": false,
+      "null_handling": "Null not allowed — rows with null OrderDate are rejected",
+      "jobs": ["BRA_VBR_RAW_0.1"],
+      "business_meaning": "OrderDate is a mandatory field — orders without dates are invalid"
+    }
+  ],
+  "data_cleansing": [
+    {
+      "column": "CustomerName",
+      "cleansing_operations": [
+        {
+          "operation": "TRIM",
+          "description": "Remove leading and trailing whitespace",
+          "expression": "StringHandling.TRIM(row1.CustomerName)"
+        },
+        {
+          "operation": "UPPERCASE",
+          "description": "Convert to uppercase for standardization",
+          "expression": "StringHandling.UPCASE(row1.CustomerName)"
+        }
+      ],
+      "reason": "Standardize customer names for consistent matching and reporting",
+      "jobs": ["BRA_VBR_CLEAN_0.1"]
+    },
+    {
+      "column": "PhoneNumber",
+      "cleansing_operations": [
+        {
+          "operation": "REMOVE_SPECIAL_CHARS",
+          "description": "Remove all non-numeric characters (spaces, dashes, parentheses)",
+          "expression": "StringHandling.EREPLACE(row1.PhoneNumber, \"[^0-9]\", \"\", 0)"
+        }
+      ],
+      "reason": "Normalize phone numbers to digits-only format for consistent storage",
+      "jobs": ["BRA_VBR_CLEAN_0.1"]
+    }
+  ],
+  "type_coercion_risks": [
+    {
+      "column": "OrderID",
+      "source_type": "String",
+      "target_type": "Integer",
+      "conversion_expression": "Integer.parseInt(row1.OrderID)",
+      "risk_level": "HIGH",
+      "risk_description": "If OrderID contains non-numeric characters, parseInt will throw NumberFormatException and crash the job",
+      "recommendation": "Add validation to check if OrderID is numeric before converting, or use try-catch to handle parse errors",
+      "jobs": ["BRA_VBR_RAW_0.1"]
+    },
+    {
+      "column": "Amount",
+      "source_type": "DECIMAL(18,2)",
+      "target_type": "Integer",
+      "conversion_expression": "row1.Amount.intValue()",
+      "risk_level": "MEDIUM",
+      "risk_description": "Decimal values are truncated to integers — amounts like 99.99 become 99, losing cents",
+      "recommendation": "Verify if precision loss is acceptable, or use NUMERIC/DECIMAL in target",
+      "jobs": ["BRA_VBR_PUBLISH_0.1"]
+    }
+  ],
+  "referential_integrity_checks": [
+    {
+      "parent_table": "dbo.Customers",
+      "child_table": "dbo.VW_SalesOrders",
+      "join_keys": "row1.CustomerID == row2.CustomerID",
+      "join_type": "LEFT_OUTER",
+      "integrity_enforcement": "WEAK — orphaned orders (no matching customer) are accepted with null customer data",
+      "reject_handling": "No rejects — orders with missing customers pass through with null CustomerName",
+      "recommendation": "Consider changing to INNER join if every order MUST have a valid customer, or log orphaned orders for investigation",
+      "jobs": ["BRA_VBR_RAW_0.1"]
+    }
+  ],
+  "quality_gates": [
+    {
+      "component": "tAssert_1",
+      "job_name": "BRA_VBR_RAW_0.1",
+      "assertion": "globalMap.get('tMSSqlInput_1_NB_LINE') > 0",
+      "description": "Job must process at least 1 row from the source query — if no rows are read, the job fails",
+      "severity": "CRITICAL",
+      "action_on_failure": "Job terminates with error"
+    }
+  ],
+  "data_quality_metrics": {
+    "total_validation_rules": 24,
+    "rules_by_severity": {
+      "CRITICAL": 2,
+      "HIGH": 8,
+      "MEDIUM": 10,
+      "LOW": 4
+    },
+    "rules_by_type": {
+      "null_check": 12,
+      "range_check": 5,
+      "format_validation": 3,
+      "referential_integrity": 2,
+      "type_validation": 2
+    },
+    "columns_with_null_handling": 18,
+    "type_coercion_risks_count": 3,
+    "redundant_validations": [
+      {
+        "rule": "Amount > 0",
+        "locations": ["BRA_VBR_RAW_0.1 tMap_1 filter", "BRA_VBR_CLEAN_0.1 tFilterRow_1"],
+        "recommendation": "Validation is duplicated — if RAW already filters out invalid amounts, CLEAN layer does not need to check again"
+      }
+    ]
+  },
+  "overall_quality_score": 7.5,
+  "quality_assessment": "GOOD — Most critical fields have null checks and validation. However, several type coercion operations lack error handling, and some validations are redundant across layers.",
+  "recommendations": [
+    "Add try-catch error handling around all Integer.parseInt() and Date parsing operations to prevent job crashes on invalid data",
+    "Consolidate redundant validations — validate once in RAW layer, trust data in downstream layers",
+    "Consider adding format validation for email and phone number fields before they reach PUBLISH layer",
+    "Document the business meaning of default values (e.g., is 'UNKNOWN' a valid customer name or a placeholder for missing data?)",
+    "Add referential integrity checks to ensure all orders have valid customers — currently orphaned orders pass through silently"
+  ]
+}
+```
+
+Be thorough. Every tMap null check, every filter condition, every StringHandling.TRIM() is part of the data quality picture. If you see a validation pattern repeated across multiple jobs, note it as a candidate for a reusable routine.

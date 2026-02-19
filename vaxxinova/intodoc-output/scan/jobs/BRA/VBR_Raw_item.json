@@ -1,0 +1,2751 @@
+{
+  "name": "VBR_Raw_item",
+  "path": "BRA/VBR/Raw/VBR_Raw_item_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2025-12-04T14:59:54.099+0100",
+  "modification_date": "2026-01-23T10:58:26.809+0100",
+  "components": [
+    {
+      "unique_name": "tPrejob_1",
+      "component_type": "tPrejob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFileInputDelimited_1",
+      "component_type": "tFileInputDelimited",
+      "params": [
+        {
+          "name": "USE_EXISTING_DYNAMIC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FILENAMETEXT",
+          "value": "\"When the input source is a stream or a zip file,footer and random shouldn't be bigger than 0.\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_file_BC_Secret_Key_Context",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CSV_OPTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CSVROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "OPENED_LIST"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HEADER",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FOOTER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REMOVE_EMPTY_ROW",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNCOMPRESS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMP_DIR",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace\"",
+          "field_type": "DIRECTORY"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RANDOM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_RANDOM",
+          "value": "10",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TRIMALL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_FIELDS_NUM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SPLITRECORD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_DECODE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_HEADER_AS_IS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "Load_Context_From_File",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFileInputDelimited_2",
+      "component_type": "tFileInputDelimited",
+      "params": [
+        {
+          "name": "USE_EXISTING_DYNAMIC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FILENAMETEXT",
+          "value": "\"When the input source is a stream or a zip file,footer and random shouldn't be bigger than 0.\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_file_BC_environment",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CSV_OPTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CSVROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "OPENED_LIST"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HEADER",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FOOTER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REMOVE_EMPTY_ROW",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNCOMPRESS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMP_DIR",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace\"",
+          "field_type": "DIRECTORY"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RANDOM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_RANDOM",
+          "value": "10",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TRIMALL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_FIELDS_NUM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SPLITRECORD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_DECODE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_HEADER_AS_IS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "Load_Context_From_File",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tUnite_1",
+      "component_type": "tUnite",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tContextLoad_1",
+      "component_type": "tContextLoad",
+      "params": [
+        {
+          "name": "LOAD_NEW_VARIABLE",
+          "value": "Info",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "NOT_LOAD_OLD_VARIABLE",
+          "value": "Info",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PRINT_OPERATIONS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_WARNINGS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_INFO",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIEONERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_1",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_1",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_2",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "Create_Business_Central_Token_v2_1",
+      "component_type": "Create_Business_Central_Token_v2",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "Create_Business_Central_Token_v2",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_2",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPostjob_1",
+      "component_type": "tPostjob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "cleanup_temp_file_storage_1",
+      "component_type": "cleanup_temp_file_storage",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1",
+          "value": "COMPONENT_OK",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1:COMPONENT_LIST",
+          "value": "tPostjob_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "cleanup_temp_file_storage",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "Vaxxinova_Logging_1",
+      "component_type": "Vaxxinova_Logging",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "Vaxxinova_Logging",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tREST_1",
+      "component_type": "tREST",
+      "params": [
+        {
+          "name": "URL",
+          "value": "\"https://api.businesscentral.dynamics.com/v2.0/\" + context.parameter_bc_TenantId + \"/\" + context.parameter_Environment + \"/WS/\" + context.parameter_Company  + \"/Codeunit/BI_Service\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "METHOD",
+          "value": "POST",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BODY",
+          "value": "\"<?xml version=\\\"1.0\\\" encoding=\\\"utf-8\\\"?>\" +\n\"<soap:Envelope xmlns:soap=\\\"http://schemas.xmlsoap.org/soap/envelope/\\\" xmlns:xsi=\\\"http://www.w3.org/2001/XMLSchema-instance\\\" xmlns:xsd=\\\"http://www.w3.org/2001/XMLSchema\\\">\" +\n\"  <soap:Body>\" +\n\"    <GetBIData4TableNoAndFieldNoListWithCount xmlns=\\\"urn:microsoft-dynamics-schemas/codeunit/BI_Service\\\">\" +\n\"        <piTableNo>\" + (String) globalMap.get(\"parameter_table_no_bc\") + \"</piTableNo>\" +\n\"        <piFieldNoList></piFieldNoList>\" +\n\"        <piFieldFilterListJson>{FieldFilter:[{'\" + (String) globalMap.get(\"parameter_field_no_bc\") + \"':'>=\" + (String) globalMap.get(\"parameter_date_bc\") + \"'}]}</piFieldFilterListJson>\" +\n\"        <piMaxNoOfRecords>\" + (String) globalMap.get(\"parameter_max_no_records_bc\") + \"</piMaxNoOfRecords>\" +\n\"        <piAddCompanyNameAsColumnName>Firmenname</piAddCompanyNameAsColumnName>\" +\n\"        <pioRecPosition></pioRecPosition>\" +\n\"        <poJSONData></poJSONData>\" +\n\"        <poEndOfRecords>false</poEndOfRecords>\" +\n\"        <poNoOfRecordsInFilter>0</poNoOfRecordsInFilter>\" +\n\"    </GetBIData4TableNoAndFieldNoListWithCount>\" +\n\"  </soap:Body>\" +\n\"</soap:Envelope>\"",
+          "field_type": "MEMO"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractXMLField_1",
+      "component_type": "tExtractXMLField",
+      "params": [
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_hIS5gFK-EfCDc7ag_ULa7A",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:REPOSITORY_SCHEMA_TYPE",
+          "value": "_hIS5gFK-EfCDc7ag_ULa7A - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "XMLFIELD",
+          "value": "Body",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "USE_ITEMS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LOOP_QUERY_BASE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"/Soap:Envelope/Soap:Body\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LIMIT",
+          "value": "50",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_XML_FIELD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "XML_TEXT",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "XML_PREFIX",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "IGNORE_NS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_2",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_gmKOUNEZEfCv2OYoSvPlXg-tMap_2-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJavaRow_1",
+      "component_type": "tJavaRow",
+      "params": [
+        {
+          "name": "CODE",
+          "value": "try {\n    Boolean poEndOfRecords = input_row.poEndOfRecords;\n    if (poEndOfRecords == false) {\n        String pioRecPosition = input_row.pioRecPosition;\n        output_row.pioRecPosition = pioRecPosition;\n        output_row.poEndOfRecords = poEndOfRecords;\n    } else {\n        output_row.pioRecPosition = null;\n        output_row.poEndOfRecords = poEndOfRecords;\n    }\n} catch (Exception e) {\n    System.out.println(\"All Records Processed\");\n}\n",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "import com.jayway.jsonpath.JsonPath;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_3",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractJSONFields_2",
+      "component_type": "tExtractJSONFields",
+      "params": [
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_oW5RoNEXEfCv2OYoSvPlXg",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:REPOSITORY_SCHEMA_TYPE",
+          "value": "_oW5RoNEXEfCv2OYoSvPlXg - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "READ_BY",
+          "value": "JSONPATH",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSON_PATH_VERSION",
+          "value": "2_1_0",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSONFIELD",
+          "value": "poJSONData",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"$.['Item'][*]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JSON_LOOP_QUERY",
+          "value": "\"$.['Item'][*]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JDK_VERSION",
+          "value": "JDK_8",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_LOOP_AS_ROOT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT_LIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashOutput_2",
+      "component_type": "tHashOutput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATA_WRITE_MODEL",
+          "value": "MEMORY",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "MEMORY_HEAP_MAX_SIZE",
+          "value": "2",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "KEYS_MANAGEMENT",
+          "value": "KEEP_ALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "APPEND",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "HASH_KEY_FROM_INPUT_CONNECTOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJava_1",
+      "component_type": "tJava",
+      "params": [
+        {
+          "name": "CODE",
+          "value": "String foo = \"bar\";",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "//import java.util.List;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLoop_1",
+      "component_type": "tLoop",
+      "params": [
+        {
+          "name": "FORLOOP",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "WHILELOOP",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FROM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TO",
+          "value": "10",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "STEP",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INCREASE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DECLARATION",
+          "value": "int i=1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONDITION",
+          "value": "((String) globalMap.get(\"pioRecPosition\")) != null && !\"true\".equals((Boolean) globalMap.get(\"loopBreak\"))",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ITERATION",
+          "value": "i++",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJava_2",
+      "component_type": "tJava",
+      "params": [
+        {
+          "name": "CODE",
+          "value": "System.out.println((String) globalMap.get(\"pioRecPosition\"));\nlog.info(\"pioRecPosition=\" + String.valueOf(globalMap.get(\"pioRecPosition\")));",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "//import java.util.List;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashInput_1",
+      "component_type": "tHashInput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LIST",
+          "value": "tHashOutput_2",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "RELEASE_CACHE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_5",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_gmKOUNEZEfCv2OYoSvPlXg-tMap_5-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_1",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\" + context.parameter_Env_Prefix + context.parameter_BC_Company_Identifier  + (String)globalMap.get(\"parameter_table_name_bc\") + \"Delta.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Env_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "(String)globalMap.get(\"parameter_table_name_bc\") + \"Delta\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.parameter_Env_Prefix+context.parameter_BC_Company_Identifier + (String)globalMap.get(\"parameter_table_name_bc\") + \"Delta.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "Write_Local_itemsDelta",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tREST_3",
+      "component_type": "tREST",
+      "params": [
+        {
+          "name": "URL",
+          "value": "\"https://api.businesscentral.dynamics.com/v2.0/\" + context.parameter_bc_TenantId + \"/\" + context.parameter_Environment + \"/WS/\" + context.parameter_Company  + \"/Codeunit/BI_Service\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "METHOD",
+          "value": "POST",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BODY",
+          "value": "\"<?xml version=\\\"1.0\\\" encoding=\\\"utf-8\\\"?>\" +\n\"<soap:Envelope xmlns:soap=\\\"http://schemas.xmlsoap.org/soap/envelope/\\\" xmlns:xsi=\\\"http://www.w3.org/2001/XMLSchema-instance\\\" xmlns:xsd=\\\"http://www.w3.org/2001/XMLSchema\\\">\" +\n\"  <soap:Body>\" +\n\"    <GetBIData4TableNoAndFieldNoListWithCount xmlns=\\\"urn:microsoft-dynamics-schemas/codeunit/BI_Service\\\">\" +\n\"        <piTableNo>\" + (String) globalMap.get(\"parameter_table_no_bc\") + \"</piTableNo>\" +\n\"        <piFieldNoList></piFieldNoList>\" +\n\"        <piFieldFilterListJson>{FieldFilter:[{'\" + (String) globalMap.get(\"parameter_field_no_bc\") + \"':'>=\" + (String) globalMap.get(\"parameter_date_bc\") + \"'}]}</piFieldFilterListJson>\" +\n\"        <piMaxNoOfRecords>\" + (String) globalMap.get(\"parameter_max_no_records_bc\") + \"</piMaxNoOfRecords>\" +\n\"        <piAddCompanyNameAsColumnName>Firmenname</piAddCompanyNameAsColumnName>\" +\n\"        <pioRecPosition>\" + (String) globalMap.get(\"pioRecPosition\") + \"</pioRecPosition>\" +\n\"        <poJSONData></poJSONData>\" +\n\"        <poEndOfRecords>false</poEndOfRecords>\" +\n\"        <poNoOfRecordsInFilter>0</poNoOfRecordsInFilter>\" +\n\"    </GetBIData4TableNoAndFieldNoListWithCount>\" +\n\"  </soap:Body>\" +\n\"</soap:Envelope>\"",
+          "field_type": "MEMO"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractXMLField_2",
+      "component_type": "tExtractXMLField",
+      "params": [
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_hIS5gFK-EfCDc7ag_ULa7A",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:REPOSITORY_SCHEMA_TYPE",
+          "value": "_hIS5gFK-EfCDc7ag_ULa7A - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "XMLFIELD",
+          "value": "Body",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "USE_ITEMS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LOOP_QUERY_BASE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"/Soap:Envelope/Soap:Body\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LIMIT",
+          "value": "50",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_XML_FIELD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "XML_TEXT",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "XML_PREFIX",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "IGNORE_NS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_4",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_gmKOUNEZEfCv2OYoSvPlXg-tMap_4-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractJSONFields_5",
+      "component_type": "tExtractJSONFields",
+      "params": [
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_oW5RoNEXEfCv2OYoSvPlXg",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:REPOSITORY_SCHEMA_TYPE",
+          "value": "_oW5RoNEXEfCv2OYoSvPlXg - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "READ_BY",
+          "value": "JSONPATH",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSON_PATH_VERSION",
+          "value": "2_1_0",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSONFIELD",
+          "value": "poJSONData",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"$.['Item'][*]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JSON_LOOP_QUERY",
+          "value": "\"$.['Item'][*]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JDK_VERSION",
+          "value": "JDK_8",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_LOOP_AS_ROOT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT_LIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJavaRow_3",
+      "component_type": "tJavaRow",
+      "params": [
+        {
+          "name": "CODE",
+          "value": "try {\n    Boolean poEndOfRecords = input_row.poEndOfRecords;\n    if (poEndOfRecords == false) {\n        String pioRecPosition = input_row.pioRecPosition;\n        output_row.pioRecPosition = pioRecPosition;\n        output_row.poEndOfRecords = poEndOfRecords;\n    } else {\n        output_row.pioRecPosition = null;\n        output_row.poEndOfRecords = poEndOfRecords;\n    }\n} catch (Exception e) {\n    System.out.println(\"All Records Processed\");\n}",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "//import java.util.List;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_5",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashOutput_1",
+      "component_type": "tHashOutput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LIST",
+          "value": "tHashOutput_2",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "DATA_WRITE_MODEL",
+          "value": "MEMORY",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "MEMORY_HEAP_MAX_SIZE",
+          "value": "2",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "KEYS_MANAGEMENT",
+          "value": "KEEP_ALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "APPEND",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "HASH_KEY_FROM_INPUT_CONNECTOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQuerySQLRow_2",
+      "component_type": "tBigQuerySQLRow",
+      "params": [
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"\nMERGE \" + context.parameter_Env_Prefix + \".\" + (String)globalMap.get(\"parameter_table_name_bc\") + \" T\nUSING (\n  SELECT * EXCEPT(rn)\n  FROM (\n    SELECT *,\n           ROW_NUMBER() OVER (PARTITION BY SystemId ORDER BY SystemModifiedAt DESC) AS rn\n    FROM \" + context.parameter_Env_Prefix + \".\" + (String)globalMap.get(\"parameter_table_name_bc\") + \"Delta\n  )\n  WHERE rn = 1\n) D\nON T.SystemId = D.SystemId\n\nWHEN MATCHED AND (\n  T.SystemModifiedAt IS NULL OR D.SystemModifiedAt > T.SystemModifiedAt\n) THEN\nUPDATE SET\n  AssemblyPolicy      = D.AssemblyPolicy,\n  BaseUnitOfMeasure   = D.BaseUnitOfMeasure,\n  CostingMethod       = D.CostingMethod,\n  Description         = D.Description,\n  Dose                = D.Dose,\n  Family              = D.Family,\n  Hierarchy           = D.Hierarchy,\n  HierarchyItems      = D.HierarchyItems,\n  Inventory           = D.Inventory,\n  ItemCategoryCode    = D.ItemCategoryCode,\n  ItemCategoryId      = D.ItemCategoryId,\n  LastDirectCost      = D.LastDirectCost,\n  Level               = D.Level,\n  ItemNumber          = D.ItemNumber,\n  Species             = D.Species,\n  SpeciesItems        = D.SpeciesItems,\n  StandardCost        = D.StandardCost,\n  SystemCreatedAt     = D.SystemCreatedAt,\n  SystemCreatedBy     = D.SystemCreatedBy,\n  SystemModifiedAt    = D.SystemModifiedAt,\n  SystemModifiedBy    = D.SystemModifiedBy,\n  Type                = D.Type,\n  UnitCost            = D.UnitCost,\n  UnitOfMeasureId     = D.UnitOfMeasureId,\n  UnitPrice           = D.UnitPrice\n\nWHEN NOT MATCHED BY TARGET THEN\nINSERT (\n  SystemId,\n  AssemblyPolicy,\n  BaseUnitOfMeasure,\n  CostingMethod,\n  Description,\n  Dose,\n  Family,\n  Hierarchy,\n  HierarchyItems,\n  Inventory,\n  ItemCategoryCode,\n  ItemCategoryId,\n  LastDirectCost,\n  Level,\n  ItemNumber,\n  Species,\n  SpeciesItems,\n  StandardCost,\n  SystemCreatedAt,\n  SystemCreatedBy,\n  SystemModifiedAt,\n  SystemModifiedBy,\n  Type,\n  UnitCost,\n  UnitOfMeasureId,\n  UnitPrice\n)\nVALUES (\n  D.SystemId,\n  D.AssemblyPolicy,\n  D.BaseUnitOfMeasure,\n  D.CostingMethod,\n  D.Description,\n  D.Dose,\n  D.Family,\n  D.Hierarchy,\n  D.HierarchyItems,\n  D.Inventory,\n  D.ItemCategoryCode,\n  D.ItemCategoryId,\n  D.LastDirectCost,\n  D.Level,\n  D.ItemNumber,\n  D.Species,\n  D.SpeciesItems,\n  D.StandardCost,\n  D.SystemCreatedAt,\n  D.SystemCreatedBy,\n  D.SystemModifiedAt,\n  D.SystemModifiedBy,\n  D.Type,\n  D.UnitCost,\n  D.UnitOfMeasureId,\n  D.UnitPrice\n)\n\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"/Applications/Talend/Talend-Studio-20221003_1400-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "productionOrders_Incremental_Load",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "OnComponentOk2",
+      "source": "tPrejob_1",
+      "target": "tFileInputDelimited_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row5",
+      "source": "tFileInputDelimited_1",
+      "target": "tUnite_1",
+      "connector_name": "FLOW",
+      "line_style": 10
+    },
+    {
+      "name": "row6",
+      "source": "tFileInputDelimited_2",
+      "target": "tUnite_1",
+      "connector_name": "FLOW",
+      "line_style": 10
+    },
+    {
+      "name": "OnComponentOk3",
+      "source": "tFileInputDelimited_2",
+      "target": "tFixedFlowInput_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row4",
+      "source": "tUnite_1",
+      "target": "tContextLoad_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row8",
+      "source": "tFixedFlowInput_1",
+      "target": "tSetGlobalVar_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnSubjobOk1",
+      "source": "tFixedFlowInput_1",
+      "target": "tFixedFlowInput_2",
+      "connector_name": "SUBJOB_OK",
+      "line_style": 1
+    },
+    {
+      "name": "row1",
+      "source": "tFixedFlowInput_2",
+      "target": "Create_Business_Central_Token_v2_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnSubjobOk3",
+      "source": "tFixedFlowInput_2",
+      "target": "tREST_1",
+      "connector_name": "SUBJOB_OK",
+      "line_style": 1
+    },
+    {
+      "name": "row2",
+      "source": "Create_Business_Central_Token_v2_1",
+      "target": "tSetGlobalVar_2",
+      "connector_name": "OUTPUT_1",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk4",
+      "source": "tPostjob_1",
+      "target": "cleanup_temp_file_storage_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "mainResponse",
+      "source": "tREST_1",
+      "target": "tExtractXMLField_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "mainXML",
+      "source": "tExtractXMLField_1",
+      "target": "tMap_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "mainBody",
+      "source": "tMap_2",
+      "target": "tExtractJSONFields_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "main_metadata",
+      "source": "tMap_2",
+      "target": "tJavaRow_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row12",
+      "source": "tJavaRow_1",
+      "target": "tSetGlobalVar_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk7",
+      "source": "tSetGlobalVar_3",
+      "target": "tJava_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "mainJSON",
+      "source": "tExtractJSONFields_2",
+      "target": "tHashOutput_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "If2",
+      "source": "tJava_1",
+      "target": "tLoop_1",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "iterate2",
+      "source": "tLoop_1",
+      "target": "tJava_2",
+      "connector_name": "ITERATE",
+      "line_style": 7
+    },
+    {
+      "name": "OnComponentOk8",
+      "source": "tJava_2",
+      "target": "tREST_3",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "completeJSON",
+      "source": "tHashInput_1",
+      "target": "tMap_5",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "mainOutput",
+      "source": "tMap_5",
+      "target": "tBigQueryOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk9",
+      "source": "tBigQueryOutput_1",
+      "target": "tBigQuerySQLRow_2",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "loopResponse",
+      "source": "tREST_3",
+      "target": "tExtractXMLField_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "loopXML",
+      "source": "tExtractXMLField_2",
+      "target": "tMap_4",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "loopBody",
+      "source": "tMap_4",
+      "target": "tExtractJSONFields_5",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "loop_metadata",
+      "source": "tMap_4",
+      "target": "tJavaRow_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "loopJSON",
+      "source": "tExtractJSONFields_5",
+      "target": "tHashOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row23",
+      "source": "tJavaRow_3",
+      "target": "tSetGlobalVar_5",
+      "connector_name": "FLOW",
+      "line_style": 0
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "PROD": "global_gr",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Retrieval_Time",
+          "type": "id_Integer",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "20",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "PROD": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+            "TEST": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+            "Default": "",
+            "TEST_LINUX": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+            "TEST_MAC": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_client_id",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_client_secret",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_Company_Identifier",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_EndPoint",
+          "type": "id_String",
+          "values": {
+            "PROD": "https://api.businesscentral.dynamics.com",
+            "TEST": "https://api.businesscentral.dynamics.com",
+            "Default": "",
+            "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+            "TEST_MAC": "https://api.businesscentral.dynamics.com",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_grant_type",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_password",
+          "type": "id_Password",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_resource",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_scope",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_TenantId",
+          "type": "id_String",
+          "values": {
+            "PROD": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+            "TEST": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+            "Default": "",
+            "TEST_LINUX": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+            "TEST_MAC": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_username",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_client_secret",
+          "type": "id_Password",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Company",
+          "type": "id_String",
+          "values": {
+            "PROD": "Vaxxinova%20Brasil",
+            "TEST": "Vaxxinova%20Brasil",
+            "Default": "",
+            "TEST_LINUX": "Vaxxinova%20Brasil",
+            "TEST_MAC": "Vaxxinova%20Brasil",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "PROD": "bra_vbr_raw",
+            "TEST": "test_bra_vbr_raw",
+            "Default": "",
+            "TEST_LINUX": "test_bra_vbr_raw",
+            "TEST_MAC": "test_bra_vbr_raw",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Environment",
+          "type": "id_String",
+          "values": {
+            "PROD": "PRD",
+            "TEST": "srSandbox",
+            "Default": "",
+            "TEST_LINUX": "PRD",
+            "TEST_MAC": "PRD",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_ResourceId",
+          "type": "id_String",
+          "values": {
+            "PROD": "",
+            "TEST": "",
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "resource_file_BC_environment",
+          "type": "id_String",
+          "values": {
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "Default": "",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "resource_file_BC_Secret_Key_Context",
+          "type": "id_String",
+          "values": {
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "Default": "",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "PROD": "c:/temp",
+            "TEST": "D:\\Vaxxinova\\BigQueryResource",
+            "Default": "",
+            "TEST_LINUX": "/home/askeox/IntoData/Vaxxinova/temp",
+            "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp",
+            "PROD_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "PROD": "vaxxinova-talend",
+            "TEST": "vaxxinova-talend",
+            "Default": "",
+            "TEST_LINUX": "vaxxinova-talend",
+            "TEST_MAC": "vaxxinova-talend",
+            "PROD_MAC": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "PROD": "vaxxinova-dwh",
+            "TEST": "vaxxinova-dwh",
+            "Default": "",
+            "TEST_LINUX": "vaxxinova-dwh",
+            "TEST_MAC": "vaxxinova-dwh",
+            "PROD_MAC": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+            "TEST": "[CREDENTIAL_PATH]",
+            "Default": "",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]",
+            "PROD_MAC": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "mainXML"
+      ],
+      "output_tables": [
+        "mainBody",
+        "main_metadata"
+      ],
+      "entries": [
+        {
+          "table_name": "mainBody",
+          "column_name": "poJSONData",
+          "expression": "mainXML.poJSONData"
+        },
+        {
+          "table_name": "main_metadata",
+          "column_name": "pioRecPosition",
+          "expression": "mainXML.pioRecPosition"
+        },
+        {
+          "table_name": "main_metadata",
+          "column_name": "poEndOfRecords",
+          "expression": "mainXML.poEndOfRecords"
+        }
+      ],
+      "var_entries": []
+    },
+    {
+      "input_tables": [
+        "completeJSON"
+      ],
+      "output_tables": [
+        "mainOutput"
+      ],
+      "entries": [
+        {
+          "table_name": "mainOutput",
+          "column_name": "SystemId",
+          "expression": "completeJSON.systemId"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "AssemblyPolicy",
+          "expression": "completeJSON.AssemblyPolicy"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "BaseUnitOfMeasure",
+          "expression": "completeJSON.BaseUnitOfMeasure"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "CostingMethod",
+          "expression": "completeJSON.CostingMethod"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Description",
+          "expression": "completeJSON.Description.trim()"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Dose",
+          "expression": "completeJSON.Dose == null ? null : Integer.parseInt(completeJSON.Dose)"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Family",
+          "expression": "completeJSON.Family"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Hierarchy",
+          "expression": "completeJSON.Hierarchy"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "HierarchyItems",
+          "expression": "completeJSON.HierarchyItems"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Inventory",
+          "expression": "completeJSON.Inventory == null ? null : Double.parseDouble(completeJSON.Inventory.replace(\",\", \"\"))"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "ItemCategoryCode",
+          "expression": "completeJSON.ItemCategoryCode"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "ItemCategoryId",
+          "expression": "completeJSON.ItemCategoryId"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "LastDirectCost",
+          "expression": "completeJSON.LastDirectCost == null ? null : Double.parseDouble(completeJSON.LastDirectCost.replace(\",\", \"\"))"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Level",
+          "expression": "completeJSON.Level"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "ItemNumber",
+          "expression": "completeJSON.ItemNumber"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Species",
+          "expression": "completeJSON.Species"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "SpeciesItems",
+          "expression": "completeJSON.SpeciesItems"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "StandardCost",
+          "expression": "completeJSON.StandardCost  == null ? null : Double.parseDouble(completeJSON.StandardCost.replace(\",\", \"\"))"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "SystemCreatedAt",
+          "expression": "(completeJSON.SystemCreatedAt == null || \n    completeJSON.SystemCreatedAt.trim().isEmpty())\n? null\n: TalendDate.parseDateLocale(\"MM/dd/yy hh:mm a\",\n                             completeJSON.SystemCreatedAt.trim(),\n                             \"en_US\")"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "SystemCreatedBy",
+          "expression": "completeJSON.SystemCreatedBy"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "SystemModifiedAt",
+          "expression": "(completeJSON.SystemModifiedAt == null || \n    completeJSON.SystemModifiedAt.trim().isEmpty())\n? null\n: TalendDate.parseDateLocale(\"MM/dd/yy hh:mm a\",\n                             completeJSON.SystemModifiedAt.trim(),\n                             \"en_US\")"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "SystemModifiedBy",
+          "expression": "completeJSON.SystemModifiedBy"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "Type",
+          "expression": "completeJSON.Type"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "UnitCost",
+          "expression": "completeJSON.UnitCost == null ? null : Double.parseDouble(completeJSON.UnitCost.replace(\",\", \"\"))"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "UnitOfMeasureId",
+          "expression": "completeJSON.UnitOfMeasureId"
+        },
+        {
+          "table_name": "mainOutput",
+          "column_name": "UnitPrice",
+          "expression": "completeJSON.UnitPrice == null ? null : Double.parseDouble(completeJSON.UnitPrice.replace(\",\", \"\"))"
+        }
+      ],
+      "var_entries": []
+    },
+    {
+      "input_tables": [
+        "loopXML"
+      ],
+      "output_tables": [
+        "loopBody",
+        "loop_metadata"
+      ],
+      "entries": [
+        {
+          "table_name": "loopBody",
+          "column_name": "poJSONData",
+          "expression": "loopXML.poJSONData"
+        },
+        {
+          "table_name": "loop_metadata",
+          "column_name": "pioRecPosition",
+          "expression": "loopXML.pioRecPosition"
+        },
+        {
+          "table_name": "loop_metadata",
+          "column_name": "poEndOfRecords",
+          "expression": "loopXML.poEndOfRecords"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString",
+    "DQTechnical",
+    "DataQualityDependencies",
+    "DataMasking",
+    "DataQuality",
+    "DqStringHandling"
+  ],
+  "group": "BRA",
+  "subgroup": "VBR"
+}

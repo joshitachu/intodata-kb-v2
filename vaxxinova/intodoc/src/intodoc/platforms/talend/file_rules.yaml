@@ -1,0 +1,69 @@
+# Talend file classification rules
+# Pattern → FileType mapping
+
+rules:
+  # Process jobs (the core integration logic)
+  - pattern: "process/**/*.item"
+    type: job
+    description: "Talend job definition (XML/XMI with components, connections, context)"
+
+  - pattern: "process/**/*.properties"
+    type: job_properties
+    description: "Job metadata sidecar (name, author, version, timestamps)"
+
+  # Metadata connections (database/file/cloud connections)
+  - pattern: "metadata/connections/*.item"
+    type: connection
+    description: "Database or external system connection definition"
+
+  - pattern: "metadata/connections/*.properties"
+    type: config
+    description: "Connection metadata properties"
+
+  # Context files (environment-specific variables)
+  - pattern: "context/*.item"
+    type: context
+    description: "Context group with per-environment variable values"
+
+  - pattern: "context/*.properties"
+    type: config
+    description: "Context metadata properties"
+
+  # Code routines (Java source files stored as .item)
+  - pattern: "code/routines/**/*.item"
+    type: routine
+    description: "Java routine source code"
+
+  - pattern: "code/routines/**/*.properties"
+    type: config
+    description: "Routine metadata properties"
+
+  # Joblets
+  - pattern: "joblets/**/*.item"
+    type: joblet
+    description: "Reusable joblet definition"
+
+  # SQL patterns
+  - pattern: "sqlPatterns/**/*"
+    type: sql_pattern
+    description: "SQL pattern template"
+
+  # Documentation
+  - pattern: "documentations/**/*"
+    type: documentation
+    description: "Project documentation"
+
+# File extensions to always skip
+skip_extensions:
+  - ".screenshot"
+  - ".bmp"
+  - ".png"
+  - ".jpg"
+  - ".jpeg"
+  - ".gif"
+
+# Directories to always skip
+skip_directories:
+  - "recycle_bin"
+  - ".git"
+  - ".settings"

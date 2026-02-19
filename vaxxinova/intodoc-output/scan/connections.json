@@ -1,0 +1,194 @@
+[
+  {
+    "xmi_id": "_rnjPsHMTEe6a-__wSE7xNw",
+    "name": "connection_BRA_VBR_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_BRA_VBR_MSSQL_Server",
+    "port": "context.connection_BRA_VBR_MSSQL_Port",
+    "database": "context.connection_BRA_VBR_MSSQL_Database",
+    "schema_name": "context.connection_BRA_VBR_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_BRA_VBR_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_rnjPsHMTEe6a-__wSE7xNw",
+    "name": "connection_BRA_VBR_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_BRA_VBR_MSSQL_Server",
+    "port": "context.connection_BRA_VBR_MSSQL_Port",
+    "database": "context.connection_BRA_VBR_MSSQL_Database",
+    "schema_name": "context.connection_BRA_VBR_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_BRA_VBR_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_XmkQIJ2xEe6M6pc7WRkjUQ",
+    "name": "connection_ITA_VAX_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_ITA_VAX_MSSQL_Server",
+    "port": "context.connection_ITA_VAX_MSSQL_Port",
+    "database": "context.connection_ITA_VAX_MSSQL_Database",
+    "schema_name": "context.connection_ITA_VAX_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_ITA_VAX_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_XmkQIJ2xEe6M6pc7WRkjUQ",
+    "name": "connection_ITA_VAX_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_ITA_VAX_MSSQL_Server",
+    "port": "context.connection_ITA_VAX_MSSQL_Port",
+    "database": "context.connection_ITA_VAX_MSSQL_Database",
+    "schema_name": "context.connection_ITA_VAX_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_ITA_VAX_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_fQyIwG2sEe6k_sZBfMCz5w",
+    "name": "connection_JDBC_Google_BigQuery",
+    "connection_type": "JDBC",
+    "host": "",
+    "port": "",
+    "database": "",
+    "schema_name": "",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "context.connection_JDBC_Google_BigQuery_connection_driverClass",
+      "product_id": "JDBC",
+      "context_mode": "true",
+      "username": "context.connection_JDBC_Google_BigQuery_connection_userPassword_userId"
+    }
+  },
+  {
+    "xmi_id": "_fQyIwG2sEe6k_sZBfMCz5w",
+    "name": "connection_JDBC_Google_BigQuery",
+    "connection_type": "JDBC",
+    "host": "",
+    "port": "",
+    "database": "",
+    "schema_name": "",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "context.connection_JDBC_Google_BigQuery_connection_driverClass",
+      "product_id": "JDBC",
+      "context_mode": "true",
+      "username": "context.connection_JDBC_Google_BigQuery_connection_userPassword_userId"
+    }
+  },
+  {
+    "xmi_id": "_riN2gILnEe6LV5h8tPX94w",
+    "name": "connection_JPN_VJP_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_JPN_VJP_MSSQL_Server",
+    "port": "context.connection_JPN_VJP_MSSQL_Port",
+    "database": "context.connection_JPN_VJP_MSSQL_Database",
+    "schema_name": "context.connection_JPN_VJP_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_JPN_VJP_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_riN2gILnEe6LV5h8tPX94w",
+    "name": "connection_JPN_VJP_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_JPN_VJP_MSSQL_Server",
+    "port": "context.connection_JPN_VJP_MSSQL_Port",
+    "database": "context.connection_JPN_VJP_MSSQL_Database",
+    "schema_name": "context.connection_JPN_VJP_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_JPN_VJP_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_9weq0MMgEfC_uv2VQrxwAA",
+    "name": "connection_SAF_VSA_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_SAF_VSA_MSSQL_Server",
+    "port": "context.connection_SAF_VSA_MSSQL_Port",
+    "database": "context.connection_SAF_VSA_MSSQL_Database",
+    "schema_name": "context.connection_SAF_VSA_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_SAF_VSA_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_9weq0MMgEfC_uv2VQrxwAA",
+    "name": "connection_SAF_VSA_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_SAF_VSA_MSSQL_Server",
+    "port": "context.connection_SAF_VSA_MSSQL_Port",
+    "database": "context.connection_SAF_VSA_MSSQL_Database",
+    "schema_name": "context.connection_SAF_VSA_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_SAF_VSA_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_diC2QHQTEe6a-__wSE7xNw",
+    "name": "connection_USA_NPL_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_USA_NPL_MSSQL_Server",
+    "port": "context.connection_USA_NPL_MSSQL_Port",
+    "database": "context.connection_USA_NPL_MSSQL_Database",
+    "schema_name": "context.connection_USA_NPL_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_USA_NPL_MSSQL_Login"
+    }
+  },
+  {
+    "xmi_id": "_diC2QHQTEe6a-__wSE7xNw",
+    "name": "connection_USA_NPL_MSSQL",
+    "connection_type": "Microsoft SQL Server",
+    "host": "context.connection_USA_NPL_MSSQL_Server",
+    "port": "context.connection_USA_NPL_MSSQL_Port",
+    "database": "context.connection_USA_NPL_MSSQL_Database",
+    "schema_name": "context.connection_USA_NPL_MSSQL_Schema",
+    "file_path": "",
+    "additional_params": {
+      "driver_class": "com.microsoft.sqlserver.jdbc.SQLServerDriver",
+      "product_id": "SQL_SERVER",
+      "context_mode": "true",
+      "username": "context.connection_USA_NPL_MSSQL_Login"
+    }
+  }
+]

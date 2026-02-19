@@ -1,0 +1,1369 @@
+{
+  "name": "VJP_Raw_glAccount",
+  "path": "JPN/VJP/RAW/VJP_Raw_glAccount_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2026-01-30T12:09:06.837+0100",
+  "modification_date": "2026-01-30T13:15:14.375+0100",
+  "components": [
+    {
+      "unique_name": "tHashInput_2",
+      "component_type": "tHashInput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LIST",
+          "value": "tHashOutput_2",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "RELEASE_CACHE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_2",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\" + context.parameter_Raw_Prefix_Prod + \".glAccount\"+\".csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Raw_Prefix_Prod",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"glAccount\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.parameter_Raw_Prefix_Prod + context.parameter_BC_Company_Identifier+\".glAccount\"+\".csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "Write_Global_SalesInvoiceLines",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_5",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM \" + context.parameter_Raw_Prefix + \".glAccount\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Read_salesInvoiceLines",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_GBvbwP3MEfCouPZuA6U6rA-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Map_SalesInvoiceLines",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashOutput_2",
+      "component_type": "tHashOutput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATA_WRITE_MODEL",
+          "value": "MEMORY",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "MEMORY_HEAP_MAX_SIZE",
+          "value": "2",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "KEYS_MANAGEMENT",
+          "value": "KEEP_LAST",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "APPEND",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "HASH_KEY_FROM_INPUT_CONNECTOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPrejob_1",
+      "component_type": "tPrejob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_1",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_1",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPostjob_1",
+      "component_type": "tPostjob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "cleanup_temp_file_storage_1",
+      "component_type": "cleanup_temp_file_storage",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1",
+          "value": "COMPONENT_OK",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1:COMPONENT_LIST",
+          "value": "tPostjob_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "cleanup_temp_file_storage",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "Vaxxinova_Logging_1",
+      "component_type": "Vaxxinova_Logging",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "Vaxxinova_Logging",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "SLG_2",
+      "source": "tHashInput_2",
+      "target": "tBigQueryOutput_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "SIL_1",
+      "source": "tBigQueryInput_5",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "SLG_1",
+      "source": "tMap_1",
+      "target": "tHashOutput_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk1",
+      "source": "tPrejob_1",
+      "target": "tFixedFlowInput_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row8",
+      "source": "tFixedFlowInput_1",
+      "target": "tSetGlobalVar_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk10",
+      "source": "tPostjob_1",
+      "target": "cleanup_temp_file_storage_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "parameter_Raw_Prefix_Prod",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "jpn_vjp_raw",
+            "TEST_LINUX": "jpn_vjp_raw",
+            "TEST": "jpn_vjp_raw",
+            "TEST_MAC": "jpn_vjp_raw",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Retrieval_Time",
+          "type": "id_Integer",
+          "values": {
+            "Default": "",
+            "PROD": "22",
+            "TEST_LINUX": "7",
+            "TEST": "22",
+            "TEST_MAC": "22",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "c:/temp",
+            "TEST_LINUX": "/home/askeox/IntoData/Vaxxinova/temp",
+            "TEST": "D:\\Vaxxinova\\BigQueryResource",
+            "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp",
+            "PROD_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-talend",
+            "TEST_LINUX": "vaxxinova-talend",
+            "TEST": "vaxxinova-talend",
+            "TEST_MAC": "vaxxinova-talend",
+            "PROD_MAC": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-dwh",
+            "TEST_LINUX": "vaxxinova-dwh",
+            "TEST": "vaxxinova-dwh",
+            "TEST_MAC": "vaxxinova-dwh",
+            "PROD_MAC": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]",
+            "PROD_MAC": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "jpn_vjp_clean",
+            "TEST_LINUX": "test_jpn_vjp_clean",
+            "TEST": "test_jpn_vjp_clean",
+            "TEST_MAC": "test_jpn_vjp_clean",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_Company_Identifier",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST_LINUX": "",
+            "TEST": "",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_EndPoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://bc-vax-api.ew-group.net",
+            "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+            "TEST": "https://bc-vax-api.ew-group.net",
+            "TEST_MAC": "https://bc-vax-api.ew-group.net",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_password",
+          "type": "id_Password",
+          "values": {
+            "Default": "",
+            "PROD": "[ENCRYPTED_PASSWORD]",
+            "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+            "TEST": "[ENCRYPTED_PASSWORD]",
+            "TEST_MAC": "[ENCRYPTED_PASSWORD]",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_bc_username",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "EW\\vax_bc_api_vax-int",
+            "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+            "TEST": "EW\\vax_bc_api_vax-int",
+            "TEST_MAC": "EW\\vax_bc_api_vax-int",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "jpn_vjp_clean",
+            "TEST_LINUX": "test_jpn_vjp_clean",
+            "TEST": "test_jpn_vjp_clean",
+            "TEST_MAC": "test_jpn_vjp_clean",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Raw_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "jpn_vjp_raw",
+            "TEST_LINUX": "test_jpn_vjp_raw",
+            "TEST": "test_jpn_vjp_raw",
+            "TEST_MAC": "test_jpn_vjp_raw",
+            "PROD_MAC": ""
+          }
+        },
+        {
+          "name": "resource_file_BC_environment",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "",
+            "PROD_MAC": ""
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "SIL_1"
+      ],
+      "output_tables": [
+        "SLG_1"
+      ],
+      "entries": [
+        {
+          "table_name": "SLG_1",
+          "column_name": "accountCategory",
+          "expression": "SIL_1.accountCategory"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "accountSubcategoryDescript",
+          "expression": "SIL_1.accountSubcategoryDescript"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "accountSubcategoryEntryNo",
+          "expression": "SIL_1.accountSubcategoryEntryNo"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "accountType",
+          "expression": "SIL_1.accountType"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "addCurrencyBalanceAtDate",
+          "expression": "SIL_1.addCurrencyBalanceAtDate"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "addCurrencyCreditAmount",
+          "expression": "SIL_1.addCurrencyCreditAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "addCurrencyDebitAmount",
+          "expression": "SIL_1.addCurrencyDebitAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "additionalCurrencyBalance",
+          "expression": "SIL_1.additionalCurrencyBalance"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "additionalCurrencyNetChange",
+          "expression": "SIL_1.additionalCurrencyNetChange"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "apiAccountType",
+          "expression": "SIL_1.apiAccountType"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "automaticExtTexts",
+          "expression": "SIL_1.automaticExtTexts"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "balance",
+          "expression": "SIL_1.balance"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "balanceAtDate",
+          "expression": "SIL_1.balanceAtDate"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "blocked",
+          "expression": "SIL_1.blocked"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "budgetAtDate",
+          "expression": "SIL_1.budgetAtDate"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "budgetedAmount",
+          "expression": "SIL_1.budgetedAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "budgetedCreditAmount",
+          "expression": "SIL_1.budgetedCreditAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "budgetedDebitAmount",
+          "expression": "SIL_1.budgetedDebitAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "comment",
+          "expression": "SIL_1.comment"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "consolCreditAcc",
+          "expression": "SIL_1.consolCreditAcc"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "consolDebitAcc",
+          "expression": "SIL_1.consolDebitAcc"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "consolTranslationMethod",
+          "expression": "SIL_1.consolTranslationMethod"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "costTypeNo",
+          "expression": "SIL_1.costTypeNo"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "creditAmount",
+          "expression": "SIL_1.creditAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "debitAmount",
+          "expression": "SIL_1.debitAmount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "debitCredit",
+          "expression": "SIL_1.debitCredit"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "defaultDeferralTemplateCode",
+          "expression": "SIL_1.defaultDeferralTemplateCode"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "defaultIcPartnerGlAccNo",
+          "expression": "SIL_1.defaultIcPartnerGlAccNo"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "defaultSustAccount",
+          "expression": "SIL_1.defaultSustAccount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "directPosting",
+          "expression": "SIL_1.directPosting"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "exchangeRateAdjustment",
+          "expression": "SIL_1.exchangeRateAdjustment"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "excludeFromConsolidation",
+          "expression": "SIL_1.excludeFromConsolidation"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "genBusPostingGroup",
+          "expression": "SIL_1.genBusPostingGroup"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "genPostingType",
+          "expression": "SIL_1.genPostingType"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "genProdPostingGroup",
+          "expression": "SIL_1.genProdPostingGroup"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "globalDimension1Code",
+          "expression": "SIL_1.globalDimension1Code"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "globalDimension2Code",
+          "expression": "SIL_1.globalDimension2Code"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "incomeBalance",
+          "expression": "SIL_1.incomeBalance"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "indentation",
+          "expression": "SIL_1.indentation"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "lastDateModified",
+          "expression": "SIL_1.lastDateModified"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "lastModifiedDateTime",
+          "expression": "SIL_1.lastModifiedDateTime"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "name",
+          "expression": "SIL_1.name"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "netChange",
+          "expression": "SIL_1.netChange"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "newPage",
+          "expression": "SIL_1.newPage"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "noOfBlankLines",
+          "expression": "SIL_1.noOfBlankLines"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "number",
+          "expression": "SIL_1.number"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "number2",
+          "expression": "SIL_1.number2"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "omitDefaultDescrInJnl",
+          "expression": "SIL_1.omitDefaultDescrInJnl"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "pb365ExtTextSetId",
+          "expression": "SIL_1.pb365ExtTextSetId"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "reconciliationAccount",
+          "expression": "SIL_1.reconciliationAccount"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "reviewPolicy",
+          "expression": "SIL_1.reviewPolicy"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "sourceCurrBalanceAtDate",
+          "expression": "SIL_1.sourceCurrBalanceAtDate"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "sourceCurrencyBalance",
+          "expression": "SIL_1.sourceCurrencyBalance"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "sourceCurrencyCode",
+          "expression": "SIL_1.sourceCurrencyCode"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "sourceCurrencyNetChange",
+          "expression": "SIL_1.sourceCurrencyNetChange"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "sourceCurrencyPosting",
+          "expression": "SIL_1.sourceCurrencyPosting"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "sourceCurrencyRevaluation",
+          "expression": "SIL_1.sourceCurrencyRevaluation"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "systemCreatedAt",
+          "expression": "SIL_1.systemCreatedAt"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "systemCreatedBy",
+          "expression": "SIL_1.systemCreatedBy"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "systemId",
+          "expression": "SIL_1.systemId"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "systemModifiedAt",
+          "expression": "SIL_1.systemModifiedAt"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "systemModifiedBy",
+          "expression": "SIL_1.systemModifiedBy"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "taxAreaCode",
+          "expression": "SIL_1.taxAreaCode"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "taxGroupCode",
+          "expression": "SIL_1.taxGroupCode"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "taxLiable",
+          "expression": "SIL_1.taxLiable"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "totaling",
+          "expression": "SIL_1.totaling"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "unrealizedRevaluation",
+          "expression": "SIL_1.unrealizedRevaluation"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "vatAmt",
+          "expression": "SIL_1.vatAmt"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "vatBusPostingGroup",
+          "expression": "SIL_1.vatBusPostingGroup"
+        },
+        {
+          "table_name": "SLG_1",
+          "column_name": "vatProdPostingGroup",
+          "expression": "SIL_1.vatProdPostingGroup"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString",
+    "DQTechnical",
+    "DqStringHandling",
+    "DataMasking",
+    "DataQualityDependencies",
+    "DataQuality"
+  ],
+  "group": "JPN",
+  "subgroup": "VJP"
+}

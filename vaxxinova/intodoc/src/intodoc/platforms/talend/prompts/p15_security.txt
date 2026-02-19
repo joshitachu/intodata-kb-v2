@@ -1,0 +1,316 @@
+You are analyzing a Talend integration project. Your task is to produce a **Security & Access Control Analysis** — identify credential exposure risks, PII (Personally Identifiable Information) handling, hardcoded secrets, encryption usage, data classification, and security vulnerabilities in the integration code.
+
+## Talend Context
+Security risks in Talend projects are often hidden in configuration and code:
+- **Credential management**: Talend supports two modes for database connections and API credentials:
+  - **REPOSITORY mode**: Credentials are stored centrally in metadata/connections/*.item files and referenced by components. This is the secure approach — credentials are in one place, can be encrypted, and are easier to rotate.
+  - **BUILT_IN mode**: Credentials are embedded directly in the component configuration (inline host, username, password). This scatters credentials across many .item files and increases exposure risk.
+  - Look for `<elementParameter name="PROPERTY:PROPERTY_TYPE" value="REPOSITORY">` vs `<elementParameter name="PROPERTY:PROPERTY_TYPE" value="BUILT_IN">`
+- **Context variables**: Often used to store credentials (context.DbPassword, context.ApiKey). Check if they use Talend's encryption mechanism:
+  - Encrypted: `<elementParameter name="VALUE" value="enc:system.encryption.key.v1,base64encodedvalue">`
+  - Plaintext: `<elementParameter name="VALUE" value="mypassword123">`
+- **Hardcoded secrets**: Search for passwords, API keys, tokens in:
+  - tJava/tJavaRow code: `String apiKey = "sk_live_abc123";`
+  - tSetGlobalVar: `globalMap.put("api_key", "hardcoded_value");`
+  - SQL queries: `WHERE Password = 'default123'`
+- **PII columns**: Identify columns that contain personally identifiable information:
+  - Names (FirstName, LastName, CustomerName)
+  - Identifiers (SSN, TaxID, DriverLicenseNumber, PassportNumber)
+  - Contact info (Email, Phone, Address)
+  - Financial data (CreditCardNumber, BankAccount)
+  - Health data (MedicalRecordNumber, DiagnosisCode)
+  - Biometrics (Fingerprint, FacialRecognition)
+- **Data masking**: Check if PII is masked/encrypted in transformations:
+  - Masking functions: `Routines.DataMasking.maskSSN(row1.SSN)`, `StringHandling.EREPLACE(row1.Email, "@.*", "@masked.com", 0)`
+  - Encryption: `Routines.Encryption.encrypt(row1.CreditCardNumber, context.EncryptionKey)`
+- **Access control**: Infer who can access what data:
+  - Do jobs filter data by user role or region?
+  - Are there row-level security patterns (e.g., `WHERE Region = context.UserRegion`)?
+  - Do different jobs write to different datasets based on sensitivity (raw vs clean vs publish)?
+- **Encryption in transit**: Check if connections use SSL/TLS:
+  - Database connections: look for `SSL=true` or `useSSL=true` in connection strings
+  - API calls: check if tRESTClient URLs use https://
+- **Audit logging**: Identify jobs that log data access or changes:
+  - tStatCatcher: Logs job execution statistics
+  - Custom logging: tJava writes to audit tables with user, timestamp, action
+  - tLogCatcher: Captures errors and warnings
+
+## What to Extract
+
+1. **Credential exposure findings**: For every instance of credential handling:
+   - Credential type (database password, API key, token, SSH key)
+   - Storage method (REPOSITORY, BUILT_IN, context variable, hardcoded)
+   - Encryption status (encrypted, plaintext)
+   - Risk level (CRITICAL = plaintext in code, HIGH = BUILT_IN plaintext, MEDIUM = context plaintext, LOW = REPOSITORY encrypted)
+   - Location (job name, component, line of code)
+   - Recommendation (move to REPOSITORY, encrypt, use secret manager)
+
+2. **PII column inventory**: For every column that contains PII:
+   - Column name and table
+   - PII type (name, SSN, email, credit card, etc.)
+   - Data classification (PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED)
+   - Is it masked or encrypted? If yes, how?
+   - Which jobs read/write this column?
+   - Region/jurisdiction (important for GDPR, CCPA, etc.)
+
+3. **Data classification**: Classify all tables and datasets:
+   - PUBLIC: Non-sensitive data (product catalogs, public pricing)
+   - INTERNAL: Business data (sales numbers, employee directories)
+   - CONFIDENTIAL: Sensitive business data (financial reports, strategic plans)
+   - RESTRICTED: Highly sensitive data (SSN, credit cards, health records, credentials)
+
+4. **Security vulnerabilities**: Identify security risks:
+   - SQL injection risks (dynamic SQL with unescaped user input)
+   - Unencrypted connections (HTTP instead of HTTPS, non-SSL database connections)
+   - Excessive permissions (jobs that read entire tables when only a subset is needed)
+   - Logging sensitive data (PII written to log files or error outputs)
+
+5. **Encryption usage**: Document where encryption is applied:
+   - Data at rest: encrypted columns in databases, encrypted files
+   - Data in transit: SSL/TLS connections
+   - Data in processing: encryption/decryption in tMap or Java routines
+
+6. **Compliance implications**: Identify potential compliance issues:
+   - GDPR: PII from EU regions must be protected, right to deletion must be supported
+   - CCPA: California customer data must be protected, opt-out must be supported
+   - PCI-DSS: Credit card data must be encrypted, access must be logged
+   - HIPAA: Health data must be encrypted, access must be audited
+
+7. **Overall security rating**: Rate the security posture (1-10) based on:
+   - Credential management practices
+   - PII protection measures
+   - Encryption usage
+   - Access control implementation
+   - Audit logging coverage
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "credential_findings": [
+    {
+      "finding_id": "SEC-001",
+      "credential_type": "Database password",
+      "storage_method": "BUILT_IN (embedded in component)",
+      "encryption_status": "plaintext",
+      "risk_level": "HIGH",
+      "location": "BRA_VBR_RAW_0.1 / tMSSqlInput_1",
+      "details": "Password 'VaxxDB2023!' is hardcoded in component properties",
+      "recommendation": "Move to REPOSITORY metadata connection with encrypted password",
+      "affected_jobs": ["BRA_VBR_RAW_0.1"]
+    },
+    {
+      "finding_id": "SEC-002",
+      "credential_type": "API key",
+      "storage_method": "Context variable",
+      "encryption_status": "plaintext",
+      "risk_level": "MEDIUM",
+      "location": "context.ApiKey in Default context",
+      "details": "API key stored as plaintext context variable — visible in .item XML",
+      "recommendation": "Use Talend password encryption (context.ApiKey with enc: prefix) or move to external secret manager (AWS Secrets Manager, Azure Key Vault)",
+      "affected_jobs": ["USA_NPL_API_Sync_0.1", "ITA_VAX_API_Sync_0.1"]
+    },
+    {
+      "finding_id": "SEC-003",
+      "credential_type": "Database connection",
+      "storage_method": "REPOSITORY",
+      "encryption_status": "encrypted (enc:system.encryption.key.v1)",
+      "risk_level": "LOW",
+      "location": "metadata/connections/BRA_VBR_MSSQL.item",
+      "details": "Password is encrypted using Talend's built-in encryption — best practice",
+      "recommendation": "No action needed — this is the secure approach",
+      "affected_jobs": ["BRA_VBR_RAW_0.1", "BRA_VBR_CLEAN_0.1"]
+    }
+  ],
+  "credential_management": {
+    "repository_mode_usage": 0.65,
+    "built_in_mode_usage": 0.35,
+    "encrypted_credentials": 0.70,
+    "plaintext_credentials": 0.30,
+    "assessment": "MEDIUM RISK — 35% of connections use BUILT_IN mode, 30% of credentials are plaintext. Should migrate all to REPOSITORY mode with encryption.",
+    "recommendation": "Mandate REPOSITORY mode for all new connections, audit and migrate existing BUILT_IN connections"
+  },
+  "pii_columns": [
+    {
+      "table": "dbo.VW_Customers",
+      "column": "SSN",
+      "pii_type": "Social Security Number",
+      "data_classification": "RESTRICTED",
+      "is_masked": false,
+      "is_encrypted": false,
+      "exposure_risk": "CRITICAL — SSN is read from source and written to BigQuery in plaintext",
+      "jobs_reading": ["BRA_VBR_RAW_0.1"],
+      "jobs_writing": ["BRA_VBR_RAW_0.1"],
+      "region": "Brazil",
+      "compliance_concern": "GDPR — personal identifier must be protected",
+      "recommendation": "Mask or encrypt SSN before writing to BigQuery — use Routines.DataMasking.maskSSN() or encrypt with AES-256"
+    },
+    {
+      "table": "dbo.VW_Customers",
+      "column": "Email",
+      "pii_type": "Email address",
+      "data_classification": "CONFIDENTIAL",
+      "is_masked": false,
+      "is_encrypted": false,
+      "exposure_risk": "MEDIUM — email is written to BigQuery for analytics, no masking applied",
+      "jobs_reading": ["BRA_VBR_RAW_0.1", "BRA_VBR_CLEAN_0.1"],
+      "jobs_writing": ["BRA_VBR_PUBLISH_0.1"],
+      "region": "Brazil",
+      "compliance_concern": "GDPR — email is personal data, access should be logged",
+      "recommendation": "Add audit logging for jobs that access email column, consider hashing for analytics use cases"
+    },
+    {
+      "table": "clean_bra_vbr.customers",
+      "column": "credit_card_last4",
+      "pii_type": "Credit card (masked)",
+      "data_classification": "CONFIDENTIAL",
+      "is_masked": true,
+      "is_encrypted": false,
+      "masking_method": "Only last 4 digits stored (first 12 digits masked with 'XXXX-XXXX-XXXX-')",
+      "exposure_risk": "LOW — only last 4 digits are stored, compliant with PCI-DSS",
+      "jobs_reading": ["BRA_VBR_PUBLISH_0.1"],
+      "jobs_writing": ["BRA_VBR_CLEAN_0.1"],
+      "compliance_concern": "PCI-DSS — storing last 4 digits is allowed, but full card number must never be stored",
+      "recommendation": "Verify that full credit card number is never written to BigQuery — audit source queries"
+    }
+  ],
+  "data_classification": {
+    "RESTRICTED": {
+      "description": "Highly sensitive PII — SSN, credit card numbers, health records, passwords",
+      "tables": ["dbo.VW_Customers (SSN, CreditCardNumber)", "dbo.VW_Employees (SSN, Salary)"],
+      "row_count_estimate": "2M rows",
+      "encryption_required": true,
+      "access_control": "Must restrict access to authorized users only, log all access",
+      "compliance": "GDPR, CCPA, PCI-DSS, HIPAA"
+    },
+    "CONFIDENTIAL": {
+      "description": "Sensitive business data — email, phone, financial amounts, strategic plans",
+      "tables": ["dbo.VW_SalesOrders", "dbo.VW_Customers (Email, Phone)", "clean_bra_vbr.sales"],
+      "row_count_estimate": "10M rows",
+      "encryption_required": false,
+      "access_control": "Restrict access to internal users, log access for audit",
+      "compliance": "GDPR (email/phone are personal data)"
+    },
+    "INTERNAL": {
+      "description": "Non-sensitive business data — product info, order IDs, status codes",
+      "tables": ["dbo.VW_Products", "publish_bra_vbr.sales_summary"],
+      "row_count_estimate": "50M rows",
+      "encryption_required": false,
+      "access_control": "Available to all employees"
+    },
+    "PUBLIC": {
+      "description": "Public data — product catalogs, published reports",
+      "tables": [],
+      "row_count_estimate": "0 rows",
+      "encryption_required": false
+    }
+  },
+  "security_vulnerabilities": [
+    {
+      "vulnerability_id": "VULN-001",
+      "vulnerability_type": "Unencrypted database connection",
+      "severity": "HIGH",
+      "location": "metadata/connections/BRA_VBR_MSSQL.item",
+      "details": "Connection to MSSQL does not use SSL — data transmitted in plaintext over the network",
+      "recommendation": "Enable SSL/TLS on MSSQL connection — add 'encrypt=true;trustServerCertificate=false' to connection string",
+      "affected_jobs": ["BRA_VBR_RAW_0.1", "BRA_VBR_CLEAN_0.1"]
+    },
+    {
+      "vulnerability_id": "VULN-002",
+      "vulnerability_type": "Logging PII to console",
+      "severity": "MEDIUM",
+      "location": "BRA_VBR_RAW_0.1 / tLogRow_1",
+      "details": "tLogRow outputs customer SSN to console logs — logs may be stored in plaintext log files",
+      "recommendation": "Remove SSN from tLogRow output, or mask it before logging",
+      "affected_jobs": ["BRA_VBR_RAW_0.1"]
+    },
+    {
+      "vulnerability_id": "VULN-003",
+      "vulnerability_type": "Dynamic SQL without sanitization",
+      "severity": "MEDIUM",
+      "location": "USA_NPL_RAW_0.1 / tMSSqlInput_1",
+      "details": "SQL query concatenates context variable into WHERE clause without escaping: 'WHERE Status = ' + context.StatusFilter — risk of SQL injection if context value is user-controlled",
+      "recommendation": "Use parameterized queries or validate/sanitize context.StatusFilter to prevent SQL injection",
+      "affected_jobs": ["USA_NPL_RAW_0.1"]
+    }
+  ],
+  "encryption_usage": {
+    "data_at_rest": [
+      {
+        "location": "BigQuery datasets (raw_*, clean_*, publish_*)",
+        "encryption_method": "Google-managed encryption (default)",
+        "assessment": "GOOD — BigQuery encrypts all data at rest by default"
+      }
+    ],
+    "data_in_transit": [
+      {
+        "connection": "BigQuery API connections",
+        "encryption_method": "HTTPS/TLS",
+        "assessment": "GOOD — all BigQuery API calls use HTTPS"
+      },
+      {
+        "connection": "MSSQL connections (BRA_VBR, ITA_VAX, etc.)",
+        "encryption_method": "None (plaintext)",
+        "assessment": "POOR — MSSQL connections do not use SSL, data transmitted in plaintext",
+        "recommendation": "Enable SSL on all MSSQL connections"
+      }
+    ],
+    "data_in_processing": [
+      {
+        "location": "BRA_VBR_CLEAN_0.1 / tMap_1",
+        "encryption_method": "Custom masking routine (Routines.DataMasking.maskSSN)",
+        "columns_affected": ["SSN"],
+        "assessment": "GOOD — SSN is masked before writing to CLEAN layer"
+      }
+    ]
+  },
+  "compliance_implications": {
+    "GDPR": {
+      "scope": "BRA, ITA regions (European data subjects)",
+      "requirements": [
+        "Protect PII (email, phone, SSN equivalents) with encryption or pseudonymization",
+        "Implement right to deletion (data retention policies, DELETE capability)",
+        "Log all access to personal data for audit",
+        "Data minimization — only collect and store necessary PII"
+      ],
+      "compliance_gaps": [
+        "SSN is stored in plaintext in BigQuery — should be encrypted or hashed",
+        "No audit logging for PII access — cannot prove compliance in case of audit",
+        "No documented data retention policy — unclear how long PII is kept"
+      ],
+      "recommendations": [
+        "Encrypt or hash SSN and other high-sensitivity PII",
+        "Implement tStatCatcher or custom logging to track which jobs access which PII columns",
+        "Document data retention policy and implement automated deletion for expired data"
+      ]
+    },
+    "PCI-DSS": {
+      "scope": "Any jobs that handle credit card data",
+      "requirements": [
+        "Never store full credit card number (PAN) — only last 4 digits allowed",
+        "Encrypt card data in transit and at rest",
+        "Log all access to card data",
+        "Restrict access to authorized personnel only"
+      ],
+      "compliance_status": "COMPLIANT — only last 4 digits stored, full PAN not persisted",
+      "recommendations": [
+        "Verify with source system that full PAN is never extracted",
+        "Add audit logging for any job that reads credit_card_last4 column"
+      ]
+    }
+  },
+  "overall_security_rating": 5.5,
+  "security_assessment": "MEDIUM RISK — Good practices in some areas (BigQuery encryption, credit card masking), but critical gaps in credential management (35% BUILT_IN, 30% plaintext) and database connection security (no SSL). PII protection is inconsistent (SSN in plaintext, but credit cards masked). No comprehensive audit logging.",
+  "top_recommendations": [
+    "CRITICAL: Migrate all BUILT_IN database connections to REPOSITORY mode with encrypted passwords",
+    "HIGH: Enable SSL/TLS on all MSSQL connections to encrypt data in transit",
+    "HIGH: Encrypt or hash SSN and other high-sensitivity PII before writing to BigQuery",
+    "MEDIUM: Implement audit logging (tStatCatcher or custom logging) to track PII access for compliance",
+    "MEDIUM: Remove PII from tLogRow and error outputs — logs should not contain sensitive data",
+    "LOW: Document data classification and retention policies for GDPR/CCPA compliance",
+    "LOW: Sanitize or validate dynamic SQL inputs to prevent SQL injection risks"
+  ]
+}
+```
+
+Be thorough. Security vulnerabilities can be subtle — a single plaintext password or unencrypted SSN is a critical finding. Flag everything, prioritize by risk, and provide actionable recommendations.

@@ -15,7 +15,7 @@ node_modules/
 .next/
 out/
 
-# Environment
+# Environment / Secrets
 .env
 .env.local
 .env.production
@@ -39,8 +39,8 @@ docker-compose.override.yml
 htmlcov/
 .pytest_cache/
 
-# Alembic
-*.pyc
+# Test artifacts
+*.item
 
-# Misc
+# Logs
 *.log

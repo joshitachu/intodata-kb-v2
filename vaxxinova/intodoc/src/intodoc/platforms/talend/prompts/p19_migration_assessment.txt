@@ -1,0 +1,111 @@
+You are analyzing a Talend integration project for **Migration Complexity Assessment**. Your task is to evaluate each job's readiness for automated migration to a modern platform (e.g., Databricks, dbt, cloud-native ETL).
+
+## Talend Migration Context
+
+When migrating Talend jobs to a modern platform, not all components are equally easy to translate:
+
+### Easy to Migrate (simple)
+- **Direct database I/O**: tMSSqlInput/Output, tOracleInput/Output, tMysqlInput/Output — these map directly to SQL source/sink connectors.
+- **Simple tMap**: Direct column mappings without expressions (source.col -> target.col) — trivial to replicate.
+- **File I/O**: tFileInputDelimited, tFileOutputDelimited — standard CSV/Parquet read/write.
+- **tLogRow, tFlowToIterate**: Logging and iteration patterns have direct equivalents.
+
+### Medium Complexity
+- **tMap with expressions**: Column transformations using Talend functions (StringHandling.TRIM, TalendDate.parseDate) — need function-by-function translation.
+- **tMap with lookups**: Lookup joins in tMap — need to be translated to SQL JOINs or lookup patterns.
+- **tMap with filter expressions**: Row-level filters — translate to WHERE clauses or filter transforms.
+- **tAggregateRow**: Aggregation logic — maps to GROUP BY but needs careful column mapping.
+- **tSortRow, tUniqRow**: Sort and dedup — standard operations but configuration must be preserved.
+- **Context variables**: Environment-specific configuration — needs parameterization strategy.
+- **tRunJob (sub-job calls)**: Orchestration — needs workflow/DAG translation.
+
+### Complex (requires manual effort)
+- **tJava/tJavaRow/tJavaFlex**: Custom Java code — must be manually reviewed and rewritten.
+- **tGroovy**: Custom Groovy code — same as Java, no automatic translation.
+- **Complex tMap expressions**: Nested ternary operators, multi-function chains, Java method calls within expressions.
+- **tSetGlobalVar**: Global state management — anti-pattern in modern platforms, needs redesign.
+- **Custom routines**: Java routines referenced by jobs — must be translated to target platform's UDFs.
+- **tESBProviderRequest/tRESTClient**: API integrations — need platform-specific connector mapping.
+- **Stored procedures**: If jobs call stored procs, those must also be migrated or replaced.
+
+### Blockers (may require manual migration)
+- **Undocumented business logic in Java code**: Code that implements business rules without clear documentation.
+- **External system dependencies**: Jobs tightly coupled to specific infrastructure (file shares, FTP servers, legacy APIs).
+- **Complex orchestration**: Jobs with RunIf conditions, error handling flows, and retry logic.
+- **Data type edge cases**: Talend-specific type handling that doesn't map cleanly to target types.
+- **Credential management**: Hardcoded credentials or Talend-specific credential store references.
+
+## Scoring Criteria
+
+For each job, assess:
+
+1. **Complexity level**: `simple`, `medium`, `complex`, or `manual`
+   - **simple**: Only standard I/O components, no or minimal tMap expressions, no custom code. Can be auto-generated.
+   - **medium**: Has tMap expressions, lookups, or aggregations but no custom Java code. Needs expression translation but is automatable.
+   - **complex**: Has custom Java code, complex expressions, or external API calls. Partially automatable but needs manual review.
+   - **manual**: Heavy custom Java logic, complex orchestration, or undocumented business rules. Must be manually redesigned.
+
+2. **Auto-migrate probability**: 0.0 to 1.0
+   - 1.0 = fully automatable (direct I/O, no transforms)
+   - 0.7-0.9 = mostly automatable (standard transforms, simple expressions)
+   - 0.3-0.6 = partially automatable (some custom code or complex expressions)
+   - 0.0-0.2 = mostly manual (heavy Java, complex orchestration)
+
+3. **Effort estimate**: Hours of developer effort to migrate this single job
+   - simple: 0.5-2 hours
+   - medium: 2-8 hours
+   - complex: 8-24 hours
+   - manual: 24-80+ hours
+
+4. **Blockers**: Specific issues that would prevent or complicate automated migration
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "assessments": [
+    {
+      "job_name": "BRA_VBR_RAW_0.1",
+      "complexity": "simple",
+      "auto_migrate_probability": 0.9,
+      "effort_estimate_hours": 1.5,
+      "blockers": [],
+      "source_components": 2,
+      "transform_components": 1,
+      "custom_code_components": 0,
+      "tmap_expression_count": 3,
+      "rationale": "Simple data extraction job with 2 SQL inputs and 1 tMap for basic column mapping. No custom code. Only 3 simple tMap expressions (direct field maps). Fully automatable."
+    },
+    {
+      "job_name": "BRA_VBR_CLEAN_0.1",
+      "complexity": "medium",
+      "auto_migrate_probability": 0.6,
+      "effort_estimate_hours": 6.0,
+      "blockers": [
+        {
+          "blocker": "Complex tMap expressions using StringHandling and TalendDate functions",
+          "severity": "medium",
+          "component": "tMap_1",
+          "recommendation": "Create a function mapping table for Talend -> target platform functions"
+        }
+      ],
+      "source_components": 1,
+      "transform_components": 3,
+      "custom_code_components": 0,
+      "tmap_expression_count": 15,
+      "rationale": "Data cleaning job with 15 tMap expressions including date parsing, string manipulation, and conditional logic. No custom Java code but needs expression-by-expression translation."
+    }
+  ],
+  "summary": {
+    "total_jobs": 10,
+    "by_complexity": {"simple": 4, "medium": 3, "complex": 2, "manual": 1},
+    "total_effort_hours": 95.5,
+    "avg_auto_migrate_probability": 0.62,
+    "top_blockers": ["Custom Java code in 3 jobs", "Complex tMap expressions in 5 jobs"],
+    "quick_wins": ["BRA_VBR_RAW_0.1", "GER_VBR_RAW_0.1"],
+    "high_risk_jobs": ["GLOBAL_MASTER_DATA_0.1"]
+  }
+}
+```
+
+Be precise with your assessments. Count actual components and expressions from the provided data. Do not inflate complexity — a job with zero custom code and only direct column mappings IS simple, even if it has many components.

@@ -1,0 +1,39 @@
+You are analyzing a Talend integration project. Your task is to produce a **Component Inventory** — a comprehensive catalog of every job, component, connection, and dependency in this chunk.
+
+## Talend Context
+In Talend, a "job" is a data integration workflow containing:
+- **Components** (nodes): tMSSqlInput, tMap, tBigQueryOutput, tRunJob, tJava, etc.
+- **Connections** (edges): FLOW (data rows), SUBJOB_OK/SUBJOB_ERROR (triggers), COMPONENT_OK/COMPONENT_ERROR
+- **Context variables**: environment-specific parameters (PROD, TEST, Default)
+- **tRunJob references**: parent→child job orchestration
+
+## What to Extract
+For each job in the chunk, identify:
+
+1. **All components** with their type, unique name, and purpose
+2. **Dependencies**: which jobs call which (tRunJob refs), which metadata connections are used (REPOSITORY refs)
+3. **Referenced by**: which parent jobs call this job
+4. **Orphaned components**: components with no incoming or outgoing connections
+5. **Missing references**: REPOSITORY refs pointing to non-existent metadata, tRunJob refs to missing jobs
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "components": [
+    {
+      "name": "job_name / component_unique_name",
+      "component_type": "tMSSqlInput",
+      "location": "BRA/VBR/BRA_VBR_RAW_0.1.item",
+      "dependencies": ["connection_BRA_VBR_MSSQL", "child_job_name"],
+      "referenced_by": ["parent_job_name"],
+      "description": "Reads from VW_Sales view in BRA VBR MSSQL database"
+    }
+  ],
+  "dependency_graph_mermaid": "graph TD\n  A[Job1] --> B[Job2]\n  ...",
+  "orphaned_components": ["component_name_with_no_connections"],
+  "missing_references": ["ref_to_nonexistent_connection"]
+}
+```
+
+Be thorough. List every component in every job. Do not skip any.

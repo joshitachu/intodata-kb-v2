@@ -1,0 +1,295 @@
+You are analyzing a Talend integration project. Your task is to produce a **Cross-Region Analysis** — compare and contrast patterns, architectures, data flows, and business logic across multiple geographic regions (BRA, ITA, JPN, SAF, USA) to identify standardization opportunities, regional deviations, and best practices.
+
+## Talend Context
+Vaxxinova operates in 5 regions, each with its own Talend jobs following the pattern `{REGION}_{SUBSIDIARY}_{LAYER}_{VERSION}`:
+- **BRA** (Brazil) — **VBR** (Vaxxinova Brazil)
+- **ITA** (Italy) — **VAX** (Vaxxinova Italy)
+- **JPN** (Japan) — **VJP** (Vaxxinova Japan)
+- **SAF** (South Africa) — **VSA** (Vaxxinova South Africa)
+- **USA** (United States) — **NPL** (Newport Labs)
+
+Multi-region integration projects often have:
+- **Shared architecture patterns**: All regions follow RAW -> CLEAN -> PUBLISH pipeline
+- **Regional deviations**: Different source systems, different business rules, different data schemas
+- **Global orchestration jobs**: GLOBAL_* jobs that call regional jobs in parallel or sequence
+- **Standardization opportunities**: Duplicated logic that could be refactored into shared routines, joblets, or parameterized jobs
+- **Best practices**: One region may have better implementations (error handling, validation, performance) that could be adopted by others
+
+## What to Extract
+
+1. **Regional job inventory**: For each region:
+   - Total job count
+   - Jobs by layer (RAW, CLEAN, PUBLISH)
+   - Jobs by domain (Sales, Finance, HR, etc.)
+   - Unique job patterns not found in other regions
+
+2. **Architectural patterns by region**: For each region:
+   - Pipeline structure (RAW -> CLEAN -> PUBLISH, or variations)
+   - Orchestration approach (Global master job, independent scheduling, etc.)
+   - Source systems (MSSQL, Oracle, SAP, API, files, etc.)
+   - Target systems (BigQuery datasets, data lake, data warehouse, etc.)
+   - Metadata management (REPOSITORY vs BUILT_IN)
+
+3. **Data flow patterns**: Compare how each region moves data:
+   - Source to target mappings (MSSQL -> BigQuery, Oracle -> BigQuery, etc.)
+   - Transformation layers (how many, what they do)
+   - Data volume estimates (which region has the most data?)
+   - Batch frequency (nightly, hourly, real-time)
+
+4. **Business logic comparison**: For each region, identify:
+   - Status code mappings (do all regions use the same codes? 'A' = Active, etc.)
+   - Data validation rules (are null checks consistent?)
+   - Data cleansing patterns (TRIM, UPCASE, date formatting)
+   - Calculation formulas (revenue calculations, aggregations)
+   - Default values (what value is used for nulls?)
+
+5. **Regional deviations**: Identify differences that may indicate bugs, inconsistencies, or intentional regional variations:
+   - Schema differences (same logical entity, different column names or types)
+   - Business rule conflicts (same concept, different implementation)
+   - Naming convention violations (one region doesn't follow standard)
+   - Missing jobs (one region has jobs that others don't — should they?)
+
+6. **Shared vs unique components**: Categorize components:
+   - **Shared patterns**: Components/logic that appear in all or most regions (e.g., all regions have RAW layer jobs that read from MSSQL and write to BigQuery)
+   - **Unique patterns**: Components/logic found in only one region (e.g., only USA has API integration jobs)
+   - **Partially shared**: Logic that appears in some regions but not all (e.g., only BRA and ITA have data masking for SSN)
+
+7. **Standardization score**: Rate how consistent the regions are (1-10):
+   - Naming conventions
+   - Architectural patterns
+   - Business logic
+   - Data schemas
+   - Component configuration
+
+8. **Best practices by region**: Identify which region has the best implementation in each area:
+   - Error handling: which region has the most robust error handling?
+   - Performance: which region has the best batch sizes and database pushdown?
+   - Security: which region has the best credential management?
+   - Data quality: which region has the most comprehensive validation?
+
+9. **Refactoring recommendations**: Suggest how to standardize:
+   - Which logic should be extracted into shared routines or joblets?
+   - Which regional jobs could be replaced with a single parameterized job?
+   - Which deviations should be standardized vs preserved as intentional regional differences?
+
+10. **Region comparison Mermaid diagram**: Generate a visual comparison of region architectures, data flows, or job counts.
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "regional_inventory": {
+    "BRA": {
+      "total_jobs": 35,
+      "jobs_by_layer": {"RAW": 12, "CLEAN": 11, "PUBLISH": 10, "GLOBAL": 2},
+      "jobs_by_domain": {"Sales": 15, "Finance": 10, "HR": 5, "Inventory": 5},
+      "source_systems": ["MSSQL (VaxxinovaDB)", "CSV files (FTP)"],
+      "target_systems": ["BigQuery (raw_bra_vbr, clean_bra_vbr, publish_bra_vbr)"],
+      "unique_patterns": ["CSV file ingestion from FTP — other regions don't have this"],
+      "data_volume_estimate": "500K orders/day, 2M customers"
+    },
+    "ITA": {
+      "total_jobs": 28,
+      "jobs_by_layer": {"RAW": 10, "CLEAN": 9, "PUBLISH": 8, "GLOBAL": 1},
+      "jobs_by_domain": {"Sales": 12, "Finance": 8, "HR": 4, "Inventory": 4},
+      "source_systems": ["MSSQL (VaxxinovaItalyDB)"],
+      "target_systems": ["BigQuery (raw_ita_vax, clean_ita_vax, publish_ita_vax)"],
+      "unique_patterns": [],
+      "data_volume_estimate": "300K orders/day, 1.5M customers"
+    },
+    "JPN": {
+      "total_jobs": 22,
+      "jobs_by_layer": {"RAW": 8, "CLEAN": 7, "PUBLISH": 6, "GLOBAL": 1},
+      "jobs_by_domain": {"Sales": 10, "Finance": 6, "HR": 3, "Inventory": 3},
+      "source_systems": ["Oracle (VaxxinovaJapanDB)"],
+      "target_systems": ["BigQuery (raw_jpn_vjp, clean_jpn_vjp, publish_jpn_vjp)"],
+      "unique_patterns": ["Oracle as source system (all other regions use MSSQL)"],
+      "data_volume_estimate": "200K orders/day, 1M customers"
+    },
+    "SAF": {
+      "total_jobs": 18,
+      "jobs_by_layer": {"RAW": 6, "CLEAN": 6, "PUBLISH": 5, "GLOBAL": 1},
+      "jobs_by_domain": {"Sales": 8, "Finance": 5, "HR": 2, "Inventory": 3},
+      "source_systems": ["MSSQL (VaxxinovaSouthAfricaDB)"],
+      "target_systems": ["BigQuery (raw_saf_vsa, clean_saf_vsa, publish_saf_vsa)"],
+      "unique_patterns": [],
+      "data_volume_estimate": "100K orders/day, 500K customers"
+    },
+    "USA": {
+      "total_jobs": 30,
+      "jobs_by_layer": {"RAW": 10, "CLEAN": 9, "PUBLISH": 9, "GLOBAL": 2},
+      "jobs_by_domain": {"Sales": 12, "Finance": 9, "HR": 4, "Inventory": 5},
+      "source_systems": ["MSSQL (NewportLabsDB)", "REST API (CRM system)"],
+      "target_systems": ["BigQuery (raw_usa_npl, clean_usa_npl, publish_usa_npl)"],
+      "unique_patterns": ["REST API integration for CRM data — other regions don't have this"],
+      "data_volume_estimate": "1M orders/day, 5M customers"
+    }
+  },
+  "shared_architectural_patterns": [
+    {
+      "pattern": "RAW -> CLEAN -> PUBLISH three-layer pipeline",
+      "regions": ["BRA", "ITA", "JPN", "SAF", "USA"],
+      "description": "All regions follow the same three-layer data pipeline: RAW extracts from source, CLEAN applies validation and transformation, PUBLISH produces analytics-ready tables",
+      "consistency": "EXCELLENT — universal pattern across all regions"
+    },
+    {
+      "pattern": "MSSQL source -> BigQuery target",
+      "regions": ["BRA", "ITA", "SAF", "USA"],
+      "description": "Most regions extract from MSSQL and load to BigQuery",
+      "consistency": "GOOD — 4 out of 5 regions use this pattern (JPN uses Oracle)"
+    },
+    {
+      "pattern": "Global orchestration job calls regional jobs in parallel",
+      "regions": ["BRA", "ITA", "JPN", "SAF", "USA"],
+      "description": "GLOBAL_RAW_Orchestrator_0.1 calls all regional RAW jobs in parallel via tRunJob",
+      "consistency": "EXCELLENT — consistent orchestration pattern"
+    }
+  ],
+  "regional_deviations": [
+    {
+      "deviation_id": "DEV-001",
+      "deviation_type": "Source system difference",
+      "description": "Japan uses Oracle as source database, all other regions use MSSQL",
+      "regions_affected": ["JPN"],
+      "impact": "Schema differences (Oracle uses NUMBER, MSSQL uses INTEGER/BIGINT), date handling differences (Oracle TO_DATE vs MSSQL CONVERT), SQL syntax differences",
+      "assessment": "INTENTIONAL — Japan subsidiary uses Oracle ERP system, cannot change source",
+      "recommendation": "Ensure JPN jobs have adequate type conversion and date handling to produce same output schema as other regions"
+    },
+    {
+      "deviation_id": "DEV-002",
+      "deviation_type": "Business logic conflict",
+      "description": "BRA filters orders by Status IN ('A','P'), but SAF filters by Status = 'A' only — Pending orders included for Brazil but excluded for South Africa",
+      "regions_affected": ["BRA", "SAF"],
+      "impact": "Downstream reports for SAF will exclude Pending orders, causing underreporting of order pipeline",
+      "assessment": "SUSPECTED BUG — likely inconsistency rather than intentional business difference",
+      "recommendation": "Verify with business whether Pending orders should be included for SAF. If yes, fix SAF_VSA_RAW_0.1 to match BRA pattern."
+    },
+    {
+      "deviation_id": "DEV-003",
+      "deviation_type": "Schema inconsistency",
+      "description": "Customer table: BRA uses 'CustomerID' (VARCHAR 50), USA uses 'CustID' (INTEGER), ITA uses 'customer_id' (STRING)",
+      "regions_affected": ["BRA", "USA", "ITA"],
+      "impact": "Cannot easily combine or compare customer data across regions due to different column names and types",
+      "assessment": "POOR DESIGN — should standardize customer identifier across all regions",
+      "recommendation": "Standardize to 'customer_id' (snake_case) with STRING type in all CLEAN/PUBLISH layers, regardless of source system format"
+    },
+    {
+      "deviation_id": "DEV-004",
+      "deviation_type": "Missing data masking",
+      "description": "BRA and ITA mask SSN in CLEAN layer, but USA, JPN, SAF do not mask SSN",
+      "regions_affected": ["USA", "JPN", "SAF"],
+      "impact": "PII (SSN) is exposed in plaintext in BigQuery for USA, JPN, SAF — compliance risk (GDPR, data privacy laws)",
+      "assessment": "CRITICAL GAP — all regions should mask PII consistently",
+      "recommendation": "Implement SSN masking in USA_NPL_CLEAN, JPN_VJP_CLEAN, SAF_VSA_CLEAN jobs to match BRA/ITA pattern"
+    }
+  ],
+  "business_logic_comparison": {
+    "status_code_mappings": {
+      "BRA": {"A": "Active", "P": "Pending", "C": "Cancelled", "D": "Deleted"},
+      "ITA": {"A": "Active", "P": "Pending", "C": "Cancelled", "D": "Deleted"},
+      "JPN": {"A": "Active", "P": "Pending", "X": "Cancelled"},
+      "SAF": {"A": "Active", "C": "Cancelled"},
+      "USA": {"A": "Active", "P": "Pending", "C": "Cancelled", "D": "Deleted"},
+      "consistency": "MEDIUM — BRA, ITA, USA have same mappings; JPN uses 'X' instead of 'C' for Cancelled; SAF is missing 'P' and 'D' codes",
+      "recommendation": "Standardize status codes across all regions — use A/P/C/D as canonical codes, map regional variations in CLEAN layer"
+    },
+    "null_handling_for_amount": {
+      "BRA": "Replace null with 0",
+      "ITA": "Replace null with 0",
+      "JPN": "Replace null with 0",
+      "SAF": "Reject row if null",
+      "USA": "Replace null with 0",
+      "consistency": "GOOD — 4 out of 5 regions use same pattern",
+      "deviation": "SAF rejects rows with null amounts instead of replacing with 0 — may lose data",
+      "recommendation": "Align SAF with other regions (replace null with 0) unless there's a business reason to reject"
+    },
+    "customer_name_cleansing": {
+      "BRA": "TRIM + UPPERCASE",
+      "ITA": "TRIM + UPPERCASE",
+      "JPN": "TRIM only (no case conversion)",
+      "SAF": "TRIM + UPPERCASE",
+      "USA": "No cleansing (raw value)",
+      "consistency": "POOR — 3 regions use TRIM+UPPERCASE, 1 uses TRIM, 1 does nothing",
+      "recommendation": "Standardize to TRIM + UPPERCASE across all regions for consistent customer name matching"
+    }
+  },
+  "standardization_score": 6.5,
+  "standardization_assessment": "MODERATE — Strong consistency in high-level architecture (RAW/CLEAN/PUBLISH layers, orchestration pattern), but significant inconsistencies in business logic (status code mappings, null handling, data cleansing), schemas (column names and types), and security practices (data masking). JPN and USA have unique source systems (Oracle, REST API) that require special handling.",
+  "best_practices_by_region": {
+    "error_handling": {
+      "best_region": "ITA",
+      "reason": "ITA jobs have comprehensive error handling — tLogCatcher on every job, reject flows routed to error tables, tDie with clear error messages",
+      "recommendation": "Adopt ITA's error handling pattern in all other regions"
+    },
+    "performance": {
+      "best_region": "USA",
+      "reason": "USA jobs use largest batch sizes (100K on BigQuery outputs), database pushdown for aggregations, and parallel subjobs for independent operations",
+      "recommendation": "Adopt USA's performance optimizations (large batch sizes, database pushdown) in all regions"
+    },
+    "security": {
+      "best_region": "BRA",
+      "reason": "BRA uses REPOSITORY mode for all connections (no BUILT_IN), encrypts all context passwords, masks PII in CLEAN layer",
+      "recommendation": "Adopt BRA's security practices (REPOSITORY mode, encryption, PII masking) in all regions"
+    },
+    "data_quality": {
+      "best_region": "ITA",
+      "reason": "ITA has the most comprehensive validation — null checks on all critical fields, format validation for email/phone, referential integrity checks via INNER joins",
+      "recommendation": "Adopt ITA's validation rules in all regions"
+    }
+  },
+  "refactoring_recommendations": [
+    {
+      "recommendation": "Extract customer name cleansing logic into shared routine",
+      "current_state": "Customer name cleansing (TRIM + UPPERCASE) is duplicated in BRA, ITA, SAF CLEAN jobs",
+      "proposed_solution": "Create routine Routines.DataCleansing.cleanCustomerName(String) — use it in all regional CLEAN jobs",
+      "benefit": "Single source of truth for customer name cleansing — easier to maintain and ensure consistency",
+      "effort": "LOW",
+      "affected_jobs": ["BRA_VBR_CLEAN_0.1", "ITA_VAX_CLEAN_0.1", "SAF_VSA_CLEAN_0.1"]
+    },
+    {
+      "recommendation": "Create parameterized regional job template",
+      "current_state": "Each region has nearly identical RAW layer jobs with only connection and table names different",
+      "proposed_solution": "Create a single generic RAW job with context parameters (region, subsidiary, source_connection, target_dataset) — call it 5 times with different parameters instead of 5 duplicate jobs",
+      "benefit": "Reduces code duplication from 5 jobs to 1 parameterized job — easier to maintain, bug fixes apply to all regions automatically",
+      "effort": "MEDIUM",
+      "affected_jobs": ["All regional RAW jobs"]
+    },
+    {
+      "recommendation": "Standardize status code mappings in CLEAN layer",
+      "current_state": "Each region has different status code mappings — JPN uses 'X' for Cancelled, SAF is missing 'P' for Pending, etc.",
+      "proposed_solution": "Define canonical status codes (A/P/C/D) in a lookup table or routine — map regional codes to canonical codes in CLEAN layer",
+      "benefit": "Consistent status codes across all regions in PUBLISH layer — enables cross-region reporting",
+      "effort": "LOW",
+      "affected_jobs": ["All regional CLEAN jobs"]
+    },
+    {
+      "recommendation": "Standardize customer schema across all regions",
+      "current_state": "Customer identifier is 'CustomerID' in BRA, 'CustID' in USA, 'customer_id' in ITA — different names and types",
+      "proposed_solution": "Standardize to 'customer_id' (STRING) in all CLEAN and PUBLISH layers — map from source-specific names in RAW layer",
+      "benefit": "Enables cross-region customer analysis and reporting",
+      "effort": "MEDIUM",
+      "affected_jobs": ["All regional CLEAN and PUBLISH jobs"]
+    },
+    {
+      "recommendation": "Implement PII masking in all regions",
+      "current_state": "Only BRA and ITA mask SSN — USA, JPN, SAF expose SSN in plaintext",
+      "proposed_solution": "Apply BRA's SSN masking logic (Routines.DataMasking.maskSSN) in USA, JPN, SAF CLEAN jobs",
+      "benefit": "Consistent PII protection across all regions — reduces compliance risk",
+      "effort": "LOW",
+      "affected_jobs": ["USA_NPL_CLEAN_0.1", "JPN_VJP_CLEAN_0.1", "SAF_VSA_CLEAN_0.1"]
+    }
+  ],
+  "region_comparison_mermaid": "graph TD\n  subgraph BRA\n    BRA_RAW[RAW: MSSQL->BigQuery]\n    BRA_CLEAN[CLEAN: Validate+Mask]\n    BRA_PUBLISH[PUBLISH: Analytics]\n    BRA_RAW --> BRA_CLEAN --> BRA_PUBLISH\n  end\n  subgraph ITA\n    ITA_RAW[RAW: MSSQL->BigQuery]\n    ITA_CLEAN[CLEAN: Validate+Mask]\n    ITA_PUBLISH[PUBLISH: Analytics]\n    ITA_RAW --> ITA_CLEAN --> ITA_PUBLISH\n  end\n  subgraph JPN\n    JPN_RAW[RAW: Oracle->BigQuery]\n    JPN_CLEAN[CLEAN: Validate]\n    JPN_PUBLISH[PUBLISH: Analytics]\n    JPN_RAW --> JPN_CLEAN --> JPN_PUBLISH\n  end\n  subgraph SAF\n    SAF_RAW[RAW: MSSQL->BigQuery]\n    SAF_CLEAN[CLEAN: Validate]\n    SAF_PUBLISH[PUBLISH: Analytics]\n    SAF_RAW --> SAF_CLEAN --> SAF_PUBLISH\n  end\n  subgraph USA\n    USA_RAW[RAW: MSSQL+API->BigQuery]\n    USA_CLEAN[CLEAN: Validate]\n    USA_PUBLISH[PUBLISH: Analytics]\n    USA_RAW --> USA_CLEAN --> USA_PUBLISH\n  end\n  GLOBAL[GLOBAL Orchestrator] -->|parallel| BRA_RAW\n  GLOBAL -->|parallel| ITA_RAW\n  GLOBAL -->|parallel| JPN_RAW\n  GLOBAL -->|parallel| SAF_RAW\n  GLOBAL -->|parallel| USA_RAW",
+  "summary": {
+    "total_regions": 5,
+    "total_jobs_across_regions": 133,
+    "shared_patterns_count": 8,
+    "regional_deviations_count": 12,
+    "critical_deviations": 2,
+    "standardization_opportunities": 5,
+    "best_practice_adoption_potential": "HIGH — significant opportunity to adopt best practices from ITA (error handling, data quality) and USA (performance) across all regions"
+  }
+}
+```
+
+Be thorough. Cross-region analysis reveals both problems (inconsistencies, bugs, security gaps) and opportunities (best practices to adopt, refactoring to reduce duplication). Every deviation should be examined to determine if it's intentional or a bug.

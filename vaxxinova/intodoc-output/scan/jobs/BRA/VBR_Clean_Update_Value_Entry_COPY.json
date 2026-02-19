@@ -1,0 +1,2322 @@
+{
+  "name": "VBR_Clean_Update_Value_Entry_COPY",
+  "path": "BRA/VBR/Dev/VBR_Clean_Update_Value_Entry_COPY_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2025-05-04T15:54:51.985+0200",
+  "modification_date": "2025-11-09T10:19:43.935-0800",
+  "components": [
+    {
+      "unique_name": "tHashInput_1",
+      "component_type": "tHashInput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LIST",
+          "value": "tHashOutput_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "RELEASE_CACHE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_3",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\" + \"test_bra_vbr_clean_Value_Entries.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "\"test_bra_vbr_clean\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Value_Entries\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "APPEND",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+ \"test_bra_vbr_clean_Value_Entries.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "Write_Value_Entries",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashInput_2",
+      "component_type": "tHashInput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LINK_WITH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LIST",
+          "value": "tHashOutput_2",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "RELEASE_CACHE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_2",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\" + context.parameter_Env_Prefix + \"Sales_Set\"+\".csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Env_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Sales_Set\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "APPEND",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\" + context.parameter_Env_Prefix + \"Sales_Set\"+\".csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "Write_Global_Sales_Set",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashOutput_2",
+      "component_type": "tHashOutput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LINK_WITH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATA_WRITE_MODEL",
+          "value": "MEMORY",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "MEMORY_HEAP_MAX_SIZE",
+          "value": "2",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "KEYS_MANAGEMENT",
+          "value": "KEEP_LAST",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "APPEND",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "HASH_KEY_FROM_INPUT_CONNECTOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_5",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM test_bra_vbr_clean.Value_Entries WHERE Cost_Breakdown_Status = 'Open' AND Document_Number IN ('OPL000001','OPL000028')\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Read_Value_Entries",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_WeuPMCjvEfCL4cgs75hz2Q-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Map_Value_Entries",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_1",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM test_bra_vbr_clean.Production_Order_Register WHERE Cost_Breakdown_Status = 'Finished'\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Read_Production<br>Order_Register",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_4",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\" + \"test_bra_vbr_clean_Value_Entries_Delta.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "\"test_bra_vbr_clean\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Value_Entries_Delta\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+ \"test_bra_vbr_clean_Value_Entries_Delta.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "Write_Value<br>Entries_Delta",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tHashOutput_1",
+      "component_type": "tHashOutput",
+      "params": [
+        {
+          "name": "LINK_WITH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATA_WRITE_MODEL",
+          "value": "MEMORY",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BASE_FILE_PATH",
+          "value": "\"/home/talend/IntoData/Vaxxinova/Talend-Studio-20231027_1100-V8.0.1/workspace/in.hash\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "MEMORY_HEAP_MAX_SIZE",
+          "value": "2",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "KEYS_MANAGEMENT",
+          "value": "KEEP_LAST",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "APPEND",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "HASH_KEY_FROM_INPUT_CONNECTOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQuerySQLRow_1",
+      "component_type": "tBigQuerySQLRow",
+      "params": [
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"DELETE FROM `\" + context.parameter_Env_Prefix + \".salesInvoices` \" +\n\"WHERE Id IN ( \" +\n\"    SELECT DISTINCT Id FROM `\" + context.parameter_Env_Prefix + \".salesInvoicesDelta` )\"\n",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"/Applications/Talend/Talend-Studio-20221003_1400-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Delete_Local_Sales_Set",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQuerySQLRow_2",
+      "component_type": "tBigQuerySQLRow",
+      "params": [
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"DELETE FROM  test_bra_vbr_clean.Value_Entries \nWHERE Entry_Number IN (\n\tSELECT DISTINCT Entry_Number FROM test_bra_vbr_clean.Value_Entries_Delta )\"\n",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"/Applications/Talend/Talend-Studio-20221003_1400-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Delete_Local_Sales_Set",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_2",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_WeuPMCjvEfCL4cgs75hz2Q-tMap_2-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Calculate_Averages",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "row1",
+      "source": "tHashInput_1",
+      "target": "tBigQueryOutput_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row2",
+      "source": "tHashInput_2",
+      "target": "tBigQueryOutput_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "VEN_1",
+      "source": "tBigQueryInput_5",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "VEN_2",
+      "source": "tMap_1",
+      "target": "tBigQueryOutput_4",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "VEN_3",
+      "source": "tMap_1",
+      "target": "tHashOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "POR_1",
+      "source": "tBigQueryInput_1",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 8
+    },
+    {
+      "name": "OnComponentOk1",
+      "source": "tBigQueryOutput_4",
+      "target": "tBigQuerySQLRow_2",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "OnSubjobOk1",
+      "source": "tBigQuerySQLRow_2",
+      "target": "tHashInput_1",
+      "connector_name": "SUBJOB_OK",
+      "line_style": 1
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "c:/temp",
+            "TEST_LINUX": "/home/talend/IntoData/Vaxxinova/temp",
+            "TEST": "c:/temp",
+            "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "Global_Clean",
+            "TEST_LINUX": "test_global_clean",
+            "TEST": "test_global_clean",
+            "TEST_MAC": "test_global_clean"
+          }
+        },
+        {
+          "name": "parameter_bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+          }
+        },
+        {
+          "name": "parameter_BC_Company_Identifier",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST_LINUX": "",
+            "TEST": "",
+            "TEST_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_EndPoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://bc-vax-api.ew-group.net",
+            "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+            "TEST": "https://bc-vax-api.ew-group.net",
+            "TEST_MAC": "https://bc-vax-api.ew-group.net"
+          }
+        },
+        {
+          "name": "parameter_bc_password",
+          "type": "id_Password",
+          "values": {
+            "Default": "",
+            "PROD": "[ENCRYPTED_PASSWORD]",
+            "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+            "TEST": "[ENCRYPTED_PASSWORD]",
+            "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+          }
+        },
+        {
+          "name": "parameter_bc_username",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "EW\\vax_bc_api_vax-int",
+            "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+            "TEST": "EW\\vax_bc_api_vax-int",
+            "TEST_MAC": "EW\\vax_bc_api_vax-int"
+          }
+        },
+        {
+          "name": "parameter_VBR_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "bra_vbr_clean",
+            "TEST_LINUX": "test_bra_vbr_clean",
+            "TEST": "test_bra_vbr_clean",
+            "TEST_MAC": "test_bra_vbr_clean"
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "Global_Clean",
+            "TEST_LINUX": "test_global_clean",
+            "TEST": "test_global_clean",
+            "TEST_MAC": "test_global_clean"
+          }
+        },
+        {
+          "name": "parameter_Forecast_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST_LINUX": "",
+            "TEST": "",
+            "TEST_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_Legacy_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST_LINUX": "",
+            "TEST": "",
+            "TEST_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_NPL_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_npl_clean",
+            "TEST_LINUX": "test_usa_npl_clean",
+            "TEST": "test_usa_npl_clean",
+            "TEST_MAC": "test_usa_npl_clean"
+          }
+        },
+        {
+          "name": "parameter_Raw_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "Global_Raw",
+            "TEST_LINUX": "test_global_raw",
+            "TEST": "test_global_raw",
+            "TEST_MAC": "test_global_raw"
+          }
+        },
+        {
+          "name": "parameter_table_name",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "Sales_Set_Legacy",
+            "TEST_LINUX": "Sales_Set_Legacy",
+            "TEST": "Sales_Set_Legacy",
+            "TEST_MAC": "Sales_Set_Legacy"
+          }
+        },
+        {
+          "name": "parameter_VDA_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "deu_vda_clean",
+            "TEST_LINUX": "test_deu_vda_clean",
+            "TEST": "test_deu_vda_clean",
+            "TEST_MAC": "test_deu_vda_clean"
+          }
+        },
+        {
+          "name": "parameter_VDD_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "deu_vdd_clean",
+            "TEST_LINUX": "test_deu_vdd_clean",
+            "TEST": "test_deu_vdd_clean",
+            "TEST_MAC": "test_deu_vdd_clean"
+          }
+        },
+        {
+          "name": "parameter_VIT_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "ita_vit_clean",
+            "TEST_LINUX": "test_ita_vit_clean",
+            "TEST": "test_ita_vit_clean",
+            "TEST_MAC": "test_ita_vit_clean"
+          }
+        },
+        {
+          "name": "parameter_VJP_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "jpn_vjp_clean",
+            "TEST_LINUX": "test_jpn_vjp_clean",
+            "TEST": "test_jpn_vjp_clean",
+            "TEST_MAC": "test_jpn_vjp_clean"
+          }
+        },
+        {
+          "name": "parameter_VUS_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_vus_clean",
+            "TEST_LINUX": "test_usa_vus_clean",
+            "TEST": "test_usa_vus_clean",
+            "TEST_MAC": "test_usa_vus_clean"
+          }
+        },
+        {
+          "name": "resource_file_BC_environment",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "/Users/robbiemartens/Documents/TalendBQ_Context_USA_NPL.cfg"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-talend",
+            "TEST_LINUX": "vaxxinova-talend",
+            "TEST": "vaxxinova-talend",
+            "TEST_MAC": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-dwh",
+            "TEST_LINUX": "vaxxinova-dwh",
+            "TEST": "vaxxinova-dwh",
+            "TEST_MAC": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "parameter_VUS_Raw_Env",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_vus_raw",
+            "TEST_LINUX": "test_usa_vus_raw",
+            "TEST": "test_usa_vus_raw",
+            "TEST_MAC": "test_usa_vus_raw"
+          }
+        },
+        {
+          "name": "parameter_Retrieval_Time",
+          "type": "id_Integer",
+          "values": {
+            "Default": "",
+            "PROD": "22",
+            "TEST_LINUX": "22",
+            "TEST": "22",
+            "TEST_MAC": "22"
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "VEN_1",
+        "POR_1"
+      ],
+      "output_tables": [
+        "VEN_2",
+        "VEN_3"
+      ],
+      "entries": [
+        {
+          "table_name": "VEN_2",
+          "column_name": "Entry_Number",
+          "expression": "VEN_1.Entry_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Item_Number",
+          "expression": "VEN_1.Item_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Posting_Date",
+          "expression": "VEN_1.Posting_Date"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Item_Ledger_Entry_Type",
+          "expression": "VEN_1.Item_Ledger_Entry_Type"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Document_Number",
+          "expression": "VEN_1.Document_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Description",
+          "expression": "VEN_1.Description"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Item_Ledger_Entry_Number",
+          "expression": "VEN_1.Item_Ledger_Entry_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Source_Code",
+          "expression": "VEN_1.Source_Code"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Cost_Amount",
+          "expression": "VEN_1.Cost_Amount"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Cost_Entry_Type",
+          "expression": "VEN_1.Cost_Entry_Type"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Center_Type",
+          "expression": "VEN_1.Center_Type"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Center_Number",
+          "expression": "VEN_1.Center_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Production_Order_Status",
+          "expression": "VEN_1.Production_Order_Status"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Inbound_Item_Entry_Numer",
+          "expression": "VEN_1.Inbound_Item_Entry_Numer"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Preceding_Document",
+          "expression": "VEN_1.Preceding_Document"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Preceding_Document_Number",
+          "expression": "VEN_1.Preceding_Document_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Quantity",
+          "expression": "VEN_1.Quantity"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Unit_Cost",
+          "expression": "VEN_1.Unit_Cost"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Material_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Material_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Material_Cost)"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Direct_Labor_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Direct_Labor_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Direct_Labor_Cost)"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Indirect_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Indirect_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Indirect_Cost)"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Direct_Machine_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Direct_Machine_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Direct_Machine_Cost)"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Overhead_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Overhead_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Overhead_Cost)"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Output_Item_Number",
+          "expression": "VEN_1.Output_Item_Number"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Output_Quantity",
+          "expression": "VEN_1.Output_Quantity"
+        },
+        {
+          "table_name": "VEN_2",
+          "column_name": "Cost_Breakdown_Status",
+          "expression": "POR_1.Cost_Breakdown_Status"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Entry_Number",
+          "expression": "VEN_1.Entry_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Item_Number",
+          "expression": "VEN_1.Item_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Posting_Date",
+          "expression": "VEN_1.Posting_Date"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Item_Ledger_Entry_Type",
+          "expression": "VEN_1.Item_Ledger_Entry_Type"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Document_Number",
+          "expression": "VEN_1.Document_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Description",
+          "expression": "VEN_1.Description"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Item_Ledger_Entry_Number",
+          "expression": "VEN_1.Item_Ledger_Entry_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Source_Code",
+          "expression": "VEN_1.Source_Code"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Cost_Amount",
+          "expression": "VEN_1.Cost_Amount"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Cost_Entry_Type",
+          "expression": "VEN_1.Cost_Entry_Type"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Center_Type",
+          "expression": "VEN_1.Center_Type"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Center_Number",
+          "expression": "VEN_1.Center_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Production_Order_Status",
+          "expression": "VEN_1.Production_Order_Status"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Inbound_Item_Entry_Numer",
+          "expression": "VEN_1.Inbound_Item_Entry_Numer"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Preceding_Document",
+          "expression": "VEN_1.Preceding_Document"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Preceding_Document_Number",
+          "expression": "VEN_1.Preceding_Document_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Quantity",
+          "expression": "VEN_1.Quantity"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Unit_Cost",
+          "expression": "VEN_1.Unit_Cost"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Material_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Material_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Material_Cost)"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Direct_Labor_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Direct_Labor_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Direct_Labor_Cost)"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Indirect_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Indirect_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Indirect_Cost)"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Direct_Machine_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Direct_Machine_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Direct_Machine_Cost)"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Overhead_Cost",
+          "expression": "(VEN_1.Quantity == null || POR_1.Average_Overhead_Cost == null) ? null : (VEN_1.Quantity * POR_1.Average_Overhead_Cost)"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Output_Item_Number",
+          "expression": "VEN_1.Output_Item_Number"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Output_Quantity",
+          "expression": "VEN_1.Output_Quantity"
+        },
+        {
+          "table_name": "VEN_3",
+          "column_name": "Cost_Breakdown_Status",
+          "expression": "POR_1.Cost_Breakdown_Status"
+        }
+      ],
+      "var_entries": []
+    },
+    {
+      "input_tables": [],
+      "output_tables": [
+        "VEN_5"
+      ],
+      "entries": [
+        {
+          "table_name": "VEN_5",
+          "column_name": "Production_Order_Number",
+          "expression": "VEN_4.Production_Order_Number"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Production_Order_Status",
+          "expression": "VEN_4.Production_Order_Status"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Item_Number",
+          "expression": "VEN_4.Item_Number"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Posting_Date",
+          "expression": "VEN_4.Posting_Date"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Preceding_Document_Number",
+          "expression": "VEN_4.Preceding_Document_Number"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Total_Preceding_Steps",
+          "expression": "VEN_4.Total_Preceding_Steps"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Open_Preceding_Steps",
+          "expression": "VEN_4.Open_Preceding_Steps"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Cost_Breakdown_Status",
+          "expression": "(VEN_4.Production_Order_Status.equals(\"Finished\") && VEN_4.Open_Preceding_Steps == 0f) ? \"Finished\" : \"Open\""
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Quantity",
+          "expression": "VEN_4.Quantity"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Cost_Amount",
+          "expression": "VEN_4.Material_Cost + VEN_4.Direct_Labor_Cost + VEN_4.Indirect_Cost + VEN_4.Direct_Machine_Cost + VEN_4.Overhead_Cost"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Unit_Cost",
+          "expression": "VEN_4.Quantity == null ? null : (VEN_4.Material_Cost + VEN_4.Direct_Labor_Cost + VEN_4.Indirect_Cost + VEN_4.Direct_Machine_Cost + VEN_4.Overhead_Cost) / VEN_4.Quantity"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Material_Cost",
+          "expression": "VEN_4.Material_Cost"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Direct_Labor_Cost",
+          "expression": "VEN_4.Direct_Labor_Cost"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Indirect_Cost",
+          "expression": "VEN_4.Indirect_Cost"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Direct_Machine_Cost",
+          "expression": "VEN_4.Direct_Machine_Cost"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Overhead_Cost",
+          "expression": "VEN_4.Overhead_Cost"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Average_Material_Cost",
+          "expression": "(VEN_4.Material_Cost == null || VEN_4.Quantity == null) ? null : (VEN_4.Material_Cost / VEN_4.Quantity)"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Average_Direct_Labor_Cost",
+          "expression": "(VEN_4.Direct_Labor_Cost == null || VEN_4.Quantity == null) ? null : (VEN_4.Direct_Labor_Cost / VEN_4.Quantity)"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Average_Indirect_Cost",
+          "expression": "(VEN_4.Indirect_Cost == null || VEN_4.Quantity == null) ? null : (VEN_4.Indirect_Cost / VEN_4.Quantity)"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Average_Direct_Machine_Cost",
+          "expression": "(VEN_4.Direct_Machine_Cost == null || VEN_4.Quantity == null) ? null : (VEN_4.Direct_Machine_Cost / VEN_4.Quantity)"
+        },
+        {
+          "table_name": "VEN_5",
+          "column_name": "Average_Overhead_Cost",
+          "expression": "(VEN_4.Overhead_Cost == null || VEN_4.Quantity == null) ? null : (VEN_4.Overhead_Cost / VEN_4.Quantity)"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString",
+    "DataQuality",
+    "DQTechnical",
+    "DataMasking",
+    "DataQualityDependencies",
+    "DqStringHandling"
+  ],
+  "group": "BRA",
+  "subgroup": "VBR"
+}

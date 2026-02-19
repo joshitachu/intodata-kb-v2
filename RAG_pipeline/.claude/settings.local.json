@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(powershell -Command:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nchore: initial project scaffolding\n\n- Project structure with all directories and placeholder files\n- Tracking files: PROJECT_MEMORY.md, PROGRESS_LOG.md, QUICK_START.md\n- Agent instruction files \\(database, backend, frontend, integration\\)\n- Config files: docker-compose.yml, pyproject.toml, .env.example, Dockerfiles\n- .gitignore for Python + Node + Docker + IDE\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(pip install:*)",
+      "Bash(pip:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(docker:*)",
+      "Bash(python -m alembic revision:*)",
+      "Bash(node --version:*)",
+      "Bash(npm --version:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run build:*)",
+      "Bash(dir:*)",
+      "Bash(grep:*)",
+      "Bash(npx next build:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:docs.zeta-alpha.com)",
+      "WebFetch(domain:www.zeta-alpha.com)",
+      "WebFetch(domain:aiknowzone.com)",
+      "WebFetch(domain:qdrant.tech)",
+      "WebFetch(domain:apidog.com)",
+      "Bash(python -c:*)"
+    ]
+  }
+}

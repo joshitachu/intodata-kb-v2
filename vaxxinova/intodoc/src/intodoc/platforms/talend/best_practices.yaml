@@ -1,0 +1,441 @@
+# Talend-specific best practices and knowledge for LLM context
+# This is injected into prompts so the LLM understands Talend conventions
+
+platform_name: "Talend Cloud / Talend Open Studio"
+
+# ── Key Concepts ─────────────────────────────────────────────────────
+
+concepts:
+  repository_mode:
+    description: >
+      Talend components can reference connection parameters in two modes:
+      REPOSITORY (references a shared metadata/connections/*.item by xmi:id)
+      or BUILT_IN (connection details embedded directly in the component).
+      REPOSITORY mode is best practice — it allows centralized connection management.
+    risk: "BUILT_IN connections scatter credentials across jobs and are harder to maintain."
+
+  context_groups:
+    description: >
+      Context groups define environment-specific variables (Default, PROD, TEST, etc.).
+      Jobs reference variables via 'context.variable_name' syntax.
+      Each context group has a .item file under context/ with multiple ContextType blocks.
+    risk: "Missing or mismatched context values between environments cause prod failures."
+
+  properties_sidecar:
+    description: >
+      Every .item file has a corresponding .properties sidecar containing:
+      job name (label), version, creation/modification dates, author reference.
+      The .item file itself does NOT contain the job name — it must be read from .properties.
+
+  trunjob_orchestration:
+    description: >
+      tRunJob components call child jobs. Key parameters:
+      PROCESS:PROCESS_TYPE_PROCESS = target job ID (format: PROJECT:_xmiId)
+      TRANSMIT_WHOLE_CONTEXT = pass all context vars to child
+      CONTEXTPARAMS = table of overridden parameters
+      DIE_ON_CHILD_ERROR = fail parent if child fails
+    risk: "Silent child job failures when DIE_ON_CHILD_ERROR is false."
+
+  tmap_transformations:
+    description: >
+      tMap is the primary transformation component. Its logic is stored in
+      nodeData xsi:type='TalendMapper:MapperData' with:
+      - inputTables: source flows with lookupMode and matchingMode
+      - outputTables: target flows with mapperTableEntries (expression + name + type)
+      - varTables: intermediate variables
+      Expressions use 'rowN.fieldName' syntax for input references.
+    risk: "Complex tMap expressions often contain hidden business logic."
+
+  connection_types:
+    description: >
+      Connections between components use lineStyle to indicate type:
+      0 = FLOW (data row), 1 = SUBJOB_OK (trigger after subjob),
+      2 = SUBJOB_ERROR, 3 = COMPONENT_OK, 4 = COMPONENT_ERROR, 7 = RUN_IF
+      connectorName values: FLOW, SUBJOB_OK, SUBJOB_ERROR, COMPONENT_OK, COMPONENT_ERROR, RUN_IF
+
+  regions:
+    description: >
+      This Vaxxinova project organizes jobs by region/subsidiary under process/:
+      BRA/VBR (Brazil), ITA/VAX (Italy), JPN/VJP (Japan), SAF/VSA (South Africa),
+      USA/NPL (USA), Global (cross-region orchestration).
+      Each region has its own MSSQL source and context group.
+
+# ── Component Types ──────────────────────────────────────────────────
+
+component_types:
+  tMSSqlInput: "Read from Microsoft SQL Server database"
+  tMSSqlOutput: "Write to Microsoft SQL Server database"
+  tBigQueryInput: "Read from Google BigQuery"
+  tBigQueryOutput: "Write to Google BigQuery"
+  tBigQuerySQLRow: "Execute SQL on Google BigQuery"
+  tMap: "Data transformation/mapping (primary transformation component)"
+  tRunJob: "Execute a child Talend job"
+  tLogRow: "Log data rows to console"
+  tWarn: "Emit warning message"
+  tDie: "Terminate job with error"
+  tJava: "Custom Java code execution"
+  tJavaRow: "Custom Java code per row"
+  tJavaFlex: "Custom Java code with begin/main/end blocks"
+  tFileInputDelimited: "Read delimited file (CSV)"
+  tFileOutputDelimited: "Write delimited file (CSV)"
+  tFlowToIterate: "Convert data flow to iterate loop"
+  tFixedFlowInput: "Generate fixed test data"
+  tContextLoad: "Load context from external source"
+  tPreJob: "Pre-job initialization (runs before main flow)"
+  tPostJob: "Post-job cleanup (runs after main flow)"
+  tFilterRow: "Filter rows based on conditions"
+  tSortRow: "Sort rows by columns"
+  tUniqRow: "Remove duplicate rows"
+  tAggregateRow: "Aggregate/group rows"
+  tSendMail: "Send email notification"
+  tAssert: "Assertion check — fail if condition is false"
+  cleanup_temp_file_storage: "Custom component to clean temp files"
+
+# ── Component Parameter Reference ───────────────────────────────────
+
+component_parameters:
+  tMSSqlInput:
+    critical_params:
+      - name: "CONNECTION_MODE"
+        description: "REPOSITORY (shared metadata) or BUILT_IN (embedded)"
+        best_practice: "Always use REPOSITORY for production. BUILT_IN scatters credentials."
+      - name: "QUERY"
+        description: "SQL SELECT statement or reference to context variable"
+        best_practice: "Use context variables for table names. Avoid SELECT * — specify columns."
+      - name: "FETCH_SIZE"
+        description: "Number of rows fetched per JDBC round-trip (default: 1000)"
+        performance: "Increase to 5000-10000 for large tables. Too high wastes memory."
+      - name: "TRIM_ALL_COLUMNS"
+        description: "Trim whitespace from all string columns"
+        best_practice: "Enable for source systems with trailing spaces."
+
+  tMSSqlOutput:
+    critical_params:
+      - name: "ACTION_ON_TABLE"
+        description: "NONE, CREATE_IF_NOT_EXISTS, DROP_AND_CREATE, TRUNCATE, etc."
+        risk: "DROP_AND_CREATE in production destroys data. Use NONE or TRUNCATE."
+      - name: "COMMIT_EVERY"
+        description: "Rows between commits (default: 10000)"
+        performance: "Match to batch size. Too low = slow. No commit = memory bloat → OOM."
+      - name: "BATCH_SIZE"
+        description: "Rows per batch insert (default: 10000)"
+        performance: "10000 is optimal for MSSQL. Larger batches hit lock escalation."
+      - name: "USE_BATCH"
+        description: "Enable batch mode for inserts"
+        best_practice: "Always enable for bulk loads. Single-row inserts are 10-100x slower."
+
+  tBigQueryOutput:
+    critical_params:
+      - name: "ACTION_ON_TABLE"
+        description: "NONE, CREATE_IF_NOT_EXISTS, DROP_AND_CREATE, TRUNCATE"
+        risk: "DROP_AND_CREATE costs BigQuery storage operations. Prefer TRUNCATE."
+      - name: "BATCH_SIZE"
+        description: "Rows per streaming insert batch (default: 500)"
+        performance: "1000-2000 optimal. >5000 hits API limits. Use load jobs for >100K rows."
+      - name: "USE_LEGACY_SQL"
+        description: "Use legacy SQL dialect vs Standard SQL"
+        best_practice: "Always use Standard SQL (false). Legacy SQL is deprecated."
+
+  tMap:
+    critical_params:
+      - name: "lookupMode"
+        description: "LOAD_ONCE (cache entire lookup table in memory) or RELOAD (re-query per row)"
+        performance: "LOAD_ONCE for small tables (<100K rows). RELOAD for large/changing tables."
+      - name: "matchingMode"
+        description: "UNIQUE_MATCH, FIRST_MATCH, ALL_MATCHES"
+        risk: "ALL_MATCHES on large lookups causes Cartesian explosion — memory/time bomb."
+      - name: "innerJoin"
+        description: "true = INNER JOIN (drop non-matching), false = LEFT OUTER (keep all)"
+        risk: "INNER JOIN silently drops rows. Use LEFT OUTER + reject link for safety."
+      - name: "persistent"
+        description: "Persist lookup table to disk vs memory"
+        performance: "Enable for lookups >500K rows to avoid OutOfMemoryError."
+
+  tRunJob:
+    critical_params:
+      - name: "PROCESS"
+        description: "Target job reference (PROJECT:_xmiId)"
+        best_practice: "Always use project-relative references, not hardcoded paths."
+      - name: "DIE_ON_CHILD_ERROR"
+        description: "Propagate child job failures to parent"
+        risk: "When false, child failures are SILENT. Always set true unless explicitly handled."
+      - name: "TRANSMIT_WHOLE_CONTEXT"
+        description: "Pass all context variables to child job"
+        best_practice: "Prefer explicit CONTEXTPARAMS over TRANSMIT_WHOLE_CONTEXT for clarity."
+      - name: "USE_DYNAMIC_JOB"
+        description: "Resolve job name at runtime from variable"
+        risk: "Dynamic job names are hard to trace in documentation. Use sparingly."
+
+  tFileInputDelimited:
+    critical_params:
+      - name: "FILENAME"
+        description: "Source file path — often a context variable"
+        best_practice: "Always use context.variable for paths. Never hardcode."
+      - name: "HEADER"
+        description: "Number of header rows to skip"
+        risk: "Wrong header count causes data misalignment. Verify with sample data."
+      - name: "ENCODING"
+        description: "Character encoding (UTF-8, ISO-8859-1, etc.)"
+        risk: "Wrong encoding corrupts special characters. BRA data may need ISO-8859-1."
+
+  tJava:
+    critical_params:
+      - name: "CODE"
+        description: "Inline Java code block"
+        risk: "Inline code is hard to test, version, and review. Prefer routines for complex logic."
+      - name: "IMPORT"
+        description: "Java import statements"
+        best_practice: "Keep imports minimal. Avoid wildcard imports."
+
+  tLogRow:
+    critical_params:
+      - name: "BASIC_MODE"
+        description: "Simple print vs table format"
+        risk: "tLogRow in production is a performance drain. Logs disappear in cloud execution."
+      - name: "PRINT_HEADER"
+        description: "Print column headers"
+        best_practice: "Remove tLogRow from production jobs. Use tWarn for important messages."
+
+# ── Anti-Patterns ────────────────────────────────────────────────────
+
+anti_patterns:
+  - id: "AP-001"
+    name: "tLogRow in Production"
+    description: >
+      tLogRow writes to stdout which is lost in production/cloud execution.
+      It adds I/O overhead per row and provides no operational value.
+    fix: "Remove tLogRow from production flows. Use tWarn for alerts, tFileOutputDelimited for debug output."
+    severity: "medium"
+
+  - id: "AP-002"
+    name: "No Commit Frequency on DB Output"
+    description: >
+      When COMMIT_EVERY is not set or set to 0 on tMSSqlOutput/tBigQueryOutput,
+      all rows accumulate in memory until the end. For large datasets, this causes
+      OutOfMemoryError or extremely long transactions that block other queries.
+    fix: "Set COMMIT_EVERY to match BATCH_SIZE (typically 10000 for MSSQL, 1000 for BigQuery)."
+    severity: "high"
+
+  - id: "AP-003"
+    name: "BUILT_IN Connection Mode"
+    description: >
+      Using BUILT_IN instead of REPOSITORY mode embeds connection details (host, port,
+      credentials) directly in the job XML. This scatters credentials across dozens of jobs,
+      making rotation painful and increasing exposure risk.
+    fix: "Convert to REPOSITORY mode referencing shared metadata/connections/*.item files."
+    severity: "high"
+
+  - id: "AP-004"
+    name: "Missing SUBJOB_ERROR Handler"
+    description: >
+      Jobs without SUBJOB_ERROR connections fail silently — the parent job continues
+      as if the subjob succeeded. This is the #1 cause of data quality issues in Talend.
+    fix: "Add SUBJOB_ERROR connection to tDie or tWarn for every subjob."
+    severity: "critical"
+
+  - id: "AP-005"
+    name: "DIE_ON_CHILD_ERROR=false Without Handling"
+    description: >
+      When tRunJob has DIE_ON_CHILD_ERROR=false and there is no explicit error check
+      after the tRunJob, child job failures are completely invisible.
+    fix: "Set DIE_ON_CHILD_ERROR=true, or add COMPONENT_ERROR handling after tRunJob."
+    severity: "critical"
+
+  - id: "AP-006"
+    name: "Hardcoded Values Instead of Context Variables"
+    description: >
+      Hardcoded file paths, server names, database names, or credentials in component
+      parameters make jobs impossible to promote across environments (DEV→TEST→PROD).
+    fix: "Replace all environment-dependent values with context.variable_name references."
+    severity: "high"
+
+  - id: "AP-007"
+    name: "tMap ALL_MATCHES on Large Lookups"
+    description: >
+      Using matchingMode=ALL_MATCHES on a lookup table with many matching rows creates
+      a Cartesian product — if 1000 main rows each match 100 lookup rows, you get
+      100,000 output rows. With large tables this causes memory explosion.
+    fix: "Use FIRST_MATCH or UNIQUE_MATCH unless you explicitly need all matches. Add row count monitoring."
+    severity: "high"
+
+  - id: "AP-008"
+    name: "No tPreJob/tPostJob for Setup/Cleanup"
+    description: >
+      Jobs that create temp files, staging tables, or acquire locks without using
+      tPreJob (setup) and tPostJob (cleanup) leave orphaned resources on failure.
+    fix: "Use tPreJob for initialization and tPostJob for cleanup — tPostJob runs even on failure."
+    severity: "medium"
+
+  - id: "AP-009"
+    name: "SELECT * in SQL Queries"
+    description: >
+      Using SELECT * pulls all columns including BLOBs, unused fields, and future
+      schema additions. This wastes bandwidth, memory, and breaks when source schema changes.
+    fix: "Explicitly list required columns in SELECT statements."
+    severity: "medium"
+
+  - id: "AP-010"
+    name: "Missing Error Notification"
+    description: >
+      Jobs that fail without sending alerts (email, webhook, monitoring) leave errors
+      undetected until downstream consumers report missing data.
+    fix: "Add tSendMail or webhook call on SUBJOB_ERROR/COMPONENT_ERROR paths."
+    severity: "high"
+
+# ── Naming Convention Decoder (Vaxxinova-specific) ───────────────────
+
+naming_conventions:
+  region_codes:
+    BRA: "Brazil"
+    ITA: "Italy"
+    JPN: "Japan"
+    SAF: "South Africa"
+    USA: "United States"
+
+  subsidiary_codes:
+    VBR: "Vaxxinova Brazil"
+    VAX: "Vaxxinova Italy"
+    VJP: "Vaxxinova Japan"
+    VSA: "Vaxxinova South Africa"
+    NPL: "Newport Labs (USA)"
+
+  layer_codes:
+    RAW: "Source extract layer — raw data as-is from source system"
+    CLEAN: "Transformed/cleansed layer — standardized, validated, deduped"
+    PUBLISH: "Final output layer — ready for consumption by BI/analytics"
+
+  job_name_pattern: "{REGION}_{SUBSIDIARY}_{LAYER}_{VERSION}"
+  job_name_examples:
+    - "BRA_VBR_RAW_0.1 → Brazil Vaxxinova Brazil, raw extract, version 0.1"
+    - "ITA_VAX_CLEAN_0.1 → Italy Vaxxinova Italy, clean transform, version 0.1"
+    - "USA_NPL_PUBLISH_0.1 → USA Newport Labs, publish output, version 0.1"
+    - "Global_Master_0.1 → Cross-region orchestration job"
+
+  special_prefixes:
+    Global: "Cross-region orchestration or consolidation job"
+    Master: "Orchestrator that calls regional child jobs via tRunJob"
+    Test: "Test/debug job — should not be in production"
+
+# ── Error Handling Patterns ──────────────────────────────────────────
+
+error_handling_patterns:
+  tDie:
+    when_to_use: "Fatal errors that should stop the entire job immediately"
+    behavior: "Terminates the JVM with exit code. Parent tRunJob detects via DIE_ON_CHILD_ERROR."
+    examples:
+      - "Source database unreachable"
+      - "Critical table missing or empty"
+      - "Authentication failure"
+
+  tWarn:
+    when_to_use: "Non-fatal issues that should be logged but allow job to continue"
+    behavior: "Emits a warning message to job log. Does NOT stop execution."
+    examples:
+      - "Optional lookup table empty — using defaults"
+      - "Data quality threshold below target but above minimum"
+      - "Deprecated feature usage detected"
+
+  SUBJOB_ERROR:
+    when_to_use: "Handle errors at the subjob level — catches any error in the subjob"
+    behavior: "Triggers when ANY component in the subjob fails. Runs the connected component."
+    best_practice: "Connect to tDie (fatal) or tWarn+tSendMail (recoverable)."
+
+  COMPONENT_ERROR:
+    when_to_use: "Handle errors from a specific component"
+    behavior: "Triggers when the specific source component fails. More granular than SUBJOB_ERROR."
+    best_practice: "Use for components that might fail transiently (API calls, file reads)."
+
+  tLogRow_tSendMail:
+    when_to_use: "Alert operators about errors"
+    behavior: "Log error details then send email notification"
+    best_practice: "Include job name, error message, timestamp, and affected record count in the email."
+
+# ── tMap Join Type Implications ──────────────────────────────────────
+
+tmap_join_types:
+  INNER_JOIN:
+    description: "Only output rows that match in both main flow and lookup"
+    risk: "Silently drops non-matching rows — potential data loss"
+    when_safe: "When you're certain every main row has a lookup match"
+    detection: "innerJoin=true in mapperTableEntries"
+
+  LEFT_OUTER_JOIN:
+    description: "Keep all main flow rows, NULL-fill unmatched lookup columns"
+    risk: "NULLs in output may cause downstream issues if not handled"
+    when_safe: "Safe default — preserves all source data"
+    detection: "innerJoin=false in mapperTableEntries"
+
+  reject_link:
+    description: "Capture non-matching rows to a separate output for investigation"
+    risk: "None — this is purely additive for debugging"
+    when_safe: "Always recommended alongside INNER_JOIN"
+    detection: "rejectInnerJoin=true with a reject output table"
+
+  match_models:
+    UNIQUE_MATCH:
+      description: "Expect exactly one match per lookup key"
+      memory: "Low — stores one match per key"
+      risk: "If multiple matches exist, only one is returned (undefined which)"
+
+    FIRST_MATCH:
+      description: "Take the first matching row from lookup"
+      memory: "Low — stops searching after first match"
+      risk: "Result depends on lookup table ordering — non-deterministic"
+
+    ALL_MATCHES:
+      description: "Return all matching rows (Cartesian product)"
+      memory: "HIGH — multiplies output by match count"
+      risk: "Memory explosion with large lookups. 1000 rows × 100 matches = 100K output rows"
+
+# ── Performance Best Practices ───────────────────────────────────────
+
+performance:
+  batch_sizes:
+    MSSQL: "10000 rows per batch — optimal for SQL Server bulk insert"
+    BigQuery: "1000-2000 rows per streaming insert. Use load jobs for >100K rows."
+    File: "No batching needed — streaming write is fine"
+
+  commit_frequency:
+    rule: "COMMIT_EVERY should match BATCH_SIZE"
+    MSSQL: "10000"
+    BigQuery: "1000"
+    risk: "Mismatched values cause either memory bloat (commit too infrequent) or transaction overhead (commit too frequent)"
+
+  parallel_execution:
+    when_safe: "Only for idempotent jobs (same input → same output, no side effects)"
+    when_unsafe: "Jobs that write to the same table, use shared temp files, or have ordering dependencies"
+    how: "Set MULTI_THREAD_EXECUTION in job settings or use parallel tRunJob calls"
+
+  lookup_cache:
+    LOAD_ONCE: "Cache entire lookup in memory at start. Use for small reference tables (<100K rows)."
+    RELOAD: "Re-query lookup for each row. Use for large or frequently changing tables."
+    persistent: "Spill lookup to disk instead of memory. Use for very large lookups (>500K rows)."
+
+  large_dataset_tips:
+    - "Use tMSSqlInput with FETCH_SIZE=5000-10000 for large source tables"
+    - "Enable USE_BATCH on all database outputs"
+    - "Avoid tSortRow on large datasets — sort in SQL instead"
+    - "Use tMap persistent mode for lookups >500K rows"
+    - "Split large loads into date-range partitions via context variables"
+
+# ── Analysis Focus ───────────────────────────────────────────────────
+
+analysis_focus:
+  - "REPOSITORY vs BUILT_IN connection modes — flag all BUILT_IN as risk"
+  - "Context variable differences between PROD and TEST environments"
+  - "tRunJob chains (parent→child orchestration patterns)"
+  - "tMap expressions containing business logic"
+  - "Error handling: which jobs have tDie/tWarn vs silent failures"
+  - "Java routines referenced by jobs (DataMasking, DataOperation, DataQuality)"
+  - "BigQuery as target (cloud data warehouse pattern)"
+  - "MSSQL as source (on-premise ERP pattern)"
+  - "Cross-region data flows (Global orchestrator jobs)"
+  - "Anti-patterns: tLogRow in production, missing error handlers, BUILT_IN connections"
+  - "Schema definitions: column types, lengths, nullable flags from metadata connections"
+  - "Data quality: validation rules in tMap expressions and tFilterRow conditions"
+  - "Naming convention compliance: {REGION}_{SUBSIDIARY}_{LAYER}_{VERSION} pattern"
+  - "Scheduling hints: tRunJob chain depth, job dependencies, execution order"
+  - "Security: credential handling, data classification (PII), access patterns"
+  - "Performance: batch sizes, commit frequency, parallel execution, large lookups"
+  - "Cross-region patterns: shared vs unique logic, standardization score"
+  - "Reusability: duplicated logic, shared routines/joblets, refactoring candidates"

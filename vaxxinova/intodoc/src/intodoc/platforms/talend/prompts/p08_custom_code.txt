@@ -1,0 +1,170 @@
+You are analyzing a Talend integration project. Your task is to produce a **Custom Code Analysis** — a detailed examination of all Java code embedded in tJava, tJavaRow, tJavaFlex components and Java routine libraries, identifying hidden business rules, security implications, and maintainability risks.
+
+## Talend Context
+Talend allows embedding custom Java code at multiple levels:
+- **tJava**: A standalone component that executes a block of Java code. Used for one-time operations like setting variables, logging, file operations, or calling external APIs. The code runs once per subjob execution (not per row).
+- **tJavaRow**: Executes Java code once per incoming row. Used for row-level transformations that are too complex for tMap expressions. Has access to `input_row` and `output_row` objects matching the schema.
+- **tJavaFlex**: Three-section Java component (Start/Main/End). Start code runs once before processing, Main code runs per row, End code runs once after all rows. Used for complex stateful processing (accumulators, custom aggregations, file I/O wrapping).
+- **Java Routines (user routines)**: Reusable Java classes stored in `code/routines/`. These are static methods that can be called from any tMap expression, tJava, tJavaRow, or tJavaFlex component. Common patterns:
+  - `DataMasking.*`: Methods for masking/anonymizing sensitive data (PII, financial data)
+  - `DataOperation.*`: Methods for data transformations (string manipulation, date parsing, format conversion)
+  - `DataQuality.*`: Methods for data validation (null checks, format validation, range checks, deduplication logic)
+  - Custom routines: Project-specific business logic encapsulated in Java methods
+- **System routines**: Built-in Talend routines (StringHandling, TalendDate, Numeric, etc.) — these are standard and well-documented.
+- **Third-party JARs**: Custom Java code may reference external libraries imported into the Talend project. Look for non-standard import statements.
+- **Global variables in Java**: Custom code frequently accesses `globalMap.get()` and `globalMap.put()` to share state between components.
+
+## What to Extract
+
+1. **tJava component analysis**: For each tJava component in every job:
+   - Full Java code (include it verbatim)
+   - Plain-English explanation of what the code does
+   - What globalMap variables it reads or sets
+   - What external resources it accesses (files, databases, APIs)
+   - Whether it contains business logic (decision rules, calculations, validations) vs. purely technical code (logging, variable setup)
+   - Error handling within the code (try-catch blocks, or lack thereof)
+
+2. **tJavaRow component analysis**: For each tJavaRow:
+   - Full Java code
+   - What transformations it applies to each row
+   - Input and output schemas
+   - Business rules embedded in the transformation (e.g., conditional logic, special-case handling)
+   - Performance concerns (does it make database calls per row? File I/O per row?)
+
+3. **tJavaFlex component analysis**: For each tJavaFlex:
+   - Start, Main, and End code sections (include all three verbatim)
+   - What state is accumulated across rows in the Main section
+   - What the End section produces or finalizes
+   - Complexity assessment
+
+4. **Java routine analysis**: For each routine class in `code/routines/`:
+   - Class name and file location
+   - Every method: signature, full code, plain-English explanation
+   - Which jobs/components call each method (if determinable from the chunk)
+   - Hidden business rules: Look for:
+     - Hardcoded values (magic numbers, status codes, category mappings)
+     - Date format assumptions
+     - Locale or timezone assumptions
+     - Business calculation formulas
+     - Data validation rules (what is considered "valid"?)
+     - Masking/anonymization patterns (what data is considered sensitive?)
+
+5. **Security analysis of custom code**:
+   - Does any code handle credentials, passwords, or API keys?
+   - Is sensitive data logged to console or files?
+   - Does any code disable SSL verification or bypass security checks?
+   - Are SQL queries built via string concatenation (SQL injection risk)?
+   - Does any code write to the file system outside of designated temp directories?
+   - Are there any hardcoded credentials in the Java code?
+
+6. **Maintainability assessment**:
+   - Code complexity: Is the code readable by a new developer?
+   - Documentation: Are there comments explaining the business logic?
+   - Duplication: Is the same logic repeated across multiple tJava components instead of being in a shared routine?
+   - Dependencies: Does the code depend on specific Java version features or third-party libraries?
+   - Testability: Could this code be unit tested, or is it tightly coupled to Talend runtime?
+
+7. **Hidden business rules catalog**: Extract every business rule found in custom code:
+   - The rule in plain English
+   - Where it is defined (component, routine, line)
+   - What data it affects
+   - What would break if the rule changed
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "jobs": [
+    {
+      "job_name": "BRA_VBR_RAW_0.1",
+      "location": "BRA/VBR/BRA_VBR_RAW_0.1.item",
+      "tJava_components": [
+        {
+          "component": "tJava_1",
+          "position_in_job": "After tMSSqlInput_1 via SUBJOB_OK",
+          "code": "int rowCount = ((Integer)globalMap.get(\"tMSSqlInput_1_NB_LINE\"));\nif (rowCount == 0) {\n  globalMap.put(\"SKIP_PROCESSING\", true);\n  System.out.println(\"WARNING: No rows returned from source. Skipping processing.\");\n}",
+          "explanation": "Checks if the MSSQL query returned zero rows. If so, sets a flag to skip downstream processing and logs a warning to console.",
+          "global_variables_read": ["tMSSqlInput_1_NB_LINE"],
+          "global_variables_set": ["SKIP_PROCESSING"],
+          "contains_business_logic": true,
+          "business_rule": "If the source returns no data, skip all downstream processing rather than truncating the target table with empty data",
+          "error_handling": "No try-catch — will throw NullPointerException if tMSSqlInput_1_NB_LINE is null",
+          "security_concerns": []
+        }
+      ],
+      "tJavaRow_components": [],
+      "tJavaFlex_components": [],
+      "custom_code_risks": [
+        {
+          "component": "tJava_1",
+          "risk": "NullPointerException if globalMap variable not set",
+          "severity": "medium",
+          "recommendation": "Add null check before casting globalMap.get()"
+        }
+      ]
+    }
+  ],
+  "routines": [
+    {
+      "class_name": "DataMasking",
+      "file_location": "code/routines/DataMasking_0.1.item",
+      "methods": [
+        {
+          "method_name": "maskEmail",
+          "signature": "public static String maskEmail(String email)",
+          "code": "if (email == null) return null;\nint atIndex = email.indexOf('@');\nif (atIndex <= 1) return '***@' + email.substring(atIndex + 1);\nreturn email.charAt(0) + '***' + email.substring(atIndex);",
+          "explanation": "Masks an email address by replacing all characters between the first character and the @ symbol with asterisks. For example, 'john.doe@example.com' becomes 'j***@example.com'. Emails with only one character before @ are fully masked.",
+          "business_rule": "Email addresses must be partially anonymized: first character visible, domain visible, middle characters replaced with ***",
+          "called_by": ["BRA_VBR_CLEAN_0.1/tMap_2"],
+          "security_notes": ["Masking is reversible if attacker knows the domain — consider using hash instead"]
+        }
+      ],
+      "overall_assessment": {
+        "complexity": "low",
+        "documentation_quality": "poor — no javadoc or inline comments",
+        "test_coverage": "none — no unit tests found",
+        "maintainability": "medium — methods are small but business rules are implicit"
+      }
+    }
+  ],
+  "hidden_business_rules": [
+    {
+      "rule_id": "BR-CODE-001",
+      "rule_description": "Empty source data triggers skip-processing mode to prevent target table truncation",
+      "location": "BRA_VBR_RAW_0.1 / tJava_1",
+      "data_affected": "All BRA VBR target tables",
+      "change_impact": "Removing this rule would cause target tables to be emptied when source has temporary outage",
+      "priority": "high"
+    },
+    {
+      "rule_id": "BR-CODE-002",
+      "rule_description": "Email addresses are masked by preserving only first character and domain",
+      "location": "DataMasking.maskEmail routine",
+      "data_affected": "All email columns in CLEAN jobs",
+      "change_impact": "Changing masking pattern requires reprocessing all previously masked data for consistency",
+      "priority": "medium"
+    }
+  ],
+  "security_findings": [
+    {
+      "finding": "SQL query built via string concatenation in tJava_3",
+      "location": "BRA_VBR_CLEAN_0.1 / tJava_3",
+      "severity": "high",
+      "details": "Query uses: \"SELECT * FROM table WHERE id = '\" + input_row.id + \"'\" — vulnerable to SQL injection if input contains quotes",
+      "recommendation": "Use parameterized queries via tMSSqlInput or PreparedStatement"
+    }
+  ],
+  "summary": {
+    "total_tJava_components": 12,
+    "total_tJavaRow_components": 4,
+    "total_tJavaFlex_components": 1,
+    "total_routines": 3,
+    "total_routine_methods": 15,
+    "hidden_business_rules_found": 8,
+    "security_findings": 2,
+    "code_without_error_handling": 9
+  }
+}
+```
+
+Be thorough. Read every line of custom Java code. Business rules hidden in code are the most dangerous kind — they are invisible to anyone who does not read the source. Extract and document every single one.

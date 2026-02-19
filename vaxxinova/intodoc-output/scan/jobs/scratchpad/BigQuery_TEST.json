@@ -1,0 +1,1166 @@
+{
+  "name": "BigQuery_TEST",
+  "path": "scratchpad/BigQuery_TEST_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2023-10-18T13:29:55.620+0200",
+  "modification_date": "2024-01-23T23:11:39.083+1100",
+  "components": [
+    {
+      "unique_name": "tBigQueryInput_1",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "\"vaxxinova-dwh\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT MOMENT,PID,FATHER_PID,ROOT_PID,SYSTEM_PID,PROJECT,JOB,JOB_REPOSITORY_ID,JOB_VERSION,CONTEXT,ORIGIN,LABEL,COUNT,REFERENCE,THRESHOLDS FROM Talend_Metadata.TFLOWMETERCATCHER\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/CustomerWorkspace/Vaxxinova/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "TFLOWMETERCATCHER",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogRow_2",
+      "component_type": "tLogRow",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "BASIC_MODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "TABLE_PRINT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "VERTICAL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"|\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PRINT_HEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_UNIQUE_NAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_COLNAMES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_FIXED_LENGTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_CONTENT_WITH_LOG4J",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tDBInput_1",
+      "component_type": "tJDBCInput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_ObDMoG2qEe6k_sZBfMCz5w",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "QUERYSTORE:QUERYSTORE_TYPE",
+          "value": "BUILT_IN",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "connection_JDBC_Google_BigQuery",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "{\"@id\":1,\"@type\":\"org.talend.components.jdbc.tjdbcinput.TJDBCInputProperties\",\"__version\":2,\"referencedComponent\":{\"referenceType\":{\"@type\":\"org.talend.daikon.properties.property.EnumProperty\",\"flags\":null,\"storedValue\":null,\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":{\"@type\":\"java.util.ArrayList\",\"@items\":[{\"@type\":\"org.talend.components.api.properties.ComponentReferenceProperties$ReferenceType\",\"name\":\"THIS_COMPONENT\"},{\"@type\":\"org.talend.components.api.properties.ComponentReferenceProperties$ReferenceType\",\"name\":\"COMPONENT_TYPE\"},{\"@type\":\"org.talend.components.api.properties.ComponentReferenceProperties$ReferenceType\",\"name\":\"COMPONENT_INSTANCE\"}]},\"currentType\":\"org.talend.components.api.properties.ComponentReferenceProperties<P extends org.talend.daikon.properties.Properties>.ReferenceType\",\"name\":\"referenceType\",\"tags\":null},\"componentInstanceId\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":null,\"storedValue\":null,\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"componentInstanceId\",\"tags\":null},\"referenceDefinitionName\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":null,\"storedValue\":\"tJDBCConnection\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"referenceDefinitionName\",\"tags\":null},\"reference\":null,\"name\":\"referencedComponent\",\"validationResult\":null,\"tags\":null},\"connection\":{\"jdbcUrl\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":null,\"storedValue\":\"context.connection_JDBC_Google_BigQuery_connection_jdbcUrl\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false,\"REPOSITORY_VALUE\":\"connection.jdbcUrl\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"jdbcUrl\",\"tags\":null},\"driverTable\":{\"drivers\":{\"flags\":null,\"storedValue\":{\"@type\":\"java.util.ArrayList\",\"@items\":[\"context.connection_JDBC_Google_BigQuery_drivers\"]},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false,\"REPOSITORY_VALUE\":\"connection.driverTable\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.util.List<java.lang.String>\",\"name\":\"drivers\",\"tags\":null},\"name\":\"driverTable\",\"validationResult\":null,\"tags\":null},\"driverClass\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":null,\"storedValue\":\"context.connection_JDBC_Google_BigQuery_connection_driverClass\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false,\"REPOSITORY_VALUE\":\"connection.driverClass\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"driverClass\",\"tags\":null},\"userPassword\":{\"useAuth\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":false},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"useAuth\",\"tags\":null},\"userId\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":null,\"storedValue\":\"context.connection_JDBC_Google_BigQuery_connection_userPassword_userId\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false,\"REPOSITORY_VALUE\":\"connection.userPassword.userId\"},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"userId\",\"tags\":null},\"password\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"ENCRYPT\"},{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"SUPPRESS_LOGGING\"}]},\"storedValue\":\"[ENCRYPTED_PASSWORD] HH:mm:ss.SSS\\\",\\\"talend.field.dbType\\\":\\\"TIMESTAMP\\\",\\\"talend.field.dbColumnName\\\":\\\"MOMENT\\\"},{\\\"name\\\":\\\"PID\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"PID\\\"},{\\\"name\\\":\\\"FATHER_PID\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"FATHER_PID\\\"},{\\\"name\\\":\\\"ROOT_PID\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"ROOT_PID\\\"},{\\\"name\\\":\\\"SYSTEM_PID\\\",\\\"type\\\":[\\\"int\\\",\\\"null\\\"],\\\"talend.field.dbType\\\":\\\"INTEGER\\\",\\\"talend.field.dbColumnName\\\":\\\"SYSTEM_PID\\\"},{\\\"name\\\":\\\"PROJECT\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"PROJECT\\\"},{\\\"name\\\":\\\"JOB\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"JOB\\\"},{\\\"name\\\":\\\"JOB_REPOSITORY_ID\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"JOB_REPOSITORY_ID\\\"},{\\\"name\\\":\\\"JOB_VERSION\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"JOB_VERSION\\\"},{\\\"name\\\":\\\"CONTEXT\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"CONTEXT\\\"},{\\\"name\\\":\\\"ORIGIN\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"ORIGIN\\\"},{\\\"name\\\":\\\"LABEL\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"LABEL\\\"},{\\\"name\\\":\\\"COUNT\\\",\\\"type\\\":[\\\"int\\\",\\\"null\\\"],\\\"talend.field.dbType\\\":\\\"INTEGER\\\",\\\"talend.field.dbColumnName\\\":\\\"COUNT\\\"},{\\\"name\\\":\\\"REFERENCE\\\",\\\"type\\\":[\\\"int\\\",\\\"null\\\"],\\\"talend.field.dbType\\\":\\\"INTEGER\\\",\\\"talend.field.dbColumnName\\\":\\\"REFERENCE\\\"},{\\\"name\\\":\\\"THRESHOLDS\\\",\\\"type\\\":[\\\"string\\\",\\\"null\\\"],\\\"talend.field.length\\\":\\\"65535\\\",\\\"talend.field.dbType\\\":\\\"STRING\\\",\\\"talend.field.dbColumnName\\\":\\\"THRESHOLDS\\\"}]}\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"org.apache.avro.Schema\",\"name\":\"schema\",\"tags\":null},\"name\":\"main\",\"validationResult\":{\"status\":{\"name\":\"OK\"},\"message\":null,\"number\":0},\"tags\":null},\"tableSelection\":{\"__version\":2,\"tablename\":{\"possibleValues2\":{\"@id\":2,\"@type\":\"java.util.Collections$EmptyList\"},\"flags\":null,\"storedValue\":\"\\\"Talend_Metadata.TFLOWMETERCATCHER\\\"\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":{\"@type\":\"java.util.ArrayList\"},\"currentType\":\"java.lang.String\",\"name\":\"tablename\",\"tags\":null},\"connection\":{\"@ref\":1},\"name\":\"tableSelection\",\"validationResult\":{\"status\":{\"name\":\"OK\"},\"message\":null,\"number\":0},\"tags\":null},\"sql\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":null,\"storedValue\":\"\\\"SELECT MOMENT,PID,FATHER_PID,ROOT_PID,SYSTEM_PID,PROJECT,JOB,JOB_REPOSITORY_ID,JOB_VERSION,CONTEXT,ORIGIN,LABEL,COUNT,REFERENCE,THRESHOLDS FROM Talend_Metadata.TFLOWMETERCATCHER\\\"\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false,\"LINE_SEPARATOR_REPLACED_TO\":\" \"},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"sql\",\"tags\":null},\"useDataSource\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":false},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"useDataSource\",\"tags\":null},\"dataSource\":{\"@type\":\"org.talend.daikon.properties.property.StringProperty\",\"possibleValues2\":null,\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"HIDDEN\"}]},\"storedValue\":\"\\\"\\\"\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.String\",\"name\":\"dataSource\",\"tags\":null},\"useCursor\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":false},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"useCursor\",\"tags\":null},\"cursor\":{\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"HIDDEN\"}]},\"storedValue\":{\"@type\":\"int\",\"value\":1000},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Integer\",\"name\":\"cursor\",\"tags\":null},\"trimStringOrCharColumns\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":false},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"trimStringOrCharColumns\",\"tags\":null},\"trimTable\":{\"trim\":{\"flags\":null,\"storedValue\":{\"@ref\":2},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.util.List<java.lang.Boolean>\",\"name\":\"trim\",\"tags\":null},\"columnName\":{\"flags\":null,\"storedValue\":{\"@type\":\"java.util.ArrayList\",\"@items\":[\"MOMENT\",\"PID\",\"FATHER_PID\",\"ROOT_PID\",\"SYSTEM_PID\",\"PROJECT\",\"JOB\",\"JOB_REPOSITORY_ID\",\"JOB_VERSION\",\"CONTEXT\",\"ORIGIN\",\"LABEL\",\"COUNT\",\"REFERENCE\",\"THRESHOLDS\"]},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"ADD_QUOTES\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.util.List<java.lang.String>\",\"name\":\"columnName\",\"tags\":null},\"name\":\"trimTable\",\"validationResult\":null,\"tags\":null},\"enableDBMapping\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":true},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"enableDBMapping\",\"tags\":null},\"dbMapping\":{\"@type\":\"org.talend.daikon.properties.property.EnumProperty\",\"flags\":{\"@type\":\"java.util.RegularEnumSet\"},\"storedValue\":{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"MYSQL\"},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":{\"@type\":\"java.util.ArrayList\",\"@items\":[{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"AS400\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"ACCESS\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"DB2\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"FIREBIRD\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"HSQLDB\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"INFORMIX\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"INGRES\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"VECTORWISE\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"INTERBASE\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"JAVADB\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"MAXDB\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"MSSQL\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"MYSQL\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"NETEZZA\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"ORACLE\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"POSTGRESQL\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"POSTGREPLUS\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"SQLITE\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"SYBASE\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"SAPHANA\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"TERADATA\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"VERTICA\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"H2\"},{\"@type\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"ODBC\"}]},\"currentType\":\"org.talend.components.jdbc.module.DBTypes\",\"name\":\"dbMapping\",\"tags\":null},\"enableSpecialTableName\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":true},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"enableSpecialTableName\",\"tags\":null},\"usePreparedStatement\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":false},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"usePreparedStatement\",\"tags\":null},\"preparedStatementTable\":{\"indexs\":{\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"HIDDEN\"}]},\"storedValue\":null,\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.util.List<java.lang.Integer>\",\"name\":\"indexs\",\"tags\":null},\"types\":{\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"HIDDEN\"}]},\"storedValue\":\"BigDecimal\",\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":{\"@type\":\"java.util.ArrayList\",\"@items\":[{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"BigDecimal\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Blob\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Boolean\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Byte\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Bytes\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Clob\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Date\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Double\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Float\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Int\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Long\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Object\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Short\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"String\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Time\"},{\"@type\":\"org.talend.components.jdbc.module.PreparedStatementTable$Type\",\"name\":\"Null\"}]},\"currentType\":\"java.util.List<java.lang.String>\",\"name\":\"types\",\"tags\":null},\"values\":{\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"HIDDEN\"}]},\"storedValue\":null,\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":0,\"occurMaxTimes\":0,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.util.List<java.lang.Object>\",\"name\":\"values\",\"tags\":null},\"name\":\"preparedStatementTable\",\"validationResult\":null,\"tags\":null},\"useQueryTimeout\":{\"flags\":null,\"storedValue\":{\"@type\":\"boolean\",\"value\":false},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":false,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Boolean\",\"name\":\"useQueryTimeout\",\"tags\":null},\"queryTimeout\":{\"flags\":{\"@type\":\"java.util.RegularEnumSet\",\"@items\":[{\"@type\":\"org.talend.daikon.properties.property.Property$Flags\",\"name\":\"HIDDEN\"}]},\"storedValue\":{\"@type\":\"int\",\"value\":30},\"storedDefaultValue\":null,\"children\":{\"@type\":\"java.util.ArrayList\"},\"taggedValues\":{\"@type\":\"java.util.HashMap\",\"SUPPORT_CONTEXT\":true,\"IS_DYNAMIC\":false},\"size\":-1,\"occurMinTimes\":1,\"occurMaxTimes\":1,\"precision\":0,\"pattern\":null,\"nullable\":false,\"possibleValues\":null,\"currentType\":\"java.lang.Integer\",\"name\":\"queryTimeout\",\"tags\":null},\"name\":\"root\",\"validationResult\":{\"status\":{\"name\":\"OK\"},\"message\":null,\"number\":0},\"tags\":null}",
+          "field_type": ""
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": "connection_JDBC_Google_BigQuery"
+    },
+    {
+      "unique_name": "tLogRow_1",
+      "component_type": "tLogRow",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "BASIC_MODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "TABLE_PRINT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "VERTICAL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"|\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PRINT_HEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_UNIQUE_NAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_COLNAMES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_FIXED_LENGTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_CONTENT_WITH_LOG4J",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogCatcher_2",
+      "component_type": "tLogCatcher",
+      "params": [
+        {
+          "name": "CATCH_JAVA_EXCEPTION",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_TDIE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_TWARN",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_TACTIONFAILURE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_qYI_EG2pEe6k_sZBfMCz5w-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_1",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "\"C:/CustomerWorkspace/Vaxxinova/biquery_bulk.txt\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "\"C:/Users/weebefr/OneDrive - Cronos/Klanten/Vaxxinova/BigQuery/vaxxinova-dwh-8c18bd136cf5.json\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "\"vaxxinova-dwh\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "\"Talend_Metadata\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"TLOGCATCHER_TEMP\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "APPEND",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "\"output\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/CustomerWorkspace/Vaxxinova/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "TLOGCATCHER",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogCatcher_1",
+      "component_type": "tLogCatcher",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_JAVA_EXCEPTION",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_TDIE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_TWARN",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CATCH_TACTIONFAILURE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_2",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace/biquery_bulk.txt\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "\"C:/Users/weebefr/OneDrive - Cronos/Klanten/Vaxxinova/BigQuery/vaxxinova-dwh-8c18bd136cf5.json\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "\"vaxxinova-dwh\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "\"Talend_Metadata\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"TLOGCATCHER_TEMP\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace/key.json\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "vaxxinova_dwh",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "row2",
+      "source": "tBigQueryInput_1",
+      "target": "tLogRow_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row1",
+      "source": "tDBInput_1",
+      "target": "tLogRow_1",
+      "connector_name": "MAIN",
+      "line_style": 0
+    },
+    {
+      "name": "row3",
+      "source": "tLogCatcher_2",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "log_cat",
+      "source": "tMap_1",
+      "target": "tBigQueryOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row4",
+      "source": "tLogCatcher_1",
+      "target": "tBigQueryOutput_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "connection_JDBC_Google_BigQuery_drivers",
+          "type": "id_String",
+          "values": {
+            "Default": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "connection_JDBC_Google_BigQuery_connection_jdbcUrl",
+          "type": "id_String",
+          "values": {
+            "Default": "[CONNECTION_STRING_REDACTED]"
+          }
+        },
+        {
+          "name": "connection_JDBC_Google_BigQuery_connection_userPassword_password",
+          "type": "id_Password",
+          "values": {
+            "Default": ""
+          }
+        },
+        {
+          "name": "connection_JDBC_Google_BigQuery_connection_driverClass",
+          "type": "id_String",
+          "values": {
+            "Default": "com.simba.googlebigquery.jdbc.Driver"
+          }
+        },
+        {
+          "name": "connection_JDBC_Google_BigQuery_connection_userPassword_userId",
+          "type": "id_String",
+          "values": {
+            "Default": "vaxxinova-talend-475"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": ""
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "row3"
+      ],
+      "output_tables": [
+        "log_cat"
+      ],
+      "entries": [
+        {
+          "table_name": "log_cat",
+          "column_name": "moment",
+          "expression": "row3.moment"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "pid",
+          "expression": "row3.pid"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "root_pid",
+          "expression": "row3.root_pid"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "father_pid",
+          "expression": "row3.father_pid"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "project",
+          "expression": "row3.project"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "job",
+          "expression": "row3.job"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "context",
+          "expression": "row3.context"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "priority",
+          "expression": "row3.priority"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "type",
+          "expression": "row3.type"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "origin",
+          "expression": "row3.origin"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "message",
+          "expression": "row3.message"
+        },
+        {
+          "table_name": "log_cat",
+          "column_name": "code",
+          "expression": "row3.code"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString"
+  ],
+  "group": "scratchpad",
+  "subgroup": ""
+}

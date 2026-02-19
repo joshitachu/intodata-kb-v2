@@ -1,0 +1,199 @@
+You are analyzing a Talend integration project. Your task is to produce a **Naming Conventions Analysis** — decode and document the naming patterns used for jobs, components, tables, columns, context variables, and metadata connections. For Vaxxinova specifically, decode the standard pattern: `{REGION}_{SUBSIDIARY}_{LAYER}_{VERSION}`.
+
+## Talend Context
+Naming conventions in Talend integration projects serve as embedded documentation. Consistent naming makes the codebase self-documenting and reveals:
+- **Organizational structure**: Region codes (BRA, ITA, JPN, SAF, USA) and subsidiary codes (VBR, VAX, VJP, VSA, NPL) encode which business unit owns the data
+- **Data layer architecture**: Layer codes (RAW, CLEAN, PUBLISH, STAGING) reveal the data transformation pipeline structure
+- **Job purpose**: Job names encode what the job does and where it sits in the pipeline
+- **Versioning**: Version suffixes (_0.1, _v2) indicate job evolution
+- **Component naming**: Components within a job may follow patterns like `tMSSqlInput_SourceName`, `tMap_TransformLogic`, `tBigQueryOutput_TargetTable`
+- **Metadata naming**: Connection names often encode environment (PROD, TEST) and system (MSSQL_BRA_VBR, BQ_PROJECT_DATASET)
+- **Context variable naming**: Variables follow patterns like `{REGION}_{SUBSIDIARY}_{PARAMETER}` (e.g., `BRA_VBR_Host`, `USA_NPL_Database`)
+
+## Vaxxinova-Specific Patterns
+Based on the Vaxxinova integration project, the standard job naming pattern is:
+**`{REGION}_{SUBSIDIARY}_{LAYER}_{VERSION}`**
+
+### Region Codes
+- **BRA** = Brazil
+- **ITA** = Italy
+- **JPN** = Japan
+- **SAF** = South Africa
+- **USA** = United States
+
+### Subsidiary Codes
+- **VBR** = Vaxxinova Brazil
+- **VAX** = Vaxxinova Italy
+- **VJP** = Vaxxinova Japan
+- **VSA** = Vaxxinova South Africa
+- **NPL** = Newport Labs (USA subsidiary)
+
+### Layer Codes
+- **RAW** = Source extract layer — reads data from source systems with minimal transformation, preserves source format
+- **CLEAN** = Data cleansing and transformation layer — applies validation, standardization, enrichment
+- **PUBLISH** = Final output layer — produces analytics-ready tables with business-friendly schemas
+- **STAGING** = Temporary intermediate layer (if used)
+- **GLOBAL** = Cross-region orchestration jobs that call multiple regional jobs
+
+### Version Pattern
+- **_0.1**, **_v1**, **_v2** = Version suffixes indicating job iterations
+
+### Examples
+- `BRA_VBR_RAW_0.1` = Brazil, Vaxxinova Brazil subsidiary, RAW layer, version 0.1
+- `USA_NPL_CLEAN_0.1` = United States, Newport Labs subsidiary, CLEAN layer, version 0.1
+- `GLOBAL_Orchestrator_0.1` = Cross-region orchestration job, version 0.1
+
+## What to Extract
+
+1. **Detected naming patterns**: For each category (jobs, components, tables, columns, metadata, context variables), identify:
+   - The naming pattern template
+   - Pattern elements (prefix, suffix, separators, codes)
+   - Examples of names that follow the pattern
+   - Pattern adherence rate (what % of names follow the pattern?)
+
+2. **Region/Subsidiary/Layer usage**: For the Vaxxinova pattern:
+   - List all region codes found and their decoded meanings
+   - List all subsidiary codes found and their decoded meanings
+   - List all layer codes found and their decoded meanings
+   - Identify any codes that don't match the known set (e.g., "GER" for Germany if it appears)
+
+3. **Naming violations**: Identify names that deviate from the expected pattern:
+   - Jobs that don't follow `{REGION}_{SUBSIDIARY}_{LAYER}_{VERSION}`
+   - Inconsistent separators (underscores vs camelCase vs spaces)
+   - Missing elements (no region, no layer, no version)
+   - Ambiguous abbreviations (is "BRA" a region or a data source name?)
+   - Generic names (job_1, tMap_2, connection_1) that provide no semantic meaning
+
+4. **Abbreviation glossary**: Decode all abbreviations found:
+   - Region/subsidiary/layer codes (already listed above)
+   - Domain-specific abbreviations in table/column names (e.g., "VW_" for view, "TEMP_" for temporary)
+   - Common suffixes (e.g., "_ID" for identifiers, "_DT" for dates, "_AMT" for amounts)
+
+5. **Consistency analysis**: Measure consistency across the project:
+   - Are region codes always uppercase? Are separators always underscores?
+   - Do all jobs in the same layer use the same layer code, or is there variation (CLEAN vs Clean vs clean)?
+   - Are versioning conventions consistent (_0.1 vs _v1 vs no version)?
+   - Do component names within a job follow a pattern, or are they arbitrary (tMSSqlInput_1 vs tMSSqlInput_Source)?
+
+6. **Naming recommendations**: Suggest improvements:
+   - Standardize deviations to match the primary pattern
+   - Replace generic names with descriptive names
+   - Document any intentional exceptions (e.g., GLOBAL jobs don't have a region code by design)
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "naming_patterns": {
+    "jobs": {
+      "pattern": "{REGION}_{SUBSIDIARY}_{LAYER}_{VERSION}",
+      "pattern_elements": ["REGION (3 chars)", "SUBSIDIARY (3 chars)", "LAYER (3-7 chars)", "VERSION (1-4 chars)"],
+      "separator": "_",
+      "examples_conforming": ["BRA_VBR_RAW_0.1", "USA_NPL_CLEAN_0.1", "ITA_VAX_PUBLISH_0.1"],
+      "examples_non_conforming": ["Global_Master", "test_job", "BRA_RAW"],
+      "adherence_rate": 0.85,
+      "total_jobs_analyzed": 120
+    },
+    "components": {
+      "pattern": "{componentType}_{purpose or sequence}",
+      "examples_conforming": ["tMSSqlInput_SourceOrders", "tMap_CleanData", "tBigQueryOutput_TargetTable"],
+      "examples_non_conforming": ["tMSSqlInput_1", "tMap_2"],
+      "adherence_rate": 0.60,
+      "recommendation": "Replace sequence numbers (tMap_1) with semantic names (tMap_CleanCustomers)"
+    },
+    "metadata_connections": {
+      "pattern": "{SYSTEM_TYPE}_{REGION}_{SUBSIDIARY} or {SYSTEM_TYPE}_{PROJECT}_{DATASET}",
+      "examples_conforming": ["MSSQL_BRA_VBR", "BQ_vaxxinova_raw_bra_vbr"],
+      "adherence_rate": 0.90
+    },
+    "context_variables": {
+      "pattern": "{REGION}_{SUBSIDIARY}_{PARAMETER} or context.{parameter}",
+      "examples_conforming": ["BRA_VBR_Host", "USA_NPL_Database", "context.MaxRetries"],
+      "adherence_rate": 0.75
+    },
+    "tables": {
+      "pattern": "Various — no single pattern detected",
+      "common_prefixes": ["VW_" (views), "TEMP_" (temp tables), "DIM_" (dimension tables), "FACT_" (fact tables)],
+      "common_suffixes": ["_HISTORY", "_STAGING", "_CLEAN"],
+      "adherence_rate": null,
+      "recommendation": "Establish a standard naming convention for tables across all systems"
+    },
+    "columns": {
+      "pattern": "PascalCase or snake_case",
+      "common_suffixes": ["_ID" (identifiers), "_DT" (dates), "_AMT" (amounts), "_FLG" (flags), "_CD" (codes)"],
+      "adherence_rate": null,
+      "inconsistency": "MSSQL uses PascalCase (CustomerID, OrderDate), BigQuery uses snake_case (customer_id, order_date)"
+    }
+  },
+  "region_codes": {
+    "BRA": {"meaning": "Brazil", "usage_count": 35, "jobs": ["BRA_VBR_RAW_0.1", "BRA_VBR_CLEAN_0.1", "..."]},
+    "ITA": {"meaning": "Italy", "usage_count": 28, "jobs": ["ITA_VAX_RAW_0.1", "..."]},
+    "JPN": {"meaning": "Japan", "usage_count": 22, "jobs": ["JPN_VJP_RAW_0.1", "..."]},
+    "SAF": {"meaning": "South Africa", "usage_count": 18, "jobs": ["SAF_VSA_RAW_0.1", "..."]},
+    "USA": {"meaning": "United States", "usage_count": 30, "jobs": ["USA_NPL_RAW_0.1", "..."]}
+  },
+  "subsidiary_codes": {
+    "VBR": {"meaning": "Vaxxinova Brazil", "region": "BRA", "usage_count": 35},
+    "VAX": {"meaning": "Vaxxinova Italy", "region": "ITA", "usage_count": 28},
+    "VJP": {"meaning": "Vaxxinova Japan", "region": "JPN", "usage_count": 22},
+    "VSA": {"meaning": "Vaxxinova South Africa", "region": "SAF", "usage_count": 18},
+    "NPL": {"meaning": "Newport Labs", "region": "USA", "usage_count": 30}
+  },
+  "layer_codes": {
+    "RAW": {"meaning": "Source extract layer", "usage_count": 65, "description": "Reads from source systems, minimal transformation"},
+    "CLEAN": {"meaning": "Data cleansing layer", "usage_count": 60, "description": "Applies validation, standardization, enrichment"},
+    "PUBLISH": {"meaning": "Analytics-ready output layer", "usage_count": 55, "description": "Final tables for reporting and analytics"},
+    "GLOBAL": {"meaning": "Cross-region orchestration", "usage_count": 5, "description": "Master jobs that call multiple regional jobs"}
+  },
+  "version_patterns": [
+    {"pattern": "_0.1", "usage_count": 80, "description": "Decimal version (0.1, 0.2, 1.0)"},
+    {"pattern": "_v1", "usage_count": 25, "description": "Version with 'v' prefix (v1, v2, v3)"},
+    {"pattern": "no version", "usage_count": 15, "description": "Jobs with no version suffix"}
+  ],
+  "naming_violations": [
+    {
+      "name": "Global_Master",
+      "category": "job",
+      "violation": "Uses camelCase instead of UPPERCASE_WITH_UNDERSCORES, missing version suffix",
+      "expected": "GLOBAL_MASTER_0.1",
+      "recommendation": "Rename to follow standard pattern"
+    },
+    {
+      "name": "test_job",
+      "category": "job",
+      "violation": "Generic name with no region, subsidiary, layer, or version — provides no semantic information",
+      "recommendation": "Rename to include region/subsidiary/layer or delete if obsolete"
+    },
+    {
+      "name": "BRA_RAW",
+      "category": "job",
+      "violation": "Missing subsidiary code — should be BRA_{SUBSIDIARY}_RAW_0.1",
+      "recommendation": "Add subsidiary code (e.g., BRA_VBR_RAW_0.1)"
+    }
+  ],
+  "abbreviation_glossary": [
+    {"abbreviation": "VW_", "meaning": "View (SQL view object)", "usage": "Table name prefix"},
+    {"abbreviation": "TEMP_", "meaning": "Temporary table", "usage": "Table name prefix"},
+    {"abbreviation": "DIM_", "meaning": "Dimension table (data warehouse)", "usage": "Table name prefix"},
+    {"abbreviation": "FACT_", "meaning": "Fact table (data warehouse)", "usage": "Table name prefix"},
+    {"abbreviation": "_ID", "meaning": "Identifier column", "usage": "Column name suffix"},
+    {"abbreviation": "_DT", "meaning": "Date column", "usage": "Column name suffix"},
+    {"abbreviation": "_AMT", "meaning": "Amount/monetary value column", "usage": "Column name suffix"},
+    {"abbreviation": "_FLG", "meaning": "Boolean flag column", "usage": "Column name suffix"},
+    {"abbreviation": "_CD", "meaning": "Code column (status code, type code)", "usage": "Column name suffix"}
+  ],
+  "consistency_score": 8.2,
+  "consistency_assessment": "GOOD — Job naming is highly consistent with the {REGION}_{SUBSIDIARY}_{LAYER}_{VERSION} pattern. Component naming is less consistent (mix of semantic and sequence-based names). Table and column naming varies by source system (MSSQL vs BigQuery conventions).",
+  "recommendations": [
+    "Standardize version suffix format across all jobs — use _0.1 decimal format consistently, deprecate _v1 format",
+    "Rename all generic component names (tMap_1, tMSSqlInput_2) to semantic names (tMap_CleanCustomers, tMSSqlInput_SourceOrders)",
+    "Establish a table naming convention that spans all source and target systems — consider {LAYER}_{REGION}_{ENTITY} pattern for BigQuery",
+    "Standardize column naming to snake_case across all systems for consistency (customer_id, not CustomerID or customerId)",
+    "Document the abbreviation glossary in a central README so all developers use the same codes",
+    "Rename or delete test/debug jobs (test_job, temp_test) that don't follow the naming convention",
+    "Add missing version suffixes to jobs that lack them — helps track job evolution over time"
+  ]
+}
+```
+
+Be thorough. Every job name, every component name, every deviation is part of the picture. Naming conventions are critical for maintainability — document them well.

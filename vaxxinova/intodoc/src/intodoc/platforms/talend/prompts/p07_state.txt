@@ -1,0 +1,177 @@
+You are analyzing a Talend integration project. Your task is to produce a **State & Side Effects Analysis** — a thorough identification of every temporary file, staging table, global variable, and persistent side effect produced by the jobs in this chunk, including cleanup gaps that could cause issues on re-runs or failures.
+
+## Talend Context
+Talend jobs can create various forms of state and side effects that persist beyond the job's execution:
+- **Temporary files**: Jobs often write intermediate data to local or network files (tFileOutputDelimited, tFileOutputExcel) during processing. These should be cleaned up in tPostJob but often are not.
+- **Staging tables**: Jobs may write to intermediate/staging database tables (e.g., `stg_*`, `tmp_*`, `_temp_*`) that are used by subsequent jobs. These need to be truncated or dropped after use.
+- **Global variables**: Talend components expose globalMap variables (e.g., `((Integer)globalMap.get("tMSSqlInput_1_NB_LINE"))`) that hold row counts, error counts, file paths, and other runtime state. These persist within a job execution and can be passed between tRunJob calls.
+- **Context variables modified at runtime**: Jobs can modify context variables during execution using tContextLoad or tSetGlobalVar. These modified values can persist if passed to child jobs.
+- **tSetGlobalVar**: Explicitly sets a globalMap variable to a value, which subsequent components can reference.
+- **Buffer files**: tMap, tSortRow, tAggregateRow and other components may create temporary buffer files on disk for large datasets. These are usually auto-cleaned but can be orphaned if the job crashes.
+- **Database locks**: Long-running transactions can hold locks on tables. If a job fails mid-transaction without rollback, locks may persist.
+- **File locks**: Jobs that open files for writing may hold file locks. If the job crashes, these locks may persist on Windows systems.
+- **tCreateTemporaryFile**: Explicitly creates a temp file that should be cleaned up later.
+- **cleanup_temp_file_storage**: A Talend utility method/pattern for cleaning up temporary files at the end of a job. Check if it is present in tPostJob or tFinally blocks.
+- **tFileDelete**: Component that deletes files. Should be present in tPostJob to clean up temp files.
+- **State in external systems**: Jobs may create/modify state in external systems (e.g., updating a "last_sync_date" column, setting status flags, creating audit log entries) that persist after the job completes.
+
+## What to Extract
+
+1. **Temporary files**: For each job, identify:
+   - Every file write operation (tFileOutputDelimited, tFileOutputExcel, tFileOutputJSON, etc.)
+   - The file path (is it hardcoded or from a context variable?)
+   - Whether the file is cleaned up after use (look for tFileDelete in tPostJob)
+   - What happens to the file if the job fails mid-execution
+
+2. **Staging tables**: Identify:
+   - Database tables that appear to be temporary/staging (naming conventions: stg_, tmp_, temp_, _staging, _buffer)
+   - Tables that are truncated at the start of a job (indicating they are staging)
+   - Tables written to in one job and read from in another (cross-job dependencies)
+   - Whether staging tables are cleaned up after the data is consumed
+
+3. **Global variables (globalMap)**: For each job:
+   - Which globalMap variables are SET (via tSetGlobalVar, tFlowToIterate, or component outputs)
+   - Which globalMap variables are READ by subsequent components
+   - Which globalMap variables are passed to child jobs via tRunJob
+   - Any globalMap variables that control execution flow (used in RunIf conditions or tJava if-statements)
+
+4. **Context variable mutations**: Identify:
+   - Jobs that modify context variables at runtime (tContextLoad, tSetGlobalVar with context.*)
+   - Whether these mutations affect child jobs called later
+   - Whether the mutations are documented or commented
+
+5. **Cleanup analysis**: For each job:
+   - Does tPostJob exist? What cleanup operations does it perform?
+   - Does tPostJob run on BOTH success and failure? (tPostJob always runs unless the JVM crashes)
+   - Are there cleanup gaps — files or tables created but never cleaned up?
+   - Is cleanup_temp_file_storage called?
+
+6. **Persistent side effects**: Identify all changes that persist in external systems after the job completes:
+   - Database rows inserted/updated/deleted
+   - Files created on file systems
+   - Audit log entries created
+   - Status flags or watermark values updated (e.g., "last_processed_date")
+   - Email notifications sent
+
+7. **Re-run safety**: Assess what happens if each job is run twice:
+   - Are writes idempotent (e.g., TRUNCATE before INSERT, or UPSERT)?
+   - Could a re-run cause duplicate data?
+   - Could a re-run fail because temp files already exist or staging tables have stale data?
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "jobs": [
+    {
+      "job_name": "BRA_VBR_RAW_0.1",
+      "location": "BRA/VBR/BRA_VBR_RAW_0.1.item",
+      "temporary_files": [
+        {
+          "component": "tFileOutputDelimited_1",
+          "file_path": "context.temp_dir + '/bra_vbr_sales_staging.csv'",
+          "purpose": "Staging file for bulk load to BigQuery",
+          "cleaned_up": true,
+          "cleanup_component": "tFileDelete_1 in tPostJob",
+          "cleanup_on_failure": true,
+          "risk": null
+        },
+        {
+          "component": "tFileOutputDelimited_2",
+          "file_path": "/tmp/error_log_bra_vbr.csv",
+          "purpose": "Error log for rejected rows",
+          "cleaned_up": false,
+          "cleanup_component": null,
+          "cleanup_on_failure": false,
+          "risk": "Error log accumulates across runs — disk space risk over time"
+        }
+      ],
+      "staging_tables": [
+        {
+          "table": "stg_bra_vbr_sales",
+          "database": "BigQuery raw_bra_vbr",
+          "created_by": "tBigQueryOutput_1",
+          "consumed_by": "BRA_VBR_CLEAN_0.1 job",
+          "truncated_before_write": true,
+          "cleaned_up_after_consumption": false,
+          "risk": "Staging table retains data indefinitely after CLEAN job runs"
+        }
+      ],
+      "global_variables": [
+        {
+          "variable": "tMSSqlInput_1_NB_LINE",
+          "set_by": "tMSSqlInput_1 (automatic)",
+          "read_by": ["tJava_1 (row count validation)"],
+          "passed_to_child": false,
+          "controls_flow": false,
+          "description": "Number of rows read from MSSQL source"
+        },
+        {
+          "variable": "processing_date",
+          "set_by": "tSetGlobalVar_1",
+          "read_by": ["tMap_1 (used in output column)", "tRunJob_1 (passed as context)"],
+          "passed_to_child": true,
+          "controls_flow": false,
+          "description": "Current processing date stamp used for partitioning"
+        }
+      ],
+      "context_mutations": [
+        {
+          "mechanism": "tContextLoad_1",
+          "source": "properties file at /config/bra_vbr.properties",
+          "variables_affected": ["db_host", "db_port", "db_name"],
+          "affects_child_jobs": true,
+          "documented": false
+        }
+      ],
+      "cleanup_assessment": {
+        "has_post_job": true,
+        "post_job_operations": ["tFileDelete_1: delete staging CSV", "tMSSqlClose_1: close connection"],
+        "cleanup_temp_file_storage_called": false,
+        "cleanup_gaps": ["Error log file never deleted", "Global variable processing_date not reset"],
+        "runs_on_failure": true
+      },
+      "persistent_side_effects": [
+        {
+          "type": "database_write",
+          "target": "BigQuery raw_bra_vbr.sales_orders",
+          "operation": "TRUNCATE + INSERT",
+          "reversible": false,
+          "description": "Replaces all rows in the target table with fresh data from source"
+        },
+        {
+          "type": "audit_log",
+          "target": "BigQuery audit.job_runs",
+          "operation": "INSERT",
+          "reversible": false,
+          "description": "Logs job execution timestamp and row counts"
+        }
+      ],
+      "rerun_safety": {
+        "is_idempotent": true,
+        "rationale": "Uses TRUNCATE before INSERT — re-running produces the same result",
+        "risks": ["Audit log will have duplicate entry for the same date if re-run"]
+      }
+    }
+  ],
+  "cross_job_state_dependencies": [
+    {
+      "producing_job": "BRA_VBR_RAW_0.1",
+      "consuming_job": "BRA_VBR_CLEAN_0.1",
+      "shared_state": "BigQuery stg_bra_vbr_sales table",
+      "coupling_type": "tight — CLEAN job expects RAW to have populated the staging table",
+      "failure_impact": "If RAW fails mid-write, CLEAN will process partial/stale data"
+    }
+  ],
+  "cleanup_recommendations": [
+    {
+      "job": "BRA_VBR_RAW_0.1",
+      "recommendation": "Add tFileDelete for error log file in tPostJob",
+      "severity": "low",
+      "rationale": "Error log file grows unbounded across runs"
+    }
+  ]
+}
+```
+
+Be thorough. Trace every file write, every globalMap.put, every staging table. Assume any state not explicitly cleaned up WILL cause problems eventually.

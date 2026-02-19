@@ -1,0 +1,433 @@
+"""MCP server with 8 tools for code intelligence orchestration."""
+
+from __future__ import annotations
+
+import datetime
+import json
+import logging
+from pathlib import Path
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
+from mcp_server.config import config
+from mcp_server.db.session import async_session_factory
+from mcp_server.services.log_manager import LogManager
+from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.services.rag_bridge import RagBridge
+from mcp_server.services.scanner_service import ScannerService
+
+logger = logging.getLogger(__name__)
+
+server = Server("intodoc")
+log_manager = LogManager()
+scanner_service = ScannerService(log_manager=log_manager)
+rag_bridge = RagBridge(log_manager=log_manager)
+
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="add_repo",
+            description=(
+                "Register a project for scanning. Accepts a local path, git URL, "
+                "or 'zip' (for previously uploaded ZIPs). Optionally triggers first scan."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Git URL, local path, or 'zip'",
+                    },
+                    "project_id": {
+                        "type": "string",
+                        "description": "Unique project identifier (e.g. 'vaxxinova')",
+                    },
+                    "platform": {
+                        "type": "string",
+                        "description": "Integration platform (default: talend)",
+                        "default": "talend",
+                    },
+                },
+                "required": ["url", "project_id"],
+            },
+        ),
+        Tool(
+            name="fetch_json",
+            description=(
+                "Returns cached scan JSON for a project. Use section parameter to "
+                "request specific parts: 'all' (default), 'meta', 'manifest', "
+                "'connections', 'contexts', 'jobs/{group}'"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "section": {
+                        "type": "string",
+                        "description": (
+                            "Section to fetch: 'all', 'meta', 'manifest', "
+                            "'connections', 'contexts', 'jobs/{group}'"
+                        ),
+                        "default": "all",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="trigger_scan",
+            description=(
+                "Runs `intodoc scan` subprocess for a project, updates cache. "
+                "Returns scan summary."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "force": {
+                        "type": "boolean",
+                        "description": "Force re-scan even if cache exists",
+                        "default": False,
+                    },
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="get_scan_status",
+            description=(
+                "Returns last scan time, cache age, job count, and current status "
+                "for a project."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="insert_to_rag",
+            description=(
+                "Push documents to the RAG pipeline for vector indexing. "
+                "If docs list provided, pushes those. Otherwise reads .md files "
+                "from the project output directory."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "docs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["filename", "content"],
+                        },
+                        "description": "Optional list of docs to push directly",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="list_projects",
+            description="Returns all registered projects with status, last scan time, job/doc counts.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="get_chunks",
+            description=(
+                "Returns chunk definitions for a project's scan data. "
+                "Each chunk is an LLM-sized group of jobs (~80K tokens). "
+                "Returns chunk_id, group, job_count, job_names, token_estimate "
+                "for each chunk. Use fetch_chunk to load actual job data."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="fetch_chunk",
+            description=(
+                "Returns full job data for a specific chunk. Includes jobs, "
+                "related connections, contexts, routines, and filtered manifest. "
+                "Use get_chunks first to see available chunk IDs."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "chunk_id": {
+                        "type": "string",
+                        "description": (
+                            "Chunk ID from get_chunks (e.g. 'DEU_all', 'BRA_0')"
+                        ),
+                    },
+                },
+                "required": ["project_id", "chunk_id"],
+            },
+        ),
+    ]
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    try:
+        result = await _dispatch(name, arguments)
+        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+    except Exception as e:
+        logger.error(f"Tool {name} failed: {e}")
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+
+
+async def _dispatch(name: str, args: dict) -> dict:
+    # Strip whitespace from project_id (MCP args bypass Pydantic validation)
+    if "project_id" in args and isinstance(args["project_id"], str):
+        args["project_id"] = args["project_id"].strip()
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+
+        if name == "add_repo":
+            return await _add_repo(registry, db, args)
+        elif name == "fetch_json":
+            return await _fetch_json(registry, args)
+        elif name == "trigger_scan":
+            return await _trigger_scan(registry, db, args)
+        elif name == "get_scan_status":
+            return await _get_scan_status(registry, args)
+        elif name == "insert_to_rag":
+            return await _insert_to_rag(registry, db, args)
+        elif name == "list_projects":
+            return await _list_projects(registry)
+        elif name == "get_chunks":
+            return await _get_chunks(registry, args)
+        elif name == "fetch_chunk":
+            return await _fetch_chunk(registry, args)
+        else:
+            return {"error": f"Unknown tool: {name}"}
+
+
+async def _add_repo(registry: ProjectRegistry, db, args: dict) -> dict:
+    url = args["url"]
+    project_id = args["project_id"]
+    platform = args.get("platform", "talend")
+
+    # Determine source type and local path
+    path = Path(url)
+    if path.exists():
+        source_type = "local"
+        local_path = str(path.resolve())
+        repo_url = None
+    elif url.startswith(("http://", "https://", "git@")):
+        # Clone the repo
+        source_type = "git"
+        repo_url = url
+        clone_dir = config.repos_dir / project_id
+        if not clone_dir.exists():
+            import subprocess
+            subprocess.run(
+                ["git", "clone", url, str(clone_dir)],
+                check=True,
+                capture_output=True,
+            )
+        local_path = str(clone_dir)
+    elif url == "zip":
+        source_type = "zip"
+        local_path = str(config.repos_dir / project_id)
+        repo_url = None
+        if not Path(local_path).exists():
+            return {"error": f"No unpacked ZIP found at {local_path}. Upload via REST endpoint first."}
+    else:
+        return {"error": f"Invalid URL/path: {url}"}
+
+    project = await registry.add_project(
+        project_id=project_id,
+        local_path=local_path,
+        repo_url=repo_url,
+        platform=platform,
+        source_type=source_type,
+    )
+    await db.commit()
+
+    return {
+        "status": "registered",
+        "project_id": project.id,
+        "local_path": project.local_path,
+        "platform": project.platform,
+        "source_type": project.source_type,
+    }
+
+
+async def _fetch_json(registry: ProjectRegistry, args: dict) -> dict:
+    project_id = args["project_id"]
+    section = args.get("section", "all")
+
+    project = await registry.get_project(project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+
+    output_dir = project.output_dir or str(config.intodoc_output_dir)
+    return scanner_service.read_scan_json(output_dir, section=section)
+
+
+async def _trigger_scan(registry: ProjectRegistry, db, args: dict) -> dict:
+    project_id = args["project_id"]
+    project = await registry.get_project(project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+
+    await registry.update_status(project_id, "scanning")
+    run = await registry.create_scan_run(project_id, triggered_by="mcp")
+    await db.commit()
+
+    # Use per-project output directory to avoid overwriting scans
+    project_output_dir = config.data_dir / "outputs" / project_id
+    
+    log_manager.reset_log_file(project_id)
+    result = await scanner_service.run_scan(
+        project_id=project_id,
+        repo_path=project.local_path,
+        platform=project.platform,
+        output_dir=str(project_output_dir),
+    )
+
+    if result["success"]:
+        await registry.update_scan_result(
+            project_id,
+            scan_result_path=result["scan_result_path"],
+            output_dir=result["output_dir"],
+            job_count=result["job_count"],
+        )
+        await registry.complete_scan_run(
+            run.id, status="completed", job_count=result["job_count"]
+        )
+    else:
+        await registry.update_status(project_id, "error", error_message=result.get("error"))
+        await registry.complete_scan_run(run.id, status="failed")
+
+    await db.commit()
+
+    return {
+        "project_id": project_id,
+        "status": "completed" if result["success"] else "failed",
+        "job_count": result["job_count"],
+        "scan_file": result.get("scan_result_path"),
+    }
+
+
+async def _get_scan_status(registry: ProjectRegistry, args: dict) -> dict:
+    project_id = args["project_id"]
+    project = await registry.get_project(project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+
+    cache_age = None
+    if project.last_scan_at:
+        delta = datetime.datetime.now(datetime.timezone.utc) - project.last_scan_at
+        cache_age = round(delta.total_seconds() / 60, 1)
+
+    return {
+        "project_id": project.id,
+        "status": project.status,
+        "last_scan_at": str(project.last_scan_at) if project.last_scan_at else None,
+        "cache_age_minutes": cache_age,
+        "job_count": project.job_count,
+        "doc_count": project.doc_count,
+        "error_message": project.error_message,
+    }
+
+
+async def _insert_to_rag(registry: ProjectRegistry, db, args: dict) -> dict:
+    project_id = args["project_id"]
+    docs = args.get("docs")
+
+    project = await registry.get_project(project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+
+    output_dir = project.output_dir or str(config.intodoc_output_dir)
+    result = await rag_bridge.push_docs(
+        project_id=project_id,
+        docs=docs,
+        output_dir=output_dir if not docs else None,
+    )
+
+    if result["pushed"] > 0:
+        await registry.update_rag_push(project_id)
+        await db.commit()
+
+    return {
+        "project_id": project_id,
+        "pushed": result["pushed"],
+        "errors": result["errors"],
+    }
+
+
+async def _list_projects(registry: ProjectRegistry) -> dict:
+    projects = await registry.list_projects()
+    return {
+        "projects": [
+            {
+                "id": p.id,
+                "display_name": p.display_name,
+                "platform": p.platform,
+                "status": p.status,
+                "source_type": p.source_type,
+                "last_scan_at": str(p.last_scan_at) if p.last_scan_at else None,
+                "job_count": p.job_count,
+                "doc_count": p.doc_count,
+            }
+            for p in projects
+        ],
+        "total": len(projects),
+    }
+
+
+async def _get_chunks(registry: ProjectRegistry, args: dict) -> dict:
+    project_id = args["project_id"]
+    project = await registry.get_project(project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+
+    output_dir = project.output_dir or str(config.intodoc_output_dir)
+    return scanner_service.get_chunk_definitions(output_dir)
+
+
+async def _fetch_chunk(registry: ProjectRegistry, args: dict) -> dict:
+    project_id = args["project_id"]
+    chunk_id = args["chunk_id"]
+    project = await registry.get_project(project_id)
+    if not project:
+        return {"error": f"Project not found: {project_id}"}
+
+    output_dir = project.output_dir or str(config.intodoc_output_dir)
+    return scanner_service.read_chunk_data(output_dir, chunk_id)
+
+
+def run_mcp_server() -> None:
+    """Entry point for MCP stdio server."""
+    import asyncio
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(_run())
+
+
+async def _run() -> None:
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())

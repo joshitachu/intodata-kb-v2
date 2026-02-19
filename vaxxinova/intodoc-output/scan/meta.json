@@ -1,0 +1,13 @@
+{
+  "platform": "talend",
+  "repo_root": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\vaxxinova\\mcp-server\\data\\repos\\TESTClAUDE",
+  "scanned_at": "2026-02-19 14:50:23.117641",
+  "stats": {
+    "total_files_walked": 1641,
+    "total_files_indexed": 1115,
+    "total_jobs": 257,
+    "total_connections": 12,
+    "total_contexts": 31,
+    "total_routines": 15
+  }
+}

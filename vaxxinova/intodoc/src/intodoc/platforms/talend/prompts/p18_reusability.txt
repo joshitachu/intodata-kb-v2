@@ -1,0 +1,414 @@
+You are analyzing a Talend integration project. Your task is to produce a **Reusability & Refactoring Analysis** — identify duplicated logic, opportunities to extract shared components (routines, joblets, metadata), code smells, unused assets, and create a refactoring roadmap to improve maintainability and reduce technical debt.
+
+## Talend Context
+Talend projects often accumulate technical debt as they grow:
+- **Duplicated tMap expressions**: The same transformation logic (TRIM, UPCASE, date formatting, null handling) repeated across multiple jobs. This violates DRY (Don't Repeat Yourself) and makes maintenance harder — if the logic changes, you must update it in many places.
+- **Similar job structures**: Regional jobs (BRA_VBR_RAW, ITA_VAX_RAW, etc.) often have nearly identical structure with only connection names and table names different. These could be replaced with a single parameterized job.
+- **Joblets**: Reusable components that encapsulate a set of components into a single unit. If you see the same component pattern repeated (e.g., tJava -> tMap -> tBigQueryOutput), that's a joblet candidate.
+- **Routines**: Shared Java code libraries. Common use cases:
+  - Data validation: `Routines.DataValidation.isValidEmail(String)`
+  - Data cleansing: `Routines.DataCleansing.cleanPhoneNumber(String)`, `Routines.DataCleansing.trimAndUppercase(String)`
+  - Data masking: `Routines.DataMasking.maskSSN(String)`
+  - Calculation formulas: `Routines.BusinessLogic.calculateDiscountedPrice(BigDecimal, BigDecimal)`
+  - Date utilities: `Routines.DateUtils.getFirstDayOfMonth(Date)`, `Routines.DateUtils.isWeekend(Date)`
+- **Metadata**: Reusable connection definitions, file schemas, database schemas. REPOSITORY mode centralizes metadata — components reference it instead of duplicating definitions (BUILT_IN mode).
+- **Context variables**: Parameterize jobs to make them reusable across environments (PROD, TEST) or regions (BRA, ITA, etc.).
+- **Code smells**: Anti-patterns that indicate poor design:
+  - Magic numbers/strings: hardcoded values like "A" for Active, "2020-01-01" for cutoff date — should be context variables or constants
+  - God jobs: jobs with 50+ components doing too many things — should be split
+  - Copy-paste code: exact duplicates of component configurations or tMap expressions across jobs
+  - Unused components: components with no connections (orphans) or test/debug components left in production code
+  - Dead code: jobs or routines that are never called
+  - Inconsistent naming: mix of naming conventions within a single project
+
+## What to Extract
+
+1. **Duplicated tMap expressions**: For every tMap expression that appears in multiple jobs:
+   - Expression text
+   - What it does (plain English)
+   - Where it appears (job names, component names)
+   - How many times it's duplicated
+   - Recommended refactoring (extract to routine, parameterize, etc.)
+
+2. **Duplicated job structures**: Identify sets of jobs with similar structure:
+   - Pattern description (what the jobs do)
+   - Jobs that follow this pattern
+   - What varies between them (connection names, table names, parameters)
+   - Recommended refactoring (parameterized job, joblet, etc.)
+
+3. **Joblet candidates**: Identify component patterns that are repeated and could be extracted into joblets:
+   - Component sequence (e.g., tFileExist -> tJava -> tLogRow)
+   - Where this pattern appears
+   - What the pattern does
+   - How much duplication would be eliminated
+
+4. **Routine candidates**: Identify Java code that should be extracted into routines:
+   - Code snippet
+   - Where it appears (tJava, tJavaRow, tMap expressions)
+   - What it does
+   - How many times it's duplicated
+   - Proposed routine signature (e.g., `Routines.DataCleansing.cleanCustomerName(String name)`)
+
+5. **Shared components usage**: For existing routines and joblets:
+   - Which routines/joblets exist?
+   - How often are they used?
+   - Are there routines that are defined but never used (dead code)?
+   - Are there opportunities to use existing routines instead of duplicating logic?
+
+6. **Metadata centralization**: For connections and schemas:
+   - What % of components use REPOSITORY metadata vs BUILT_IN?
+   - Are there duplicate connection definitions (same database, different .item files)?
+   - Are there duplicate schema definitions?
+
+7. **Code smells**: Identify anti-patterns:
+   - Hardcoded values that should be parameterized
+   - Jobs that are too large (>30-50 components)
+   - Orphaned components (no connections)
+   - Unused jobs (never called by tRunJob or scheduler)
+   - Inconsistent naming (jobs that don't follow the standard pattern)
+   - Magic numbers and strings
+
+8. **Reusability score**: Rate the project's reusability (1-10) based on:
+   - Routine usage (are common operations in routines or duplicated in jobs?)
+   - Joblet usage (are repeated patterns extracted?)
+   - Metadata centralization (REPOSITORY vs BUILT_IN)
+   - Code duplication level
+
+9. **Refactoring roadmap**: Prioritized list of refactoring opportunities:
+   - What to refactor
+   - Why (benefit)
+   - Effort (low, medium, high)
+   - Priority (critical, high, medium, low)
+   - Risk (low, medium, high — could refactoring break something?)
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "duplicated_tmap_expressions": [
+    {
+      "expression": "StringHandling.TRIM(StringHandling.UPCASE(row1.CustomerName))",
+      "description": "Trim whitespace and convert customer name to uppercase",
+      "appears_in": [
+        "BRA_VBR_CLEAN_0.1 / tMap_1",
+        "ITA_VAX_CLEAN_0.1 / tMap_1",
+        "SAF_VSA_CLEAN_0.1 / tMap_1",
+        "USA_NPL_CLEAN_0.1 / tMap_2"
+      ],
+      "duplication_count": 4,
+      "recommended_refactoring": {
+        "approach": "Extract to routine",
+        "routine_signature": "public static String cleanCustomerName(String name)",
+        "routine_body": "if (name == null) return null; return StringHandling.UPCASE(StringHandling.TRIM(name));",
+        "usage_example": "Routines.DataCleansing.cleanCustomerName(row1.CustomerName)",
+        "effort": "LOW",
+        "benefit": "Single source of truth for customer name cleansing — if logic changes (e.g., add special character removal), update once instead of 4 times"
+      }
+    },
+    {
+      "expression": "row1.Amount != null ? row1.Amount : BigDecimal.ZERO",
+      "description": "Replace null amounts with zero",
+      "appears_in": [
+        "BRA_VBR_RAW_0.1 / tMap_1",
+        "ITA_VAX_RAW_0.1 / tMap_1",
+        "JPN_VJP_RAW_0.1 / tMap_1",
+        "SAF_VSA_RAW_0.1 / tMap_1",
+        "USA_NPL_RAW_0.1 / tMap_1"
+      ],
+      "duplication_count": 5,
+      "recommended_refactoring": {
+        "approach": "Extract to routine or use default value in schema",
+        "routine_signature": "public static BigDecimal coalesce(BigDecimal value, BigDecimal defaultValue)",
+        "usage_example": "Routines.NumberUtils.coalesce(row1.Amount, BigDecimal.ZERO)",
+        "effort": "LOW",
+        "benefit": "Reusable null-handling logic for all numeric fields"
+      }
+    }
+  ],
+  "duplicated_job_structures": [
+    {
+      "pattern_id": "PATTERN-001",
+      "pattern_name": "Regional RAW layer: MSSQL -> BigQuery",
+      "pattern_description": "Read from regional MSSQL database -> tMap renames columns and cleans data -> write to BigQuery RAW dataset",
+      "jobs_following_pattern": [
+        "BRA_VBR_RAW_0.1",
+        "ITA_VAX_RAW_0.1",
+        "SAF_VSA_RAW_0.1",
+        "USA_NPL_RAW_0.1"
+      ],
+      "duplication_count": 4,
+      "what_varies": [
+        "Source connection name (BRA_VBR_MSSQL, ITA_VAX_MSSQL, etc.)",
+        "Source table name (dbo.VW_SalesOrders in different databases)",
+        "Target dataset name (raw_bra_vbr, raw_ita_vax, etc.)",
+        "Context variables (BRA_VBR_Host, ITA_VAX_Host, etc.)"
+      ],
+      "recommended_refactoring": {
+        "approach": "Create single parameterized job",
+        "new_job_name": "GENERIC_RAW_MSSQL_to_BigQuery_0.1",
+        "parameters": [
+          "context.Region (BRA, ITA, SAF, USA)",
+          "context.Subsidiary (VBR, VAX, VSA, NPL)",
+          "context.SourceConnection (MSSQL connection name)",
+          "context.SourceTable (dbo.VW_SalesOrders)",
+          "context.TargetDataset (raw_bra_vbr, raw_ita_vax, etc.)",
+          "context.TargetTable (sales_orders)"
+        ],
+        "effort": "MEDIUM — requires refactoring 4 jobs into 1 parameterized job and updating orchestration to pass parameters",
+        "benefit": "Reduces 4 jobs to 1 — easier to maintain (bug fixes apply to all regions), easier to add new regions (just add new context parameter set)",
+        "risk": "MEDIUM — must test thoroughly to ensure parameterized job works for all regions"
+      }
+    }
+  ],
+  "joblet_candidates": [
+    {
+      "candidate_id": "JOBLET-001",
+      "component_sequence": "tPreJob -> tJava (send start email) -> [main job] -> tPostJob -> tJava (send completion email)",
+      "appears_in": [
+        "BRA_VBR_RAW_0.1",
+        "BRA_VBR_CLEAN_0.1",
+        "BRA_VBR_PUBLISH_0.1",
+        "ITA_VAX_RAW_0.1",
+        "ITA_VAX_CLEAN_0.1"
+      ],
+      "duplication_count": 5,
+      "pattern_description": "Email notification pattern: send email when job starts, send email when job completes (success or failure)",
+      "recommended_joblet": {
+        "joblet_name": "EmailNotification",
+        "inputs": ["job_name", "status (START/SUCCESS/FAILURE)", "recipient_email"],
+        "outputs": [],
+        "effort": "LOW",
+        "benefit": "Standardizes email notification across all jobs — easier to change email template or add CC recipients"
+      }
+    },
+    {
+      "candidate_id": "JOBLET-002",
+      "component_sequence": "tBigQueryInput -> tMap (filter by date range) -> tBigQueryOutput",
+      "appears_in": [
+        "BRA_VBR_CLEAN_0.1",
+        "ITA_VAX_CLEAN_0.1",
+        "USA_NPL_CLEAN_0.1"
+      ],
+      "duplication_count": 3,
+      "pattern_description": "Incremental load pattern: read from BigQuery RAW table, filter by date range (only new/updated records), write to CLEAN table",
+      "recommended_joblet": {
+        "joblet_name": "IncrementalLoad_BigQuery",
+        "inputs": ["source_dataset", "source_table", "date_column", "start_date", "end_date"],
+        "outputs": ["filtered_rows"],
+        "effort": "MEDIUM",
+        "benefit": "Standardizes incremental load logic — ensures all regions use same approach"
+      }
+    }
+  ],
+  "routine_candidates": [
+    {
+      "code_snippet": "if (email != null && email.matches(\".*@.*\\\\..*\")) { return email; } else { return null; }",
+      "appears_in": [
+        "BRA_VBR_CLEAN_0.1 / tJavaRow_1",
+        "ITA_VAX_CLEAN_0.1 / tMap_1",
+        "USA_NPL_CLEAN_0.1 / tJavaRow_2"
+      ],
+      "duplication_count": 3,
+      "description": "Validate email format — return email if valid, null if invalid",
+      "recommended_routine": {
+        "routine_name": "DataValidation",
+        "method_signature": "public static String validateEmail(String email)",
+        "method_body": "if (email == null || email.isEmpty()) return null;\nif (email.matches(\"^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$\")) return email;\nreturn null;",
+        "usage_example": "Routines.DataValidation.validateEmail(row1.Email)",
+        "effort": "LOW",
+        "benefit": "Consistent email validation across all jobs, easier to update regex if requirements change"
+      }
+    },
+    {
+      "code_snippet": "String masked = row1.SSN.substring(0, 3) + \"-XX-\" + row1.SSN.substring(7);",
+      "appears_in": [
+        "BRA_VBR_CLEAN_0.1 / tMap_1",
+        "ITA_VAX_CLEAN_0.1 / tMap_1"
+      ],
+      "duplication_count": 2,
+      "description": "Mask SSN — keep first 3 digits, replace middle with XX, keep last 2 digits",
+      "recommended_routine": {
+        "routine_name": "DataMasking",
+        "method_signature": "public static String maskSSN(String ssn)",
+        "method_body": "if (ssn == null || ssn.length() < 9) return null;\nreturn ssn.substring(0, 3) + \"-XX-\" + ssn.substring(7);",
+        "usage_example": "Routines.DataMasking.maskSSN(row1.SSN)",
+        "effort": "LOW",
+        "benefit": "Consistent PII masking logic, easier to apply to other regions (USA, JPN, SAF)"
+      }
+    }
+  ],
+  "existing_routines": [
+    {
+      "routine_name": "StringHandling",
+      "methods": ["TRIM", "UPCASE", "DOWNCASE", "EREPLACE", "LEN"],
+      "usage_count": 150,
+      "assessment": "GOOD — widely used, core utility routine"
+    },
+    {
+      "routine_name": "TalendDate",
+      "methods": ["parseDate", "formatDate", "addDate", "diffDate"],
+      "usage_count": 80,
+      "assessment": "GOOD — widely used for date operations"
+    },
+    {
+      "routine_name": "CustomBusinessLogic",
+      "methods": ["calculateDiscount", "categorizeCustomer"],
+      "usage_count": 0,
+      "assessment": "DEAD CODE — routine exists but is never used, should be deleted or documented"
+    }
+  ],
+  "metadata_centralization": {
+    "repository_mode_usage": 0.65,
+    "built_in_mode_usage": 0.35,
+    "duplicate_connections": [
+      {
+        "connection_name": "BRA_VBR_MSSQL",
+        "duplicates": ["BRA_VBR_MSSQL_v2", "BRA_VBR_MSSQL_TEST"],
+        "recommendation": "Consolidate into single connection with context variables for environment (PROD/TEST)"
+      }
+    ],
+    "assessment": "FAIR — majority of components use REPOSITORY mode (good), but 35% still use BUILT_IN (bad for maintainability and security)",
+    "recommendation": "Mandate REPOSITORY mode for all new components, migrate existing BUILT_IN to REPOSITORY"
+  },
+  "code_smells": [
+    {
+      "smell_id": "SMELL-001",
+      "smell_type": "Magic string",
+      "location": "BRA_VBR_RAW_0.1 / tMap_1",
+      "description": "Hardcoded status code 'A' for Active — appears in 15 different jobs",
+      "issue": "If status code mapping changes (e.g., 'A' becomes 'ACT'), must update 15 jobs",
+      "recommendation": "Create context variable context.StatusCode_Active = 'A', or create lookup table for status codes",
+      "severity": "MEDIUM",
+      "effort_to_fix": "LOW"
+    },
+    {
+      "smell_id": "SMELL-002",
+      "smell_type": "Magic date",
+      "location": "Multiple RAW jobs",
+      "description": "Hardcoded cutoff date '2020-01-01' in SQL WHERE clauses",
+      "issue": "Unclear why this date is used — is it a go-live date? Migration date? Should it be updated annually?",
+      "recommendation": "Replace with context variable context.DataCutoffDate with documentation of what it means",
+      "severity": "MEDIUM",
+      "effort_to_fix": "LOW"
+    },
+    {
+      "smell_id": "SMELL-003",
+      "smell_type": "God job",
+      "location": "USA_NPL_MASTER_0.1",
+      "description": "Job has 87 components — reads from 10 different sources, performs complex transformations, writes to 8 different targets, all in one job",
+      "issue": "Too complex — hard to understand, test, debug, and maintain. Long execution time. If one part fails, entire job fails.",
+      "recommendation": "Split into multiple jobs by domain or layer (e.g., USA_NPL_RAW_Sales, USA_NPL_RAW_Finance, USA_NPL_RAW_HR)",
+      "severity": "HIGH",
+      "effort_to_fix": "HIGH"
+    },
+    {
+      "smell_id": "SMELL-004",
+      "smell_type": "Orphaned component",
+      "location": "BRA_VBR_RAW_0.1 / tLogRow_Debug",
+      "description": "tLogRow component with no incoming or outgoing connections — likely left over from debugging",
+      "issue": "Clutter — makes job harder to read, no functional impact",
+      "recommendation": "Delete orphaned components",
+      "severity": "LOW",
+      "effort_to_fix": "LOW"
+    },
+    {
+      "smell_id": "SMELL-005",
+      "smell_type": "Unused job",
+      "location": "test_job_temp",
+      "description": "Job is never called by tRunJob or mentioned in orchestration — likely a test/debug job left in production code",
+      "issue": "Dead code — increases codebase size, confuses developers",
+      "recommendation": "Delete unused jobs, or move to a 'deprecated' folder if there's a chance they'll be needed later",
+      "severity": "LOW",
+      "effort_to_fix": "LOW"
+    }
+  ],
+  "reusability_score": 5.5,
+  "reusability_assessment": "FAIR — Some reuse via Talend built-in routines (StringHandling, TalendDate) and REPOSITORY metadata, but significant code duplication in tMap expressions, job structures, and Java code. Joblets are not used at all despite many opportunities. Custom routines exist but are underutilized (some are dead code).",
+  "refactoring_roadmap": [
+    {
+      "priority": 1,
+      "refactoring": "Extract customer name cleansing logic to routine",
+      "reason": "Duplicated in 4 jobs — high duplication, low effort to fix",
+      "effort": "LOW (1-2 hours)",
+      "benefit": "Single source of truth, easier to maintain",
+      "risk": "LOW — simple, well-understood logic",
+      "affected_jobs": ["BRA_VBR_CLEAN_0.1", "ITA_VAX_CLEAN_0.1", "SAF_VSA_CLEAN_0.1", "USA_NPL_CLEAN_0.1"]
+    },
+    {
+      "priority": 2,
+      "refactoring": "Create parameterized regional RAW job template",
+      "reason": "Eliminates duplication of 4 nearly identical jobs",
+      "effort": "MEDIUM (1-2 days)",
+      "benefit": "Reduces 4 jobs to 1 — easier to maintain, easier to add new regions",
+      "risk": "MEDIUM — requires thorough testing to ensure parameterization works for all regions",
+      "affected_jobs": ["BRA_VBR_RAW_0.1", "ITA_VAX_RAW_0.1", "SAF_VSA_RAW_0.1", "USA_NPL_RAW_0.1"]
+    },
+    {
+      "priority": 3,
+      "refactoring": "Extract email notification pattern to joblet",
+      "reason": "Duplicated in 5 jobs, easy to extract",
+      "effort": "LOW (2-4 hours)",
+      "benefit": "Standardizes email notifications, easier to update email template",
+      "risk": "LOW — well-defined pattern",
+      "affected_jobs": ["BRA_VBR_RAW_0.1", "BRA_VBR_CLEAN_0.1", "BRA_VBR_PUBLISH_0.1", "ITA_VAX_RAW_0.1", "ITA_VAX_CLEAN_0.1"]
+    },
+    {
+      "priority": 4,
+      "refactoring": "Create DataValidation routine with email/phone validation methods",
+      "reason": "Email validation logic is duplicated in 3 jobs",
+      "effort": "LOW (1-2 hours)",
+      "benefit": "Consistent validation logic, easier to add phone/SSN validation later",
+      "risk": "LOW",
+      "affected_jobs": ["BRA_VBR_CLEAN_0.1", "ITA_VAX_CLEAN_0.1", "USA_NPL_CLEAN_0.1"]
+    },
+    {
+      "priority": 5,
+      "refactoring": "Split USA_NPL_MASTER_0.1 god job into smaller domain-specific jobs",
+      "reason": "Job is too complex (87 components) — hard to maintain and debug",
+      "effort": "HIGH (1-2 weeks)",
+      "benefit": "Easier to understand, test, and maintain; faster debugging; parallel execution possible",
+      "risk": "HIGH — large refactoring, must ensure no logic is lost",
+      "affected_jobs": ["USA_NPL_MASTER_0.1"]
+    },
+    {
+      "priority": 6,
+      "refactoring": "Migrate all BUILT_IN connections to REPOSITORY mode",
+      "reason": "35% of components use BUILT_IN — reduces maintainability and security",
+      "effort": "MEDIUM (3-5 days)",
+      "benefit": "Centralized credential management, easier to rotate passwords, better security",
+      "risk": "LOW — straightforward migration",
+      "affected_jobs": ["All jobs using BUILT_IN connections"]
+    },
+    {
+      "priority": 7,
+      "refactoring": "Replace magic strings and dates with context variables",
+      "reason": "Hardcoded values ('A', '2020-01-01') scattered across many jobs — hard to maintain",
+      "effort": "MEDIUM (2-3 days)",
+      "benefit": "Easier to change values globally, self-documenting code",
+      "risk": "LOW — must test to ensure context variables are used correctly",
+      "affected_jobs": ["All jobs with hardcoded status codes or dates"]
+    },
+    {
+      "priority": 8,
+      "refactoring": "Delete orphaned components and unused jobs",
+      "reason": "Clean up dead code and debug artifacts",
+      "effort": "LOW (1-2 hours)",
+      "benefit": "Cleaner codebase, easier to navigate",
+      "risk": "LOW — just delete, don't modify logic",
+      "affected_jobs": ["All jobs with orphaned components", "test_job_temp", "debug_job"]
+    }
+  ],
+  "summary": {
+    "total_duplicated_expressions": 18,
+    "total_duplicated_job_patterns": 3,
+    "total_joblet_candidates": 2,
+    "total_routine_candidates": 4,
+    "total_code_smells": 12,
+    "total_refactoring_opportunities": 8,
+    "estimated_effort_to_refactor": "3-4 weeks for high-priority items",
+    "estimated_benefit": "50% reduction in code duplication, 30% reduction in maintenance effort, improved consistency and reliability"
+  }
+}
+```
+
+Be thorough. Reusability and refactoring are critical for long-term maintainability. Every duplicated expression, every repeated pattern, every code smell is an opportunity to improve the codebase.

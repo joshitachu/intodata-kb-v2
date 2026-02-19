@@ -1,0 +1,2001 @@
+{
+  "name": "VUS_Clean_BC_SalesCreditMemo_v2",
+  "path": "USA/EPI/VUS_Clean_BC_SalesCreditMemo_v2_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2024-02-26T15:40:23.380+0000",
+  "modification_date": "2025-11-09T10:19:32.773-0800",
+  "components": [
+    {
+      "unique_name": "tPostjob_1",
+      "component_type": "tPostjob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "cleanup_temp_file_storage_1",
+      "component_type": "cleanup_temp_file_storage",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1",
+          "value": "COMPONENT_OK",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1:COMPONENT_LIST",
+          "value": "tPostjob_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "cleanup_temp_file_storage",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "Vaxxinova_Logging_1",
+      "component_type": "Vaxxinova_Logging",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "Vaxxinova_Logging",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_4",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM \" + context.parameter_Raw_Prefix + \".salesCreditMemos\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "VUS_SalesCreditMemo",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_2",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_-RoNYNS0Ee6AbtcehqcZDA-tMap_2-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_6",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM \" + context.parameter_Raw_Prefix + \".salesCreditMemoLines\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "VUS_SalesCreditMemo",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_3",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_-RoNYNS0Ee6AbtcehqcZDA-tMap_3-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_3",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM Global_Raw.Salesforce_Country_Mappings\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Salesforce_Country_Mapping",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryInput_5",
+      "component_type": "tBigQueryInput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "DYNAMIC_GUESS_SCHEMA"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_LEGACY_SQL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT * FROM Global_Raw.Fiscal_Periods\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "RESULT_SIZE",
+          "value": "SMALL",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_CUSTOM_TEMPORARY_DATASET",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMPORARY_DATASET_NAME",
+          "value": "\"temp_dataset\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FORCE_SINGLE_QUERY_EXEC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "Fiscal_Periods",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_1",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\"+context.parameter_Env_Prefix+context.parameter_BC_Company_Identifier+\"BC_Sales_Credit_Memo_Lines.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Env_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"BC_Sales_Credit_Memo_Lines\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.parameter_Env_Prefix+context.parameter_BC_Company_Identifier+\"BC_Sales_Credit_Memo_Lines.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "usa_vus_clean_sales_credit_memo_lines",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_1",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "OnComponentOk1",
+      "source": "tPostjob_1",
+      "target": "cleanup_temp_file_storage_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "bqInput",
+      "source": "tBigQueryInput_4",
+      "target": "tMap_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "unitedOutput",
+      "source": "tMap_2",
+      "target": "tMap_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row4",
+      "source": "tBigQueryInput_6",
+      "target": "tMap_2",
+      "connector_name": "FLOW",
+      "line_style": 8
+    },
+    {
+      "name": "bqOutput",
+      "source": "tMap_3",
+      "target": "tBigQueryOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row2",
+      "source": "tBigQueryInput_3",
+      "target": "tMap_3",
+      "connector_name": "FLOW",
+      "line_style": 8
+    },
+    {
+      "name": "row5",
+      "source": "tBigQueryInput_5",
+      "target": "tMap_3",
+      "connector_name": "FLOW",
+      "line_style": 8
+    },
+    {
+      "name": "row8",
+      "source": "tFixedFlowInput_1",
+      "target": "tMap_3",
+      "connector_name": "FLOW",
+      "line_style": 8
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "c:/temp",
+            "TEST": "c:/temp",
+            "TEST_LINUX": "/home/talend/IntoData/Vaxxinova/temp",
+            "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-talend",
+            "TEST": "vaxxinova-talend",
+            "TEST_LINUX": "vaxxinova-talend",
+            "TEST_MAC": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-dwh",
+            "TEST": "vaxxinova-dwh",
+            "TEST_LINUX": "vaxxinova-dwh",
+            "TEST_MAC": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_vus_clean",
+            "TEST": "test_usa_vus_clean",
+            "TEST_LINUX": "test_usa_vus_clean",
+            "TEST_MAC": "test_usa_vus_clean"
+          }
+        },
+        {
+          "name": "parameter_bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+          }
+        },
+        {
+          "name": "parameter_BC_Company_Identifier",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_EndPoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://bc-vax-api.ew-group.net",
+            "TEST": "https://bc-vax-api.ew-group.net",
+            "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+            "TEST_MAC": "https://bc-vax-api.ew-group.net"
+          }
+        },
+        {
+          "name": "parameter_bc_password",
+          "type": "id_Password",
+          "values": {
+            "Default": "",
+            "PROD": "[ENCRYPTED_PASSWORD]",
+            "TEST": "[ENCRYPTED_PASSWORD]",
+            "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+            "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+          }
+        },
+        {
+          "name": "parameter_bc_username",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "EW\\vax_bc_api_vax-int",
+            "TEST": "EW\\vax_bc_api_vax-int",
+            "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+            "TEST_MAC": "EW\\vax_bc_api_vax-int"
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_vus_clean",
+            "TEST": "test_usa_vus_clean",
+            "TEST_LINUX": "test_usa_vus_clean",
+            "TEST_MAC": "test_usa_vus_clean"
+          }
+        },
+        {
+          "name": "parameter_Raw_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_vus_raw",
+            "TEST": "test_usa_vus_raw",
+            "TEST_LINUX": "test_usa_vus_raw",
+            "TEST_MAC": "test_usa_vus_raw"
+          }
+        },
+        {
+          "name": "resource_file_BC_environment",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "/Users/robbiemartens/Documents/Talend/BQ_Context_USA_NPL.cfg"
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "bqInput",
+        "row4"
+      ],
+      "output_tables": [
+        "unitedOutput"
+      ],
+      "entries": [
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Id",
+          "expression": "\"VUS-\"  + row4.id"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Entity",
+          "expression": "\"Vaxxinova United States\""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Id",
+          "expression": "\"VUS-\"  + bqInput.number"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Item_Id",
+          "expression": "\"VUS-\"  +  bqInput.number + \"-\" + row4.sequence"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_External_Id",
+          "expression": "\"VUS-\"  +  bqInput.invoiceNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Date",
+          "expression": "bqInput.creditMemoDate"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Period",
+          "expression": "TalendDate.formatDate(\"yyyy-MM\",bqInput.creditMemoDate)"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Posting_Date",
+          "expression": "bqInput.postingDate"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Due_Date",
+          "expression": "bqInput.dueDate"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Last_Modified_Date",
+          "expression": "bqInput.lastModifiedDateTime"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Purchase_Order_Reference",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Currency_Code",
+          "expression": "bqInput.currencyCode"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Account_Id",
+          "expression": "\"VUS-\" + bqInput.billToCustomerNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Account_Name",
+          "expression": "bqInput.billToName"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Street",
+          "expression": "bqInput.billToAddressLine1"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_City",
+          "expression": "bqInput.billToCity"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Zipcode",
+          "expression": "bqInput.billToPostCode"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_State",
+          "expression": "bqInput.billToState"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Invoice_Country",
+          "expression": "bqInput.billToCountry == null || bqInput.billToCountry.equals(\"\") ? \"US\" : bqInput.billToCountry"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_Id",
+          "expression": "\"VUS-\""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_Account_Name",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_Street",
+          "expression": "bqInput.sellToAddressLine1"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_City",
+          "expression": "bqInput.sellToCity"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_Zipcode",
+          "expression": "bqInput.sellToPostCode"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_State",
+          "expression": "bqInput.sellToState"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Order_Country",
+          "expression": "bqInput.sellToCountry"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_Date",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_Account_Name",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_Street",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_City",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_Zipcode",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_State",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Delivery_Country",
+          "expression": ""
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Product_Id",
+          "expression": "\"VUS-\" + row4.lineObjectNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Product_Name",
+          "expression": "row4.description"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Quantity",
+          "expression": "row4.quantity"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Unit_Price_Local_Currency",
+          "expression": "row4.unitPrice"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Discount_Percentage",
+          "expression": "row4.discountPercent"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Discount_Amount_local_Currency",
+          "expression": "row4.discountAmount"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Discount_Allocation_Amount_Local_Currency",
+          "expression": "row4.invoiceDiscountAllocation"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "Line_Amount_Local_Currency",
+          "expression": "row4.netAmount"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "externalDocumentNumber",
+          "expression": "bqInput.externalDocumentNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "customerId",
+          "expression": "bqInput.customerId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "customerNumber",
+          "expression": "bqInput.customerNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "customerName",
+          "expression": "bqInput.customerName"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "billToCustomerId",
+          "expression": "bqInput.billToCustomerId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "sellToAddressLine2",
+          "expression": "bqInput.sellToAddressLine2"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "billToAddressLine2",
+          "expression": "bqInput.billToAddressLine2"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "currencyId",
+          "expression": "bqInput.currencyId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "paymentTermsId",
+          "expression": "bqInput.paymentTermsId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "shipmentMethodId",
+          "expression": "bqInput.shipmentMethodId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesperson",
+          "expression": "bqInput.salesperson"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "pricesIncludeTax",
+          "expression": "bqInput.pricesIncludeTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "discountAmount",
+          "expression": "row4.discountAmount"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "discountAppliedBeforeTax",
+          "expression": "row4.discountAppliedBeforeTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "totalAmountExcludingTax",
+          "expression": "bqInput.totalAmountExcludingTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "totalTaxAmount",
+          "expression": "row4.totalTaxAmount"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "totalAmountIncludingTax",
+          "expression": "bqInput.totalAmountIncludingTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "status",
+          "expression": "bqInput.status"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "invoiceId",
+          "expression": "bqInput.invoiceId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "invoiceNumber",
+          "expression": "bqInput.invoiceNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "phoneNumber",
+          "expression": "bqInput.phoneNumber"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "email",
+          "expression": "bqInput.email"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_discountAppliedBeforeTax",
+          "expression": "row4.discountAppliedBeforeTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_locationId",
+          "expression": "row4.locationId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_lineType",
+          "expression": "row4.lineType"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_taxPercent",
+          "expression": "row4.taxPercent"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_id",
+          "expression": "row4.id"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_shipmentDate",
+          "expression": "row4.shipmentDate"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_itemVariantId",
+          "expression": "row4.itemVariantId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_amountExcludingTax",
+          "expression": "row4.amountExcludingTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_etag__",
+          "expression": "row4.etag__"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_unitOfMeasureId",
+          "expression": "row4.unitOfMeasureId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_taxCode",
+          "expression": "row4.taxCode"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_netTaxAmount",
+          "expression": "row4.netTaxAmount"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_sequence",
+          "expression": "String.valueOf(row4.sequence )"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_itemId",
+          "expression": "row4.itemId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_accountId",
+          "expression": "row4.accountId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_netAmountIncludingTax",
+          "expression": "row4.netAmountIncludingTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_documentId",
+          "expression": "row4.documentId"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_totalTaxAmount",
+          "expression": "row4.totalTaxAmount"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_amountIncludingTax",
+          "expression": "row4.amountIncludingTax"
+        },
+        {
+          "table_name": "unitedOutput",
+          "column_name": "salesCreditMemoLines_unitOfMeasureCode",
+          "expression": "row4.unitOfMeasureCode"
+        }
+      ],
+      "var_entries": []
+    },
+    {
+      "input_tables": [
+        "unitedOutput",
+        "row5",
+        "row2",
+        "row8"
+      ],
+      "output_tables": [
+        "bqOutput"
+      ],
+      "entries": [
+        {
+          "table_name": "bqOutput",
+          "column_name": "Id",
+          "expression": "unitedOutput.Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Entity",
+          "expression": "unitedOutput.Entity"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Id",
+          "expression": "unitedOutput.Invoice_Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Item_Id",
+          "expression": "unitedOutput.Invoice_Item_Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_External_Id",
+          "expression": "unitedOutput.Invoice_External_Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Date",
+          "expression": "unitedOutput.Invoice_Date"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Period",
+          "expression": "unitedOutput.Period"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Fiscal_Period",
+          "expression": "row5.Fiscal_Period"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Fiscal_Year",
+          "expression": "row5.Fiscal_Year"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Posting_Date",
+          "expression": "unitedOutput.Posting_Date"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Due_Date",
+          "expression": "unitedOutput.Due_Date"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Last_Modified_Date",
+          "expression": "TalendDate.parseDateInUTC(\"yyyy-MM-dd HH:mm:ss.SSS\", TalendDate.formatDateInTimeZone(\"yyyy-MM-dd HH:mm:ss.SSS\", unitedOutput.Last_Modified_Date, row8.TimeZone))"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Purchase_Order_Reference",
+          "expression": "unitedOutput.Purchase_Order_Reference"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Currency_Code",
+          "expression": "unitedOutput.Currency_Code"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Account_Id",
+          "expression": "unitedOutput.Invoice_Account_Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Account_Name",
+          "expression": "unitedOutput.Invoice_Account_Name"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Street",
+          "expression": "unitedOutput.Invoice_Street"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_City",
+          "expression": "unitedOutput.Invoice_City"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Zipcode",
+          "expression": "unitedOutput.Invoice_Zipcode"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_State",
+          "expression": "unitedOutput.Invoice_State"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Invoice_Country",
+          "expression": "unitedOutput.Invoice_Country"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_Id",
+          "expression": "unitedOutput.Order_Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_Account_Name",
+          "expression": "unitedOutput.Order_Account_Name"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_Street",
+          "expression": "unitedOutput.Order_Street"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_City",
+          "expression": "unitedOutput.Order_City"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_Zipcode",
+          "expression": "unitedOutput.Order_Zipcode"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_State",
+          "expression": "unitedOutput.Order_State"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Order_Country",
+          "expression": "unitedOutput.Order_Country"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_Date",
+          "expression": "unitedOutput.Delivery_Date"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_Account_Name",
+          "expression": "unitedOutput.Delivery_Account_Name"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_Street",
+          "expression": "unitedOutput.Delivery_Street"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_City",
+          "expression": "unitedOutput.Delivery_City"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_Zipcode",
+          "expression": "unitedOutput.Delivery_Zipcode"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_State",
+          "expression": "unitedOutput.Delivery_State"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Delivery_Country",
+          "expression": "unitedOutput.Delivery_Country"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Product_Id",
+          "expression": "unitedOutput.Product_Id"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Product_Name",
+          "expression": "unitedOutput.Product_Name"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Quantity",
+          "expression": "unitedOutput.Quantity"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Unit_Price_Local_Currency",
+          "expression": "unitedOutput.Unit_Price_Local_Currency"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Discount_Percentage",
+          "expression": "unitedOutput.Discount_Percentage"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Discount_Amount_local_Currency",
+          "expression": "unitedOutput.Discount_Amount_local_Currency"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Discount_Allocation_Amount_Local_Currency",
+          "expression": "unitedOutput.Discount_Allocation_Amount_Local_Currency"
+        },
+        {
+          "table_name": "bqOutput",
+          "column_name": "Line_Amount_Local_Currency",
+          "expression": "unitedOutput.Line_Amount_Local_Currency"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString",
+    "DataQuality",
+    "DQTechnical",
+    "DataMasking",
+    "DataQualityDependencies",
+    "DqStringHandling"
+  ],
+  "group": "USA",
+  "subgroup": "EPI"
+}

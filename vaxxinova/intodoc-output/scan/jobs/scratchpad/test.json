@@ -1,0 +1,1588 @@
+{
+  "name": "test",
+  "path": "scratchpad/test_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2023-11-22T10:53:00.222+0100",
+  "modification_date": "2025-11-09T10:19:35.553-0800",
+  "components": [
+    {
+      "unique_name": "tDBInput_1",
+      "component_type": "tMSSqlInput",
+      "params": [
+        {
+          "name": "USE_EXISTING_CONNECTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_UjGPYILnEe6LV5h8tPX94w",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "HOST",
+          "value": "context.connection_JPN_VJP_MSSQL_Server",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DRIVER",
+          "value": "MSSQL_PROP",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TYPE",
+          "value": "MSSQL",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PORT",
+          "value": "context.connection_JPN_VJP_MSSQL_Port",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DB_SCHEMA",
+          "value": "context.connection_JPN_VJP_MSSQL_Schema",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DBNAME",
+          "value": "context.connection_JPN_VJP_MSSQL_Database",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USER",
+          "value": "context.connection_JPN_VJP_MSSQL_Login",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PASS",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Vaxxinova Japan$Sales Cr_Memo Line\"",
+          "field_type": "DBTABLE"
+        },
+        {
+          "name": "QUERYSTORE",
+          "value": "\"\"",
+          "field_type": "QUERYSTORE_TYPE"
+        },
+        {
+          "name": "QUERYSTORE:QUERYSTORE_TYPE",
+          "value": "BUILT_IN",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "GUESS_SCHEMA"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT  \\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".timestamp,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Document No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Line No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Sell-to Customer No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".Type,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".No_,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Location Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Posting Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Shipment Date\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".Description,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Description 2\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit of Measure\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".Quantity,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit Price\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit Cost (LCY)\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT _\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Line Discount _\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Line Discount Amount\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".Amount,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Amount Including VAT\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Allow Invoice Disc_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Gross Weight\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Net Weight\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Units per Parcel\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit Volume\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Appl_-to Item Entry\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Shortcut Dimension 1 Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Shortcut Dimension 2 Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Customer Price Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Job No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Work Type Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Bill-to Customer No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Inv_ Discount Amount\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Gen_ Bus_ Posting Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Gen_ Prod_ Posting Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT Calculation Type\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Transaction Type\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Transport Method\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Attached to Line No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Exit Point\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".Area,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Transaction Specification\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Tax Area Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Tax Liable\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Tax Group Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT Bus_ Posting Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT Prod_ Posting Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Blanket Order No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Blanket Order Line No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT Base Amount\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit Cost\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"System-Created Entry\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Line Amount\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT Difference\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"VAT Identifier\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"IC Partner Ref_ Type\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"IC Partner Reference\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Prepayment Line\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"IC Partner Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Posting Date\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Dimension Set ID\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Job Task No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Job Contract Entry No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Variant Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Bin Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Qty_ per Unit of Measure\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit of Measure Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Quantity (Base)\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"FA Posting Date\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Depreciation Book Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Depr_ until FA Posting Date\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Duplicate in Depreciation Book\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Use Duplication List\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Responsibility Center\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Cross-Reference No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Unit of Measure (Cross Ref_)\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Cross-Reference Type\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Cross-Reference Type No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Item Category Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".Nonstock,\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Purchasing Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Product Group Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Appl_-from Item Entry\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Return Receipt No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Return Receipt Line No_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Return Reason Code\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Allow Line Disc_\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Customer Disc_ Group\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Packaging Type\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"Line Note\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"SET Item Type\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"SET Unit Price\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"SET Line Amount\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"SET Amount\\\",\r\n\t\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\".\\\"SET Amount Including VAT\\\"\"\r\n+\"\r\nFROM\t\\\"\"+context.connection_JPN_VJP_MSSQL_Schema+\"\\\".\\\"Vaxxinova Japan$Sales Cr_Memo Line\\\"\r\nwhere \\\"Document No_\\\" = 'PSCV018123'\r\n\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "NOTE",
+          "value": "This option only applies when deploying and running in the Talend Runtime",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_DATASOURCE_ALIAS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATASOURCE_ALIAS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "MAPPING",
+          "value": "id_MSSQL",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "context.connection_JPN_VJP_MSSQL_AdditionalParams",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVE_DIR_AUTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "TRIM_ALL_COLUMN",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_QUERY_TIMEOUT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY_TIMEOUT_IN_SECONDS",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "__TABLE__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": "connection_JPN_VJP_MSSQL"
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_66jscIkcEe6nu6M1kZLx_A-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_1",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\"+context.Env_Prefix+\"Sales Cr_Memo Line.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.Env_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Sales Cr_Memo Line\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.Env_Prefix+\"Sales Cr_Memo Line.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "vaxxinova_dwh",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "row6",
+      "source": "tDBInput_1",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "Sales_Cr_Memo_Line_Out",
+      "source": "tMap_1",
+      "target": "tBigQueryOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "connection_JPN_VJP_MSSQL_AdditionalParams",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": ""
+          }
+        },
+        {
+          "name": "connection_JPN_VJP_MSSQL_Database",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "NAV_LIVE",
+            "TEST": "NAV_TEST"
+          }
+        },
+        {
+          "name": "connection_JPN_VJP_MSSQL_Login",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "Gl_User",
+            "TEST": "talend01"
+          }
+        },
+        {
+          "name": "connection_JPN_VJP_MSSQL_Password",
+          "type": "id_Password",
+          "values": {
+            "Default": "",
+            "PROD": "[ENCRYPTED_PASSWORD]",
+            "TEST": "[ENCRYPTED_PASSWORD]"
+          }
+        },
+        {
+          "name": "connection_JPN_VJP_MSSQL_Port",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "1433",
+            "TEST": "1433"
+          }
+        },
+        {
+          "name": "connection_JPN_VJP_MSSQL_Schema",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "dbo",
+            "TEST": "dbo"
+          }
+        },
+        {
+          "name": "connection_JPN_VJP_MSSQL_Server",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[SERVER_IP]",
+            "TEST": "[SERVER_IP]"
+          }
+        },
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "c:/temp",
+            "TEST": "c:/temp"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-talend",
+            "TEST": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-dwh",
+            "TEST": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+            "TEST": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "jpn_vjp_raw",
+            "TEST": "test_jpn_vjp_raw"
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "row6"
+      ],
+      "output_tables": [
+        "Sales_Cr_Memo_Line_Out",
+        "tst"
+      ],
+      "entries": [
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "timestamp",
+          "expression": "row6.timestamp"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Document_No_",
+          "expression": "row6.Document_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Line_No_",
+          "expression": "row6.Line_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Sell_to_Customer_No_",
+          "expression": "row6.Sell_to_Customer_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Type",
+          "expression": "row6.Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "No_",
+          "expression": "row6.No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Location_Code",
+          "expression": "row6.Location_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Posting_Group",
+          "expression": "row6.Posting_Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Shipment_Date",
+          "expression": "row6.Shipment_Date"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Description",
+          "expression": "row6.Description"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Description_2",
+          "expression": "row6.Description_2"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_of_Measure",
+          "expression": "row6.Unit_of_Measure"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Quantity",
+          "expression": "row6.Quantity"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_Price",
+          "expression": "row6.Unit_Price"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_Cost__LCY",
+          "expression": "row6.Unit_Cost__LCY"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT__",
+          "expression": "row6.VAT__"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Line_Discount__",
+          "expression": "row6.Line_Discount__"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Line_Discount_Amount",
+          "expression": "row6.Line_Discount_Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Amount",
+          "expression": "row6.Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Amount_Including_VAT",
+          "expression": "row6.Amount_Including_VAT"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Allow_Invoice_Disc_",
+          "expression": "row6.Allow_Invoice_Disc_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Gross_Weight",
+          "expression": "row6.Gross_Weight"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Net_Weight",
+          "expression": "row6.Net_Weight"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Units_per_Parcel",
+          "expression": "row6.Units_per_Parcel"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_Volume",
+          "expression": "row6.Unit_Volume"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Appl__to_Item_Entry",
+          "expression": "row6.Appl__to_Item_Entry"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Shortcut_Dimension_1_Code",
+          "expression": "row6.Shortcut_Dimension_1_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Shortcut_Dimension_2_Code",
+          "expression": "row6.Shortcut_Dimension_2_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Customer_Price_Group",
+          "expression": "row6.Customer_Price_Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Job_No_",
+          "expression": "row6.Job_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Work_Type_Code",
+          "expression": "row6.Work_Type_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Bill_to_Customer_No_",
+          "expression": "row6.Bill_to_Customer_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Inv__Discount_Amount",
+          "expression": "row6.Inv__Discount_Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Gen__Bus__Posting_Group",
+          "expression": "row6.Gen__Bus__Posting_Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Gen__Prod__Posting_Group",
+          "expression": "row6.Gen__Prod__Posting_Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT_Calculation_Type",
+          "expression": "row6.VAT_Calculation_Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Transaction_Type",
+          "expression": "row6.Transaction_Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Transport_Method",
+          "expression": "row6.Transport_Method"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Attached_to_Line_No_",
+          "expression": "row6.Attached_to_Line_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Exit_Point",
+          "expression": "row6.Exit_Point"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Area",
+          "expression": "row6.Area"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Transaction_Specification",
+          "expression": "row6.Transaction_Specification"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Tax_Area_Code",
+          "expression": "row6.Tax_Area_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Tax_Liable",
+          "expression": "row6.Tax_Liable"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Tax_Group_Code",
+          "expression": "row6.Tax_Group_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT_Bus__Posting_Group",
+          "expression": "row6.VAT_Bus__Posting_Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT_Prod__Posting_Group",
+          "expression": "row6.VAT_Prod__Posting_Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Blanket_Order_No_",
+          "expression": "row6.Blanket_Order_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Blanket_Order_Line_No_",
+          "expression": "row6.Blanket_Order_Line_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT_Base_Amount",
+          "expression": "row6.VAT_Base_Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_Cost",
+          "expression": "row6.Unit_Cost"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "System_Created_Entry",
+          "expression": "row6.System_Created_Entry"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Line_Amount",
+          "expression": "row6.Line_Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT_Difference",
+          "expression": "row6.VAT_Difference"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "VAT_Identifier",
+          "expression": "row6.VAT_Identifier"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "IC_Partner_Ref__Type",
+          "expression": "row6.IC_Partner_Ref__Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "IC_Partner_Reference",
+          "expression": "row6.IC_Partner_Reference"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Prepayment_Line",
+          "expression": "row6.Prepayment_Line"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "IC_Partner_Code",
+          "expression": "row6.IC_Partner_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Posting_Date",
+          "expression": "row6.Posting_Date"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Dimension_Set_ID",
+          "expression": "row6.Dimension_Set_ID"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Job_Task_No_",
+          "expression": "row6.Job_Task_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Job_Contract_Entry_No_",
+          "expression": "row6.Job_Contract_Entry_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Variant_Code",
+          "expression": "row6.Variant_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Bin_Code",
+          "expression": "row6.Bin_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Qty__per_Unit_of_Measure",
+          "expression": "row6.Qty__per_Unit_of_Measure"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_of_Measure_Code",
+          "expression": "row6.Unit_of_Measure_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Quantity__Base",
+          "expression": "row6.Quantity__Base"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "FA_Posting_Date",
+          "expression": "row6.FA_Posting_Date"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Depreciation_Book_Code",
+          "expression": "row6.Depreciation_Book_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Depr__until_FA_Posting_Date",
+          "expression": "row6.Depr__until_FA_Posting_Date"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Duplicate_in_Depreciation_Book",
+          "expression": "row6.Duplicate_in_Depreciation_Book"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Use_Duplication_List",
+          "expression": "row6.Use_Duplication_List"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Responsibility_Center",
+          "expression": "row6.Responsibility_Center"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Cross_Reference_No_",
+          "expression": "row6.Cross_Reference_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Unit_of_Measure__Cross_Ref_",
+          "expression": "row6.Unit_of_Measure__Cross_Ref_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Cross_Reference_Type",
+          "expression": "row6.Cross_Reference_Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Cross_Reference_Type_No_",
+          "expression": "row6.Cross_Reference_Type_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Item_Category_Code",
+          "expression": "row6.Item_Category_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Nonstock",
+          "expression": "row6.Nonstock"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Purchasing_Code",
+          "expression": "row6.Purchasing_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Product_Group_Code",
+          "expression": "row6.Product_Group_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Appl__from_Item_Entry",
+          "expression": "row6.Appl__from_Item_Entry"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Return_Receipt_No_",
+          "expression": "row6.Return_Receipt_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Return_Receipt_Line_No_",
+          "expression": "row6.Return_Receipt_Line_No_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Return_Reason_Code",
+          "expression": "row6.Return_Reason_Code"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Allow_Line_Disc_",
+          "expression": "row6.Allow_Line_Disc_"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Customer_Disc__Group",
+          "expression": "row6.Customer_Disc__Group"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Packaging_Type",
+          "expression": "row6.Packaging_Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "Line_Note",
+          "expression": "row6.Line_Note"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "SET_Item_Type",
+          "expression": "row6.SET_Item_Type"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "SET_Unit_Price",
+          "expression": "row6.SET_Unit_Price"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "SET_Line_Amount",
+          "expression": "row6.SET_Line_Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "SET_Amount",
+          "expression": "row6.SET_Amount"
+        },
+        {
+          "table_name": "Sales_Cr_Memo_Line_Out",
+          "column_name": "SET_Amount_Including_VAT",
+          "expression": "row6.SET_Amount_Including_VAT"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "timestamp",
+          "expression": "row6.timestamp"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Document_No_",
+          "expression": "row6.Document_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Line_No_",
+          "expression": "row6.Line_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Sell_to_Customer_No_",
+          "expression": "row6.Sell_to_Customer_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Type",
+          "expression": "row6.Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "No_",
+          "expression": "row6.No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Location_Code",
+          "expression": "row6.Location_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Posting_Group",
+          "expression": "row6.Posting_Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Shipment_Date",
+          "expression": "row6.Shipment_Date"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Description",
+          "expression": "row6.Description"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Description_2",
+          "expression": "row6.Description_2"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_of_Measure",
+          "expression": "row6.Unit_of_Measure"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Quantity",
+          "expression": "row6.Quantity"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_Price",
+          "expression": "row6.Unit_Price"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_Cost__LCY",
+          "expression": "row6.Unit_Cost__LCY"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT__",
+          "expression": "row6.VAT__"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Line_Discount__",
+          "expression": "row6.Line_Discount__"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Line_Discount_Amount",
+          "expression": "row6.Line_Discount_Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Amount",
+          "expression": "row6.Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Amount_Including_VAT",
+          "expression": "row6.Amount_Including_VAT"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Allow_Invoice_Disc_",
+          "expression": "row6.Allow_Invoice_Disc_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Gross_Weight",
+          "expression": "row6.Gross_Weight"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Net_Weight",
+          "expression": "row6.Net_Weight"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Units_per_Parcel",
+          "expression": "row6.Units_per_Parcel"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_Volume",
+          "expression": "row6.Unit_Volume"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Appl__to_Item_Entry",
+          "expression": "row6.Appl__to_Item_Entry"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Shortcut_Dimension_1_Code",
+          "expression": "row6.Shortcut_Dimension_1_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Shortcut_Dimension_2_Code",
+          "expression": "row6.Shortcut_Dimension_2_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Customer_Price_Group",
+          "expression": "row6.Customer_Price_Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Job_No_",
+          "expression": "row6.Job_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Work_Type_Code",
+          "expression": "row6.Work_Type_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Bill_to_Customer_No_",
+          "expression": "row6.Bill_to_Customer_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Inv__Discount_Amount",
+          "expression": "row6.Inv__Discount_Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Gen__Bus__Posting_Group",
+          "expression": "row6.Gen__Bus__Posting_Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Gen__Prod__Posting_Group",
+          "expression": "row6.Gen__Prod__Posting_Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT_Calculation_Type",
+          "expression": "row6.VAT_Calculation_Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Transaction_Type",
+          "expression": "row6.Transaction_Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Transport_Method",
+          "expression": "row6.Transport_Method"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Attached_to_Line_No_",
+          "expression": "row6.Attached_to_Line_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Exit_Point",
+          "expression": "row6.Exit_Point"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Area",
+          "expression": "row6.Area"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Transaction_Specification",
+          "expression": "row6.Transaction_Specification"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Tax_Area_Code",
+          "expression": "row6.Tax_Area_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Tax_Liable",
+          "expression": "row6.Tax_Liable"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Tax_Group_Code",
+          "expression": "row6.Tax_Group_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT_Bus__Posting_Group",
+          "expression": "row6.VAT_Bus__Posting_Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT_Prod__Posting_Group",
+          "expression": "row6.VAT_Prod__Posting_Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Blanket_Order_No_",
+          "expression": "row6.Blanket_Order_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Blanket_Order_Line_No_",
+          "expression": "row6.Blanket_Order_Line_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT_Base_Amount",
+          "expression": "row6.VAT_Base_Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_Cost",
+          "expression": "row6.Unit_Cost"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "System_Created_Entry",
+          "expression": "row6.System_Created_Entry"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Line_Amount",
+          "expression": "row6.Line_Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT_Difference",
+          "expression": "row6.VAT_Difference"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "VAT_Identifier",
+          "expression": "row6.VAT_Identifier"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "IC_Partner_Ref__Type",
+          "expression": "row6.IC_Partner_Ref__Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "IC_Partner_Reference",
+          "expression": "row6.IC_Partner_Reference"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Prepayment_Line",
+          "expression": "row6.Prepayment_Line"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "IC_Partner_Code",
+          "expression": "row6.IC_Partner_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Posting_Date",
+          "expression": "row6.Posting_Date"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Dimension_Set_ID",
+          "expression": "row6.Dimension_Set_ID"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Job_Task_No_",
+          "expression": "row6.Job_Task_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Job_Contract_Entry_No_",
+          "expression": "row6.Job_Contract_Entry_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Variant_Code",
+          "expression": "row6.Variant_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Bin_Code",
+          "expression": "row6.Bin_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Qty__per_Unit_of_Measure",
+          "expression": "row6.Qty__per_Unit_of_Measure"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_of_Measure_Code",
+          "expression": "row6.Unit_of_Measure_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Quantity__Base",
+          "expression": "row6.Quantity__Base"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "FA_Posting_Date",
+          "expression": "row6.FA_Posting_Date"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Depreciation_Book_Code",
+          "expression": "row6.Depreciation_Book_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Depr__until_FA_Posting_Date",
+          "expression": "row6.Depr__until_FA_Posting_Date"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Duplicate_in_Depreciation_Book",
+          "expression": "row6.Duplicate_in_Depreciation_Book"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Use_Duplication_List",
+          "expression": "row6.Use_Duplication_List"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Responsibility_Center",
+          "expression": "row6.Responsibility_Center"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Cross_Reference_No_",
+          "expression": "row6.Cross_Reference_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Unit_of_Measure__Cross_Ref_",
+          "expression": "row6.Unit_of_Measure__Cross_Ref_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Cross_Reference_Type",
+          "expression": "row6.Cross_Reference_Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Cross_Reference_Type_No_",
+          "expression": "row6.Cross_Reference_Type_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Item_Category_Code",
+          "expression": "row6.Item_Category_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Nonstock",
+          "expression": "row6.Nonstock"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Purchasing_Code",
+          "expression": "row6.Purchasing_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Product_Group_Code",
+          "expression": "row6.Product_Group_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Appl__from_Item_Entry",
+          "expression": "row6.Appl__from_Item_Entry"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Return_Receipt_No_",
+          "expression": "row6.Return_Receipt_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Return_Receipt_Line_No_",
+          "expression": "row6.Return_Receipt_Line_No_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Return_Reason_Code",
+          "expression": "row6.Return_Reason_Code"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Allow_Line_Disc_",
+          "expression": "row6.Allow_Line_Disc_"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Customer_Disc__Group",
+          "expression": "row6.Customer_Disc__Group"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Packaging_Type",
+          "expression": "row6.Packaging_Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "Line_Note",
+          "expression": "row6.Line_Note"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "SET_Item_Type",
+          "expression": "row6.SET_Item_Type"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "SET_Unit_Price",
+          "expression": "row6.SET_Unit_Price"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "SET_Line_Amount",
+          "expression": "row6.SET_Line_Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "SET_Amount",
+          "expression": "row6.SET_Amount"
+        },
+        {
+          "table_name": "tst",
+          "column_name": "SET_Amount_Including_VAT",
+          "expression": "row6.SET_Amount_Including_VAT"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString",
+    "DataQuality",
+    "DQTechnical",
+    "DataMasking",
+    "DataQualityDependencies",
+    "DqStringHandling"
+  ],
+  "group": "scratchpad",
+  "subgroup": ""
+}

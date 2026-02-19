@@ -1,0 +1,3229 @@
+[
+  {
+    "name": "BRA_PROBI_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_raw",
+          "TEST": "test_bra_vbr_raw",
+          "TEST_LINUX": "test_bra_vbr_raw",
+          "TEST_MAC": "test_bra_vbr_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+          "TEST": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+          "TEST_LINUX": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+          "TEST_MAC": "0f0f8523-5b4b-430c-a80b-36237cadf944/"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "PRD",
+          "TEST": "srSandbox",
+          "TEST_LINUX": "PRD",
+          "TEST_MAC": "PRD"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Vaxxinova%20Brasil",
+          "TEST": "Vaxxinova%20Brasil",
+          "TEST_LINUX": "Vaxxinova%20Brasil",
+          "TEST_MAC": "Vaxxinova%20Brasil"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      }
+    ]
+  },
+  {
+    "name": "BRA_VBR_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_raw",
+          "TEST": "test_bra_vbr_raw",
+          "TEST_LINUX": "test_bra_vbr_raw",
+          "TEST_MAC": "test_bra_vbr_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/0f0f8523-5b4b-430c-a80b-36237cadf944/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+          "TEST": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+          "TEST_LINUX": "0f0f8523-5b4b-430c-a80b-36237cadf944/",
+          "TEST_MAC": "0f0f8523-5b4b-430c-a80b-36237cadf944/"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "PRD",
+          "TEST": "TestEnvironment",
+          "TEST_LINUX": "PRD",
+          "TEST_MAC": "PRD"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "cc86d8e0-32c0-ee11-9078-000d3a88ecb1",
+          "TEST": "cc86d8e0-32c0-ee11-9078-000d3a88ecb1",
+          "TEST_LINUX": "cc86d8e0-32c0-ee11-9078-000d3a88ecb1",
+          "TEST_MAC": "cc86d8e0-32c0-ee11-9078-000d3a88ecb1"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      }
+    ]
+  },
+  {
+    "name": "BRA_VBR_environment",
+    "variables": [
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_raw",
+          "TEST": "test_bra_vbr_raw",
+          "TEST_LINUX": "test_bra_vbr_raw",
+          "TEST_MAC": "test_bra_vbr_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "BRA_VBR_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_clean",
+          "TEST": "test_bra_vbr_clean",
+          "TEST_LINUX": "test_bra_vbr_clean",
+          "TEST_MAC": "test_bra_vbr_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_raw",
+          "TEST": "test_bra_vbr_raw",
+          "TEST_LINUX": "test_bra_vbr_raw",
+          "TEST_MAC": "test_bra_vbr_raw"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_raw",
+          "TEST": "test_bra_vbr_raw",
+          "TEST_LINUX": "test_bra_vbr_raw",
+          "TEST_MAC": "test_bra_vbr_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_activemq",
+    "variables": [
+      {
+        "name": "connection_activemq_username",
+        "type": "id_String",
+        "values": {
+          "Default": "admin",
+          "PROD": "admin",
+          "TEST": "admin2"
+        }
+      },
+      {
+        "name": "connection_activemq_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "[ENCRYPTED_PASSWORD]",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "connection_activemq_ipaddress",
+        "type": "id_String",
+        "values": {
+          "Default": "localhost",
+          "PROD": "localhost",
+          "TEST": "localhost"
+        }
+      },
+      {
+        "name": "connection_activemq_port",
+        "type": "id_String",
+        "values": {
+          "Default": "61616",
+          "PROD": "61616",
+          "TEST": "61616"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_BRA_VBR_MSSQL",
+    "variables": [
+      {
+        "name": "connection_BRA_VBR_MSSQL_Password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "connection_BRA_VBR_MSSQL_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "1433",
+          "TEST": "1433",
+          "TEST_LINUX": "1433",
+          "TEST_MAC": "1433"
+        }
+      },
+      {
+        "name": "connection_BRA_VBR_MSSQL_AdditionalParams",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "connection_BRA_VBR_MSSQL_Database",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Biovet",
+          "TEST": "Biovet",
+          "TEST_LINUX": "Biovet",
+          "TEST_MAC": "Biovet"
+        }
+      },
+      {
+        "name": "connection_BRA_VBR_MSSQL_Login",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "vxn_user",
+          "TEST": "vxn_user",
+          "TEST_LINUX": "vxn_user",
+          "TEST_MAC": "vxn_user"
+        }
+      },
+      {
+        "name": "connection_BRA_VBR_MSSQL_Server",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[SERVER_IP]",
+          "TEST": "[SERVER_IP]",
+          "TEST_LINUX": "[SERVER_IP]",
+          "TEST_MAC": "[SERVER_IP]"
+        }
+      },
+      {
+        "name": "connection_BRA_VBR_MSSQL_Schema",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "SIA",
+          "TEST": "SIA",
+          "TEST_LINUX": "SIA",
+          "TEST_MAC": "SIA"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_ITA_VAX_MSSQL",
+    "variables": [
+      {
+        "name": "connection_ITA_VAX_MSSQL_AdditionalParams",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "connection_ITA_VAX_MSSQL_Server",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[SERVER_IP]",
+          "TEST": "[SERVER_IP]",
+          "TEST_LINUX": "[SERVER_IP]",
+          "TEST_MAC": "[SERVER_IP]"
+        }
+      },
+      {
+        "name": "connection_ITA_VAX_MSSQL_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "54625",
+          "TEST": "54625",
+          "TEST_LINUX": "54625",
+          "TEST_MAC": "54625"
+        }
+      },
+      {
+        "name": "connection_ITA_VAX_MSSQL_Schema",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "REVE",
+          "TEST": "REVE",
+          "TEST_LINUX": "REVE",
+          "TEST_MAC": "REVE"
+        }
+      },
+      {
+        "name": "connection_ITA_VAX_MSSQL_Login",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "vaxxinova",
+          "TEST": "vaxxinova",
+          "TEST_LINUX": "vaxxinova",
+          "TEST_MAC": "vaxxinova"
+        }
+      },
+      {
+        "name": "connection_ITA_VAX_MSSQL_Database",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "DW_VAXXINOVA",
+          "TEST": "DW_VAXXINOVA",
+          "TEST_LINUX": "DW_VAXXINOVA",
+          "TEST_MAC": "DW_VAXXINOVA"
+        }
+      },
+      {
+        "name": "connection_ITA_VAX_MSSQL_Password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_JPN_VJP_MSSQL",
+    "variables": [
+      {
+        "name": "connection_JPN_VJP_MSSQL_AdditionalParams",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "connection_JPN_VJP_MSSQL_Password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "connection_JPN_VJP_MSSQL_Login",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Gl_User",
+          "TEST": "talend01",
+          "TEST_LINUX": "talend01",
+          "TEST_MAC": "talend01"
+        }
+      },
+      {
+        "name": "connection_JPN_VJP_MSSQL_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "1433",
+          "TEST": "1433",
+          "TEST_LINUX": "1433",
+          "TEST_MAC": "1433"
+        }
+      },
+      {
+        "name": "connection_JPN_VJP_MSSQL_Database",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "NAV_LIVE",
+          "TEST": "NAV_TEST",
+          "TEST_LINUX": "NAV_TEST",
+          "TEST_MAC": "NAV_TEST"
+        }
+      },
+      {
+        "name": "connection_JPN_VJP_MSSQL_Schema",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "dbo",
+          "TEST": "dbo",
+          "TEST_LINUX": "dbo",
+          "TEST_MAC": "dbo"
+        }
+      },
+      {
+        "name": "connection_JPN_VJP_MSSQL_Server",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[SERVER_IP]",
+          "TEST": "[SERVER_IP]",
+          "TEST_LINUX": "[SERVER_IP]",
+          "TEST_MAC": "[SERVER_IP]"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_SAF_VSA_MSSQL",
+    "variables": [
+      {
+        "name": "connection_SAF_VSA_MSSQL_Server",
+        "type": "id_String",
+        "values": {
+          "Default": "[SERVER_IP]",
+          "PROD": "[SERVER_IP]",
+          "TEST": "[SERVER_IP]",
+          "TEST_LINUX": "[SERVER_IP]"
+        }
+      },
+      {
+        "name": "connection_SAF_VSA_MSSQL_Schema",
+        "type": "id_String",
+        "values": {
+          "Default": "dbo",
+          "PROD": "dbo",
+          "TEST": "dbo",
+          "TEST_LINUX": "dbo"
+        }
+      },
+      {
+        "name": "connection_SAF_VSA_MSSQL_Login",
+        "type": "id_String",
+        "values": {
+          "Default": "Vaxxinova-IDL",
+          "PROD": "Vaxxinova-IDL",
+          "TEST": "Vaxxinova-IDL",
+          "TEST_LINUX": "Vaxxinova-IDL"
+        }
+      },
+      {
+        "name": "connection_SAF_VSA_MSSQL_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "1433",
+          "PROD": "1433",
+          "TEST": "1433",
+          "TEST_LINUX": "1433"
+        }
+      },
+      {
+        "name": "connection_SAF_VSA_MSSQL_Password",
+        "type": "id_Password",
+        "values": {
+          "Default": "[ENCRYPTED_PASSWORD]",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "connection_SAF_VSA_MSSQL_AdditionalParams",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": ""
+        }
+      },
+      {
+        "name": "connection_SAF_VSA_MSSQL_Database",
+        "type": "id_String",
+        "values": {
+          "Default": "DeltamuneReporting",
+          "PROD": "DeltamuneReporting",
+          "TEST": "DeltamuneReporting",
+          "TEST_LINUX": "DeltamuneReporting"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_USA_NPL_MSSQL",
+    "variables": [
+      {
+        "name": "connection_USA_NPL_MSSQL_Password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "connection_USA_NPL_MSSQL_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "9101",
+          "TEST": "9101",
+          "TEST_LINUX": "9101",
+          "TEST_MAC": "9101"
+        }
+      },
+      {
+        "name": "connection_USA_NPL_MSSQL_AdditionalParams",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "connection_USA_NPL_MSSQL_Database",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "BI360DW",
+          "TEST": "BI360DW102622",
+          "TEST_LINUX": "BI360DW102622",
+          "TEST_MAC": "BI360DW102622"
+        }
+      },
+      {
+        "name": "connection_USA_NPL_MSSQL_Login",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "gcompany_bi360",
+          "TEST": "gcompany_bi360",
+          "TEST_LINUX": "gcompany_bi360",
+          "TEST_MAC": "gcompany_bi360"
+        }
+      },
+      {
+        "name": "connection_USA_NPL_MSSQL_Server",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[SERVER_IP]",
+          "TEST": "[SERVER_IP]",
+          "TEST_LINUX": "[SERVER_IP]",
+          "TEST_MAC": "[SERVER_IP]"
+        }
+      },
+      {
+        "name": "connection_USA_NPL_MSSQL_Schema",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "dbo",
+          "TEST": "dbo",
+          "TEST_LINUX": "dbo",
+          "TEST_MAC": "dbo"
+        }
+      }
+    ]
+  },
+  {
+    "name": "DEU_VDA_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vda_clean",
+          "TEST": "test_deu_vda_clean",
+          "TEST_LINUX": "test_deu_vda_clean",
+          "TEST_MAC": "test_deu_vda_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vda_clean",
+          "TEST": "test_deu_vda_clean",
+          "TEST_LINUX": "test_deu_vda_clean",
+          "TEST_MAC": "test_deu_vda_clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vda_raw",
+          "TEST": "test_deu_vda_raw",
+          "TEST_LINUX": "deu_vda_raw",
+          "TEST_MAC": "test_deu_vda_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "DEU_VDD_environment",
+    "variables": [
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vdd_raw",
+          "TEST": "test_deu_vdd_raw",
+          "TEST_LINUX": "test_deu_vdd_raw",
+          "TEST_MAC": "test_deu_vdd_raw"
+        }
+      },
+      {
+        "name": "DEU_Json_File",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "/Users/ahlemzoccar/Documents/Vaxxinova/vaxxinova-dwh-8c18bd136cf5.json",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "DEU_VDD_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vdd_clean",
+          "TEST": "test_deu_vdd_clean",
+          "TEST_LINUX": "test_deu_vdd_clean",
+          "TEST_MAC": "test_deu_vdd_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vdd_clean",
+          "TEST": "test_deu_vdd_clean",
+          "TEST_LINUX": "test_deu_vdd_clean",
+          "TEST_MAC": "test_deu_vdd_clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vdd_raw",
+          "TEST": "test_deu_vdd_raw",
+          "TEST_LINUX": "test_deu_vdd_raw",
+          "TEST_MAC": "test_deu_vdd_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "test_usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://to-increase-food.api.bc.dynamics.com",
+          "TEST": "https://to-increase-food.api.bc.dynamics.com",
+          "TEST_LINUX": "https://to-increase-food.api.bc.dynamics.com",
+          "TEST_MAC": "https://to-increase-food.api.bc.dynamics.com"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_BC_environment_oData",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vda_raw",
+          "TEST": "test_deu_vda_raw",
+          "TEST_LINUX": "test_deu_vda_raw",
+          "TEST_MAC": "test_deu_vda_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vda_raw",
+          "TEST": "test_deu_vda_raw",
+          "TEST_LINUX": "test_deu_vda_raw",
+          "TEST_MAC": "test_deu_vda_raw"
+        }
+      },
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_BC_webhook",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com"
+        }
+      },
+      {
+        "name": "resource_webhook_payload",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "dev"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "Global_Clean",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int",
+          "PROD_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]",
+          "PROD_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Global_Clean",
+          "TEST": "test_global_clean",
+          "TEST_LINUX": "Global_Clean",
+          "TEST_MAC": "test_global_clean",
+          "PROD_MAC": "Global_Clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": "",
+          "PROD_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "/Users/robbiemartens/Documents/TalendBQ_Context_USA_NPL.cfg",
+          "PROD_MAC": "/Users/robbiemartens/Documents/TalendBQ_Context_USA_NPL.cfg"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "PROD_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net",
+          "PROD_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Global_Clean",
+          "TEST": "test_global_clean",
+          "TEST_LINUX": "test_global_clean",
+          "TEST_MAC": "test_global_clean",
+          "PROD_MAC": "Global_Clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Global_Raw",
+          "TEST": "test_global_raw",
+          "TEST_LINUX": "test_global_raw",
+          "TEST_MAC": "test_global_raw",
+          "PROD_MAC": "Global_Raw"
+        }
+      },
+      {
+        "name": "parameter_VBR_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "bra_vbr_clean",
+          "TEST": "test_bra_vbr_clean",
+          "TEST_LINUX": "test_bra_vbr_clean",
+          "TEST_MAC": "test_bra_vbr_clean",
+          "PROD_MAC": "bra_vbr_clean"
+        }
+      },
+      {
+        "name": "parameter_Forecast_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": "",
+          "PROD_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Legacy_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": "",
+          "PROD_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_NPL_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_npl_clean",
+          "TEST": "test_usa_npl_clean",
+          "TEST_LINUX": "test_usa_npl_clean",
+          "TEST_MAC": "test_usa_npl_clean",
+          "PROD_MAC": "usa_npl_clean"
+        }
+      },
+      {
+        "name": "parameter_VDA_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vda_clean",
+          "TEST": "test_deu_vda_clean",
+          "TEST_LINUX": "test_deu_vda_clean",
+          "TEST_MAC": "test_deu_vda_clean",
+          "PROD_MAC": "deu_vda_clean"
+        }
+      },
+      {
+        "name": "parameter_VDD_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "deu_vdd_clean",
+          "TEST": "test_deu_vdd_clean",
+          "TEST_LINUX": "test_deu_vdd_clean",
+          "TEST_MAC": "test_deu_vdd_clean",
+          "PROD_MAC": "deu_vdd_clean"
+        }
+      },
+      {
+        "name": "parameter_VIT_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "ita_vit_clean",
+          "TEST": "test_ita_vit_clean",
+          "TEST_LINUX": "test_ita_vit_clean",
+          "TEST_MAC": "test_ita_vit_clean",
+          "PROD_MAC": "ita_vit_clean"
+        }
+      },
+      {
+        "name": "parameter_VJP_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "jpn_vjp_clean",
+          "TEST": "test_jpn_vjp_clean",
+          "TEST_LINUX": "test_jpn_vjp_clean",
+          "TEST_MAC": "test_jpn_vjp_clean",
+          "PROD_MAC": "jpn_vjp_clean"
+        }
+      },
+      {
+        "name": "parameter_VUS_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_clean",
+          "TEST": "test_usa_vus_clean",
+          "TEST_LINUX": "test_usa_vus_clean",
+          "TEST_MAC": "test_usa_vus_clean",
+          "PROD_MAC": "usa_vus_clean"
+        }
+      },
+      {
+        "name": "parameter_table_name",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Sales_Set_Legacy",
+          "TEST": "Sales_Set_Legacy",
+          "TEST_LINUX": "Sales_Set_Legacy",
+          "TEST_MAC": "Sales_Set_Legacy",
+          "PROD_MAC": "Sales_Set_Legacy"
+        }
+      },
+      {
+        "name": "parameter_DEL_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": " zaf_del_clean",
+          "TEST": "test_ zaf_del_clean",
+          "TEST_LINUX": "test_ zaf_del_clean",
+          "TEST_MAC": "test_ zaf_del_clean",
+          "PROD_MAC": "zaf_del_clean"
+        }
+      }
+    ]
+  },
+  {
+    "name": "Global_Contexts",
+    "variables": [
+      {
+        "name": "resource_flow_temp_folder",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "c:/temp",
+          "TEST": "D:\\Vaxxinova\\BigQueryResource",
+          "TEST_LINUX": "/home/askeox/IntoData/Vaxxinova/temp",
+          "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp",
+          "PROD_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+        }
+      }
+    ]
+  },
+  {
+    "name": "GoogleBigQuery",
+    "variables": [
+      {
+        "name": "[CREDENTIAL_PATH]",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]",
+          "PROD_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_Project_Id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "vaxxinova-dwh",
+          "TEST": "vaxxinova-dwh",
+          "TEST_LINUX": "vaxxinova-dwh",
+          "TEST_MAC": "vaxxinova-dwh",
+          "PROD_MAC": "vaxxinova-dwh"
+        }
+      },
+      {
+        "name": "parameter_GS_Bucket",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "vaxxinova-talend",
+          "TEST": "vaxxinova-talend",
+          "TEST_LINUX": "vaxxinova-talend",
+          "TEST_MAC": "vaxxinova-talend",
+          "PROD_MAC": "vaxxinova-talend"
+        }
+      }
+    ]
+  },
+  {
+    "name": "ITA_IZO_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "ita_vit_clean",
+          "TEST": "test_ita_vit_clean",
+          "TEST_LINUX": "test_ita_vit_clean",
+          "TEST_MAC": "test_ita_vit_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "ita_vit_raw",
+          "TEST": "test_ita_vit_raw",
+          "TEST_LINUX": "test_ita_vit_raw",
+          "TEST_MAC": "test_ita_vit_raw"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "ita_vit_raw",
+          "TEST": "test_ita_vit_raw",
+          "TEST_LINUX": "test_ita_vit_raw",
+          "TEST_MAC": "test_ita_vit_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "JPN_JVP_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "jpn_vjp_clean",
+          "TEST": "test_jpn_vjp_clean",
+          "TEST_LINUX": "test_jpn_vjp_clean",
+          "TEST_MAC": "test_jpn_vjp_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "jpn_vjp_clean",
+          "TEST": "test_jpn_vjp_clean",
+          "TEST_LINUX": "test_jpn_vjp_clean",
+          "TEST_MAC": "test_jpn_vjp_clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "jpn_vjp_raw",
+          "TEST": "test_jpn_vjp_raw",
+          "TEST_LINUX": "test_jpn_vjp_raw",
+          "TEST_MAC": "test_jpn_vjp_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "JPN_PROBI_VUS_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "jpn_vjp_raw",
+          "TEST": "test_jpn_vjp_raw",
+          "TEST_LINUX": "test_jpn_vjp_raw",
+          "TEST_MAC": "test_jpn_vjp_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/6ffacdd8-f58e-42c9-8b30-295938042506/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/6ffacdd8-f58e-42c9-8b30-295938042506/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/6ffacdd8-f58e-42c9-8b30-295938042506/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/6ffacdd8-f58e-42c9-8b30-295938042506/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "6ffacdd8-f58e-42c9-8b30-295938042506",
+          "TEST": "6ffacdd8-f58e-42c9-8b30-295938042506",
+          "TEST_LINUX": "6ffacdd8-f58e-42c9-8b30-295938042506",
+          "TEST_MAC": "6ffacdd8-f58e-42c9-8b30-295938042506"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "Production",
+          "TEST_LINUX": "Production",
+          "TEST_MAC": "Production"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "My%20Company",
+          "TEST": "My%20Company",
+          "TEST_LINUX": "My%20Company",
+          "TEST_MAC": "My%20Company"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      }
+    ]
+  },
+  {
+    "name": "JPN_VJP_environment",
+    "variables": [
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "jpn_vjp_raw",
+          "TEST": "test_jpn_vjp_raw",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "SAF_VSA_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "saf_vsa_clean",
+          "TEST": "test_saf_vsa_clean",
+          "TEST_LINUX": "test_saf_vsa_clean",
+          "TEST_MAC": "test_saf_vsa_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "saf_del_raw",
+          "TEST": "test_saf_del_raw",
+          "TEST_LINUX": "test_saf_del_raw",
+          "TEST_MAC": "test_saf_del_raw"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "saf_del_raw",
+          "TEST": "test_saf_del_raw",
+          "TEST_LINUX": "test_saf_del_raw",
+          "TEST_MAC": "test_saf_del_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_NPL_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_npl_clean",
+          "TEST": "test_usa_npl_clean",
+          "TEST_LINUX": "test_usa_npl_clean",
+          "TEST_MAC": "test_usa_npl_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_npl_clean",
+          "TEST": "test_usa_npl_clean",
+          "TEST_LINUX": "test_usa_npl_clean",
+          "TEST_MAC": "test_usa_npl_clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_npl_raw",
+          "TEST": "test_usa_npl_raw",
+          "TEST_LINUX": "test_usa_npl_raw",
+          "TEST_MAC": "test_usa_npl_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_PROBI_VUS_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "D:\\Vaxxinova\\Talend\\Credencials\\USA_BC_Secret_key_Context.cfg",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "test_usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "D:\\Vaxxinova\\Talend\\Credencials\\USA_VUS_BC_Context_Environment.cfg",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "73d8d632-56e7-49a8-8e85-83b57fd69299",
+          "TEST": "73d8d632-56e7-49a8-8e85-83b57fd69299",
+          "TEST_LINUX": "73d8d632-56e7-49a8-8e85-83b57fd69299",
+          "TEST_MAC": "73d8d632-56e7-49a8-8e85-83b57fd69299"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "Production",
+          "TEST_LINUX": "Production",
+          "TEST_MAC": "Production"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Vaxxinova%20US",
+          "TEST": "Vaxxinova%20US",
+          "TEST_LINUX": "Vaxxinova%20US",
+          "TEST_MAC": "Vaxxinova%20US"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_Vaxxinova_Salesforce",
+    "variables": [
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.salesforce.com/services/Soap/u/57.0",
+          "TEST": "https://test.salesforce.com/services/Soap/u/57.0",
+          "TEST_LINUX": "https://test.salesforce.com/services/Soap/u/57.0",
+          "TEST_MAC": "https://test.salesforce.com/services/Soap/u/57.0",
+          "PROD_MAC": "https://login.salesforce.com/services/Soap/u/57.0"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_userPassword_userId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "salesforce.integration@vaxxinova.com",
+          "TEST": "salesforce.integration@vaxxinova.com.dev",
+          "TEST_LINUX": "salesforce.integration@vaxxinova.com.dev",
+          "TEST_MAC": "salesforce.integration@vaxxinova.com.dev",
+          "PROD_MAC": "salesforce.integration@vaxxinova.com"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_oauth2JwtFlow_keyStorePassword",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": "",
+          "PROD_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_apiVersion",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "57.0",
+          "TEST": "57.0",
+          "TEST_LINUX": "57.0",
+          "TEST_MAC": "57.0",
+          "PROD_MAC": "57.0"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_oauth_clientSecret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]",
+          "PROD_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_userPassword_securityKey",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]",
+          "PROD_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_timeout",
+        "type": "id_Integer",
+        "values": {
+          "Default": "",
+          "PROD": "60000",
+          "TEST": "60000",
+          "TEST_LINUX": "60000",
+          "TEST_MAC": "60000",
+          "PROD_MAC": "60000"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_userPassword_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]",
+          "PROD_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_oauth2JwtFlow_audience",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.salesforce.com",
+          "TEST": "https://test.salesforce.com",
+          "TEST_LINUX": "https://test.salesforce.com",
+          "TEST_MAC": "https://test.salesforce.com",
+          "PROD_MAC": "https://login.salesforce.com"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_sslProperties_keyStorePwd",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": "",
+          "PROD_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_proxy_userPassword_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": "",
+          "PROD_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_VUS_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "D:\\Vaxxinova\\Talend\\Credencials\\USA_BC_Secret_key_Context.cfg",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "usa_vus_raw_dwh",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "D:\\Vaxxinova\\Talend\\Credencials\\USA_VUS_BC_Context_Environment.cfg",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+          "TEST": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+          "TEST_LINUX": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+          "TEST_MAC": "73d8d632-56e7-49a8-8e85-83b57fd69299/"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "Production",
+          "TEST_LINUX": "Production",
+          "TEST_MAC": "Production"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST": "c0fb568e-6ba3-ef11-8a6b-000d3ac371a5",
+          "TEST_LINUX": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST_MAC": "eccc5682-c8ce-ef11-b8ec-7c1e52589656"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_VUS_environment",
+    "variables": [
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_npl_raw",
+          "TEST": "test_usa_npl_raw",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_VUS_environment_GC v2",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_clean",
+          "TEST": "test_usa_vus_clean",
+          "TEST_LINUX": "test_usa_vus_clean",
+          "TEST_MAC": "test_usa_vus_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "/Users/robbiemartens/Documents/Talend/BQ_Context_USA_NPL.cfg"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_clean",
+          "TEST": "test_usa_vus_clean",
+          "TEST_LINUX": "test_usa_vus_clean",
+          "TEST_MAC": "test_usa_vus_clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "test_usa_vus_raw"
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_VUS_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "EW\\vax_bc_api_vax-int",
+          "TEST": "EW\\vax_bc_api_vax-int",
+          "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+          "TEST_MAC": "EW\\vax_bc_api_vax-int"
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+          "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_clean",
+          "TEST": "test_usa_vus_clean",
+          "TEST_LINUX": "test_usa_vus_clean",
+          "TEST_MAC": "test_usa_vus_clean"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "/Users/robbiemartens/Documents/Talend/BQ_Context_USA_NPL.cfg"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net",
+          "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+          "TEST_MAC": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_clean",
+          "TEST": "test_usa_vus_clean",
+          "TEST_LINUX": "test_usa_vus_clean",
+          "TEST_MAC": "test_usa_vus_clean"
+        }
+      },
+      {
+        "name": "parameter_Raw_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "test_usa_vus_raw"
+        }
+      }
+    ]
+  }
+]

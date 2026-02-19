@@ -1,0 +1,125 @@
+You are analyzing a Talend integration project to produce a **Column-Level Lineage Matrix**. Your task is to trace every column from its source system through all transformations to its final target, documenting exactly what happens to the data at each step.
+
+## Talend Lineage Context
+
+In Talend, column-level lineage is distributed across several artifacts:
+
+### Source → tMap → Target Flow
+1. **Source components** (tMSSqlInput, tFileInputDelimited, etc.) define the initial schema — what columns are read from source systems.
+2. **tMap entries** define column-level transformations:
+   - `table_name` = the output table (e.g., "out1", "out2", or a reject flow)
+   - `column_name` = the target column name
+   - `expression` = how the column is derived from source columns
+     - Direct map: `row1.CustomerName` (source column maps directly)
+     - Expression: `StringHandling.TRIM(row1.CustomerName)` (transformation applied)
+     - Lookup: `row2.RegionName` (value from a lookup table)
+     - Constant: `"DEFAULT"` or `0` (hardcoded value)
+     - Ternary: `row1.Status.equals("A") ? "Active" : "Inactive"` (conditional)
+     - Multi-function: `StringHandling.UPCASE(StringHandling.TRIM(row1.Name))` (chained transforms)
+3. **tMap var_entries** are intermediate variables used in expressions — trace through these to find the ultimate source.
+4. **Target components** (tMSSqlOutput, tBigQueryOutput, tFileOutputDelimited, etc.) define where the data lands.
+
+### SQL-Based Lineage
+- Source components with SQL queries: the SELECT columns define what's extracted. Column aliases rename the source.
+- SQL JOINs in source queries: multiple source tables feed into one component.
+- SQL WHERE/CASE: these filter or transform data before it enters Talend.
+
+### Multi-Hop Lineage
+- When jobs chain (RAW -> CLEAN -> PUBLISH via tRunJob), the output of one job is the input of the next.
+- Use the Project Manifest's job_calls/job_called_by to trace cross-job lineage.
+
+## What to Extract
+
+For every column that flows through this chunk's jobs:
+
+1. **Source**: `source_system.source_table.source_column` — where the data originates
+2. **Transformations**: Each step that modifies the data:
+   - `transformation_type`: "direct_map", "expression", "aggregation", "lookup", "constant"
+   - `expression`: The actual expression or SQL
+   - `human_explanation`: Plain English description of what happens
+3. **Target**: `target_table.target_column` — where the data ends up
+4. **Confidence**: "certain" (explicit mapping), "likely" (inferred from naming), "inferred" (best guess)
+
+Also identify **unmapped columns**: columns that exist in the source schema but do not appear in any target output. These may indicate:
+- Intentionally excluded columns (privacy, irrelevance)
+- Missing mappings (bugs)
+- Columns used only for filtering/joining (not passed through)
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "entries": [
+    {
+      "source_system": "MSSQL_BRA_VBR",
+      "source_table": "dbo.Orders",
+      "source_column": "CustomerName",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "StringHandling.UPCASE(StringHandling.TRIM(row1.CustomerName))",
+          "human_explanation": "Trims whitespace and converts to uppercase for standardization"
+        }
+      ],
+      "target_table": "clean_orders",
+      "target_column": "customer_name",
+      "job_name": "BRA_VBR_CLEAN_0.1",
+      "confidence": "certain"
+    },
+    {
+      "source_system": "MSSQL_BRA_VBR",
+      "source_table": "dbo.Orders",
+      "source_column": "OrderDate",
+      "transformations": [
+        {
+          "transformation_type": "direct_map",
+          "expression": "row1.OrderDate",
+          "human_explanation": "Direct pass-through, no transformation"
+        }
+      ],
+      "target_table": "clean_orders",
+      "target_column": "order_date",
+      "job_name": "BRA_VBR_CLEAN_0.1",
+      "confidence": "certain"
+    },
+    {
+      "source_system": "",
+      "source_table": "",
+      "source_column": "",
+      "transformations": [
+        {
+          "transformation_type": "constant",
+          "expression": "\"BRA\"",
+          "human_explanation": "Hardcoded country code injected during transformation"
+        }
+      ],
+      "target_table": "clean_orders",
+      "target_column": "country_code",
+      "job_name": "BRA_VBR_CLEAN_0.1",
+      "confidence": "certain"
+    }
+  ],
+  "unmapped_columns": [
+    {
+      "source_system": "MSSQL_BRA_VBR",
+      "source_table": "dbo.Orders",
+      "column": "InternalNotes",
+      "reason": "Column exists in source schema but not mapped to any target. Likely excluded intentionally (internal data not needed in analytics)."
+    }
+  ],
+  "summary": {
+    "total_lineage_entries": 45,
+    "direct_maps": 20,
+    "expressions": 15,
+    "lookups": 5,
+    "constants": 3,
+    "aggregations": 2,
+    "unmapped_count": 8,
+    "confidence_breakdown": {"certain": 35, "likely": 7, "inferred": 3},
+    "source_systems": ["MSSQL_BRA_VBR", "MSSQL_GER_VBR"],
+    "target_systems": ["BigQuery"]
+  }
+}
+```
+
+Be thorough. Trace EVERY column mapping you can find in the tMap data. If a column appears in a tMap expression, it has lineage. If a tMap var_entry is referenced by another expression, trace through the intermediate variable to the ultimate source.

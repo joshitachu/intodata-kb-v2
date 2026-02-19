@@ -1,0 +1,120 @@
+You are analyzing a Talend integration project. Your task is to produce an **External Systems Catalog** — a comprehensive inventory of every external system, service, database, file system, and API that the jobs in this chunk connect to, along with connection details, usage patterns, and a topology diagram.
+
+## Talend Context
+Talend jobs interact with external systems through specialized connector components:
+- **Database connectors**: tMSSqlInput/Output/Connection, tOracleInput/Output, tMySqlInput/Output, tBigQueryInput/Output/Connection, tPostgresqlInput/Output, etc. These reference connection metadata (host, port, database, schema, credentials) either inline (BUILT_IN) or from shared metadata (REPOSITORY).
+- **File connectors**: tFileInputDelimited, tFileOutputDelimited, tFileInputExcel, tFileOutputExcel, tFileList, tFileDelete, tFileCopy. These read/write from local or network file paths.
+- **Cloud storage**: tS3Input/Output, tAzureBlobInput/Output, tGoogleStorageInput/Output. Cloud object storage connectors.
+- **API connectors**: tRESTClient, tSOAP, tHTTPRequest. HTTP-based service integrations.
+- **Message queues**: tKafkaInput/Output, tActiveMQInput/Output, tJMSInput/Output.
+- **SFTP/FTP**: tFTPGet, tFTPPut, tSFTP. File transfer protocol connectors.
+- **Email**: tSendMail, tPOP3. Email sending/receiving components.
+- **Metadata connections**: Defined in the Talend repository under `metadata/connections/`, these are reusable connection configurations referenced by multiple jobs. They contain host, port, database, schema, username, and (encrypted) password.
+- **Connection components**: tMSSqlConnection, tBigQueryConnection, etc. — these open a persistent connection at the start of a job, and subsequent Input/Output components in the same job reuse it via "Use existing connection" setting.
+
+## What to Extract
+
+1. **External system inventory**: For every external system detected, provide:
+   - System name (derived from metadata connection name or component configuration)
+   - System type (MSSQL, BigQuery, SFTP, REST API, local filesystem, etc.)
+   - Connection details: host/endpoint, port, database/dataset name, schema
+   - Authentication method: username/password, service account, API key, certificate, anonymous
+   - Which context variables are used for connection parameters
+   - Whether the connection is REPOSITORY-based (shared) or BUILT_IN (per-component)
+
+2. **Usage mapping**: For each external system:
+   - Which jobs connect to it
+   - What operations are performed (READ, WRITE, READ_WRITE, DELETE)
+   - Which specific tables/views/endpoints are accessed
+   - Estimated data volume indicators (if queries contain LIMIT, TOP, or date filters)
+
+3. **Criticality rating**: Rate each external system:
+   - **CRITICAL**: Production databases written to, systems where data loss would be severe
+   - **HIGH**: Production databases read from, systems feeding downstream processes
+   - **MEDIUM**: Staging/temporary storage, logging systems
+   - **LOW**: Development/test systems, optional integrations
+   - Explain the rationale for each rating
+
+4. **Connection patterns**:
+   - Which jobs open their own connections vs. use connections opened by parent jobs?
+   - Are there connection pools or shared connections across subjobs?
+   - Are connections properly closed (look for tMSSqlClose, tBigQueryClose, etc. in tPostJob)?
+
+5. **Network topology**: Identify the network flow:
+   - Source systems (data originates here)
+   - Intermediate systems (staging, temp storage)
+   - Target systems (final destination)
+   - Direction of data flow between systems
+
+6. **Security observations**:
+   - Systems using plaintext credentials vs. encrypted
+   - Systems accessible without authentication
+   - Systems using hardcoded IPs vs. DNS names
+   - Any VPN/tunnel indicators in connection strings
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "external_systems": [
+    {
+      "system_id": "BRA_VBR_MSSQL",
+      "system_name": "Vaxxinova Brazil VBR MSSQL Database",
+      "system_type": "MSSQL",
+      "connection_details": {
+        "host": "context.BRA_VBR_Host (PROD: bra-sql-01.vaxxinova.local)",
+        "port": "1433",
+        "database": "VaxxinovaVBR",
+        "schema": "dbo",
+        "authentication": "SQL Server Authentication (username/password from context variables)"
+      },
+      "connection_mode": "REPOSITORY",
+      "metadata_reference": "metadata/connections/BRA_VBR_MSSQL_0.1.item",
+      "criticality": "HIGH",
+      "criticality_rationale": "Source of truth for Brazil VBR sales data; read-only access but feeds all downstream BigQuery tables",
+      "used_by_jobs": [
+        {
+          "job": "BRA_VBR_RAW_0.1",
+          "operation": "READ",
+          "tables_accessed": ["dbo.VW_SalesOrders", "dbo.VW_Customers"],
+          "components": ["tMSSqlInput_1", "tMSSqlInput_2"]
+        }
+      ],
+      "connection_lifecycle": {
+        "opened_by": "tMSSqlConnection_1 in tPreJob",
+        "closed_by": "tMSSqlClose_1 in tPostJob",
+        "shared_across_subjobs": true
+      },
+      "security_notes": ["Uses encrypted password context variable", "Connects via DNS hostname"]
+    }
+  ],
+  "topology_mermaid": "graph LR\n  subgraph Sources\n    MSSQL_BRA[BRA VBR MSSQL]\n    MSSQL_GER[GER MSSQL]\n    SFTP[Partner SFTP]\n  end\n  subgraph Processing\n    Talend[Talend Jobs]\n  end\n  subgraph Targets\n    BQ[BigQuery]\n    BLOB[Azure Blob]\n  end\n  MSSQL_BRA -->|SQL Read| Talend\n  MSSQL_GER -->|SQL Read| Talend\n  SFTP -->|File Download| Talend\n  Talend -->|Bulk Insert| BQ\n  Talend -->|File Upload| BLOB",
+  "system_dependency_matrix": [
+    {
+      "system": "BRA_VBR_MSSQL",
+      "depends_on": [],
+      "depended_on_by": ["BigQuery raw_bra_vbr dataset"],
+      "if_unavailable": "All BRA VBR RAW jobs will fail; downstream CLEAN and PUBLISH jobs will have stale data"
+    }
+  ],
+  "risks": [
+    {
+      "system": "BRA_VBR_MSSQL",
+      "risk": "No connection timeout configured — job may hang indefinitely if database is unreachable",
+      "severity": "medium",
+      "recommendation": "Add connection timeout context variable and configure in metadata connection"
+    }
+  ],
+  "summary": {
+    "total_external_systems": 8,
+    "databases": 4,
+    "file_systems": 2,
+    "cloud_services": 1,
+    "apis": 1,
+    "critical_systems": 2,
+    "high_systems": 3
+  }
+}
+```
+
+Be thorough. Every database, file path, API endpoint, and external service must be cataloged. Do not miss connections that are configured at the metadata level but not immediately visible in the job XML.

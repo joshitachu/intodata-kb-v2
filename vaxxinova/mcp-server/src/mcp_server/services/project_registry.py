@@ -1,0 +1,172 @@
+"""Project registry — CRUD for projects in PostgreSQL."""
+
+from __future__ import annotations
+
+import datetime
+import logging
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mcp_server.db.models import Project, ScanRun
+
+logger = logging.getLogger(__name__)
+
+
+class ProjectRegistry:
+    """Manages project registration and status in the database."""
+
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def add_project(
+        self,
+        project_id: str,
+        local_path: str,
+        *,
+        display_name: str | None = None,
+        repo_url: str | None = None,
+        platform: str = "talend",
+        source_type: str = "local",
+    ) -> Project:
+        """Register a new project. If it already exists, update its path."""
+        existing = await self.get_project(project_id)
+        if existing:
+            existing.local_path = local_path
+            existing.repo_url = repo_url
+            existing.platform = platform
+            existing.source_type = source_type
+            existing.status = "registered"
+            existing.error_message = None
+            if display_name:
+                existing.display_name = display_name
+            await self.db.flush()
+            logger.info(f"Updated existing project: {project_id}")
+            return existing
+
+        project = Project(
+            id=project_id,
+            display_name=display_name or project_id,
+            repo_url=repo_url,
+            local_path=local_path,
+            platform=platform,
+            source_type=source_type,
+            status="registered",
+        )
+        self.db.add(project)
+        await self.db.flush()
+        logger.info(f"Registered new project: {project_id}")
+        return project
+
+    async def get_project(self, project_id: str) -> Project | None:
+        result = await self.db.execute(
+            select(Project).where(Project.id == project_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_projects(self) -> list[Project]:
+        result = await self.db.execute(
+            select(Project).order_by(Project.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def update_status(
+        self,
+        project_id: str,
+        status: str,
+        *,
+        error_message: str | None = None,
+    ) -> None:
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                status=status,
+                error_message=error_message,
+                updated_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+        )
+        await self.db.flush()
+
+    async def update_scan_result(
+        self,
+        project_id: str,
+        *,
+        scan_result_path: str,
+        output_dir: str,
+        job_count: int,
+    ) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                scan_result_path=scan_result_path,
+                output_dir=output_dir,
+                job_count=job_count,
+                last_scan_at=now,
+                status="ready",
+                error_message=None,
+                updated_at=now,
+            )
+        )
+        await self.db.flush()
+
+    async def update_generate_result(
+        self, project_id: str, *, doc_count: int
+    ) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                doc_count=doc_count,
+                last_generate_at=now,
+                status="ready",
+                updated_at=now,
+            )
+        )
+        await self.db.flush()
+
+    async def update_rag_push(self, project_id: str) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(last_rag_push_at=now, updated_at=now)
+        )
+        await self.db.flush()
+
+    async def create_scan_run(
+        self,
+        project_id: str,
+        triggered_by: str = "api",
+    ) -> ScanRun:
+        run = ScanRun(
+            project_id=project_id,
+            triggered_by=triggered_by,
+            status="running",
+        )
+        self.db.add(run)
+        await self.db.flush()
+        return run
+
+    async def complete_scan_run(
+        self,
+        run_id: int,
+        *,
+        status: str = "completed",
+        job_count: int = 0,
+        log_file: str | None = None,
+    ) -> None:
+        await self.db.execute(
+            update(ScanRun)
+            .where(ScanRun.id == run_id)
+            .values(
+                status=status,
+                job_count=job_count,
+                log_file=log_file,
+                completed_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+        )
+        await self.db.flush()

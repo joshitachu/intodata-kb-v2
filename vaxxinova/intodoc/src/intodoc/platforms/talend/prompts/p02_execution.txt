@@ -1,0 +1,86 @@
+You are analyzing a Talend integration project. Your task is to produce an **Execution Logic Analysis** — a complete mapping of control flow, execution order, trigger conditions, and orchestration chains for every job in this chunk.
+
+## Talend Context
+In Talend, execution flow is governed by several mechanisms:
+- **SUBJOB_OK / SUBJOB_ERROR triggers**: After a component's subjob completes, these triggers fire the next subjob. SUBJOB_OK fires on success, SUBJOB_ERROR fires on failure. A job is typically a chain of subjobs connected by these triggers.
+- **COMPONENT_OK / COMPONENT_ERROR**: Fine-grained triggers that fire after a single component finishes (not the whole subjob).
+- **tPreJob / tPostJob**: Special components that run before and after the main job body respectively. tPreJob is used for setup (e.g., opening connections, setting variables). tPostJob is used for cleanup (e.g., closing connections, deleting temp files). These run regardless of main job success/failure.
+- **tRunJob**: Orchestration component that calls a child job. The parent job pauses until the child completes. tRunJob can pass context variables to the child and optionally propagate child errors via DIE_ON_CHILD_ERROR.
+- **Orchestration chains**: A master/parent job that calls multiple child jobs in sequence using tRunJob components connected by SUBJOB_OK triggers. This defines the overall ETL execution order.
+- **tFlowToIterate + tLoop**: Components that convert a data flow into an iteration, executing downstream components once per row or iteration.
+- **Parallel execution**: Talend supports parallelizing subjobs. Look for tParallelize components or independent subjob chains with no trigger dependencies.
+- **Run-if links**: Conditional triggers that evaluate an expression before firing (shown as "RunIf" connection type with a condition expression).
+
+## What to Extract
+For each job in this chunk:
+
+1. **Subjob chains**: Identify each subjob (a group of components connected by FLOW connections) and the trigger connections between subjobs. List them in execution order.
+2. **tPreJob / tPostJob blocks**: What setup and teardown operations does each job perform? What components are in these blocks?
+3. **Trigger conditions**: For every SUBJOB_OK, SUBJOB_ERROR, COMPONENT_OK, COMPONENT_ERROR, and RunIf connection, document the source component, target component, trigger type, and any condition expression.
+4. **tRunJob orchestration**: For each tRunJob component, identify the child job being called, what context variables are passed, whether DIE_ON_CHILD_ERROR is enabled, and the expected execution order within the parent job.
+5. **Execution order**: Produce a numbered, sequential execution order for each job, accounting for tPreJob (runs first), main body subjob chains (in trigger order), and tPostJob (runs last).
+6. **Parallelism**: Identify any parallel execution paths — subjobs that can run concurrently because they have no trigger dependencies on each other.
+7. **Iteration loops**: Identify tFlowToIterate, tLoop, tForEach patterns and what they iterate over.
+8. **Dead paths**: Subjobs or components that are present but unreachable (no incoming trigger and not a starting subjob).
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "jobs": [
+    {
+      "job_name": "BRA_VBR_RAW_0.1",
+      "location": "BRA/VBR/BRA_VBR_RAW_0.1.item",
+      "pre_job": {
+        "components": ["tPreJob_1 -> tContextLoad_1"],
+        "description": "Loads context variables from file before main execution"
+      },
+      "post_job": {
+        "components": ["tPostJob_1 -> tFileDelete_1"],
+        "description": "Deletes temporary staging file after job completes"
+      },
+      "subjob_chains": [
+        {
+          "order": 1,
+          "subjob_root": "tMSSqlInput_1",
+          "components_in_subjob": ["tMSSqlInput_1", "tMap_1", "tBigQueryOutput_1"],
+          "trigger_to_next": {
+            "type": "SUBJOB_OK",
+            "target": "tMSSqlInput_2",
+            "condition": null
+          }
+        }
+      ],
+      "execution_order": [
+        "1. tPreJob: Load context variables",
+        "2. Subjob A: Read from MSSQL VW_Sales -> tMap transform -> Write to BigQuery",
+        "3. Subjob B: Read from MSSQL VW_Customers -> Write to BigQuery",
+        "4. tPostJob: Delete temp file"
+      ],
+      "tRunJob_calls": [
+        {
+          "component": "tRunJob_1",
+          "child_job": "BRA_VBR_CLEAN_0.1",
+          "context_variables_passed": ["db_host", "db_name"],
+          "die_on_child_error": true,
+          "position_in_chain": 3
+        }
+      ],
+      "parallel_paths": [],
+      "iteration_loops": [],
+      "dead_paths": [],
+      "flowchart_mermaid": "graph TD\n  preJob[tPreJob: Load Context] --> subjob1[MSSQL Read -> tMap -> BQ Write]\n  subjob1 -->|SUBJOB_OK| subjob2[MSSQL Read -> BQ Write]\n  subjob2 -->|SUBJOB_OK| postJob[tPostJob: Cleanup]\n  subjob1 -->|SUBJOB_ERROR| errorHandler[tDie: Abort]"
+    }
+  ],
+  "orchestration_diagram_mermaid": "graph TD\n  master[MasterJob] -->|tRunJob| child1[BRA_VBR_RAW]\n  child1 -->|SUBJOB_OK| child2[BRA_VBR_CLEAN]\n  child2 -->|SUBJOB_OK| child3[BRA_VBR_PUBLISH]\n  ...",
+  "execution_risks": [
+    {
+      "job": "BRA_VBR_RAW_0.1",
+      "risk": "No SUBJOB_ERROR handler on subjob 2 — failure will be silent",
+      "severity": "high"
+    }
+  ]
+}
+```
+
+Be thorough. Trace every trigger connection. Do not assume execution order — derive it from the actual trigger chain. Flag any jobs with ambiguous or missing execution paths.

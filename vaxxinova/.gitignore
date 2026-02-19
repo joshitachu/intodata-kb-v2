@@ -1,0 +1,15 @@
+# Generated output (per-project docs, logs)
+output/
+
+# Scanner-produced generated artifacts (not source)
+intodoc/docs/
+
+# Registered repo copies (use vaxxinova-talend/ as the canonical source)
+mcp-server/data/repos/
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/

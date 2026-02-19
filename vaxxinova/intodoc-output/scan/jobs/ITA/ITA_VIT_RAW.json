@@ -1,0 +1,1488 @@
+{
+  "name": "ITA_VIT_RAW",
+  "path": "ITA/VIT/ITA_VIT_RAW_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2023-12-18T15:26:33.071+0100",
+  "modification_date": "2025-11-09T10:19:44.036-0800",
+  "components": [
+    {
+      "unique_name": "cleanup_temp_file_storage_1",
+      "component_type": "cleanup_temp_file_storage",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1",
+          "value": "COMPONENT_OK",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1:COMPONENT_LIST",
+          "value": "tPostjob_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "cleanup_temp_file_storage",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPostjob_1",
+      "component_type": "tPostjob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "Vaxxinova_Logging_1",
+      "component_type": "Vaxxinova_Logging",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "Vaxxinova_Logging",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tDBInput_4",
+      "component_type": "tMSSqlInput",
+      "params": [
+        {
+          "name": "USE_EXISTING_CONNECTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_pZBakJ2wEe6M6pc7WRkjUQ",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "HOST",
+          "value": "context.connection_ITA_VAX_MSSQL_Server",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DRIVER",
+          "value": "MSSQL_PROP",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TYPE",
+          "value": "MSSQL",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PORT",
+          "value": "context.connection_ITA_VAX_MSSQL_Port",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DB_SCHEMA",
+          "value": "context.connection_ITA_VAX_MSSQL_Schema",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DBNAME",
+          "value": "context.connection_ITA_VAX_MSSQL_Database",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USER",
+          "value": "context.connection_ITA_VAX_MSSQL_Login",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PASS",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"TABANALISI\"",
+          "field_type": "DBTABLE"
+        },
+        {
+          "name": "QUERYSTORE",
+          "value": "\"\"",
+          "field_type": "QUERYSTORE_TYPE"
+        },
+        {
+          "name": "QUERYSTORE:QUERYSTORE_TYPE",
+          "value": "BUILT_IN",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "GUESS_SCHEMA"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT  \\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DOC_DATA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_NUMERO_RIGA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_NUMERO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_ANNO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ORIGINE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FASE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DATA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DATA_ANNO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DATA_TRIMESTRE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DATA_MESE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DATA_SETTIMANA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DATA_GIORNO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DATA_CONSEGNA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DATA_CONSEGNA_ANNO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DATA_CONSEGNA_TRIMESTRE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DATA_CONSEGNA_MESE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DATA_CONSEGNA_SETTIMANA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DATA_CONSEGNA_GIORNO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_CAUSALE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_TIPO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_CAUSALE_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_CAUSALE_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_DEFINITIVA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.TIPO_BUDGET,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DOC_TIPO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.MOV_TIPO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.MOV_TIPO_DESCRIZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.MOV_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.OPERAZIONE_DATA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.NAZI_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.NAZI_DESCRIZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.NAZI_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_IT_EXT,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.PROV,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ZONA_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ZONA_DESCRIZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ZONA_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLIE_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DEST_CLI,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.DEST_CLI_PROV,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.AGEN_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ARTI_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ARTI_STABILIMENTO_STORICO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.VCONT_CLASS,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.VCONT_CONTO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.VCONT_SOTTC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.VCONT_CONTM,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FATT_TIPO_QTA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.PEZZ_FATT,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.SCONT_MERC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.Q000,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.QTA_VEND_ART_FASE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.PREZ_UNIT_LORDO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CAMBIO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.RLOR,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.SCO1_PERC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.SCO2_PERC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.SCO3_PERC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.S001_SCONTO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.R_IM_NO_EXTRASCONTO_AS,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.R_IM_NO_EXTRASCONTO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.S002_EXTRASCONTO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.R_IM,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.R_NF,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ANTICIPO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.C100,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.C110,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.C_DVC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.R_NE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_RAGSOC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_COD_RAGSOC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_VIA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_CAP,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_LOCALITA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_PROV,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_NAZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_DEST_ITA_EXT,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CDCLI,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_RAG_SOC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_COD_RAG_SOC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_INDIRIZZO,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_LOCALITA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_PROVINCIA,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_CAP,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_ZONA_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_ZONA_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_ZONA_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_AGENTE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_CAT_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.CLI_CAT_DESCRIZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.AGE_DESCRIZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.AGE_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_DESCRIZIONE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_UM,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_TIPO_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_TIPO_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_TIPO_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_CAT_CONTAB_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_CAT_CONTAB_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_CAT_CONTAB_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_CLAS_MERC_CODICE,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_CLAS_MERC_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_CLAS_MERC_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_RAMO_AZIENDA_COD,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_RAMO_AZIENDA_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_RAMO_AZIENDA_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_SETTORE_COD,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_SETTORE_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_SETTORE_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_STABILIMENTO_COD,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_STABILIMENTO_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.ART_STABILIMENTO_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FASE_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FASE_COD_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FASE_STABILIMENTO_COD,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FASE_STABILIMENTO_DESC,\n\t\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI.FASE_STABILIMENTO_COD_DESC\"\n+\"\nFROM\t\\\"\"+context.connection_ITA_VAX_MSSQL_Schema+\"\\\".TABANALISI\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "NOTE",
+          "value": "This option only applies when deploying and running in the Talend Runtime",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_DATASOURCE_ALIAS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATASOURCE_ALIAS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "MAPPING",
+          "value": "id_MSSQL",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "context.connection_ITA_VAX_MSSQL_AdditionalParams",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVE_DIR_AUTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "TRIM_ALL_COLUMN",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_QUERY_TIMEOUT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY_TIMEOUT_IN_SECONDS",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "__TABLE__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": "connection_ITA_VAX_MSSQL"
+    },
+    {
+      "unique_name": "tMap_4",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_cUdioJ2xEe6M6pc7WRkjUQ-tMap_4-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_4",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\"+context.parameter_Raw_Prefix +\"_tabalanisi.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Raw_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"TABALANISI\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "TRUNCATE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.parameter_Raw_Prefix+\"_tabalanisi.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "vaxxinova_dwh",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "OnComponentOk1",
+      "source": "tPostjob_1",
+      "target": "cleanup_temp_file_storage_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row4",
+      "source": "tDBInput_4",
+      "target": "tMap_4",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "load_Tabanalisi",
+      "source": "tMap_4",
+      "target": "tBigQueryOutput_4",
+      "connector_name": "FLOW",
+      "line_style": 0
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "connection_ITA_VAX_MSSQL_AdditionalParams",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": ""
+          }
+        },
+        {
+          "name": "connection_ITA_VAX_MSSQL_Database",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "DW_VAXXINOVA",
+            "TEST": "DW_VAXXINOVA",
+            "TEST_LINUX": "DW_VAXXINOVA",
+            "TEST_MAC": "DW_VAXXINOVA"
+          }
+        },
+        {
+          "name": "connection_ITA_VAX_MSSQL_Login",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova",
+            "TEST": "vaxxinova",
+            "TEST_LINUX": "vaxxinova",
+            "TEST_MAC": "vaxxinova"
+          }
+        },
+        {
+          "name": "connection_ITA_VAX_MSSQL_Password",
+          "type": "id_Password",
+          "values": {
+            "Default": "",
+            "PROD": "[ENCRYPTED_PASSWORD]",
+            "TEST": "[ENCRYPTED_PASSWORD]",
+            "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+            "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+          }
+        },
+        {
+          "name": "connection_ITA_VAX_MSSQL_Port",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "54625",
+            "TEST": "54625",
+            "TEST_LINUX": "54625",
+            "TEST_MAC": "54625"
+          }
+        },
+        {
+          "name": "connection_ITA_VAX_MSSQL_Schema",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "REVE",
+            "TEST": "REVE",
+            "TEST_LINUX": "REVE",
+            "TEST_MAC": "REVE"
+          }
+        },
+        {
+          "name": "connection_ITA_VAX_MSSQL_Server",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[SERVER_IP]",
+            "TEST": "[SERVER_IP]",
+            "TEST_LINUX": "[SERVER_IP]",
+            "TEST_MAC": "[SERVER_IP]"
+          }
+        },
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "c:/temp",
+            "TEST": "c:/temp",
+            "TEST_LINUX": "/home/talend/IntoData/Vaxxinova/temp",
+            "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-talend",
+            "TEST": "vaxxinova-talend",
+            "TEST_LINUX": "vaxxinova-talend",
+            "TEST_MAC": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "vaxxinova-dwh",
+            "TEST": "vaxxinova-dwh",
+            "TEST_LINUX": "vaxxinova-dwh",
+            "TEST_MAC": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": "[CREDENTIAL_PATH]",
+            "TEST_MAC": "[CREDENTIAL_PATH]"
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "ita_vit_raw",
+            "TEST": "test_ita_vit_raw",
+            "TEST_LINUX": "test_ita_vit_raw",
+            "TEST_MAC": "test_ita_vit_raw"
+          }
+        },
+        {
+          "name": "parameter_bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_LINUX": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+            "TEST_MAC": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+          }
+        },
+        {
+          "name": "parameter_BC_Company_Identifier",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": "",
+            "TEST_MAC": ""
+          }
+        },
+        {
+          "name": "parameter_BC_EndPoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://bc-vax-api.ew-group.net",
+            "TEST": "https://bc-vax-api.ew-group.net",
+            "TEST_LINUX": "https://bc-vax-api.ew-group.net",
+            "TEST_MAC": "https://bc-vax-api.ew-group.net"
+          }
+        },
+        {
+          "name": "parameter_bc_password",
+          "type": "id_Password",
+          "values": {
+            "Default": "",
+            "PROD": "[ENCRYPTED_PASSWORD]",
+            "TEST": "[ENCRYPTED_PASSWORD]",
+            "TEST_LINUX": "[ENCRYPTED_PASSWORD]",
+            "TEST_MAC": "[ENCRYPTED_PASSWORD]"
+          }
+        },
+        {
+          "name": "parameter_bc_username",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "EW\\vax_bc_api_vax-int",
+            "TEST": "EW\\vax_bc_api_vax-int",
+            "TEST_LINUX": "EW\\vax_bc_api_vax-int",
+            "TEST_MAC": "EW\\vax_bc_api_vax-int"
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "ita_vit_clean",
+            "TEST": "test_ita_vit_clean",
+            "TEST_LINUX": "test_ita_vit_clean",
+            "TEST_MAC": "test_ita_vit_clean"
+          }
+        },
+        {
+          "name": "parameter_Raw_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "ita_vit_raw",
+            "TEST": "test_ita_vit_raw",
+            "TEST_LINUX": "test_ita_vit_raw",
+            "TEST_MAC": "test_ita_vit_raw"
+          }
+        },
+        {
+          "name": "resource_file_BC_environment",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": "",
+            "TEST_MAC": ""
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "row4"
+      ],
+      "output_tables": [
+        "load_Tabanalisi"
+      ],
+      "entries": [
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DOC_DATA",
+          "expression": "row4.DOC_DATA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_NUMERO_RIGA",
+          "expression": "row4.FATT_NUMERO_RIGA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_NUMERO",
+          "expression": "row4.FATT_NUMERO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_ANNO",
+          "expression": "row4.FATT_ANNO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ORIGINE",
+          "expression": "row4.ORIGINE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FASE",
+          "expression": "row4.FASE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DATA",
+          "expression": "row4.FATT_DATA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DATA_ANNO",
+          "expression": "row4.FATT_DATA_ANNO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DATA_TRIMESTRE",
+          "expression": "row4.FATT_DATA_TRIMESTRE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DATA_MESE",
+          "expression": "row4.FATT_DATA_MESE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DATA_SETTIMANA",
+          "expression": "row4.FATT_DATA_SETTIMANA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DATA_GIORNO",
+          "expression": "row4.FATT_DATA_GIORNO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DATA_CONSEGNA",
+          "expression": "row4.DATA_CONSEGNA.before(TalendDate.parseDate(\"yyyy-MM-dd HH:mm:ss\", \"1970-01-01 00:00:00\")) ? TalendDate.parseDate(\"yyyy-MM-dd HH:mm:ss\", \"1970-01-01 00:00:00\") : row4.DATA_CONSEGNA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DATA_CONSEGNA_ANNO",
+          "expression": "row4.DATA_CONSEGNA_ANNO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DATA_CONSEGNA_TRIMESTRE",
+          "expression": "row4.DATA_CONSEGNA_TRIMESTRE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DATA_CONSEGNA_MESE",
+          "expression": "row4.DATA_CONSEGNA_MESE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DATA_CONSEGNA_SETTIMANA",
+          "expression": "row4.DATA_CONSEGNA_SETTIMANA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DATA_CONSEGNA_GIORNO",
+          "expression": "row4.DATA_CONSEGNA_GIORNO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_CAUSALE",
+          "expression": "row4.FATT_CAUSALE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_TIPO",
+          "expression": "row4.FATT_TIPO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_CAUSALE_DESC",
+          "expression": "row4.FATT_CAUSALE_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_CAUSALE_COD_DESC",
+          "expression": "row4.FATT_CAUSALE_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_DEFINITIVA",
+          "expression": "row4.FATT_DEFINITIVA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "TIPO_BUDGET",
+          "expression": "row4.TIPO_BUDGET"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DOC_TIPO",
+          "expression": "row4.DOC_TIPO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "MOV_TIPO",
+          "expression": "row4.MOV_TIPO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "MOV_TIPO_DESCRIZIONE",
+          "expression": "row4.MOV_TIPO_DESCRIZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "MOV_COD_DESC",
+          "expression": "row4.MOV_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "OPERAZIONE_DATA",
+          "expression": "row4.OPERAZIONE_DATA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "NAZI_CODICE",
+          "expression": "row4.NAZI_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "NAZI_DESCRIZIONE",
+          "expression": "row4.NAZI_DESCRIZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "NAZI_COD_DESC",
+          "expression": "row4.NAZI_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_IT_EXT",
+          "expression": "row4.FATT_IT_EXT"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "PROV",
+          "expression": "row4.PROV"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ZONA_CODICE",
+          "expression": "row4.ZONA_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ZONA_DESCRIZIONE",
+          "expression": "row4.ZONA_DESCRIZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ZONA_COD_DESC",
+          "expression": "row4.ZONA_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLIE_CODICE",
+          "expression": "row4.CLIE_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DEST_CLI",
+          "expression": "row4.DEST_CLI"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "DEST_CLI_PROV",
+          "expression": "row4.DEST_CLI_PROV"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "AGEN_CODICE",
+          "expression": "row4.AGEN_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ARTI_CODICE",
+          "expression": "row4.ARTI_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ARTI_STABILIMENTO_STORICO",
+          "expression": "row4.ARTI_STABILIMENTO_STORICO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "VCONT_CLASS",
+          "expression": "row4.VCONT_CLASS"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "VCONT_CONTO",
+          "expression": "row4.VCONT_CONTO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "VCONT_SOTTC",
+          "expression": "row4.VCONT_SOTTC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "VCONT_CONTM",
+          "expression": "row4.VCONT_CONTM"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FATT_TIPO_QTA",
+          "expression": "row4.FATT_TIPO_QTA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "PEZZ_FATT",
+          "expression": "row4.PEZZ_FATT"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "SCONT_MERC",
+          "expression": "row4.SCONT_MERC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "Q000",
+          "expression": "row4.Q000"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "QTA_VEND_ART_FASE",
+          "expression": "row4.QTA_VEND_ART_FASE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "PREZ_UNIT_LORDO",
+          "expression": "row4.PREZ_UNIT_LORDO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CAMBIO",
+          "expression": "row4.CAMBIO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "RLOR",
+          "expression": "row4.RLOR"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "SCO1_PERC",
+          "expression": "row4.SCO1_PERC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "SCO2_PERC",
+          "expression": "row4.SCO2_PERC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "SCO3_PERC",
+          "expression": "row4.SCO3_PERC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "S001_SCONTO",
+          "expression": "row4.S001_SCONTO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "R_IM_NO_EXTRASCONTO_AS",
+          "expression": "row4.R_IM_NO_EXTRASCONTO_AS"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "R_IM_NO_EXTRASCONTO",
+          "expression": "row4.R_IM_NO_EXTRASCONTO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "S002_EXTRASCONTO",
+          "expression": "row4.S002_EXTRASCONTO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "R_IM",
+          "expression": "row4.R_IM"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "R_NF",
+          "expression": "row4.R_NF"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ANTICIPO",
+          "expression": "row4.ANTICIPO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "C100",
+          "expression": "row4.C100"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "C110",
+          "expression": "row4.C110"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "C_DVC",
+          "expression": "row4.C_DVC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "R_NE",
+          "expression": "row4.R_NE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_RAGSOC",
+          "expression": "row4.CLI_DEST_RAGSOC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_COD_RAGSOC",
+          "expression": "row4.CLI_DEST_COD_RAGSOC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_VIA",
+          "expression": "row4.CLI_DEST_VIA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_CAP",
+          "expression": "row4.CLI_DEST_CAP"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_LOCALITA",
+          "expression": "row4.CLI_DEST_LOCALITA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_PROV",
+          "expression": "row4.CLI_DEST_PROV"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_NAZIONE",
+          "expression": "row4.CLI_DEST_NAZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_DEST_ITA_EXT",
+          "expression": "row4.CLI_DEST_ITA_EXT"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CDCLI",
+          "expression": "row4.CDCLI"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_RAG_SOC",
+          "expression": "row4.CLI_RAG_SOC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_COD_RAG_SOC",
+          "expression": "row4.CLI_COD_RAG_SOC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_INDIRIZZO",
+          "expression": "row4.CLI_INDIRIZZO"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_LOCALITA",
+          "expression": "row4.CLI_LOCALITA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_PROVINCIA",
+          "expression": "row4.CLI_PROVINCIA"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_CAP",
+          "expression": "row4.CLI_CAP"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_ZONA_CODICE",
+          "expression": "row4.CLI_ZONA_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_ZONA_COD_DESC",
+          "expression": "row4.CLI_ZONA_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_ZONA_DESC",
+          "expression": "row4.CLI_ZONA_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_AGENTE",
+          "expression": "row4.CLI_AGENTE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_CAT_CODICE",
+          "expression": "row4.CLI_CAT_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "CLI_CAT_DESCRIZIONE",
+          "expression": "row4.CLI_CAT_DESCRIZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "AGE_DESCRIZIONE",
+          "expression": "row4.AGE_DESCRIZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "AGE_COD_DESC",
+          "expression": "row4.AGE_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_DESCRIZIONE",
+          "expression": "row4.ART_DESCRIZIONE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_COD_DESC",
+          "expression": "row4.ART_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_UM",
+          "expression": "row4.ART_UM"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_TIPO_CODICE",
+          "expression": "row4.ART_TIPO_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_TIPO_DESC",
+          "expression": "row4.ART_TIPO_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_TIPO_COD_DESC",
+          "expression": "row4.ART_TIPO_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_CAT_CONTAB_CODICE",
+          "expression": "row4.ART_CAT_CONTAB_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_CAT_CONTAB_DESC",
+          "expression": "row4.ART_CAT_CONTAB_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_CAT_CONTAB_COD_DESC",
+          "expression": "row4.ART_CAT_CONTAB_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_CLAS_MERC_CODICE",
+          "expression": "row4.ART_CLAS_MERC_CODICE"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_CLAS_MERC_DESC",
+          "expression": "row4.ART_CLAS_MERC_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_CLAS_MERC_COD_DESC",
+          "expression": "row4.ART_CLAS_MERC_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_RAMO_AZIENDA_COD",
+          "expression": "row4.ART_RAMO_AZIENDA_COD"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_RAMO_AZIENDA_DESC",
+          "expression": "row4.ART_RAMO_AZIENDA_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_RAMO_AZIENDA_COD_DESC",
+          "expression": "row4.ART_RAMO_AZIENDA_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_SETTORE_COD",
+          "expression": "row4.ART_SETTORE_COD"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_SETTORE_DESC",
+          "expression": "row4.ART_SETTORE_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_SETTORE_COD_DESC",
+          "expression": "row4.ART_SETTORE_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_STABILIMENTO_COD",
+          "expression": "row4.ART_STABILIMENTO_COD"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_STABILIMENTO_DESC",
+          "expression": "row4.ART_STABILIMENTO_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "ART_STABILIMENTO_COD_DESC",
+          "expression": "row4.ART_STABILIMENTO_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FASE_DESC",
+          "expression": "row4.FASE_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FASE_COD_DESC",
+          "expression": "row4.FASE_COD_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FASE_STABILIMENTO_COD",
+          "expression": "row4.FASE_STABILIMENTO_COD"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FASE_STABILIMENTO_DESC",
+          "expression": "row4.FASE_STABILIMENTO_DESC"
+        },
+        {
+          "table_name": "load_Tabanalisi",
+          "column_name": "FASE_STABILIMENTO_COD_DESC",
+          "expression": "row4.FASE_STABILIMENTO_COD_DESC"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString",
+    "DataQuality",
+    "DQTechnical",
+    "DataMasking",
+    "DataQualityDependencies",
+    "DqStringHandling"
+  ],
+  "group": "ITA",
+  "subgroup": "VIT"
+}

@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m intodoc:*)",
+      "Bash(python:*)",
+      "Bash(sort:*)",
+      "Bash(python3:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(ls:*)",
+      "Bash(for f in USA_0 USA_1 USA_2 USA_3 USA_4 USA_5 USA_6 Global_0 Global_1 Global_2 Global_3 Global_4 Global_5 Global_6 Global_7)",
+      "Bash(do)",
+      "Bash(file=\"C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/intodoc/docs/pass_results/p10_$f.json\")",
+      "Bash(if grep -q \"claude-opus-agent\" \"$file\")",
+      "Bash(then)",
+      "Bash(echo:*)",
+      "Bash(else)",
+      "Bash(fi:*)",
+      "Bash(done)",
+      "Bash(for f in USA_3 USA_4 USA_5 USA_6 Global_0 Global_1 Global_2 Global_3 Global_4 Global_5 Global_6 Global_7)",
+      "Bash(test:*)",
+      "Bash(C:UserskabeljoAppDataRoamingnpmclaude.CMD --help)",
+      "Bash(CLAUDECODE= claude --help)",
+      "WebSearch",
+      "Bash(du:*)",
+      "WebFetch(domain:www.youtube.com)",
+      "WebFetch(domain:noembed.com)",
+      "WebFetch(domain:shivanshyadav13.medium.com)",
+      "WebFetch(domain:claude.com)",
+      "WebFetch(domain:dometrain.com)",
+      "WebFetch(domain:www.linkedin.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(git add:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "intodoc"
+  ]
+}
