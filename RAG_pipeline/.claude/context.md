@@ -1,8 +1,8 @@
 # Current State
 
 **Status**: MVP Complete (Phase 1) + All Phase 1.5 improvements + Enterprise Retrieval Quality Upgrade (Phase 2) + Configurable LLM Provider Chain + Streaming Chat UI
-**Last session**: 2026-02-11
-**Last completed**: End-to-end streaming responses for chat UI. Backend `_prepare_rag_context()` shared helper + `run_conversational_rag_stream()`. Frontend `useStreamMessage` hook with SSE parsing, optimistic user messages, blinking cursor. 192 tests passing.
+**Last session**: 2026-02-20
+**Last completed**: Fixed Qdrant Cloud connection failure — `qdrant-client` was connecting to port 6333 (default for self-hosted) but Qdrant Cloud uses port 443. Added explicit `:443` to URL in `.env` and `config.py`.
 
 ## What's Done
 

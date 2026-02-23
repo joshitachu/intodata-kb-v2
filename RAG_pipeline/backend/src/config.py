@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Qdrant
     qdrant_api_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.fd5QDZ8upKoKMF5wq3ykD4qQ30X3i6HLX9NvD7WdMC8"
-    qdrant_url: str = "https://8dbbe97c-2931-45fb-8c46-836c7fbcd3e7.europe-west3-0.gcp.cloud.qdrant.io"
+    qdrant_url: str = "https://8dbbe97c-2931-45fb-8c46-836c7fbcd3e7.europe-west3-0.gcp.cloud.qdrant.io:443"
 
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://postgres:voetbal123@localhost:5432/intodata_kb"

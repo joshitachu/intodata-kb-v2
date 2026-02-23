@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(test:*)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(nslookup:*)",
+      "Bash(echo:*)",
+      "Bash(curl:*)",
+      "Bash(pip show:*)",
+      "Bash(git:*)",
+      "Bash(cd:*)",
+      "Bash(git status:*)",
+      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb && powershell.exe -Command \"Get-Process | Where-Object { \\\\$_.Path -like '*vaxxinova*' -or \\\\$_.Path -like '*mcp*' } | Select-Object Id, ProcessName, Path | Format-Table -AutoSize\" 2>&1)",
+      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb && powershell.exe -Command 'Get-Process python* | Select-Object Id, ProcessName | Format-Table -AutoSize' 2>&1)",
+      "Bash(powershell.exe:*)"
     ]
   }
 }

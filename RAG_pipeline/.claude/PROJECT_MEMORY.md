@@ -122,6 +122,7 @@ None currently.
 - Provider registry must resolve functions at call time (not at import time) for `unittest.mock.patch()` to work — use string-based registry + `getattr(sys.modules[__name__], func_name)`
 - Semantic chunker: single-paragraph texts that fit in one chunk should bypass min_tokens filter (otherwise empty returns for short documents)
 - Python 3.14 has limited package compatibility — many packages don't have pre-built wheels yet
+- **Qdrant Cloud uses port 443, not 6333**: `qdrant-client` defaults to port 6333 for REST connections. Qdrant Cloud exposes API on 443 (standard HTTPS). Always use `https://...cloud.qdrant.io:443` in the URL — without `:443`, the client tries port 6333 and fails with `All connection attempts failed`
 
 ## Environment
 

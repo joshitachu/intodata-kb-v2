@@ -1,5 +1,18 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-02-20 (Fix Qdrant Cloud Connection Failure)
+
+### [Fix]: Qdrant Cloud connection failure — port 6333 unreachable, must use port 443
+
+- **Files changed**: `backend/.env` (line 7), `backend/src/config.py` (line 30)
+- **Problem**: FastAPI app crashed on startup with `httpcore.ConnectError: All connection attempts failed` during `ensure_collection()` in the lifespan handler. The `qdrant-client` Python library (v1.17.0) could not connect to the Qdrant Cloud instance.
+- **Root cause**: `qdrant-client` defaults to port 6333 for REST API connections when no port is specified in the URL. Qdrant Cloud exposes its API on port 443 (standard HTTPS), not port 6333. The URL `https://...cloud.qdrant.io` without an explicit port caused the client to attempt `https://...cloud.qdrant.io:6333`, which is not open on the Qdrant Cloud load balancer.
+- **Change**: Appended `:443` to the Qdrant URL in both `.env` and `config.py` default:
+  - Before: `https://8dbbe97c-2931-45fb-8c46-836c7fbcd3e7.europe-west3-0.gcp.cloud.qdrant.io`
+  - After: `https://8dbbe97c-2931-45fb-8c46-836c7fbcd3e7.europe-west3-0.gcp.cloud.qdrant.io:443`
+- **Why this approach**: Explicit port in the URL is the simplest fix — no code changes needed in the client initialization. Port 443 is the standard HTTPS port and is what Qdrant Cloud uses for its REST API.
+- **Verification**: Tested with `curl` (port 443 returns `{"result":{"collections":[{"name":"documents"}]},"status":"ok"}`), Python `AsyncQdrantClient` with settings from `config.py` returns `Connection OK! Collections: ['documents']`.
+
 ## Session: 2026-02-11 (Streaming Responses for Chat UI)
 
 ### [Feature]: End-to-end streaming responses for conversation chat
