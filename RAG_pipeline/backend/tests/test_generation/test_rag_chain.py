@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.generation.intent_classifier import Action, QueryAnalysis, QueryType
 from src.generation.rag_chain import run_rag_query
 from src.schemas import DocumentSource, QueryRequest, Source
 
@@ -97,14 +98,16 @@ async def test_rag_query_no_sources_calls_llm_fallback(mock_qdrant, mock_db):
     mock_db.add.assert_called_once()
 
 
-async def test_rag_query_greeting_skips_search(mock_qdrant, mock_db):
-    """Greetings should go straight to LLM without calling search."""
+async def test_rag_query_greeting_goes_through_search(mock_qdrant, mock_db):
+    """Greetings now go through search (returns 0 results) then to no-results LLM fallback."""
     request = QueryRequest(query="hello")
 
     with (
         patch("src.generation.rag_chain.search_similar", new_callable=AsyncMock) as mock_search,
         patch("src.generation.rag_chain.generate_answer", new_callable=AsyncMock) as mock_gen,
     ):
+        # Search returns no results for "hello"
+        mock_search.return_value = []
         mock_gen.return_value = "Hello! How can I help you find information today?"
 
         response = await run_rag_query(
@@ -115,9 +118,9 @@ async def test_rag_query_greeting_skips_search(mock_qdrant, mock_db):
             db=mock_db,
         )
 
-    # Search should NOT have been called
-    mock_search.assert_not_called()
-    # LLM should have been called with the greeting prompt
+    # Search WAS called (greetings now go through search)
+    mock_search.assert_called_once()
+    # LLM was called with no-results prompt
     mock_gen.assert_called_once()
     assert len(response.sources) == 0
     assert response.answer == "Hello! How can I help you find information today?"

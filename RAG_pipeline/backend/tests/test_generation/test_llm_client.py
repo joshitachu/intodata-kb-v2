@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -17,82 +17,49 @@ MESSAGES = [
 
 
 async def test_first_provider_success():
-    """Groq works → others not called."""
+    """Kimi works → Ollama not called."""
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_generate", new_callable=AsyncMock) as mock_groq,
-        patch("src.generation.llm_client._openrouter_generate", new_callable=AsyncMock) as mock_or,
+        patch("src.generation.llm_client._kimi_generate", new_callable=AsyncMock) as mock_kimi,
         patch("src.generation.llm_client._ollama_generate", new_callable=AsyncMock) as mock_ollama,
     ):
-        mock_settings.llm_providers = ["groq", "openrouter", "ollama"]
-        mock_groq.return_value = "Groq answer"
+        mock_settings.llm_providers = ["kimi", "ollama"]
+        mock_kimi.return_value = "Kimi answer"
 
         result = await generate_answer(MESSAGES)
 
-        assert result == "Groq answer"
-        mock_groq.assert_awaited_once_with(MESSAGES)
-        mock_or.assert_not_awaited()
+        assert result == "Kimi answer"
+        mock_kimi.assert_awaited_once_with(MESSAGES)
         mock_ollama.assert_not_awaited()
 
 
-async def test_fallback_to_second():
-    """Groq fails → OpenRouter succeeds."""
+async def test_fallback_to_ollama():
+    """Kimi fails → Ollama succeeds."""
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_generate", new_callable=AsyncMock) as mock_groq,
-        patch(
-            "src.generation.llm_client._openrouter_generate", new_callable=AsyncMock
-        ) as mock_or,
+        patch("src.generation.llm_client._kimi_generate", new_callable=AsyncMock) as mock_kimi,
         patch("src.generation.llm_client._ollama_generate", new_callable=AsyncMock) as mock_ollama,
     ):
-        mock_settings.llm_providers = ["groq", "openrouter", "ollama"]
-        mock_groq.side_effect = Exception("Groq rate limited")
-        mock_or.return_value = "OpenRouter answer"
-
-        result = await generate_answer(MESSAGES)
-
-        assert result == "OpenRouter answer"
-        mock_groq.assert_awaited_once()
-        mock_or.assert_awaited_once_with(MESSAGES)
-        mock_ollama.assert_not_awaited()
-
-
-async def test_fallback_to_third():
-    """Groq + OpenRouter fail → Ollama succeeds."""
-    with (
-        patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_generate", new_callable=AsyncMock) as mock_groq,
-        patch(
-            "src.generation.llm_client._openrouter_generate", new_callable=AsyncMock
-        ) as mock_or,
-        patch("src.generation.llm_client._ollama_generate", new_callable=AsyncMock) as mock_ollama,
-    ):
-        mock_settings.llm_providers = ["groq", "openrouter", "ollama"]
-        mock_groq.side_effect = Exception("Groq down")
-        mock_or.side_effect = Exception("OpenRouter down")
+        mock_settings.llm_providers = ["kimi", "ollama"]
+        mock_kimi.side_effect = Exception("Kimi rate limited")
         mock_ollama.return_value = "Ollama answer"
 
         result = await generate_answer(MESSAGES)
 
         assert result == "Ollama answer"
-        mock_groq.assert_awaited_once()
-        mock_or.assert_awaited_once()
+        mock_kimi.assert_awaited_once()
         mock_ollama.assert_awaited_once_with(MESSAGES)
 
 
 async def test_all_providers_fail():
-    """All three fail → RuntimeError."""
+    """Both fail → RuntimeError."""
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_generate", new_callable=AsyncMock) as mock_groq,
-        patch(
-            "src.generation.llm_client._openrouter_generate", new_callable=AsyncMock
-        ) as mock_or,
+        patch("src.generation.llm_client._kimi_generate", new_callable=AsyncMock) as mock_kimi,
         patch("src.generation.llm_client._ollama_generate", new_callable=AsyncMock) as mock_ollama,
     ):
-        mock_settings.llm_providers = ["groq", "openrouter", "ollama"]
-        mock_groq.side_effect = Exception("Groq error")
-        mock_or.side_effect = Exception("OpenRouter error")
+        mock_settings.llm_providers = ["kimi", "ollama"]
+        mock_kimi.side_effect = Exception("Kimi error")
         mock_ollama.side_effect = Exception("Ollama error")
 
         with pytest.raises(RuntimeError, match="All LLM providers failed"):
@@ -104,7 +71,7 @@ async def test_custom_provider_order():
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
         patch("src.generation.llm_client._ollama_generate", new_callable=AsyncMock) as mock_ollama,
-        patch("src.generation.llm_client._groq_generate", new_callable=AsyncMock) as mock_groq,
+        patch("src.generation.llm_client._kimi_generate", new_callable=AsyncMock) as mock_kimi,
     ):
         mock_settings.llm_providers = ["ollama"]
         mock_ollama.return_value = "Ollama first"
@@ -113,7 +80,7 @@ async def test_custom_provider_order():
 
         assert result == "Ollama first"
         mock_ollama.assert_awaited_once()
-        mock_groq.assert_not_awaited()
+        mock_kimi.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -122,32 +89,32 @@ async def test_custom_provider_order():
 
 
 async def test_stream_first_provider_success():
-    """Streaming: Groq works → others not called."""
+    """Streaming: Kimi works → Ollama not called."""
 
-    async def _fake_groq_stream(messages):
+    async def _fake_kimi_stream(messages):
         yield "Hello "
         yield "world"
 
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_stream", side_effect=_fake_groq_stream),
-        patch("src.generation.llm_client._openrouter_stream", new_callable=AsyncMock) as mock_or,
+        patch("src.generation.llm_client._kimi_stream", side_effect=_fake_kimi_stream),
+        patch("src.generation.llm_client._ollama_stream", new_callable=AsyncMock) as mock_ollama,
     ):
-        mock_settings.llm_providers = ["groq", "openrouter"]
+        mock_settings.llm_providers = ["kimi", "ollama"]
 
         tokens = []
         async for token in generate_answer_stream(MESSAGES):
             tokens.append(token)
 
         assert tokens == ["Hello ", "world"]
-        mock_or.assert_not_awaited()
+        mock_ollama.assert_not_awaited()
 
 
 async def test_stream_fallback():
-    """Streaming: Groq fails → OpenRouter streams successfully."""
+    """Streaming: Kimi fails → Ollama streams successfully."""
 
     async def _failing_stream(messages):
-        raise Exception("Groq stream error")
+        raise Exception("Kimi stream error")
         yield  # noqa: unreachable — makes this an async generator
 
     async def _working_stream(messages):
@@ -156,10 +123,10 @@ async def test_stream_fallback():
 
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_stream", side_effect=_failing_stream),
-        patch("src.generation.llm_client._openrouter_stream", side_effect=_working_stream),
+        patch("src.generation.llm_client._kimi_stream", side_effect=_failing_stream),
+        patch("src.generation.llm_client._ollama_stream", side_effect=_working_stream),
     ):
-        mock_settings.llm_providers = ["groq", "openrouter"]
+        mock_settings.llm_providers = ["kimi", "ollama"]
 
         tokens = []
         async for token in generate_answer_stream(MESSAGES):
@@ -177,11 +144,10 @@ async def test_stream_all_fail():
 
     with (
         patch("src.generation.llm_client.settings") as mock_settings,
-        patch("src.generation.llm_client._groq_stream", side_effect=_failing),
-        patch("src.generation.llm_client._openrouter_stream", side_effect=_failing),
+        patch("src.generation.llm_client._kimi_stream", side_effect=_failing),
         patch("src.generation.llm_client._ollama_stream", side_effect=_failing),
     ):
-        mock_settings.llm_providers = ["groq", "openrouter", "ollama"]
+        mock_settings.llm_providers = ["kimi", "ollama"]
 
         with pytest.raises(RuntimeError, match="All LLM providers failed"):
             async for _ in generate_answer_stream(MESSAGES):

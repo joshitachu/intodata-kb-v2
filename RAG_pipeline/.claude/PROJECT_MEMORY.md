@@ -7,7 +7,7 @@
 | Decision | Choice | Rationale | Date |
 |----------|--------|-----------|------|
 | No LangChain | Direct Ollama client | Full control, fewer deps | 2026-02-05 |
-| Embeddings | Ollama nomic-embed-text (768-dim) | Same interface as LLM, good quality | 2026-02-05 |
+| Embeddings | Voyage AI voyage-4-large (1024-dim) → Ollama fallback | +14% over OpenAI v3 Large, first 200M free; was Ollama nomic-embed-text (768-dim) | 2026-02-23 |
 | LLM | Ollama (Mistral or Llama 3) | Local, no API costs | 2026-02-05 |
 | Vector DB | Qdrant (Docker) | HNSW, payload filtering for RBAC | 2026-02-05 |
 | Relational DB | PostgreSQL (async) | Users, roles, doc metadata, audit | 2026-02-05 |
@@ -16,10 +16,12 @@
 | State mgmt | React Query | Server state caching | 2026-02-05 |
 | API pattern | BFF via Next.js route.ts → FastAPI | Client never calls FastAPI directly | 2026-02-05 |
 | Integrations | Phase 2 (deferred) | Company tooling unknown | 2026-02-05 |
-| Intent routing | LLM router (gemma3:4b) | Replaces regex — more robust routing + typo correction; safe fallback to SEARCH on failure | 2026-02-10 |
-| Search threshold | 0.4 (was 0.7→0.4→0.2→0.4) | 0.2 too permissive, 0.58 too strict; 0.4 is the sweet spot for nomic-embed-text | 2026-02-10 |
-| Chunk size | 256 tokens / 32 overlap | Smaller chunks = more focused embeddings = better similarity scores | 2026-02-09 |
-| Context window | 4096 tokens | Fits ~16 chunks of 256 tokens | 2026-02-09 |
+| Intent routing | Zero-LLM heuristic (was LLM router) | All queries → SEARCH; keyword regex for summary detection. LLM call was pure overhead — Qdrant search is ~50ms | 2026-02-23 |
+| Search threshold | 0.3 (was 0.7→0.4→0.2→0.4→0.3) | 0.3 suits API embeddings (Voyage AI); was 0.4 for nomic-embed-text | 2026-02-23 |
+| Kimi thinking mode | Disabled via `extra_body` | Thinking mode adds 8-25s/call with no RAG quality benefit; temp must be exactly 0.6 in instant mode (API rejects all other values with 400) | 2026-02-23 |
+| HTTP clients | Singleton with lazy init | Reuses TCP connections, avoids per-request overhead | 2026-02-23 |
+| Chunk size | 256 tokens / 100 overlap | Larger overlap = better coherence; sentence-boundary snapping prevents mid-sentence splits | 2026-02-23 |
+| Context window | 6144 tokens / per-source truncation | Was 4096 with drop-entire-source; now all sources represented | 2026-02-23 |
 | Source merging | Document-level (not chunk-level) | Users don't need chunk granularity; numbered refs enable clickable UI links | 2026-02-09 |
 | Markdown rendering | react-markdown + remark-gfm | Standard, lightweight, supports GFM tables/lists | 2026-02-09 |
 | Summarization | Map-reduce (not stuff-all-in-context) | top_k=3 can't summarize a 50-chunk document; map-reduce scales to any size | 2026-02-10 |
@@ -37,6 +39,13 @@
 | Feature flags | hybrid_search_enabled, reranker_enabled, query_expansion_enabled | All features toggleable for A/B testing and gradual rollout | 2026-02-11 |
 | LLM provider chain | Groq → OpenRouter → Ollama fallback via `llm_providers` list | Free cloud APIs first, local fallback; single env var to switch to paid API | 2026-02-11 |
 | Streaming conversations | Shared `_prepare_rag_context()` + `run_conversational_rag_stream()` | Eliminates duplication between streaming/non-streaming; precomputed answers for RESPOND/SUMMARY, stream for QA | 2026-02-11 |
+| Kimi K2.5 LLM provider | OpenAI-compatible API (moonshot.ai), primary in chain | 1T-param MoE (32B active), 256K context, $0.60/M input — very cost-effective | 2026-02-23 |
+| Voyage AI embeddings | Provider chain: Voyage AI → Ollama fallback | voyage-4-large (1024-dim), +14% over OpenAI v3 Large on MTEB, first 200M tokens free | 2026-02-23 |
+| Sparse embeddings | Hash-based (not TF-IDF) | TF-IDF had vocabulary mismatch bug between ingestion and query; hash-based is stateless and deterministic | 2026-02-23 |
+| Context truncation | Per-source truncation (not drop) | All sources represented in LLM context; truncated text with `[...]` beats dropped text | 2026-02-23 |
+| Reranker upgrade | ms-marco-MiniLM-L-12-v2 (33M params) | Outperforms L6-v2 (22M) and much larger models while staying fast on CPU | 2026-02-23 |
+| Sentence-boundary chunking | Snap to sentence endings in last 20% | Prevents mid-sentence splits that degrade embedding quality | 2026-02-23 |
+| LLM for routing/expansion | **Routing removed** (heuristic); expansion disabled by default | Intent classifier eliminated (0 LLM calls). Query expansion `False` by default — re-enable via `.env` if quality > speed | 2026-02-23 |
 
 ## Code Patterns
 
@@ -68,6 +77,9 @@
 | Fix [NEED_SEARCH] leak | 2026-02-10 | Separated CONTEXT_FIRST_SYSTEM_PROMPT from main prompt, added safety strip, removed reformulate_search_query(). 154 tests passing |
 | Enterprise Retrieval Quality Upgrade | 2026-02-11 | 5-phase: hybrid search (RRF), cross-encoder reranking, semantic chunking, query expansion, streaming SSE + chat-with-doc. 186 tests passing |
 | Configurable LLM Provider Chain | 2026-02-11 | Groq → OpenRouter → Ollama fallback. `llm_providers` config list. 192 tests passing |
+| RAG Retrieval Quality Overhaul | 2026-02-23 | Fixed sparse embedding bug, added Kimi K2.5 + Voyage AI providers, upgraded reranker, tuned search params, improved chunking. 193 tests passing |
+| Eliminate Intent Classifier LLM Call | 2026-02-23 | Zero-LLM heuristic router, disabled query expansion. QA: 3→1 LLM calls, Chitchat: 2→1. 171 non-DB tests passing |
+| Production Bug Fixes + Voyage AI | 2026-02-24 | Fixed reranker min-score, Voyage 400 error, reranker warmup, sync/async crash, added delete_collection(). 174 non-DB tests passing |
 
 ## Pending Tasks
 
@@ -123,6 +135,17 @@ None currently.
 - Semantic chunker: single-paragraph texts that fit in one chunk should bypass min_tokens filter (otherwise empty returns for short documents)
 - Python 3.14 has limited package compatibility — many packages don't have pre-built wheels yet
 - **Qdrant Cloud uses port 443, not 6333**: `qdrant-client` defaults to port 6333 for REST connections. Qdrant Cloud exposes API on 443 (standard HTTPS). Always use `https://...cloud.qdrant.io:443` in the URL — without `:443`, the client tries port 6333 and fails with `All connection attempts failed`
+- **TF-IDF sparse embeddings are broken for hybrid search**: `TfidfVectorizer` fitted per-call creates different vocabulary mappings between ingestion and query time. Index 0 means different words in different calls. Use hash-based approach: `hash(token) % DIM` for deterministic, stateless sparse vectors.
+- **JSON null vs missing key**: `dict.get("key", "default")` returns `None` (not `"default"`) when key exists but has value `null`. Use `(dict.get("key") or "default")` to handle both missing and null.
+- **Lazy imports break `unittest.mock.patch`**: When a function is imported inside another function body (`from module import func`), `patch("caller_module.func")` fails with `AttributeError`. Must patch at the definition site: `patch("definition_module.func")`.
+- **Embedding provider chain**: Same pattern as LLM provider chain. Voyage AI uses OpenAI-compatible API format — reuse the `openai` SDK with different `base_url`.
+- **Kimi K2.5 instant mode temperature**: When thinking is disabled (`extra_body={"thinking": {"type": "disabled"}}`), Kimi K2.5 enforces exactly `temperature=0.6`. Any other value returns HTTP 400: `invalid temperature: only 0.6 is allowed for this model`.
+- **OpenAI SDK `max_retries=0` for provider chains**: The `AsyncOpenAI` client defaults to `max_retries=2` with exponential backoff. When using a multi-provider fallback chain, set `max_retries=0` — otherwise the SDK silently burns 10+ seconds retrying a failed call before the outer fallback logic can switch to the next provider.
+- **Intent classifier is pure overhead**: Qdrant search is ~50ms. "Skipping search for chitchat" saves 50ms but costs 3-12s for the LLM call. The `NO_RESULTS_PROMPT` handles greetings/chitchat naturally when search returns 0 results. Always route through search.
+- **Voyage AI `dimensions` param not supported**: `voyage-4-large` always returns 1024-dim natively. Passing `dimensions=` causes HTTP 400. Don't use the `dimensions` parameter with Voyage API.
+- **Reranker min-score is essential**: Without a minimum score threshold, the reranker returns top_k candidates regardless of relevance. Chitchat queries get irrelevant chunks (score -9.13) sent to LLM. Use `reranker_min_score=0.0` to filter negative scores.
+- **Pre-load ML models at startup**: Cross-encoder model downloads ~80MB on first use. Lazy loading means the first user request takes +100s. Call `warmup()` in the lifespan handler.
+- **Qdrant dimension mismatch on provider switch**: When changing embedding provider (e.g. Ollama 768-dim → Voyage AI 1024-dim), the existing Qdrant collection has the old dimension. `ensure_collection()` auto-detects this and recreates. All documents must be re-ingested after recreation.
 
 ## Environment
 

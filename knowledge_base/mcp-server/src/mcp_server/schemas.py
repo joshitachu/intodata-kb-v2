@@ -90,6 +90,44 @@ class MarkdownDoc(BaseModel):
     content: str
 
 
+# --- Generate Run ---
+
+class GenerateRunResponse(BaseModel):
+    id: int
+    project_id: str
+    triggered_by: str
+    status: str
+    started_at: datetime.datetime | None = None
+    completed_at: datetime.datetime | None = None
+    cost_usd: float | None = None
+    duration_ms: int | None = None
+    duration_api_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    num_turns: int | None = None
+    session_id: str | None = None
+    doc_count: int = 0
+    error_message: str | None = None
+    log_file: str | None = None
+
+
+class GenerateRunListResponse(BaseModel):
+    runs: list[GenerateRunResponse]
+    total: int
+
+
+class LogFileResponse(BaseModel):
+    filename: str
+    project_id: str
+    timestamp: str
+    size_bytes: int
+
+
+class LogFileListResponse(BaseModel):
+    files: list[LogFileResponse]
+    total: int
+
+
 # --- Generic ---
 
 class StatusResponse(BaseModel):

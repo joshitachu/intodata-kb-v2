@@ -77,6 +77,26 @@ class LogManager:
             if not self._subscribers[project_id]:
                 del self._subscribers[project_id]
 
+    async def emit_done(self, project_id: str) -> None:
+        """Broadcast a 'done' event so SSE subscribers know generation finished."""
+        log_path = self._log_files.get(project_id)
+        log_file = log_path.name if log_path else None
+        event = {
+            "project_id": project_id,
+            "level": "done",
+            "message": "Generation complete",
+            "log_file": log_file,
+        }
+        if project_id in self._subscribers:
+            dead: list[asyncio.Queue] = []
+            for queue in self._subscribers[project_id]:
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    dead.append(queue)
+            for q in dead:
+                self._subscribers[project_id].remove(q)
+
     def reset_log_file(self, project_id: str) -> None:
         """Start a fresh log file for the next operation."""
         self._log_files.pop(project_id, None)

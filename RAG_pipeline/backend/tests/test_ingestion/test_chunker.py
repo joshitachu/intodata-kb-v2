@@ -38,4 +38,4 @@ def test_chunk_size_respected():
 
 def test_default_parameters():
     assert DEFAULT_CHUNK_SIZE == 256
-    assert DEFAULT_OVERLAP == 32
+    assert DEFAULT_OVERLAP == 100

@@ -49,3 +49,21 @@ export function usePushToRag() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }
+
+export function useGenerateRuns(projectId: string | null) {
+  return useQuery({
+    queryKey: ["generate-runs", projectId],
+    queryFn: () => api.listGenerateRuns(projectId!),
+    enabled: !!projectId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useLogFiles(projectId: string | null) {
+  return useQuery({
+    queryKey: ["log-files", projectId],
+    queryFn: () => api.listLogFiles(projectId!),
+    enabled: !!projectId,
+    refetchInterval: 10_000,
+  });
+}

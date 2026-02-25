@@ -143,7 +143,7 @@ def _merge_and_split(
                 buffer_tokens = 0
 
             # Mechanically split the oversized paragraph
-            sub_chunks = mechanical_chunk(para, chunk_size=max_tokens, overlap=32)
+            sub_chunks = mechanical_chunk(para, chunk_size=max_tokens, overlap=128)
             for sc in sub_chunks:
                 if len(enc.encode(sc)) >= min_tokens:
                     chunks.append(sc)

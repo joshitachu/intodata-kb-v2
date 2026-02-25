@@ -13,7 +13,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from src.retrieval.embedder import EMBEDDING_DIM
+from src.retrieval.embedder import get_embedding_dim
 from src.retrieval.sparse_embedder import SparseVector as AppSparseVector
 
 logger = logging.getLogger(__name__)
@@ -22,20 +22,40 @@ COLLECTION_NAME = "documents"
 
 
 async def ensure_collection(client: AsyncQdrantClient) -> None:
-    """Create the documents collection with named vectors if it doesn't exist."""
+    """Create the documents collection with named vectors if it doesn't exist.
+
+    If the collection exists but has a different dense vector dimension
+    (e.g. provider changed from Ollama 768-dim to Voyage AI 1024-dim),
+    delete and recreate it.
+    """
+    dim = get_embedding_dim()
+    collections = await client.get_collections()
+    names = [c.name for c in collections.collections]
+
+    if COLLECTION_NAME in names:
+        info = await client.get_collection(COLLECTION_NAME)
+        existing_dim = info.config.params.vectors["dense"].size
+        if existing_dim != dim:
+            logger.warning(
+                f"Qdrant collection dimension mismatch: existing={existing_dim}, expected={dim}. "
+                f"Deleting and recreating collection."
+            )
+            await client.delete_collection(COLLECTION_NAME)
+
+    # (Re-)create if missing or just deleted
     collections = await client.get_collections()
     names = [c.name for c in collections.collections]
     if COLLECTION_NAME not in names:
         await client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config={
-                "dense": VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+                "dense": VectorParams(size=dim, distance=Distance.COSINE),
             },
             sparse_vectors_config={
                 "sparse": SparseVectorParams(),
             },
         )
-        logger.info(f"Created Qdrant collection: {COLLECTION_NAME} (named vectors: dense + sparse)")
+        logger.info(f"Created Qdrant collection: {COLLECTION_NAME} (dim={dim})")
 
     # Ensure payload indexes exist (idempotent — safe to call on every startup)
     await client.create_payload_index(
@@ -48,6 +68,15 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
         field_name="document_id",
         field_schema=PayloadSchemaType.INTEGER,
     )
+
+
+async def delete_collection(client: AsyncQdrantClient) -> None:
+    """Delete the documents collection. Used when vector dimensions change."""
+    collections = await client.get_collections()
+    names = [c.name for c in collections.collections]
+    if COLLECTION_NAME in names:
+        await client.delete_collection(COLLECTION_NAME)
+        logger.info(f"Deleted Qdrant collection: {COLLECTION_NAME}")
 
 
 async def upsert_chunks(

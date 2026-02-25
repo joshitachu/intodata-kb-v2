@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import AsyncGenerator
 
+import httpx
 import ollama as ollama_lib
 
 from src.config import settings
@@ -10,69 +13,70 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Singleton clients (lazy-initialized, one per process)
+# ---------------------------------------------------------------------------
+
+_kimi_client = None
+_kimi_lock = asyncio.Lock()
+
+_ollama_client = None
+_ollama_lock = asyncio.Lock()
+
+
+async def _get_kimi_client():
+    global _kimi_client
+    if _kimi_client is None:
+        async with _kimi_lock:
+            if _kimi_client is None:
+                from openai import AsyncOpenAI
+
+                _kimi_client = AsyncOpenAI(
+                    base_url="https://api.moonshot.ai/v1",
+                    api_key=settings.kimi_api_key,
+                    timeout=httpx.Timeout(settings.kimi_timeout, connect=5.0),
+                    max_retries=0,  # Our provider chain handles fallback — don't let SDK retry internally
+                )
+    return _kimi_client
+
+
+async def _get_ollama_client():
+    global _ollama_client
+    if _ollama_client is None:
+        async with _ollama_lock:
+            if _ollama_client is None:
+                _ollama_client = ollama_lib.AsyncClient(
+                    host=settings.ollama_base_url,
+                    timeout=httpx.Timeout(settings.ollama_timeout, connect=5.0),
+                )
+    return _ollama_client
+
+
+# ---------------------------------------------------------------------------
 # Provider implementations
 # ---------------------------------------------------------------------------
 
 
-async def _groq_generate(messages: list[dict[str, str]]) -> str:
-    from groq import AsyncGroq
-
-    client = AsyncGroq(api_key=settings.groq_api_key)
+async def _kimi_generate(messages: list[dict[str, str]]) -> str:
+    client = await _get_kimi_client()
     response = await client.chat.completions.create(
-        model=settings.groq_llm_model,
+        model=settings.kimi_llm_model,
         messages=messages,
-        temperature=0.3,
+        temperature=settings.kimi_temperature,
         max_tokens=2048,
+        extra_body={"thinking": {"type": "disabled"}},
     )
     return response.choices[0].message.content
 
 
-async def _groq_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
-    from groq import AsyncGroq
-
-    client = AsyncGroq(api_key=settings.groq_api_key)
+async def _kimi_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
+    client = await _get_kimi_client()
     stream = await client.chat.completions.create(
-        model=settings.groq_llm_model,
+        model=settings.kimi_llm_model,
         messages=messages,
-        temperature=0.3,
+        temperature=settings.kimi_temperature,
         max_tokens=2048,
         stream=True,
-    )
-    async for chunk in stream:
-        token = chunk.choices[0].delta.content
-        if token:
-            yield token
-
-
-async def _openrouter_generate(messages: list[dict[str, str]]) -> str:
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=settings.openrouter_api_key,
-    )
-    response = await client.chat.completions.create(
-        model=settings.openrouter_llm_model,
-        messages=messages,
-        temperature=0.3,
-        max_tokens=2048,
-    )
-    return response.choices[0].message.content
-
-
-async def _openrouter_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=settings.openrouter_api_key,
-    )
-    stream = await client.chat.completions.create(
-        model=settings.openrouter_llm_model,
-        messages=messages,
-        temperature=0.3,
-        max_tokens=2048,
-        stream=True,
+        extra_body={"thinking": {"type": "disabled"}},
     )
     async for chunk in stream:
         token = chunk.choices[0].delta.content
@@ -81,7 +85,7 @@ async def _openrouter_stream(messages: list[dict[str, str]]) -> AsyncGenerator[s
 
 
 async def _ollama_generate(messages: list[dict[str, str]]) -> str:
-    client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
+    client = await _get_ollama_client()
     response = await client.chat(
         model=settings.ollama_llm_model,
         messages=messages,
@@ -90,7 +94,7 @@ async def _ollama_generate(messages: list[dict[str, str]]) -> str:
 
 
 async def _ollama_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
-    client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
+    client = await _get_ollama_client()
     stream = await client.chat(
         model=settings.ollama_llm_model,
         messages=messages,
@@ -108,8 +112,7 @@ async def _ollama_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str, 
 # ---------------------------------------------------------------------------
 
 _PROVIDER_FUNCS: dict[str, tuple[str, str]] = {
-    "groq": ("_groq_generate", "_groq_stream"),
-    "openrouter": ("_openrouter_generate", "_openrouter_stream"),
+    "kimi": ("_kimi_generate", "_kimi_stream"),
     "ollama": ("_ollama_generate", "_ollama_stream"),
 }
 
@@ -133,11 +136,14 @@ async def generate_answer(
     for name in settings.llm_providers:
         gen_fn = _resolve(name, 0)
         try:
+            t0 = time.perf_counter()
             result = await gen_fn(messages)
-            logger.info("LLM response from %s", name)
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("LLM response from %s (%.0fms)", name, elapsed)
             return result
         except Exception as e:
-            logger.warning("%s failed: %s", name, e)
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.warning("%s failed (%.0fms): %s", name, elapsed, e)
             errors.append(f"{name}: {e}")
             continue
     raise RuntimeError(f"All LLM providers failed: {'; '.join(errors)}")

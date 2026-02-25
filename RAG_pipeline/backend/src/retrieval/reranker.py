@@ -53,12 +53,30 @@ def rerank(
     indexed_scores = [(i, float(s)) for i, s in enumerate(scores)]
     indexed_scores.sort(key=lambda x: x[1], reverse=True)
 
+    # Filter below minimum relevance score
+    min_score = settings.reranker_min_score
+    pre_filter_count = len(indexed_scores)
+    indexed_scores = [(i, s) for i, s in indexed_scores if s >= min_score]
+
     result = indexed_scores[:top_k]
 
+    # Log with drop count
+    dropped = pre_filter_count - len(indexed_scores)
     if result:
         logger.info(
-            f"Reranker top scores: "
+            "Reranker top scores: "
             + ", ".join(f"#{idx}={score:.4f}" for idx, score in result)
+            + (f" | {dropped} dropped below {min_score}" if dropped else "")
         )
+    elif dropped:
+        logger.info(f"Reranker: all {pre_filter_count} candidates below min_score={min_score}")
 
     return result
+
+
+def warmup() -> None:
+    """Pre-load cross-encoder model. Call at startup."""
+    if not settings.reranker_enabled:
+        return
+    logger.info(f"Warming up reranker: {settings.reranker_model}")
+    _get_model()

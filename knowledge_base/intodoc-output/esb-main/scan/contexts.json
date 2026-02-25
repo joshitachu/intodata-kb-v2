@@ -1,0 +1,1898 @@
+[
+  {
+    "name": "ACTIVE_MQ",
+    "variables": [
+      {
+        "name": "activemq_broker",
+        "type": "id_String",
+        "values": {
+          "CRP": "\"079talend02.keune.com\"",
+          "Default": "\"tcp://079talend02.keune.com\"",
+          "DEV": "\"079talend02.keune.com\"",
+          "PROD": "\"079talend03.keune.com\""
+        }
+      },
+      {
+        "name": "activemq_user",
+        "type": "id_String",
+        "values": {
+          "CRP": "\"admin\"",
+          "Default": "\"admin\"",
+          "DEV": "\"admin\"",
+          "PROD": "\"admin\""
+        }
+      },
+      {
+        "name": "activemq_password",
+        "type": "id_Password",
+        "values": {
+          "CRP": "[ENCRYPTED_PASSWORD]",
+          "Default": "[ENCRYPTED_PASSWORD]",
+          "DEV": "[ENCRYPTED_PASSWORD]",
+          "PROD": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "activemq_broker_port",
+        "type": "id_String",
+        "values": {
+          "CRP": "\"61616\"",
+          "Default": "\"61616\"",
+          "DEV": "\"61616\"",
+          "PROD": "\"61616\""
+        }
+      },
+      {
+        "name": "activemq_factory_settings",
+        "type": "id_String",
+        "values": {
+          "CRP": "\"?jms.redeliveryPolicy.initialRedeliveryDelay=30000&jms.redeliveryPolicy.maximumRedeliveries=2\"",
+          "Default": "\"?jms.redeliveryPolicy.initialRedeliveryDelay=30000&jms.redeliveryPolicy.maximumRedeliveries=0\"",
+          "DEV": "\"?jms.redeliveryPolicy.initialRedeliveryDelay=30000&jms.redeliveryPolicy.maximumRedeliveries=0\"",
+          "PROD": "\"?jms.redeliveryPolicy.initialRedeliveryDelay=30000&jms.redeliveryPolicy.maximumRedeliveries=0\""
+        }
+      },
+      {
+        "name": "activemq_max_redelivery",
+        "type": "id_Integer",
+        "values": {
+          "CRP": "2",
+          "Default": "0",
+          "DEV": "0",
+          "PROD": "0"
+        }
+      },
+      {
+        "name": "activemq_error_queue",
+        "type": "id_String",
+        "values": {
+          "CRP": "\"ErrorQueue\"",
+          "Default": "\"ErrorQueue\"",
+          "DEV": "\"ErrorQueue\"",
+          "PROD": "\"ErrorQueue\""
+        }
+      },
+      {
+        "name": "activemq_api_url",
+        "type": "id_String",
+        "values": {
+          "CRP": "\"http://079talend02.keune.com:8161/api/",
+          "Default": "\"http://079talend02.keune.com:8161/api/",
+          "DEV": "\"http://079talend02.keune.com:8161/api/",
+          "PROD": "\"http://079talend03.keune.com:8161/api/"
+        }
+      },
+      {
+        "name": "activemq_max_connections",
+        "type": "id_Integer",
+        "values": {
+          "CRP": "2",
+          "Default": "",
+          "DEV": "2",
+          "PROD": "2"
+        }
+      },
+      {
+        "name": "activemq_max_active",
+        "type": "id_Integer",
+        "values": {
+          "CRP": "110",
+          "Default": "",
+          "DEV": "10",
+          "PROD": "10"
+        }
+      }
+    ]
+  },
+  {
+    "name": "connection_activemq",
+    "variables": [
+      {
+        "name": "connection_activemq_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "admin",
+          "TEST": "admin",
+          "TEST_LINUX": "admin"
+        }
+      },
+      {
+        "name": "connection_activemq_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]",
+          "TEST_LINUX": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "connection_activemq_broker",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "localhost",
+          "TEST": "localhost",
+          "TEST_LINUX": "localhost"
+        }
+      },
+      {
+        "name": "connection_activemq_broker_port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "61616",
+          "TEST": "61616",
+          "TEST_LINUX": "61616"
+        }
+      },
+      {
+        "name": "connection_activemq_error_queue",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "\"ErrorQueue\"",
+          "TEST": "\"ErrorQueue\"",
+          "TEST_LINUX": "\"ErrorQueue\""
+        }
+      }
+    ]
+  },
+  {
+    "name": "Country_State_Mapping",
+    "variables": [
+      {
+        "name": "resource_file_Country_Mapping",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "C:\\InToData\\Vaxxinova\\ESB\\Resource\\Countries.csv"
+        }
+      },
+      {
+        "name": "resource_file_State_Mapping",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "C:\\InToData\\Vaxxinova\\ESB\\Resource\\States.csv"
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_BC_webhook",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://us-central1-vaxxinova-dwh.cloudfunctions.net",
+          "TEST": "https://us-central1-vaxxinova-dwh.cloudfunctions.net"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "dev"
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "resource_webhook_payload",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_BC_webhook_api",
+    "variables": [
+      {
+        "name": "parameter_bc_webhook",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "businesscentral",
+          "PROD": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_BC_webhook_subscription",
+    "variables": [
+      {
+        "name": "parameter_bc_subscription_body",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": ""
+        }
+      },
+      {
+        "name": "parameter_bc_subscription_string",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": ""
+        }
+      },
+      {
+        "name": "resource_file_bc_subscription_resources",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "C:\\\\InToData\\\\Vaxxinova\\\\ESB\\\\Resource\\\\subscriptions.cfg",
+          "TEST": "C:\\\\InToData\\\\Vaxxinova\\\\ESB\\\\Resource\\\\subscriptions.cfg",
+          "TEST_LINUX": ""
+        }
+      },
+      {
+        "name": "parameter_bc_subscription_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "http://[SERVER_IP]:8090/businesscentral",
+          "TEST_LINUX": ""
+        }
+      },
+      {
+        "name": "parameter_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "8040",
+          "TEST": "8041",
+          "TEST_LINUX": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "GEN_SF_webhook_api",
+    "variables": [
+      {
+        "name": "parameter_sf_webhook",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "salesforce"
+        }
+      }
+    ]
+  },
+  {
+    "name": "GithubAPI",
+    "variables": [
+      {
+        "name": "[CREDENTIAL_PATH]",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_gh_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_gh_token",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "Global_Contexts",
+    "variables": [
+      {
+        "name": "resource_flow_temp_folder",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "c:/temp",
+          "TEST": "D:\\Vaxxinova\\BigQueryResource",
+          "TEST_LINUX": "/home/talend/IntoData/Vaxxinova/temp",
+          "TEST_MAC": "/Users/robbiemartens/Documents/Talend/Temp",
+          "PROD_MAC": "/Users/robbiemartens/Documents/Talend/Temp"
+        }
+      }
+    ]
+  },
+  {
+    "name": "GoogleBigQuery",
+    "variables": [
+      {
+        "name": "[CREDENTIAL_PATH]",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "C:\\talend\\data\\Klanten\\Vaxxinova\\BigQuery\\vaxxinova-dwh-8c18bd136cf5.json",
+          "TEST": "D:\\Vaxxinova\\PowerBi\\ServiceAccount_GoogleSecurity\\vaxxinova-dwh-943e64669511.json",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]",
+          "PROD_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_Project_Id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "vaxxinova-dwh",
+          "TEST": "vaxxinova-dwh",
+          "TEST_LINUX": "vaxxinova-dwh",
+          "TEST_MAC": "vaxxinova-dwh",
+          "PROD_MAC": "vaxxinova-dwh"
+        }
+      },
+      {
+        "name": "parameter_GS_Bucket",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "vaxxinova-talend",
+          "TEST": "vaxxinova-talend",
+          "TEST_LINUX": "vaxxinova-talend",
+          "TEST_MAC": "vaxxinova-talend",
+          "PROD_MAC": "vaxxinova-talend"
+        }
+      }
+    ]
+  },
+  {
+    "name": "Monitoring_Context",
+    "variables": [
+      {
+        "name": "Monitoring_Queue",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "Talend_Monitoring_TEST",
+          "PROD": "Talend_Monitoring_PROD"
+        }
+      },
+      {
+        "name": "Monitoring_authMethod",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_authPassword",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_authUsername",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Index_Document",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Index_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_URL",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_CMM",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Consumer",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ConsumerKey",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Description",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_End",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Error",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Interface",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_InterfaceRunId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_InterfaceRunId_SubNr",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_JobDetails",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Kibana_DocId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Link",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_MessageIn",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_MessageOut",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStep",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStepNr",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStepStatus",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStepTotal",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Producer",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProducerKey",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProducerKeyId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Start",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_WebService",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "TEST": "",
+          "PROD": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "MONITORING_SETTINGS",
+    "variables": [
+      {
+        "name": "Monitoring_URL",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "http://079talend05",
+          "TEST": "https://localhost"
+        }
+      },
+      {
+        "name": "Monitoring_Port",
+        "type": "id_String",
+        "values": {
+          "Default": "9200",
+          "PROD": "9200",
+          "TEST": "9200"
+        }
+      },
+      {
+        "name": "Monitoring_Index_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "process_monitoring-",
+          "PROD": "process_monitoring-",
+          "TEST": "process_monitoring-"
+        }
+      },
+      {
+        "name": "Monitoring_Queue",
+        "type": "id_String",
+        "values": {
+          "Default": "Talend_Monitoring",
+          "PROD": "Talend_Monitoring",
+          "TEST": "Talend_Monitoring_TEST"
+        }
+      },
+      {
+        "name": "Monitoring_Index_Document",
+        "type": "id_String",
+        "values": {
+          "Default": "/_doc",
+          "PROD": "/_doc",
+          "TEST": "/_doc"
+        }
+      },
+      {
+        "name": "Monitoring_authMethod",
+        "type": "id_String",
+        "values": {
+          "Default": "Basic",
+          "PROD": "Basic",
+          "TEST": "Basic"
+        }
+      },
+      {
+        "name": "Monitoring_authPassword",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "Monitoring_authUsername",
+        "type": "id_String",
+        "values": {
+          "Default": "elastic",
+          "PROD": "elastic",
+          "TEST": "elastic"
+        }
+      }
+    ]
+  },
+  {
+    "name": "MONITORING_VARIABLES",
+    "variables": [
+      {
+        "name": "Monitoring_Producer",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProducerKey",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProducerKeyId",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_InterfaceRunId",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_InterfaceRunId_SubNr",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Start",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_End",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Environment",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_CMM",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Interface",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStep",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStepNr",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStepTotal",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ProcessingStepStatus",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Consumer",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_ConsumerKey",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Description",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Error",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_MessageIn",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_MessageOut",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Link",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_WebService",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_Kibana_DocId",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      },
+      {
+        "name": "Monitoring_JobDetails",
+        "type": "id_String",
+        "values": {
+          "CRP": "",
+          "Default": "",
+          "DEV": "",
+          "PROD": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_PROBI_VUS_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "test_usa_vus_raw",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "test_usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "73d8d632-56e7-49a8-8e85-83b57fd69299",
+          "TEST": "73d8d632-56e7-49a8-8e85-83b57fd69299",
+          "TEST_LINUX": "73d8d632-56e7-49a8-8e85-83b57fd69299",
+          "TEST_MAC": "73d8d632-56e7-49a8-8e85-83b57fd69299"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "SSISandbox",
+          "TEST_LINUX": "SSISandbox",
+          "TEST_MAC": "Production"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company_ProBI",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Vaxxinova%20US",
+          "TEST": "Vaxxinova%20US",
+          "TEST_LINUX": "Vaxxinova%20US",
+          "TEST_MAC": "Vaxxinova%20US"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST_LINUX": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST_MAC": "eccc5682-c8ce-ef11-b8ec-7c1e52589656"
+        }
+      },
+      {
+        "name": "parameter_bc_lastmodifiedby",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "2611A7EC-B073-4728-9101-2BFCDB6D6BD8",
+          "TEST_LINUX": "2611A7EC-B073-4728-9101-2BFCDB6D6BD8",
+          "TEST_MAC": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_Vaxxinova_Salesforce",
+    "variables": [
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.salesforce.com/services/Soap/u/57.0",
+          "TEST": "https://test.salesforce.com/services/Soap/u/57.0"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_userPassword_userId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "salesforce.integration@vaxxinova.com",
+          "TEST": "salesforce.integration@vaxxinova.com.dev"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_oauth2JwtFlow_keyStorePassword",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_apiVersion",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "57.0",
+          "TEST": "57.0"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_oauth_clientSecret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_userPassword_securityKey",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_timeout",
+        "type": "id_Integer",
+        "values": {
+          "Default": "",
+          "PROD": "60000",
+          "TEST": "60000"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_userPassword_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_oauth2JwtFlow_audience",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.salesforce.com",
+          "TEST": "https://test.salesforce.com"
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_sslProperties_keyStorePwd",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_USA_Vaxxinova_Salesforce_proxy_userPassword_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_VUS_BC_environment",
+    "variables": [
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "D:\\Vaxxinova\\Talend\\Credencials\\USA_BC_Secret_key_Context.cfg",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_client_secret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Env_Prefix",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "usa_vus_raw",
+          "TEST": "usa_vus_raw_dwh",
+          "TEST_LINUX": "test_usa_vus_raw",
+          "TEST_MAC": "usa_vus_raw"
+        }
+      },
+      {
+        "name": "parameter_BC_Company_Identifier",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "D:\\Vaxxinova\\Talend\\Credencials\\USA_VUS_BC_Context_Environment.cfg",
+          "TEST_LINUX": "[CREDENTIAL_PATH]",
+          "TEST_MAC": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_LINUX": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST_MAC": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_bc_resource",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+          "TEST": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+          "TEST_LINUX": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+          "TEST_MAC": "73d8d632-56e7-49a8-8e85-83b57fd69299/"
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "Production",
+          "TEST": "Production",
+          "TEST_LINUX": "Production",
+          "TEST_MAC": "Production"
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "",
+          "TEST_LINUX": "",
+          "TEST_MAC": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST": "c0fb568e-6ba3-ef11-8a6b-000d3ac371a5",
+          "TEST_LINUX": "eccc5682-c8ce-ef11-b8ec-7c1e52589656",
+          "TEST_MAC": "eccc5682-c8ce-ef11-b8ec-7c1e52589656"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://api.businesscentral.dynamics.com",
+          "TEST": "https://api.businesscentral.dynamics.com",
+          "TEST_LINUX": "https://api.businesscentral.dynamics.com",
+          "TEST_MAC": "https://api.businesscentral.dynamics.com"
+        }
+      }
+    ]
+  },
+  {
+    "name": "USA_VUS_environment_GC",
+    "variables": [
+      {
+        "name": "parameter_bc_username",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_bc_grant_type",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_bc_client_id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "resource_file_BC_environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_authentication_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+          "TEST": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0"
+        }
+      },
+      {
+        "name": "parameter_BC_EndPoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://bc-vax-api.ew-group.net",
+          "TEST": "https://bc-vax-api.ew-group.net"
+        }
+      },
+      {
+        "name": "resource_file_BC_Secret_Key_Context",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "[CREDENTIAL_PATH]",
+          "TEST": "[CREDENTIAL_PATH]"
+        }
+      },
+      {
+        "name": "parameter_bc_client_secret",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_bc_scope",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_ResourceId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Company",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "c0fb568e-6ba3-ef11-8a6b-000d3ac371a5"
+        }
+      },
+      {
+        "name": "parameter_ResourceNumber",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Environment",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "srSandbox"
+        }
+      },
+      {
+        "name": "parameter_bc_TenantId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "73d8d632-56e7-49a8-8e85-83b57fd69299/"
+        }
+      },
+      {
+        "name": "parameter_bc_LastModifiedBy",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "b64d7245-b62d-4421-9ca8-4a0b2baf5c85"
+        }
+      }
+    ]
+  },
+  {
+    "name": "Vaxxinova_Salesforce",
+    "variables": [
+      {
+        "name": "parameter_Vaxxinova_Salesforce_endpoint",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.salesforce.com/services/Soap/u/57.0",
+          "TEST": "https://vaxxinova--dev.sandbox.my.salesforce.com/services/Soap/u/57.0"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_userPassword_userId",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "salesforce.integration@vaxxinova.com",
+          "TEST": "salesforce.integration@vaxxinova.com.dev"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_oauth2JwtFlow_keyStorePassword",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_apiVersion",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "57.0",
+          "TEST": "57.0"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_oauth_clientSecret",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_userPassword_securityKey",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_timeout",
+        "type": "id_Integer",
+        "values": {
+          "Default": "",
+          "PROD": "60000",
+          "TEST": "60000"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_userPassword_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "[ENCRYPTED_PASSWORD]",
+          "TEST": "[ENCRYPTED_PASSWORD]"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_oauth2JwtFlow_audience",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "https://login.salesforce.com",
+          "TEST": "https://test.salesforce.com"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_sslProperties_keyStorePwd",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_proxy_userPassword_password",
+        "type": "id_Password",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_Integration_Id",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": "0051v000006XEXZAA4"
+        }
+      },
+      {
+        "name": "parameter_Vaxxinova_Salesforce_Product_Code",
+        "type": "id_String",
+        "values": {
+          "Default": "",
+          "PROD": "",
+          "TEST": ""
+        }
+      }
+    ]
+  }
+]

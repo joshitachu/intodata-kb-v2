@@ -1,13 +1,13 @@
 {
   "platform": "talend",
-  "repo_root": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\vaxxinova\\mcp-server\\data\\repos\\TESTClAUDE",
-  "scanned_at": "2026-02-19 14:50:23.117641",
+  "repo_root": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb-main",
+  "scanned_at": "2026-02-24 17:13:44.216532",
   "stats": {
-    "total_files_walked": 1641,
-    "total_files_indexed": 1115,
-    "total_jobs": 257,
-    "total_connections": 12,
-    "total_contexts": 31,
-    "total_routines": 15
+    "total_files_walked": 366,
+    "total_files_indexed": 298,
+    "total_jobs": 21,
+    "total_connections": 2,
+    "total_contexts": 18,
+    "total_routines": 10
   }
 }

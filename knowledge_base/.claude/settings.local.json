@@ -34,7 +34,10 @@
       "WebFetch(domain:dometrain.com)",
       "WebFetch(domain:www.linkedin.com)",
       "WebFetch(domain:github.com)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(intodoc scan:*)",
+      "Bash(tail:*)",
+      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb/knowledge_base/dashboard && npx tsc --noEmit 2>&1)"
     ]
   },
   "enabledMcpjsonServers": [

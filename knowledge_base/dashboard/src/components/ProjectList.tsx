@@ -5,6 +5,8 @@ import StatusBadge from "./StatusBadge";
 
 interface Props {
   onAction: (projectId: string) => void;
+  activeProject?: string | null;
+  onSelect: (projectId: string) => void;
 }
 
 function formatDate(d: string | null): string {
@@ -12,7 +14,7 @@ function formatDate(d: string | null): string {
   return new Date(d).toLocaleString();
 }
 
-export default function ProjectList({ onAction }: Props) {
+export default function ProjectList({ onAction, activeProject, onSelect }: Props) {
   const { data, isLoading, error } = useProjects();
 
   if (isLoading) {
@@ -53,10 +55,20 @@ export default function ProjectList({ onAction }: Props) {
         </thead>
         <tbody>
           {projects.map((p) => (
-            <tr key={p.id} className="border-b hover:bg-gray-50">
+            <tr
+              key={p.id}
+              className={`border-b hover:bg-gray-50 ${activeProject === p.id ? "bg-blue-50" : ""}`}
+            >
               <td className="px-4 py-3">
-                <div className="font-medium">{p.display_name}</div>
-                <div className="text-xs text-gray-400">{p.id}</div>
+                <button
+                  className="text-left group"
+                  onClick={() => onSelect(p.id)}
+                >
+                  <div className="font-medium text-blue-600 group-hover:underline">
+                    {p.display_name}
+                  </div>
+                  <div className="text-xs text-gray-400">{p.id}</div>
+                </button>
               </td>
               <td className="px-4 py-3">{p.platform}</td>
               <td className="px-4 py-3">

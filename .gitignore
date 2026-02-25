@@ -44,3 +44,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# Binary uploads
+knowledge_base/mcp-server/data/uploads/

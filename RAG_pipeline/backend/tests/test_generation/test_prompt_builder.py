@@ -68,14 +68,15 @@ def test_build_context_with_reference_numbers():
     assert "[Source:" not in context
 
 
-def test_build_context_truncates_at_max_tokens():
-    # Create a source with a very long text that exceeds MAX_CONTEXT_TOKENS (4096)
-    long_text = "word " * 5000  # ~5000 tokens, exceeds 4096 limit
+def test_build_context_truncates_per_source():
+    # Create a source with a very long text that exceeds MAX_CONTEXT_TOKENS (6144)
+    long_text = "word " * 8000  # ~8000 tokens, well exceeds 6144 limit
     sources = [
         _make_source(long_text, chunk_index=0),
-        _make_source("This should not appear", chunk_index=1),
+        _make_source("Second source text", chunk_index=1),
     ]
     context = _build_context(sources)
-    # Both sources exceed the limit individually (first is ~5000 tokens)
-    # so neither should be included
-    assert "This should not appear" not in context
+    # First source should be truncated (not dropped) with [...] marker
+    assert "[...]" in context
+    # Source header should still appear
+    assert "[Source: test.pdf, chunk 0]" in context

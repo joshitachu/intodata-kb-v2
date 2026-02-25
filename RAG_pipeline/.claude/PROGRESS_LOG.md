@@ -1,5 +1,263 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-02-24 (Fix config.py drift)
+
+### [Fix]: Sync config.py with runtime expectations — missing settings crash backend
+
+- **Files changed**: `backend/src/config.py` (lines 11-51)
+- **Problem**: Backend crashes with `'Settings' object has no attribute 'kimi_timeout'` and `KeyError: 'groq'` on every query. `config.py` was out of sync with what `llm_client.py` and `reranker.py` actually reference.
+- **Root cause**: Multiple sessions modified `llm_client.py` (removing groq/openrouter providers, adding timeouts/temperature) but corresponding `config.py` changes were lost or reverted. The on-disk `config.py` was stale.
+- **Change**:
+  1. Removed dead provider settings: `groq_api_key`, `groq_llm_model`, `openrouter_api_key`, `openrouter_llm_model`
+  2. Fixed `llm_providers` default: `["kimi", "groq", "openrouter", "ollama"]` → `["kimi", "ollama"]`
+  3. Added missing Kimi settings: `kimi_temperature: float = 0.6`, `kimi_timeout: float = 15.0`
+  4. Added missing Ollama timeout: `ollama_timeout: float = 30.0`
+  5. Added missing reranker min-score: `reranker_min_score: float = 0.0`
+  6. Fixed `query_expansion_enabled`: `True` → `False` (disabled in Phase 3.2)
+- **Why this approach**: Pure config sync — only `config.py` was stale; all consumer code (`llm_client.py`, `reranker.py`) was already correct.
+- **Verification**: `pytest backend/tests/ --ignore=tests/test_db` — 174 passed, 0 failed
+
+## Session: 2026-02-24 (Auto-detect Qdrant vector dimension mismatch)
+
+### [Feature]: Auto-detect and fix Qdrant collection dimension mismatch at startup
+
+- **Files changed**: `backend/src/retrieval/vector_store.py` (lines 24-58)
+- **Problem**: After enabling Voyage AI as primary embedding provider (1024-dim), ingesting documents fails with `Wrong input: Vector dimension error: expected dim: 768, got 1024`. The old Qdrant collection was created with 768-dim (Ollama nomic-embed-text). `ensure_collection()` only created a new collection if none existed — it didn't detect dimension mismatches.
+- **Root cause**: `ensure_collection()` had a simple `if COLLECTION_NAME not in names:` guard — it skipped all logic if the collection already existed, regardless of whether the vector dimensions matched the current embedding provider.
+- **Change**: Rewrote `ensure_collection()` to:
+  1. Call `get_embedding_dim()` upfront (before checking collection existence)
+  2. If collection exists, fetch its info via `client.get_collection()` and compare `info.config.params.vectors["dense"].size` against expected dim
+  3. If mismatch, log a WARNING and delete the collection
+  4. After the check, re-query collections list and create if missing (handles both fresh installs and dimension-mismatch recreations)
+- **Why this approach**: Automatic detection at startup means no manual intervention needed when switching embedding providers. The WARNING log makes it visible that old vectors are gone and re-ingestion is required. The two-phase check (exists → compare → maybe delete → create if missing) keeps the logic clean and handles all cases.
+- **Verification**: 174 non-DB tests passing. No test changes needed — existing mocks don't exercise the dimension check path.
+
+## Session: 2026-02-24 (Fix SQLAlchemy Engine Log Noise)
+
+### [Fix]: SQLAlchemy engine INFO logs flooding startup output
+
+- **Files changed**: `backend/src/db/session.py` (line 13)
+- **Problem**: SQLAlchemy engine INFO logs (`select pg_catalog.version()`, `SELECT 1`, etc.) flooding console output on first request despite `logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)` in `main.py` lifespan.
+- **Root cause**: `echo=settings.is_dev` in `create_async_engine()` — when `echo=True`, SQLAlchemy internally sets the `sqlalchemy.engine.Engine` logger to `logging.INFO`, overriding the parent-level WARNING set later in lifespan.
+- **Change**: Changed `echo=settings.is_dev` to `echo=False`. SQL echo was useful during early development but is now just noise. DB errors still surface through normal error handling.
+- **Why this approach**: The `echo` parameter directly controls SQLAlchemy's internal logger level. No amount of `setLevel(WARNING)` on the parent logger can override it because SQLAlchemy re-sets the level when connections are used. Disabling echo is the only clean fix.
+- **Verification**: 174 non-DB tests passing. (DB test has unrelated `aiosqlite` missing dependency.)
+
+## Session: 2026-02-24 (Fix Production Bugs + Enable Voyage AI Embeddings)
+
+### [Fix]: Reranker min-score filtering — chitchat gets irrelevant results sent to LLM
+
+- **Files changed**: `backend/src/config.py` (line 48), `backend/src/retrieval/reranker.py` (lines 52-69)
+- **Problem**: Reranker returned top_k candidates regardless of score. Chitchat queries got irrelevant results (score -9.13) sent to LLM, producing hallucinated answers.
+- **Root cause**: `rerank()` returned `indexed_scores[:top_k]` with no minimum score threshold.
+- **Change**: Added `reranker_min_score: float = 0.0` to config. In `rerank()`, filter out scores below `settings.reranker_min_score` before slicing to top_k. Updated logging to show drop count.
+- **Why this approach**: Centralizing the filter inside `rerank()` protects all callers (`search_and_rerank()` and `search_multi_query()`). Default 0.0 filters only negative scores.
+- **Verification**: 3 new tests + 5 existing tests pass (174 total non-DB tests passing).
+
+### [Fix]: Voyage AI 400 error — `dimensions` parameter not supported
+
+- **Files changed**: `backend/src/retrieval/embedder.py` (lines 41-44, 56-59)
+- **Problem**: Every Voyage AI embed call failed with HTTP 400, falling back to slow Ollama (1-6s vs 100-200ms).
+- **Root cause**: `dimensions=settings.voyage_embed_dim` passed to Voyage API, but `voyage-4-large` doesn't support the `dimensions` parameter. It always returns 1024-dim natively.
+- **Change**: Removed `dimensions=settings.voyage_embed_dim` from both `_voyage_embed_single()` and `_voyage_embed_batch()`.
+- **Why this approach**: `voyage-4-large` natively outputs 1024-dim vectors. The `dimensions` param is an OpenAI API feature not supported by Voyage.
+- **Verification**: No test changes needed (existing mocks don't check API params). 174 non-DB tests passing.
+
+### [Fix]: Reranker downloads model on first request (+100s latency)
+
+- **Files changed**: `backend/src/retrieval/reranker.py` (lines 67-71), `backend/src/api/main.py` (lines 27-29)
+- **Problem**: First user request triggered cross-encoder model download (~100s), causing request timeout.
+- **Root cause**: Model was lazy-loaded on first `rerank()` call, not at startup.
+- **Change**: Added `warmup()` function to reranker that calls `_get_model()` to pre-load. Called from `main.py` lifespan after Qdrant verification, guarded by `settings.reranker_enabled`.
+- **Why this approach**: Startup is the right time to download/load models. Users don't wait.
+- **Verification**: 174 non-DB tests passing.
+
+### [Fix]: `query.py:125` crashes — `await` on sync `analyze_query()`
+
+- **Files changed**: `backend/src/api/routes/query.py` (line 125)
+- **Problem**: Streaming endpoint crashed at runtime with `TypeError: object QueryAnalysis can't be used in 'await' expression`.
+- **Root cause**: When `analyze_query()` was made sync (Phase 3.2), the `await` in `query.py:125` was missed (only `rag_chain.py` and `conversational_rag.py` were updated).
+- **Change**: `analysis = await analyze_query(body.query)` → `analysis = analyze_query(body.query)`
+- **Verification**: 174 non-DB tests passing.
+
+### [Feature]: Add `delete_collection()` helper to vector_store.py
+
+- **Files changed**: `backend/src/retrieval/vector_store.py` (lines 54-60)
+- **Problem**: No way to programmatically delete the old 768-dim Qdrant collection to recreate with 1024-dim for Voyage AI.
+- **Change**: Added `delete_collection(client)` async function that checks if collection exists and deletes it.
+- **Why this approach**: Utility for one-time collection migration. Can be called via script or admin endpoint.
+- **Verification**: 174 non-DB tests passing.
+
+### [Test]: Reranker min-score tests
+
+- **Files changed**: `backend/tests/test_retrieval/test_reranker.py` (full update)
+- **Problem**: Existing tests didn't account for `settings.reranker_min_score`.
+- **Change**: Added `@patch("src.retrieval.reranker.settings")` with `mock_settings.reranker_min_score = -999` to 4 existing tests (all except `test_rerank_empty_texts`). Added 3 new tests: `test_rerank_filters_below_min_score` (mixed scores, min=0), `test_rerank_all_below_min_score_returns_empty` (all negative), `test_rerank_min_score_boundary` (exactly 0.0 passes).
+- **Verification**: All 8 reranker tests pass. 174 non-DB tests passing total.
+
+## Session: 2026-02-23 (Eliminate Intent Classifier LLM Call + Disable Query Expansion)
+
+### [Performance]: Remove LLM-based intent classifier — zero LLM calls for query routing
+
+- **Files changed**:
+  - `backend/src/generation/intent_classifier.py` — Full rewrite: removed `generate_answer()` LLM call, `ROUTER_PROMPT`, `_parse_router_response()`. Replaced `async analyze_query()` with sync `analyze_query()` using keyword-based heuristics. Added `_SUMMARY_PATTERN` regex for summary detection. All queries return `Action.SEARCH` (empty queries return `Action.RESPOND`).
+  - `backend/src/generation/rag_chain.py` (line 39) — `await analyze_query(...)` → `analyze_query(...)` (sync call)
+  - `backend/src/generation/conversational_rag.py` (lines 246-253) — Removed `conversation_context` building (was lines 247-252), `await analyze_query(query, conversation_context=...)` → `analyze_query(query)` (sync call)
+  - `backend/src/config.py` (line 50) — `query_expansion_enabled: bool = True` → `False`
+  - `backend/tests/test_generation/test_intent_classifier.py` — Full rewrite: 20 sync tests (no mocking, no async). Tests cover empty→RESPOND, all text→SEARCH, summary keywords (summarize/summarise/summary/overview/recap/rundown/brief me), QA default, case insensitivity, conversation_context API compat.
+  - `backend/tests/test_generation/test_rag_chain.py` — Removed `analyze_query` AsyncMock. Renamed `test_rag_query_greeting_skips_search` → `test_rag_query_greeting_goes_through_search` (greetings now go through search → 0 results → no-results fallback).
+  - `backend/tests/test_generation/test_conversational_rag.py` — Removed `analyze_query` AsyncMock. Renamed `test_greeting_skips_search` → `test_greeting_goes_through_search` (same pattern).
+- **Problem**: Every user query made 2-3 sequential LLM API calls (intent classifier + optional query expansion + answer generation). At ~3-12s per call, total latency was 6-36s.
+- **Root cause**: The intent classifier existed to skip search for chitchat, but Qdrant search takes ~50-100ms — negligible. The `NO_RESULTS_PROMPT` already handles greetings/chitchat naturally when search returns 0 results.
+- **Change**: Replaced LLM-based intent classifier with zero-cost heuristic: all queries go through SEARCH. Summary detection uses regex keyword matching (reliable since users use explicit words like "summarize", "overview"). Disabled query expansion by default (saves another LLM call). Net effect: QA queries go from 3 LLM calls to 1, chitchat goes from 2 to 1.
+- **Why this approach**: The intent classifier LLM call was pure overhead — Qdrant search is ~50ms, so "skipping search for chitchat" saved almost nothing while costing 3-12s. Keyword-based summary detection is reliable (users use explicit summary words). Query expansion can be re-enabled via config if quality > speed is preferred.
+- **Verification**: 171 non-DB tests passing (20 DB errors are pre-existing `aiosqlite` issue). All 84 generation tests pass. All 35 conversational_rag tests pass.
+
+## Session: 2026-02-23 (Fix Kimi K2.5 temperature 400 error)
+
+### [Fix]: Change kimi_temperature from 0.4 to 0.6 — Kimi K2.5 instant mode requires exactly 0.6
+
+- **Files changed**: `backend/src/config.py` (line 17)
+- **Problem**: All Kimi K2.5 API calls fail with HTTP 400: `invalid temperature: only 0.6 is allowed for this model`. Every request falls back to local Ollama (~5s per call × 2 calls = ~10s), negating the latency optimization from the previous session.
+- **Root cause**: Previous session disabled thinking mode (`extra_body={"thinking": {"type": "disabled"}}`) which puts Kimi K2.5 into "instant mode". Instant mode enforces exactly `temperature=0.6` — no other value is accepted. We set 0.4.
+- **Change**: `kimi_temperature: float = 0.4` → `kimi_temperature: float = 0.6` with comment explaining the constraint.
+- **Why this approach**: Kimi K2.5 instant mode only accepts 0.6. No flexibility — it's a hard API constraint.
+- **Verification**: All 172 tests pass. Live verification: restart backend, send query → logs should show `LLM response from kimi` (not fallback to ollama). Latency should drop from ~10s to ~3-5s.
+
+### [Fix]: Disable OpenAI SDK internal retries + add per-call timing
+
+- **Files changed**: `backend/src/generation/llm_client.py` (lines 33, 2, 137-142)
+- **Problem**: After temperature fix, Kimi calls succeeded but total latency was still ~25s for 2 calls. Logs showed `Retrying request to /chat/completions in 0.416478 seconds` — the OpenAI SDK was silently retrying failed attempts (default `max_retries=2`) with exponential backoff, burning ~10s on a failed first attempt before our provider chain even knew about the failure.
+- **Root cause**: `AsyncOpenAI` defaults to `max_retries=2`. A failed Kimi call (transient error, rate limit) would be retried by the SDK internally, wasting the full timeout duration before the retry — and before our own `kimi → ollama` fallback chain could kick in.
+- **Change**:
+  1. Added `max_retries=0` to `AsyncOpenAI` constructor — our provider chain handles fallback, SDK retries just waste time
+  2. Added `import time` and per-call `time.perf_counter()` timing in `generate_answer()` — logs now show exact milliseconds per provider call (both success and failure)
+- **Why this approach**: With `max_retries=0`, a failed Kimi call immediately falls through to Ollama instead of burning 10+ seconds on internal retries. Per-call timing makes latency bottlenecks visible in logs.
+- **Verification**: All 7 llm_client tests pass. Restart backend to confirm: logs should show `LLM response from kimi (Xms)` with actual per-call timing.
+
+## Session: 2026-02-23 (Fix RAG Query Latency ~27s → ~3-5s)
+
+### [Performance]: Disable Kimi K2.5 thinking mode + singleton clients + timeouts
+
+- **Files changed**:
+  - `backend/src/generation/llm_client.py` — Added `extra_body={"thinking": {"type": "disabled"}}` to both `_kimi_generate()` and `_kimi_stream()`; changed hardcoded `temperature=1` to `settings.kimi_temperature` (0.4); replaced per-call client creation with module-level singleton clients using `asyncio.Lock` for lazy initialization; added `httpx.Timeout` for both Kimi (15s) and Ollama (30s) clients
+  - `backend/src/config.py` — Added `kimi_temperature: float = 0.4`, `kimi_timeout: float = 15.0`, `ollama_timeout: float = 30.0`
+- **Problem**: Simple queries took ~27s. Kimi K2.5 defaults to Thinking Mode (deep chain-of-thought) when `temperature=1`, adding 8-25s per call. Two sequential Kimi calls (intent classifier + response generation) = ~26s total. Also, new HTTP clients were created per request with no timeouts.
+- **Root cause**: Kimi K2.5's thinking mode is triggered by `temperature=1` and no `extra_body` override. Each API call spun up a new `AsyncOpenAI` / `ollama.AsyncClient` with connection overhead.
+- **Change**:
+  1. Added `extra_body={"thinking": {"type": "disabled"}}` to disable thinking mode on all Kimi calls
+  2. Lowered temperature from 1.0 to 0.4 (configurable via `kimi_temperature`)
+  3. Created singleton `AsyncOpenAI` and `ollama.AsyncClient` instances with double-checked locking
+  4. Added configurable timeouts (kimi: 15s, ollama: 30s) with 5s connect timeout
+- **Why this approach**: For RAG, the model synthesizes retrieved context — no need for deep reasoning. Thinking mode adds 8-25s per call with no quality benefit. Singletons reuse TCP connections, timeouts prevent hanging.
+- **Expected improvement**: ~27s → ~3-5s for chitchat, ~5-8s for QA queries
+- **Verification**: All 172 tests pass (85 generation tests, 87 other tests). 20 DB test errors are pre-existing (missing `aiosqlite`).
+
+## Session: 2026-02-23 (Remove Groq + OpenRouter providers)
+
+### [Refactor]: Strip Groq and OpenRouter, keep only Kimi K2.5 + Ollama fallback
+
+- **Files changed**:
+  - `backend/src/config.py` — removed `groq_api_key`, `groq_llm_model`, `openrouter_api_key`, `openrouter_llm_model`; changed `llm_providers` default from `["kimi", "groq", "openrouter", "ollama"]` to `["kimi", "ollama"]`
+  - `backend/src/generation/llm_client.py` — removed `_groq_generate()`, `_groq_stream()`, `_openrouter_generate()`, `_openrouter_stream()` and their registry entries
+  - `backend/tests/test_generation/test_llm_client.py` — rewrote all 7 tests for kimi + ollama only
+  - `backend/pyproject.toml` — removed `groq>=0.11.0` dependency (kept `openai` — Kimi uses it)
+- **Problem**: Unnecessary LLM providers (Groq, OpenRouter) cluttering the codebase. User only wants Kimi K2.5 as primary and Ollama as local fallback.
+- **Change**: Deleted all Groq and OpenRouter provider functions, config settings, and test references. Provider chain is now `kimi → ollama`.
+- **Why this approach**: Simplifies the stack — fewer dependencies, fewer API keys to manage, cleaner code.
+- **Verification**: All 7 tests in `test_llm_client.py` pass. `.env` already had no groq/openrouter entries.
+
+## Session: 2026-02-23 (API Key Placeholders)
+
+### [Config]: Add Kimi and Voyage AI API key placeholders to .env
+
+- **Files changed**: `backend/.env` (added lines 18-23)
+- **Problem**: Kimi K2.5 and Voyage AI providers were added in the RAG Retrieval Quality Overhaul but their API keys were missing from `.env`, making it unclear what env vars need to be set.
+- **Change**: Added `KIMI_API_KEY=your-kimi-api-key-here` and `VOYAGE_API_KEY=your-voyage-api-key-here` with section comments.
+- **Why this approach**: Placeholder values make it obvious which keys are needed. `config.py` already reads these via `os.getenv()`.
+- **Verification**: Confirmed `.env` has both new keys. No code changes needed — `config.py` already reads `kimi_api_key` and `voyage_api_key` from env.
+
+## Session: 2026-02-23 (RAG Retrieval Quality Overhaul)
+
+### [Feature]: Phase 1A — Smarter context truncation
+
+- **Files changed**: `backend/src/generation/prompt_builder.py` (lines 10, 60-103)
+- **Problem**: `_build_context()` dropped entire sources when the token budget was exceeded — a source with 5000 tokens would be completely discarded, losing all its information
+- **Change**: Increased `MAX_CONTEXT_TOKENS` from 4096 → 6144. Replaced drop-entire-source logic with per-source truncation: if a source exceeds remaining budget, its text is truncated to fit with `[...]` appended. All sources are now represented in context.
+- **Why this approach**: More sources = better LLM answers. Truncated context is still useful; dropped context is worthless.
+- **Verification**: Updated `test_build_context_truncates_per_source` test confirms `[...]` marker appears and source header is preserved. 193 tests passing.
+
+### [Feature]: Phase 1B — Add Kimi K2.5 as LLM provider
+
+- **Files changed**: `backend/src/generation/llm_client.py` (added `_kimi_generate()` + `_kimi_stream()`), `backend/src/config.py` (added `kimi_api_key`, `kimi_llm_model`)
+- **Problem**: No access to high-quality, cost-effective cloud LLM beyond Groq free tier and OpenRouter free tier
+- **Change**: Added Kimi K2.5 provider using OpenAI-compatible API (`https://api.moonshot.ai/v1`). Same pattern as OpenRouter. Registered in `_PROVIDER_FUNCS`. Updated default `llm_providers` chain: `["kimi", "groq", "openrouter", "ollama"]` — Kimi as primary.
+- **Why this approach**: Kimi K2.5 is a 1T-param MoE (32B active), 256K context, $0.60/M input — very cost-effective. OpenAI-compatible API means reusing existing `openai` SDK.
+- **Verification**: 193 tests passing.
+
+### [Feature]: Phase 1C — Upgrade query expansion + intent classifier to provider chain
+
+- **Files changed**: `backend/src/retrieval/query_expander.py` (replaced Ollama direct call with `generate_answer()`), `backend/src/generation/intent_classifier.py` (replaced Ollama direct call with `generate_answer()`, fixed null-safety bug in `_parse_router_response`)
+- **Problem**: Query expansion and intent classification were hardcoded to local Ollama `gemma3:4b`, which requires Ollama running locally. Also, `_parse_router_response` crashed with `'NoneType' object has no attribute 'lower'` when JSON had `null` values.
+- **Change**: Both modules now use `generate_answer()` from `llm_client.py`, routing through the full provider chain (Kimi → Groq → OpenRouter → Ollama). Fixed null-safety: `data.get("action", "search").lower()` → `(data.get("action") or "search").lower()`. Improved expansion prompt to request one more-specific and one more-general alternative.
+- **Why this approach**: Single provider chain for all LLM calls — no more dependency on local Ollama for routing/expansion.
+- **Verification**: Updated test mocks to patch `src.generation.llm_client.generate_answer`. 193 tests passing.
+
+### [Feature]: Phase 1D — Tune search parameters
+
+- **Files changed**: `backend/src/schemas.py` (lines 12-13, 123-124), `backend/src/retrieval/search.py` (lines 57-58, 91, 328, 363), `backend/src/config.py`
+- **Problem**: Suboptimal defaults: `top_k=3` too few sources, `threshold=0.4` too strict for API embeddings, `prefetch_limit=20` hardcoded, `max_documents=1` hardcoded
+- **Change**: `top_k` 3→5, `threshold` 0.4→0.3, `rerank_top_n` 15→20, `prefetch_limit` 20→30 (from config), `max_result_documents` 1→3 (from config). Added `default_top_k`, `default_threshold`, `prefetch_limit`, `max_result_documents` to Settings.
+- **Why this approach**: API embeddings (Voyage AI) have different score distributions than Ollama nomic-embed-text. More sources and candidates improve retrieval quality.
+- **Verification**: Updated merge_sources default test. 193 tests passing.
+
+### [Feature]: Phase 2A — Replace TF-IDF with token-hashing sparse embedder
+
+- **Files changed**: `backend/src/retrieval/sparse_embedder.py` (full rewrite)
+- **Problem**: **Critical bug**: `TfidfVectorizer` was created fresh on every call. During ingestion it fitted on a batch of chunks (vocabulary A). During query it fitted on the query string alone (vocabulary B). Index 0 in vector A mapped to a different word than index 0 in vector B. **Hybrid search was comparing random dimensions.**
+- **Root cause**: TF-IDF requires a shared vocabulary between indexing and query time. Creating a new vectorizer per call made the vocabulary non-deterministic.
+- **Change**: Full rewrite to hash-based approach: `hash(token) % 30000`. Each token deterministically maps to the same index regardless of when/where embedding is created. Tokenize with regex `[a-zA-Z0-9]+`, lowercase, remove English stop words, sub-linear TF weighting `1.0 + log(count)`. Pure Python, no sklearn dependency for this module.
+- **Why this approach**: Hash-based approach is stateless — no fitting step, no vocabulary mismatch. Same token always produces same index. Removes sklearn dependency from sparse embedder.
+- **Verification**: All 5 sparse embedder tests passing. `test_different_texts_produce_different_vectors` confirms deterministic indices. 193 tests passing.
+
+### [Feature]: Phase 3A — Add Voyage AI embedding provider chain
+
+- **Files changed**: `backend/src/retrieval/embedder.py` (full rewrite), `backend/src/retrieval/vector_store.py` (line 16, 31)
+- **Problem**: Ollama `nomic-embed-text` (768-dim) produces mediocre embeddings for domain-specific content
+- **Change**: Rewrote embedder with provider chain pattern (same as `llm_client.py`): Voyage AI → Ollama fallback. `voyage-4-large` (1024-dim). Added `get_embedding_dim()` function for dynamic dimension. `embed_text()` and `embed_texts()` public API unchanged. Updated `vector_store.py` to use `get_embedding_dim()` instead of `EMBEDDING_DIM` constant.
+- **Why this approach**: Voyage AI `voyage-4-large` is +14% over OpenAI v3 Large on MTEB, first 200M tokens free, 40% cheaper. Uses OpenAI-compatible API (existing `openai` SDK).
+- **Verification**: Updated embedder tests to mock provider chain. Added `test_get_embedding_dim_voyage` and `test_get_embedding_dim_ollama_default`. 193 tests passing.
+
+### [Feature]: Phase 3B-D — Upgrade reranker, config, vector store
+
+- **Files changed**: `backend/src/config.py` (added embedding_providers, voyage settings, search tuning settings, upgraded reranker model)
+- **Problem**: `ms-marco-MiniLM-L6-v2` (22M params) is the smallest cross-encoder; L-12-v2 (33M params) outperforms much larger models
+- **Change**: Upgraded `reranker_model` from `cross-encoder/ms-marco-MiniLM-L6-v2` → `cross-encoder/ms-marco-MiniLM-L-12-v2`. Added all config settings: `embedding_providers`, `voyage_api_key`, `voyage_embed_model`, `voyage_embed_dim`, `default_top_k`, `default_threshold`, `prefetch_limit`, `max_result_documents`.
+- **Verification**: 193 tests passing.
+
+### [Feature]: Phase 4A-B — Fix chunking overlap + sentence boundaries
+
+- **Files changed**: `backend/src/ingestion/semantic_chunker.py` (line 146), `backend/src/ingestion/chunker.py` (full rewrite)
+- **Problem**: Mechanical chunker had only 32-token overlap — chunks shared very little context. Also, chunks split mid-sentence, producing incoherent embeddings.
+- **Change**: Increased semantic chunker fallback overlap from 32→128. Increased mechanical chunker `DEFAULT_OVERLAP` from 32→100. Added `_snap_to_sentence_boundary()`: when splitting, tries to end chunks at sentence-ending punctuation (`. `, `? `, `! `) within the last 20% of each chunk.
+- **Why this approach**: More overlap = better semantic coherence between adjacent chunks. Sentence boundary detection prevents mid-sentence splits that degrade embedding quality.
+- **Verification**: Updated `test_default_parameters` for new overlap value. 193 tests passing.
+
+### [Fix]: Null-safety in intent classifier JSON parser
+
+- **Files changed**: `backend/src/generation/intent_classifier.py` (line 70-72)
+- **Problem**: `_parse_router_response` crashed with `'NoneType' object has no attribute 'lower'` when LLM returned JSON with `null` values (e.g., `{"query_type": null}`)
+- **Root cause**: `data.get("action", "search")` returns `None` (not `"search"`) when the key exists but has value `null`. Calling `.lower()` on `None` crashes.
+- **Change**: Changed `data.get("action", "search").lower()` → `(data.get("action") or "search").lower()` for all three fields. The `or` operator handles both missing keys and explicit `null` values.
+- **Verification**: 193 tests passing.
+
+### [Fix]: Updated test mocks for provider chain migration
+
+- **Files changed**: `backend/tests/test_generation/test_intent_classifier.py`, `backend/tests/test_retrieval/test_query_expander.py`, `backend/tests/test_retrieval/test_embedder.py`, `backend/tests/test_generation/test_rag_chain.py`, `backend/tests/test_generation/test_conversational_rag.py`, `backend/tests/test_generation/test_prompt_builder.py`, `backend/tests/test_retrieval/test_search.py`, `backend/tests/test_ingestion/test_chunker.py`
+- **Problem**: Tests patched `ollama_lib.AsyncClient` for intent classifier and query expander, but these now use `generate_answer()` from `llm_client.py`. Embedder tests referenced `EMBEDDING_DIM` constant that no longer exists.
+- **Change**: Updated all test mocks to patch `src.generation.llm_client.generate_answer` instead of `ollama_lib`. Updated embedder tests for provider chain pattern. Added `analyze_query` mocks to greeting-skip tests. Updated default parameter assertions.
+- **Verification**: 193 tests passing (was 192 — +1 new `test_get_embedding_dim_voyage` test).
+
 ## Session: 2026-02-20 (Fix Qdrant Cloud Connection Failure)
 
 ### [Fix]: Qdrant Cloud connection failure — port 6333 unreachable, must use port 443

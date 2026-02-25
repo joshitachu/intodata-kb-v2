@@ -38,6 +38,10 @@ class MCPServerConfig(BaseSettings):
     # vaxxinova project root (parent of mcp-server)
     project_root: Path = Path(__file__).resolve().parent.parent.parent.parent
 
+    # Hindsight memory
+    hindsight_enabled: bool = False
+    hindsight_url: str = "http://localhost:8888"
+
     # App
     log_level: str = "INFO"
 

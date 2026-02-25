@@ -7,7 +7,7 @@ from src.schemas import Source
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTEXT_TOKENS = 4096
+MAX_CONTEXT_TOKENS = 6144
 ENCODING_NAME = "cl100k_base"
 
 SYSTEM_PROMPT = (
@@ -61,11 +61,16 @@ def _build_context(
     sources: list[Source],
     reference_numbers: dict[int, int] | None = None,
 ) -> str:
-    """Concatenate source texts, truncating to stay within MAX_CONTEXT_TOKENS."""
+    """Concatenate source texts, truncating per-source to stay within MAX_CONTEXT_TOKENS.
+
+    Instead of dropping entire sources when the budget is exceeded, each source
+    that would overflow is truncated to fit the remaining budget (with ``[...]``
+    appended).  This ensures all retrieved sources are represented in the context.
+    """
     enc = tiktoken.get_encoding(ENCODING_NAME)
     parts: list[str] = []
     total_tokens = 0
-    truncated = 0
+    truncated_sources = 0
 
     for src in sources:
         if reference_numbers and src.document_id in reference_numbers:
@@ -73,20 +78,50 @@ def _build_context(
             header = f"[Reference {ref_num}: {src.filename}]"
         else:
             header = f"[Source: {src.filename}, chunk {src.chunk_index}]"
+
         block = f"{header}\n{src.text}\n"
         block_tokens = len(enc.encode(block))
+        remaining = MAX_CONTEXT_TOKENS - total_tokens
 
-        if total_tokens + block_tokens > MAX_CONTEXT_TOKENS:
-            truncated = len(sources) - len(parts)
+        if remaining <= 0:
             break
-        parts.append(block)
-        total_tokens += block_tokens
+
+        if block_tokens <= remaining:
+            parts.append(block)
+            total_tokens += block_tokens
+        else:
+            # Truncate this source's text to fit the remaining budget
+            header_line = f"{header}\n"
+            header_tokens = len(enc.encode(header_line))
+            suffix = " [...]"
+            suffix_tokens = len(enc.encode(suffix))
+            text_budget = remaining - header_tokens - suffix_tokens
+            if text_budget > 0:
+                text_tokens = enc.encode(src.text)
+                truncated_text = enc.decode(text_tokens[:text_budget])
+                block = f"{header_line}{truncated_text}{suffix}\n"
+                parts.append(block)
+                total_tokens += len(enc.encode(block))
+                truncated_sources += 1
 
     logger.info(
-        f"Context: {len(parts)} chunks used ({total_tokens}/{MAX_CONTEXT_TOKENS} tokens), "
-        f"{truncated} truncated"
+        f"Context: {len(parts)} sources used ({total_tokens}/{MAX_CONTEXT_TOKENS} tokens), "
+        f"{truncated_sources} truncated, {len(sources) - len(parts)} dropped"
     )
     return "\n".join(parts)
+
+
+def build_memory_context(memories: list[str]) -> str:
+    """Format recalled user memories into a system message block."""
+    if not memories:
+        return ""
+    lines = "\n".join(f"- {m}" for m in memories[:10])
+    return (
+        "## What you remember about this user\n"
+        f"{lines}\n\n"
+        "Use these memories to personalize your response where relevant, "
+        "but do not mention them explicitly unless the user asks."
+    )
 
 
 def build_no_results_messages(

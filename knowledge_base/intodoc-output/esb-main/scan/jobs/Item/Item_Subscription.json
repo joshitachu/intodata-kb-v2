@@ -1,0 +1,2299 @@
+{
+  "name": "Item_Subscription",
+  "path": "Item/Webhook/Item_Subscription_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2024-09-11T11:48:26.666+0200",
+  "modification_date": "2025-11-07T17:46:13.417+0100",
+  "components": [
+    {
+      "unique_name": "tFixedFlowInput_2",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "__hPjkHAiEe-Cuenwt4pzbg-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tWriteJSONField_2",
+      "component_type": "tWriteJSONField",
+      "params": [
+        {
+          "name": "JSONFIELD",
+          "value": "string",
+          "field_type": "COLUMN_LIST"
+        },
+        {
+          "name": "REMOVE_ROOT",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "COMPACT_FORMAT",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUOTE_ALL_VALUES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUOTE_NULL_VALUES",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ALLOW_EMPTY_STRINGS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_SCIENTIFIC_NOTATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "subscription_template",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tRESTClient_1",
+      "component_type": "tRESTClient",
+      "params": [
+        {
+          "name": "URL",
+          "value": "\"https://api.businesscentral.dynamics.com/v2.0/\" + context.parameter_bc_TenantId + context.parameter_Environment + \"/api/ssi/vaxxinova/v2.0/subscriptions\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PATH",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "METHOD",
+          "value": "POST",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "CONTENT_TYPE",
+          "value": "application/json",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCEPT_TYPE",
+          "value": "application/json",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "SERVICE_LOCATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SERVICE_NAMESPACE",
+          "value": "\"http://www.talend.org/rest/\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SERVICE_NAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SERVICE_ACTIVITY_MONITOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NEED_AUTH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "OAUTH2_BEARER",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "AUTH_USERNAME",
+          "value": "\"username\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTH_PASSWORD",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTH_BEARER_TOKEN",
+          "value": "(String)globalMap.get(\"token\")",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "NEED_AUTHORIZATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROLE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_BUSINESS_CORRELATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CORRELATION_VALUE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHECK_SERVER_IDENTITY",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REUSE_SSL_CONNECTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LOG_MESSAGES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FOLLOW_REDIRECTS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REDIRECT_NON_SAME_HOST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAINTAIN_SESSION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_WEBCLIENT_OPERATION_REPORTING",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONVERT_RESPONSE_TO_DOM",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNWRAP_JSON_REQUEST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "WRAP_JSON_RESPONSE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONVERT_TYPES_TO_STRINGS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_CHUNKED_ENCODING",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_TIMEOUT",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECEIVE_TIMEOUT",
+          "value": "60",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECEIVE_TIMEOUT_DESC",
+          "value": "(See tRESTClient doc. to configure timeouts for Talend Runtime)",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "USE_PROXY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROXY_HOST",
+          "value": "\"[SERVER_IP]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_PORT",
+          "value": "8080",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_USERNAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_PASSWORD",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ARRAY_KEYS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogRow_1",
+      "component_type": "tLogRow",
+      "params": [
+        {
+          "name": "BASIC_MODE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "TABLE_PRINT",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "VERTICAL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"|\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PRINT_HEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_UNIQUE_NAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_COLNAMES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_FIXED_LENGTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_CONTENT_WITH_LOG4J",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogRow_2",
+      "component_type": "tLogRow",
+      "params": [
+        {
+          "name": "BASIC_MODE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "TABLE_PRINT",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "VERTICAL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"|\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PRINT_HEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_UNIQUE_NAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_COLNAMES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_FIXED_LENGTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_CONTENT_WITH_LOG4J",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tRESTClient_3",
+      "component_type": "tRESTClient",
+      "params": [
+        {
+          "name": "URL",
+          "value": "\"https://api.businesscentral.dynamics.com/v2.0/\" + context.parameter_bc_TenantId + context.parameter_Environment + \"/api/ssi/vaxxinova/v2.0/subscriptions\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PATH",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "METHOD",
+          "value": "GET",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "CONTENT_TYPE",
+          "value": "application/xml",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCEPT_TYPE",
+          "value": "application/json",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "SERVICE_LOCATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SERVICE_NAMESPACE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SERVICE_NAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SERVICE_ACTIVITY_MONITOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NEED_AUTH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "OAUTH2_BEARER",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "AUTH_USERNAME",
+          "value": "\"username\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTH_PASSWORD",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTH_BEARER_TOKEN",
+          "value": "(String)globalMap.get(\"token\")",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "NEED_AUTHORIZATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROLE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_BUSINESS_CORRELATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CORRELATION_VALUE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHECK_SERVER_IDENTITY",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REUSE_SSL_CONNECTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LOG_MESSAGES",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FOLLOW_REDIRECTS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REDIRECT_NON_SAME_HOST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAINTAIN_SESSION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_WEBCLIENT_OPERATION_REPORTING",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONVERT_RESPONSE_TO_DOM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNWRAP_JSON_REQUEST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "WRAP_JSON_RESPONSE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONVERT_TYPES_TO_STRINGS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_CHUNKED_ENCODING",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_TIMEOUT",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECEIVE_TIMEOUT",
+          "value": "60",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECEIVE_TIMEOUT_DESC",
+          "value": "(See tRESTClient doc. to configure timeouts for Talend Runtime)",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "USE_PROXY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROXY_HOST",
+          "value": "\"[SERVER_IP]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_PORT",
+          "value": "8080",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_USERNAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_PASSWORD",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ARRAY_KEYS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractJSONFields_1",
+      "component_type": "tExtractJSONFields",
+      "params": [
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_5Vo_AL1oEe-0roqFqC5B9Q",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA:REPOSITORY_SCHEMA_TYPE",
+          "value": "_5Vo_AL1oEe-0roqFqC5B9Q - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "READ_BY",
+          "value": "JSONPATH",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSON_PATH_VERSION",
+          "value": "2_1_0",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSONFIELD",
+          "value": "string",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"$.value[*]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JSON_LOOP_QUERY",
+          "value": "\"$.value[*]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_REJECT:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA_REJECT:REPOSITORY_SCHEMA_TYPE",
+          "value": "_5Vo_AL1oEe-0roqFqC5B9Q - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JDK_VERSION",
+          "value": "JDK_8",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_LOOP_AS_ROOT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT_LIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "webhook_subscription_values",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_3",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "__hPjkHAiEe-Cuenwt4pzbg-tMap_3-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_1",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPrejob_1",
+      "component_type": "tPrejob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFileInputDelimited_1",
+      "component_type": "tFileInputDelimited",
+      "params": [
+        {
+          "name": "USE_EXISTING_DYNAMIC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FILENAMETEXT",
+          "value": "\"When the input source is a stream or a zip file,footer and random shouldn't be bigger than 0.\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_file_BC_Secret_Key_Context",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CSV_OPTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CSVROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "OPENED_LIST"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HEADER",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FOOTER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REMOVE_EMPTY_ROW",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNCOMPRESS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMP_DIR",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace\"",
+          "field_type": "DIRECTORY"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RANDOM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_RANDOM",
+          "value": "10",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TRIMALL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_FIELDS_NUM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SPLITRECORD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_DECODE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_HEADER_AS_IS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "Load_Context_From_File",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFileInputDelimited_2",
+      "component_type": "tFileInputDelimited",
+      "params": [
+        {
+          "name": "USE_EXISTING_DYNAMIC",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FILENAMETEXT",
+          "value": "\"When the input source is a stream or a zip file,footer and random shouldn't be bigger than 0.\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_file_BC_environment",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CSV_OPTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CSVROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "OPENED_LIST"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HEADER",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FOOTER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REMOVE_EMPTY_ROW",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNCOMPRESS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "TEMP_DIR",
+          "value": "\"D:/Talend/TS801_Vaxxinova/workspace\"",
+          "field_type": "DIRECTORY"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RANDOM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_RANDOM",
+          "value": "10",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TRIMALL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_FIELDS_NUM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SPLITRECORD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_DECODE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_HEADER_AS_IS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "Load_Context_From_File",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tUnite_1",
+      "component_type": "tUnite",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tContextLoad_1",
+      "component_type": "tContextLoad",
+      "params": [
+        {
+          "name": "LOAD_NEW_VARIABLE",
+          "value": "Info",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "NOT_LOAD_OLD_VARIABLE",
+          "value": "Info",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PRINT_OPERATIONS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_WARNINGS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_INFO",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIEONERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_3",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "Create_Business_Central_Token_1",
+      "component_type": "Create_Business_Central_Token",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "Create_Business_Central_Token",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_2",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_1",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_4",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "__hPjkHAiEe-Cuenwt4pzbg-tMap_4-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tRESTClient_2",
+      "component_type": "tRESTClient",
+      "params": [
+        {
+          "name": "URL",
+          "value": "\"https://api.businesscentral.dynamics.com/v2.0/\" + context.parameter_bc_TenantId + context.parameter_Environment + \"/api/ssi/vaxxinova/v2.0/subscriptions('\"+ (String)globalMap.get(\"subscriptionId\") +\"')\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PATH",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "METHOD",
+          "value": "PATCH",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "CONTENT_TYPE",
+          "value": "application/json",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCEPT_TYPE",
+          "value": "application/json",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "SERVICE_LOCATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SERVICE_NAMESPACE",
+          "value": "\"http://www.talend.org/rest/\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SERVICE_NAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SERVICE_ACTIVITY_MONITOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NEED_AUTH",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "OAUTH2_BEARER",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "AUTH_USERNAME",
+          "value": "\"username\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "AUTH_PASSWORD",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTH_BEARER_TOKEN",
+          "value": "(String)globalMap.get(\"token\")",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "NEED_AUTHORIZATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROLE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_BUSINESS_CORRELATION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CORRELATION_VALUE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHECK_SERVER_IDENTITY",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REUSE_SSL_CONNECTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LOG_MESSAGES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FOLLOW_REDIRECTS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REDIRECT_NON_SAME_HOST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAINTAIN_SESSION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_WEBCLIENT_OPERATION_REPORTING",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONVERT_RESPONSE_TO_DOM",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "UNWRAP_JSON_REQUEST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "WRAP_JSON_RESPONSE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONVERT_TYPES_TO_STRINGS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DISABLE_CHUNKED_ENCODING",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_TIMEOUT",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECEIVE_TIMEOUT",
+          "value": "60",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECEIVE_TIMEOUT_DESC",
+          "value": "(See tRESTClient doc. to configure timeouts for Talend Runtime)",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "USE_PROXY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROXY_HOST",
+          "value": "\"[SERVER_IP]\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_PORT",
+          "value": "8080",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_USERNAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROXY_PASSWORD",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ARRAY_KEYS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogRow_3",
+      "component_type": "tLogRow",
+      "params": [
+        {
+          "name": "BASIC_MODE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "TABLE_PRINT",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "VERTICAL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"|\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PRINT_HEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_UNIQUE_NAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_COLNAMES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_FIXED_LENGTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_CONTENT_WITH_LOG4J",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "row4",
+      "source": "tFixedFlowInput_2",
+      "target": "tWriteJSONField_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "itemSupscription",
+      "source": "tMap_1",
+      "target": "tRESTClient_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row5",
+      "source": "tWriteJSONField_2",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row11",
+      "source": "tRESTClient_1",
+      "target": "tLogRow_1",
+      "connector_name": "RESPONSE",
+      "line_style": 0
+    },
+    {
+      "name": "row12",
+      "source": "tRESTClient_1",
+      "target": "tLogRow_2",
+      "connector_name": "FAULT",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentError1",
+      "source": "tRESTClient_1",
+      "target": "tRESTClient_3",
+      "connector_name": "COMPONENT_ERROR",
+      "line_style": 5
+    },
+    {
+      "name": "row2",
+      "source": "tRESTClient_3",
+      "target": "tExtractJSONFields_1",
+      "connector_name": "RESPONSE",
+      "line_style": 0
+    },
+    {
+      "name": "row3",
+      "source": "tExtractJSONFields_1",
+      "target": "tMap_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "subscriptionsOutput",
+      "source": "tMap_3",
+      "target": "tSetGlobalVar_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "If2",
+      "source": "tSetGlobalVar_1",
+      "target": "tFixedFlowInput_1",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "OnComponentOk1",
+      "source": "tPrejob_1",
+      "target": "tFileInputDelimited_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row1",
+      "source": "tFileInputDelimited_1",
+      "target": "tUnite_1",
+      "connector_name": "FLOW",
+      "line_style": 10
+    },
+    {
+      "name": "row6",
+      "source": "tFileInputDelimited_2",
+      "target": "tUnite_1",
+      "connector_name": "FLOW",
+      "line_style": 10
+    },
+    {
+      "name": "row7",
+      "source": "tUnite_1",
+      "target": "tContextLoad_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "If1",
+      "source": "tContextLoad_1",
+      "target": "tFixedFlowInput_3",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "row1_0",
+      "source": "tFixedFlowInput_3",
+      "target": "Create_Business_Central_Token_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row9",
+      "source": "Create_Business_Central_Token_1",
+      "target": "tSetGlobalVar_2",
+      "connector_name": "OUTPUT_1",
+      "line_style": 0
+    },
+    {
+      "name": "row8",
+      "source": "tFixedFlowInput_1",
+      "target": "tMap_4",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "copyOfitemSupscription",
+      "source": "tMap_4",
+      "target": "tRESTClient_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row10",
+      "source": "tRESTClient_2",
+      "target": "tLogRow_3",
+      "connector_name": "RESPONSE",
+      "line_style": 0
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "parameter_bc_subscription_body",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_subscription_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "http://[SERVER_IP]:8090/businesscentral",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_subscription_string",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "resource_file_bc_subscription_resources",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "C:\\\\InToData\\\\Vaxxinova\\\\ESB\\\\Resource\\\\subscriptions.cfg",
+            "TEST": "C:\\\\InToData\\\\Vaxxinova\\\\ESB\\\\Resource\\\\subscriptions.cfg",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_authentication_endpoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+            "TEST": "https://login.microsoftonline.com/73d8d632-56e7-49a8-8e85-83b57fd69299/oauth2/v2.0",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_client_id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_client_secret",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_BC_EndPoint",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "https://bc-vax-api.ew-group.net",
+            "TEST": "https://bc-vax-api.ew-group.net",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_grant_type",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_LastModifiedBy",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "b64d7245-b62d-4421-9ca8-4a0b2baf5c85",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_scope",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_TenantId",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "73d8d632-56e7-49a8-8e85-83b57fd69299/",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_bc_username",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_Company",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "c0fb568e-6ba3-ef11-8a6b-000d3ac371a5",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_Environment",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "srSandbox",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_ResourceId",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_ResourceNumber",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "resource_file_BC_environment",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "resource_file_BC_Secret_Key_Context",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "[CREDENTIAL_PATH]",
+            "TEST": "[CREDENTIAL_PATH]",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "usa_vus_raw",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "PROD": "global_gr",
+            "TEST": "",
+            "TEST_LINUX": ""
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "row5"
+      ],
+      "output_tables": [
+        "itemSupscription"
+      ],
+      "entries": [
+        {
+          "table_name": "itemSupscription",
+          "column_name": "string",
+          "expression": "row5.string"
+        },
+        {
+          "table_name": "itemSupscription",
+          "column_name": "body",
+          "expression": ""
+        }
+      ],
+      "var_entries": []
+    },
+    {
+      "input_tables": [
+        "row3"
+      ],
+      "output_tables": [
+        "subscriptionsOutput"
+      ],
+      "entries": [
+        {
+          "table_name": "subscriptionsOutput",
+          "column_name": "etag__",
+          "expression": "row3.etag__"
+        },
+        {
+          "table_name": "subscriptionsOutput",
+          "column_name": "subscriptionId",
+          "expression": "row3.subscriptionId"
+        }
+      ],
+      "var_entries": [
+        {
+          "table_name": "Var",
+          "column_name": "resource",
+          "expression": "row3.resource.split(\"/\")[row3.resource.split(\"/\").length - 1]"
+        }
+      ]
+    },
+    {
+      "input_tables": [
+        "row8"
+      ],
+      "output_tables": [
+        "copyOfitemSupscription"
+      ],
+      "entries": [
+        {
+          "table_name": "copyOfitemSupscription",
+          "column_name": "string",
+          "expression": "\"{}\""
+        },
+        {
+          "table_name": "copyOfitemSupscription",
+          "column_name": "body",
+          "expression": ""
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString"
+  ],
+  "group": "Item",
+  "subgroup": "Webhook"
+}

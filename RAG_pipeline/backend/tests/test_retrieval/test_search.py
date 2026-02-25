@@ -232,14 +232,14 @@ def test_merge_sources_multiple_chunks_same_doc():
 
 
 def test_merge_sources_multiple_documents_default():
-    """Default max_documents=1 returns only the top-scoring document."""
+    """Default max_documents uses settings.max_result_documents (3) — returns all."""
     sources = [
         Source(document_id=1, filename="a.pdf", chunk_index=0, score=0.9, text="Doc A"),
         Source(document_id=2, filename="b.pdf", chunk_index=0, score=0.95, text="Doc B"),
         Source(document_id=3, filename="c.pdf", chunk_index=0, score=0.7, text="Doc C"),
     ]
     merged = merge_sources_by_document(sources)
-    assert len(merged) == 1
+    assert len(merged) == 3
     assert merged[0].filename == "b.pdf"
     assert merged[0].reference_number == 1
 

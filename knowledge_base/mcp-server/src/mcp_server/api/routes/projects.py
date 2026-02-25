@@ -14,6 +14,10 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.schemas import (
     AddRepoRequest,
     GenerateRequest,
+    GenerateRunListResponse,
+    GenerateRunResponse,
+    LogFileListResponse,
+    LogFileResponse,
     ProjectListResponse,
     ProjectResponse,
     PushToRagRequest,
@@ -154,8 +158,9 @@ async def scan_project(req: ScanRequest, request: Request, background_tasks: Bac
         platform = project.platform
         run_id = run.id
 
+    output_dir = str(config.intodoc_output_dir / req.project_id)
     background_tasks.add_task(
-        _run_scan_background, req.project_id, local_path, platform, run_id, log_mgr
+        _run_scan_background, req.project_id, local_path, platform, run_id, log_mgr, output_dir
     )
 
     return StatusResponse(status="scan_triggered", message=f"Scan started for {req.project_id}")
@@ -167,6 +172,7 @@ async def _run_scan_background(
     platform: str,
     run_id: int,
     log_mgr,
+    output_dir: str,
 ):
     """Background task: run scan and update DB."""
     scanner = ScannerService(log_manager=log_mgr)
@@ -176,6 +182,7 @@ async def _run_scan_background(
         project_id=project_id,
         repo_path=local_path,
         platform=platform,
+        output_dir=output_dir,
     )
 
     async with async_session_factory() as db:
@@ -209,28 +216,59 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
         await registry.update_status(req.project_id, "generating")
+        run = await registry.create_generate_run(req.project_id, triggered_by="api")
         await db.commit()
+        run_id = run.id
 
-    background_tasks.add_task(_run_generate_background, req.project_id, log_mgr)
+    background_tasks.add_task(_run_generate_background, req.project_id, run_id, log_mgr)
     return StatusResponse(
         status="generation_triggered",
         message=f"Doc generation started for {req.project_id}",
     )
 
 
-async def _run_generate_background(project_id: str, log_mgr):
+async def _run_generate_background(project_id: str, run_id: int, log_mgr):
     """Background task: spawn Claude Code for doc generation."""
     claude = ClaudeService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
-    success = await claude.generate_docs(project_id)
+    result = await claude.generate_docs(project_id)
+
+    success = result.get("success", False)
+
+    # Count generated docs
+    docs_dir = config.project_root / "output" / project_id / "docs"
+    doc_count = len(list(docs_dir.glob("*.md"))) if docs_dir.exists() else 0
+
+    # Get log file path
+    log_path = log_mgr.get_current_log_path(project_id)
+    log_file = log_path.name if log_path else None
 
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         if success:
             await registry.update_status(project_id, "ready")
+            await registry.update_generate_result(project_id, doc_count=doc_count)
         else:
             await registry.update_status(project_id, "error", error_message="Doc generation failed")
+
+        await registry.complete_generate_run(
+            run_id,
+            status="completed" if success else "failed",
+            cost_usd=result.get("cost_usd"),
+            duration_ms=result.get("duration_ms"),
+            duration_api_ms=result.get("duration_api_ms"),
+            input_tokens=result.get("input_tokens"),
+            output_tokens=result.get("output_tokens"),
+            num_turns=result.get("num_turns"),
+            session_id=result.get("session_id"),
+            doc_count=doc_count,
+            error_message=None if success else "Doc generation failed",
+            log_file=log_file,
+        )
         await db.commit()
+
+    # Signal SSE subscribers that generation is done
+    await log_mgr.emit_done(project_id)
 
 
 @router.post("/push-to-rag", response_model=StatusResponse)
@@ -244,9 +282,11 @@ async def push_to_rag(req: PushToRagRequest, request: Request):
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
 
-        output_dir = project.output_dir or str(config.intodoc_output_dir)
+        docs_dir = config.project_root / "output" / req.project_id / "docs"
+        if not docs_dir.exists():
+            raise HTTPException(status_code=404, detail=f"No docs found at {docs_dir}")
         bridge = RagBridge(log_manager=log_mgr)
-        result = await bridge.push_docs(project_id=req.project_id, output_dir=output_dir)
+        result = await bridge.push_docs(project_id=req.project_id, output_dir=str(docs_dir))
 
         if result["pushed"] > 0:
             await registry.update_rag_push(req.project_id)
@@ -294,3 +334,67 @@ async def list_projects():
             projects=[_project_to_response(p) for p in projects],
             total=len(projects),
         )
+
+
+def _run_to_response(r) -> GenerateRunResponse:
+    return GenerateRunResponse(
+        id=r.id,
+        project_id=r.project_id,
+        triggered_by=r.triggered_by,
+        status=r.status,
+        started_at=r.started_at,
+        completed_at=r.completed_at,
+        cost_usd=r.cost_usd,
+        duration_ms=r.duration_ms,
+        duration_api_ms=r.duration_api_ms,
+        input_tokens=r.input_tokens,
+        output_tokens=r.output_tokens,
+        num_turns=r.num_turns,
+        session_id=r.session_id,
+        doc_count=r.doc_count,
+        error_message=r.error_message,
+        log_file=r.log_file,
+    )
+
+
+@router.get("/generate-runs/{project_id}", response_model=GenerateRunListResponse)
+async def list_generate_runs(project_id: str):
+    """List all generation runs for a project (newest first)."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        runs = await registry.list_generate_runs(project_id)
+        return GenerateRunListResponse(
+            runs=[_run_to_response(r) for r in runs],
+            total=len(runs),
+        )
+
+
+@router.get("/logs/{project_id}", response_model=LogFileListResponse)
+async def list_log_files(project_id: str):
+    """List available log files for a project."""
+    logs_dir = config.logs_dir
+    files: list[LogFileResponse] = []
+    for log_path in sorted(logs_dir.glob(f"{project_id}_*.log"), reverse=True):
+        # Extract timestamp from filename: {project_id}_{YYYYMMDD_HHMMSS}.log
+        name = log_path.stem  # e.g. "myproject_20260224_143000"
+        ts_part = name[len(project_id) + 1:]  # e.g. "20260224_143000"
+        files.append(LogFileResponse(
+            filename=log_path.name,
+            project_id=project_id,
+            timestamp=ts_part,
+            size_bytes=log_path.stat().st_size,
+        ))
+    return LogFileListResponse(files=files, total=len(files))
+
+
+@router.get("/logs/{project_id}/{filename}")
+async def get_log_content(project_id: str, filename: str):
+    """Return the content of a specific log file."""
+    # Sanitize filename to prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    log_path = config.logs_dir / filename
+    if not log_path.exists() or not filename.startswith(project_id):
+        raise HTTPException(status_code=404, detail="Log file not found")
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    return {"filename": filename, "content": content}

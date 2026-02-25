@@ -230,6 +230,7 @@ async def send_message(
         db=db,
         top_k=request.top_k,
         threshold=request.threshold,
+        user_id=str(user.id),
     )
 
     return response
@@ -276,6 +277,7 @@ async def send_message_stream(
             db=db,
             top_k=request.top_k,
             threshold=request.threshold,
+            user_id=str(user.id),
         ):
             yield f"event: {event_type}\ndata: {data}\n\n"
 

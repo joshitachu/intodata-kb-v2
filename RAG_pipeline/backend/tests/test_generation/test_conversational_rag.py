@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.db.models import Conversation, ConversationMessage
+from src.generation.intent_classifier import Action, QueryAnalysis, QueryType
 from src.generation.conversational_rag import (
     build_context,
     build_context_from_document_sources,
@@ -317,12 +318,14 @@ class TestConversationalRagIntentRouting:
         db.flush = AsyncMock(side_effect=fake_flush)
         return db
 
-    async def test_greeting_skips_search(self, mock_conversation, mock_qdrant, mock_db):
-        """Greetings skip search and go directly to LLM."""
+    async def test_greeting_goes_through_search(self, mock_conversation, mock_qdrant, mock_db):
+        """Greetings now go through search (returns 0 results) then to no-results LLM fallback."""
         with (
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
+            # Search returns no results for "hello"
+            mock_search.return_value = []
             mock_gen.return_value = "Hello! How can I help you?"
 
             response = await run_conversational_rag(
@@ -333,10 +336,10 @@ class TestConversationalRagIntentRouting:
                 db=mock_db,
             )
 
-        mock_search.assert_not_called()
+        # Search WAS called (greetings now go through search)
+        mock_search.assert_called_once()
         mock_gen.assert_called_once()
         assert response.content == "Hello! How can I help you?"
-        assert response.sources is None
 
     async def test_no_results_calls_llm_fallback(self, mock_conversation, mock_qdrant, mock_db):
         """When search returns no results, LLM generates a helpful response."""

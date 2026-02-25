@@ -8,7 +8,7 @@ import logging
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mcp_server.db.models import Project, ScanRun
+from mcp_server.db.models import GenerateRun, Project, ScanRun
 
 logger = logging.getLogger(__name__)
 
@@ -170,3 +170,63 @@ class ProjectRegistry:
             )
         )
         await self.db.flush()
+
+    # --- GenerateRun CRUD ---
+
+    async def create_generate_run(
+        self,
+        project_id: str,
+        triggered_by: str = "api",
+    ) -> GenerateRun:
+        run = GenerateRun(
+            project_id=project_id,
+            triggered_by=triggered_by,
+            status="running",
+        )
+        self.db.add(run)
+        await self.db.flush()
+        return run
+
+    async def complete_generate_run(
+        self,
+        run_id: int,
+        *,
+        status: str = "completed",
+        cost_usd: float | None = None,
+        duration_ms: int | None = None,
+        duration_api_ms: int | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        num_turns: int | None = None,
+        session_id: str | None = None,
+        doc_count: int = 0,
+        error_message: str | None = None,
+        log_file: str | None = None,
+    ) -> None:
+        await self.db.execute(
+            update(GenerateRun)
+            .where(GenerateRun.id == run_id)
+            .values(
+                status=status,
+                cost_usd=cost_usd,
+                duration_ms=duration_ms,
+                duration_api_ms=duration_api_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                num_turns=num_turns,
+                session_id=session_id,
+                doc_count=doc_count,
+                error_message=error_message,
+                log_file=log_file,
+                completed_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+        )
+        await self.db.flush()
+
+    async def list_generate_runs(self, project_id: str) -> list[GenerateRun]:
+        result = await self.db.execute(
+            select(GenerateRun)
+            .where(GenerateRun.project_id == project_id)
+            .order_by(GenerateRun.started_at.desc())
+        )
+        return list(result.scalars().all())

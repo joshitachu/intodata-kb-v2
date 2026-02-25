@@ -25,7 +25,14 @@
       "WebFetch(domain:aiknowzone.com)",
       "WebFetch(domain:qdrant.tech)",
       "WebFetch(domain:apidog.com)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:platform.moonshot.ai)",
+      "WebFetch(domain:agentsapis.com)",
+      "WebFetch(domain:blog.voyageai.com)",
+      "WebFetch(domain:www.codecademy.com)",
+      "Bash(head:*)",
+      "Bash(curl:*)"
     ]
   }
 }

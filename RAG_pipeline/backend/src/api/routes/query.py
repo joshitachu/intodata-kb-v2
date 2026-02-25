@@ -122,7 +122,7 @@ async def query_stream(
     user_groups = get_user_groups(user)
 
     # 1. Route query
-    analysis = await analyze_query(body.query)
+    analysis = analyze_query(body.query)
 
     if analysis.action == Action.RESPOND:
         messages = build_no_results_messages(body.query)

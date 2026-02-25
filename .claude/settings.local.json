@@ -12,7 +12,22 @@
       "Bash(git status:*)",
       "Bash(cd /c/Users/kabeljo/Documents/intodata-kb && powershell.exe -Command \"Get-Process | Where-Object { \\\\$_.Path -like '*vaxxinova*' -or \\\\$_.Path -like '*mcp*' } | Select-Object Id, ProcessName, Path | Format-Table -AutoSize\" 2>&1)",
       "Bash(cd /c/Users/kabeljo/Documents/intodata-kb && powershell.exe -Command 'Get-Process python* | Select-Object Id, ProcessName | Format-Table -AutoSize' 2>&1)",
-      "Bash(powershell.exe:*)"
+      "Bash(powershell.exe:*)",
+      "Bash(gh repo:*)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:forms.office.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:hindsight.vectorize.io)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb && npx skills add https://github.com/vectorize-io/hindsight --skill hindsight-docs 2>&1)",
+      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb && npx skills add https://github.com/vectorize-io/hindsight --skill hindsight-docs --yes 2>&1)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(# Find the hindsight-api entry point\npip show hindsight-api 2>/dev/null | head -5 && python -c \"from importlib.metadata import entry_points; eps = entry_points\\(group='console_scripts'\\); print\\([e for e in eps if 'hindsight' in e.name]\\)\" 2>&1)",
+      "Bash(HINDSIGHT_API_LLM_PROVIDER=ollama HINDSIGHT_API_LLM_BASE_URL=http://localhost:11434 HINDSIGHT_API_LLM_MODEL=gemma3:12b timeout 30 python:*)",
+      "Bash(HINDSIGHT_API_LLM_PROVIDER=ollama HINDSIGHT_API_LLM_BASE_URL=http://localhost:11434 HINDSIGHT_API_LLM_MODEL=gemma3:12b timeout 45 python:*)",
+      "Bash(HINDSIGHT_API_LLM_PROVIDER=ollama HINDSIGHT_API_LLM_BASE_URL=http://localhost:11434/v1 HINDSIGHT_API_LLM_MODEL=gemma3:12b HINDSIGHT_API_SKIP_LLM_VERIFICATION=false timeout 45 python:*)"
     ]
   }
 }

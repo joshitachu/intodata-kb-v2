@@ -54,7 +54,50 @@
 - [x] Frontend: React Query cache invalidation on stream completion
 - [x] 192 tests passing (no regressions)
 
-## Phase 3 — Future
+## Phase 3 — RAG Retrieval Quality Overhaul (COMPLETE)
+
+- [x] Smarter context truncation (6144 tokens, per-source truncation instead of dropping)
+- [x] Kimi K2.5 LLM provider (OpenAI-compatible, primary in chain)
+- [x] Query expansion + intent classifier → LLM provider chain (no more local Ollama dependency)
+- [x] Search parameter tuning (top_k=5, threshold=0.3, rerank_top_n=20, prefetch_limit=30, max_documents=3)
+- [x] Fixed critical sparse embedding bug (TF-IDF → deterministic hash-based approach)
+- [x] Voyage AI embedding provider chain (voyage-4-large, 1024-dim, Ollama fallback)
+- [x] Upgraded reranker (L6-v2 → L-12-v2, 33M params)
+- [x] Dynamic embedding dimensions in vector store
+- [x] Improved chunking (overlap 32→100/128, sentence-boundary detection)
+- [x] Fixed null-safety bug in intent classifier JSON parser
+- [x] 193 tests passing (1 new test)
+
+## Phase 3.1 — Latency Optimization (COMPLETE)
+
+- [x] Disable Kimi K2.5 thinking mode (`extra_body={"thinking": {"type": "disabled"}}`)
+- [x] Lower temperature 1.0 → 0.4 (configurable via `kimi_temperature`)
+- [x] Singleton HTTP clients (AsyncOpenAI + ollama.AsyncClient) with lazy init
+- [x] Configurable timeouts (kimi: 15s, ollama: 30s, connect: 5s)
+- [x] 172 tests passing (no regressions)
+
+## Phase 3.2 — Latency Optimization: Eliminate Intent Classifier (COMPLETE)
+
+- [x] Replace LLM-based intent classifier with zero-cost heuristic (keyword-based summary detection)
+- [x] Make `analyze_query()` sync (no async, no LLM call)
+- [x] All queries go through SEARCH — Qdrant + NO_RESULTS_PROMPT handles chitchat
+- [x] Disable query expansion by default (`query_expansion_enabled: bool = False`)
+- [x] Update all callers (rag_chain.py, conversational_rag.py) to sync call
+- [x] Rewrite tests: 20 sync intent classifier tests, updated greeting tests in rag_chain + conversational_rag
+- [x] 171 non-DB tests passing (no regressions)
+
+## Phase 3.3 — Production Bug Fixes + Voyage AI Enablement (COMPLETE)
+
+- [x] Reranker min-score filtering (`reranker_min_score: float = 0.0` in config)
+- [x] Reranker warmup at startup (pre-load cross-encoder model in lifespan)
+- [x] Fix Voyage AI 400 error (remove unsupported `dimensions` param)
+- [x] Fix sync/async crash in streaming endpoint (`await` on sync `analyze_query()`)
+- [x] Add `delete_collection()` helper for collection migration
+- [x] Auto-detect Qdrant vector dimension mismatch at startup (auto-delete + recreate if dim changed)
+- [x] 3 new reranker tests + updated existing test mocks
+- [x] 174 non-DB tests passing (no regressions)
+
+## Phase 4 — Future
 
 - [ ] Integration Agent (Slack, SharePoint, etc.) — deferred until company tooling known
 - [ ] JWT/OAuth authentication
@@ -66,7 +109,7 @@
 
 | Component | Files | Tests | Status |
 |-----------|-------|-------|--------|
-| Backend | 35+ Python files | 192 passing | Complete |
+| Backend | 35+ Python files | 174 passing (non-DB) | Complete |
 | Frontend | 20+ TypeScript files | - | Build passing |
 | Database | 5 models + migration | 11 passing | Complete |
 

@@ -65,4 +65,19 @@ export const api = {
       doc_count: number;
       error_message: string | null;
     }>(`/mcp/status/${projectId}`),
+
+  listGenerateRuns: (projectId: string) =>
+    request<{ runs: import("../types").GenerateRun[]; total: number }>(
+      `/mcp/generate-runs/${projectId}`
+    ),
+
+  listLogFiles: (projectId: string) =>
+    request<{ files: import("../types").LogFile[]; total: number }>(
+      `/mcp/logs/${projectId}`
+    ),
+
+  getLogContent: (projectId: string, filename: string) =>
+    request<{ filename: string; content: string }>(
+      `/mcp/logs/${projectId}/${filename}`
+    ),
 };

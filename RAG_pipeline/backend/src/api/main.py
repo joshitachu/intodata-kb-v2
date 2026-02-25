@@ -24,6 +24,10 @@ async def lifespan(app: FastAPI):
     await ensure_collection(qdrant)
     logger.info("Qdrant collection and indexes verified")
 
+    if settings.reranker_enabled:
+        from src.retrieval.reranker import warmup as warmup_reranker
+        warmup_reranker()
+
     yield
     logger.info("Shutting down IntoData KB API")
     # Cleanup: close Qdrant client if open

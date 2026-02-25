@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from mcp_server.config import config
+from mcp_server.db.models import Base
+from mcp_server.db.session import engine
 from mcp_server.services.log_manager import LogManager
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,9 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown."""
     logging.basicConfig(level=getattr(logging, config.log_level))
     logger.info("Starting intodoc MCP Server API on :8001")
+    # Auto-create tables (e.g. generate_runs) on first run
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     app.state.log_manager = log_manager
     yield
     logger.info("Shutting down intodoc MCP Server API")

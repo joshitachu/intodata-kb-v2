@@ -9,21 +9,26 @@ class Settings(BaseSettings):
     )
 
     # LLM provider chain (tried in order, first success wins)
-    llm_providers: list[str] = ["groq", "openrouter", "ollama"]
+    llm_providers: list[str] = ["kimi", "ollama"]
 
-    # Groq
-    groq_api_key: str = "gsk_582vRAGn3fS0rVGN376EWGdyb3FYesvdd9P34kt2wLe3py6Ck2lZ8"
-    groq_llm_model: str = "llama-3.3-70b-versatile"
-
-    # OpenRouter
-    openrouter_api_key: str = "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"
-    openrouter_llm_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    # Kimi (Moonshot AI)
+    kimi_api_key: str = "sk-1FSKsQ9pKQPwcw0uPyFwsO72uQtlcIxmRNboiIOJ5EdK17MY"
+    kimi_llm_model: str = "kimi-k2.5"
+    kimi_temperature: float = 0.6
+    kimi_timeout: float = 15.0
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_llm_model: str = "gemma3:12b"
     ollama_embed_model: str = "nomic-embed-text"
     ollama_router_model: str = "gemma3:4b"
+    ollama_timeout: float = 30.0
+
+    # Embedding provider chain
+    embedding_providers: list[str] = ["voyage", "ollama"]
+    voyage_api_key: str = "pa-nu8c97r7H4mYSWwuEbbeYkTO3px2a3hbFYpCyxAN-gv"
+    voyage_embed_model: str = "voyage-4-large"
+    voyage_embed_dim: int = 1024
 
     # Qdrant
     qdrant_api_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.fd5QDZ8upKoKMF5wq3ykD4qQ30X3i6HLX9NvD7WdMC8"
@@ -38,11 +43,22 @@ class Settings(BaseSettings):
 
     # Reranking
     reranker_enabled: bool = True
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
-    rerank_top_n: int = 15
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    rerank_top_n: int = 20
+    reranker_min_score: float = 0.0
 
     # Query expansion
-    query_expansion_enabled: bool = True
+    query_expansion_enabled: bool = False
+
+    # Search tuning
+    default_top_k: int = 5
+    default_threshold: float = 0.3
+    prefetch_limit: int = 30
+    max_result_documents: int = 3
+
+    # Hindsight memory
+    hindsight_enabled: bool = False
+    hindsight_url: str = "http://localhost:8888"
 
     # App
     app_env: str = "development"

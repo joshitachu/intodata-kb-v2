@@ -35,8 +35,8 @@ async def run_rag_query(
     """Full RAG pipeline: classify → (search → build prompt) → generate → log."""
     start = time.perf_counter()
 
-    # 1. Route query via LLM
-    analysis = await analyze_query(request.query)
+    # 1. Route query via heuristics (no LLM call)
+    analysis = analyze_query(request.query)
     logger.info(
         f"Query: {request.query[:80]!r} | Action: {analysis.action.value} "
         f"| Type: {analysis.query_type.value} | Cleaned: {analysis.cleaned_query[:80]!r}"

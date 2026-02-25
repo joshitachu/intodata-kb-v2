@@ -54,8 +54,8 @@ async def search_similar(
     client: AsyncQdrantClient,
     query: str,
     user_groups: list[str],
-    top_k: int = 3,
-    threshold: float = 0.4,
+    top_k: int = 5,
+    threshold: float = 0.3,
     document_ids: list[int] | None = None,
 ) -> list[Source]:
     """Embed query, search Qdrant with RBAC filtering, return sources above threshold.
@@ -86,9 +86,9 @@ async def search_similar_hybrid(
     client: AsyncQdrantClient,
     query: str,
     user_groups: list[str],
-    top_k: int = 3,
+    top_k: int = 5,
     threshold: float = 0.25,
-    prefetch_limit: int = 20,
+    prefetch_limit: int | None = None,
     document_ids: list[int] | None = None,
 ) -> list[Source]:
     """Hybrid search: dense + sparse with Reciprocal Rank Fusion (RRF).
@@ -96,6 +96,8 @@ async def search_similar_hybrid(
     Uses Qdrant's Prefetch API to retrieve candidates from both indexes
     and fuse them server-side with RRF.
     """
+    pf_limit = prefetch_limit if prefetch_limit is not None else settings.prefetch_limit
+
     embed_start = time.perf_counter()
     query_embedding = await embed_text(query)
     sparse_vector = embed_text_sparse(query)
@@ -113,7 +115,7 @@ async def search_similar_hybrid(
                 query=query_embedding,
                 using="dense",
                 filter=search_filter,
-                limit=prefetch_limit,
+                limit=pf_limit,
             ),
             Prefetch(
                 query=QdrantSparseVector(
@@ -122,7 +124,7 @@ async def search_similar_hybrid(
                 ),
                 using="sparse",
                 filter=search_filter,
-                limit=prefetch_limit,
+                limit=pf_limit,
             ),
         ],
         query=FusionQuery(fusion="rrf"),
@@ -325,7 +327,7 @@ def _process_results(
 
 def merge_sources_by_document(
     sources: list[Source],
-    max_documents: int = 1,
+    max_documents: int | None = None,
 ) -> list[DocumentSource]:
     """Merge chunk-level sources into document-level sources.
 
@@ -357,8 +359,9 @@ def merge_sources_by_document(
         )
 
     # Sort by score descending, limit to max_documents
+    limit = max_documents if max_documents is not None else settings.max_result_documents
     merged.sort(key=lambda d: d.score, reverse=True)
-    merged = merged[:max_documents]
+    merged = merged[:limit]
     for i, doc in enumerate(merged):
         doc.reference_number = i + 1
     return merged

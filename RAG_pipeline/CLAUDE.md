@@ -186,6 +186,7 @@ See `.claude/agents/[agent-name]/instructions.md` for specific agent tasks.
 ```bash
 # Dev
 uvicorn src.api.main:app --reload    # Backend
+python -m uvicorn src.api.main:app --reload
 npm run dev                          # Frontend
 
 # Infra

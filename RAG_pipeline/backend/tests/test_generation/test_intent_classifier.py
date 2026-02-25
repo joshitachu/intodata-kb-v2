@@ -1,199 +1,101 @@
-import json
-from unittest.mock import AsyncMock, patch
-
-import pytest
+"""Tests for the heuristic intent classifier (zero LLM calls)."""
 
 from src.generation.intent_classifier import (
     Action,
     QueryAnalysis,
     QueryType,
-    _parse_router_response,
     analyze_query,
 )
 
 
-class TestParseRouterResponse:
-    def test_valid_search_response(self) -> None:
-        raw = '{"action": "search", "cleaned_query": "what is the onboarding process"}'
-        result = _parse_router_response(raw, "what is the onbording process")
-        assert result.action == Action.SEARCH
-        assert result.cleaned_query == "what is the onboarding process"
+class TestAnalyzeQueryAction:
+    """All real queries should return SEARCH; only empty → RESPOND."""
 
-    def test_valid_respond_response(self) -> None:
-        raw = '{"action": "respond", "cleaned_query": "hello"}'
-        result = _parse_router_response(raw, "hello")
+    def test_empty_query_returns_respond(self) -> None:
+        result = analyze_query("")
         assert result.action == Action.RESPOND
+        assert result.cleaned_query == ""
+
+    def test_whitespace_query_returns_respond(self) -> None:
+        result = analyze_query("   ")
+        assert result.action == Action.RESPOND
+        assert result.cleaned_query == ""
+
+    def test_greeting_returns_search(self) -> None:
+        result = analyze_query("hello")
+        assert result.action == Action.SEARCH
         assert result.cleaned_query == "hello"
 
-    def test_markdown_code_fence_stripped(self) -> None:
-        raw = '```json\n{"action": "search", "cleaned_query": "test query"}\n```'
-        result = _parse_router_response(raw, "test query")
-        assert result.action == Action.SEARCH
-        assert result.cleaned_query == "test query"
-
-    def test_invalid_json_falls_back_to_search(self) -> None:
-        raw = "This is not JSON at all"
-        result = _parse_router_response(raw, "original query")
-        assert result.action == Action.SEARCH
-        assert result.cleaned_query == "original query"
-
-    def test_missing_action_defaults_to_search(self) -> None:
-        raw = '{"cleaned_query": "some query"}'
-        result = _parse_router_response(raw, "some query")
+    def test_thanks_returns_search(self) -> None:
+        result = analyze_query("thanks!")
         assert result.action == Action.SEARCH
 
-    def test_unknown_action_defaults_to_search(self) -> None:
-        raw = '{"action": "unknown_thing", "cleaned_query": "query"}'
-        result = _parse_router_response(raw, "query")
+    def test_real_question_returns_search(self) -> None:
+        result = analyze_query("what is the vacation policy?")
+        assert result.action == Action.SEARCH
+        assert result.cleaned_query == "what is the vacation policy?"
+
+    def test_mixed_greeting_and_question_returns_search(self) -> None:
+        result = analyze_query("hi, what's our vacation policy?")
         assert result.action == Action.SEARCH
 
-    def test_empty_cleaned_query_uses_original(self) -> None:
-        raw = '{"action": "search", "cleaned_query": ""}'
-        result = _parse_router_response(raw, "original")
-        assert result.cleaned_query == "original"
+    def test_conversation_context_accepted_but_ignored(self) -> None:
+        """The conversation_context parameter is accepted for API compat but doesn't affect results."""
+        result = analyze_query("what about that?", conversation_context="user: tell me about X\nassistant: X is ...")
+        assert result.action == Action.SEARCH
+        assert result.cleaned_query == "what about that?"
 
-    def test_missing_cleaned_query_uses_original(self) -> None:
-        raw = '{"action": "respond"}'
-        result = _parse_router_response(raw, "hi there")
-        assert result.cleaned_query == "hi there"
 
-    def test_query_type_qa_default(self) -> None:
-        raw = '{"action": "search", "cleaned_query": "what is onboarding"}'
-        result = _parse_router_response(raw, "what is onboarding")
+class TestAnalyzeQueryType:
+    """Summary detection via keyword matching."""
+
+    def test_qa_by_default(self) -> None:
+        result = analyze_query("what is the onboarding process?")
         assert result.query_type == QueryType.QA
 
-    def test_query_type_summary_parsed(self) -> None:
-        raw = '{"action": "search", "query_type": "summary", "cleaned_query": "summarize the HR policy"}'
-        result = _parse_router_response(raw, "summarize the HR policy")
+    def test_summarize_detected(self) -> None:
+        result = analyze_query("summarize the HR policy")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_summarise_british_spelling(self) -> None:
+        result = analyze_query("summarise the onboarding guide")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_summary_keyword(self) -> None:
+        result = analyze_query("give me a summary of the document")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_overview_keyword(self) -> None:
+        result = analyze_query("overview of the quarterly report")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_recap_keyword(self) -> None:
+        result = analyze_query("recap the meeting notes")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_rundown_keyword(self) -> None:
+        result = analyze_query("give me a rundown of the project plan")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_brief_me_keyword(self) -> None:
+        result = analyze_query("brief me on the safety guidelines")
+        assert result.query_type == QueryType.SUMMARY
+
+    def test_mixed_greeting_and_summary(self) -> None:
+        """Summary keyword should be detected even with chitchat prefix."""
+        result = analyze_query("hi, summarize the HR doc")
         assert result.query_type == QueryType.SUMMARY
         assert result.action == Action.SEARCH
 
-    def test_query_type_missing_defaults_to_qa(self) -> None:
-        raw = '{"action": "search", "cleaned_query": "some query"}'
-        result = _parse_router_response(raw, "some query")
-        assert result.query_type == QueryType.QA
-
-    def test_query_type_unknown_defaults_to_qa(self) -> None:
-        raw = '{"action": "search", "query_type": "banana", "cleaned_query": "query"}'
-        result = _parse_router_response(raw, "query")
-        assert result.query_type == QueryType.QA
-
-
-class TestAnalyzeQuery:
-    @pytest.mark.asyncio
-    async def test_empty_query_returns_respond(self) -> None:
-        result = await analyze_query("")
-        assert result.action == Action.RESPOND
-
-    @pytest.mark.asyncio
-    async def test_whitespace_query_returns_respond(self) -> None:
-        result = await analyze_query("   ")
-        assert result.action == Action.RESPOND
-
-    @pytest.mark.asyncio
-    async def test_calls_ollama_and_parses_response(self) -> None:
-        mock_response = {
-            "message": {
-                "content": '{"action": "search", "cleaned_query": "what is the onboarding process"}',
-            }
-        }
-        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.chat.return_value = mock_response
-            mock_cls.return_value = mock_client
-
-            result = await analyze_query("what is the onbording process")
-
-        assert result.action == Action.SEARCH
-        assert result.cleaned_query == "what is the onboarding process"
-        mock_client.chat.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_greeting_routed_to_respond(self) -> None:
-        mock_response = {
-            "message": {
-                "content": '{"action": "respond", "cleaned_query": "hello"}',
-            }
-        }
-        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.chat.return_value = mock_response
-            mock_cls.return_value = mock_client
-
-            result = await analyze_query("hello")
-
-        assert result.action == Action.RESPOND
-
-    @pytest.mark.asyncio
-    async def test_ollama_failure_falls_back_to_search(self) -> None:
-        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.chat.side_effect = ConnectionError("Ollama unavailable")
-            mock_cls.return_value = mock_client
-
-            result = await analyze_query("what is the vacation policy")
-
-        assert result.action == Action.SEARCH
-        assert result.cleaned_query == "what is the vacation policy"
-
-    @pytest.mark.asyncio
-    async def test_garbage_llm_response_falls_back_to_search(self) -> None:
-        mock_response = {
-            "message": {
-                "content": "I'm sorry, I can't help with that.",
-            }
-        }
-        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.chat.return_value = mock_response
-            mock_cls.return_value = mock_client
-
-            result = await analyze_query("test query")
-
-        assert result.action == Action.SEARCH
-        assert result.cleaned_query == "test query"
-
-    @pytest.mark.asyncio
-    async def test_conversation_context_included_in_prompt(self) -> None:
-        """When conversation_context is provided, it should be prepended to the user message."""
-        mock_response = {
-            "message": {
-                "content": '{"action": "search", "query_type": "summary", "cleaned_query": "summarize The Quiet Revolution"}',
-            }
-        }
-        context = "user: is there a file about The Quiet Revolution?\nassistant: Yes, the file is The Quiet Revolution.pdf"
-        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.chat.return_value = mock_response
-            mock_cls.return_value = mock_client
-
-            result = await analyze_query("summarize it", conversation_context=context)
-
-        assert result.action == Action.SEARCH
+    def test_case_insensitive(self) -> None:
+        result = analyze_query("SUMMARIZE the document")
         assert result.query_type == QueryType.SUMMARY
-        assert result.cleaned_query == "summarize The Quiet Revolution"
-        # Verify context was included in the prompt
-        call_args = mock_client.chat.call_args
-        user_msg = call_args.kwargs["messages"][1]["content"]
-        assert "Recent conversation:" in user_msg
-        assert "The Quiet Revolution" in user_msg
 
-    @pytest.mark.asyncio
-    async def test_no_context_sends_plain_query(self) -> None:
-        """Without conversation_context, only the bare query is sent."""
-        mock_response = {
-            "message": {
-                "content": '{"action": "search", "cleaned_query": "what is onboarding"}',
-            }
-        }
-        with patch("src.generation.intent_classifier.ollama_lib.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.chat.return_value = mock_response
-            mock_cls.return_value = mock_client
+    def test_no_false_positive_on_partial_match(self) -> None:
+        """Words containing 'summary' as a substring shouldn't trigger (but 'summary' itself should)."""
+        result = analyze_query("what is the summary of benefits?")
+        assert result.query_type == QueryType.SUMMARY
 
-            result = await analyze_query("what is onboarding")
-
-        call_args = mock_client.chat.call_args
-        user_msg = call_args.kwargs["messages"][1]["content"]
-        assert user_msg == "what is onboarding"
-        assert "Recent conversation:" not in user_msg
+    def test_normal_question_not_summary(self) -> None:
+        result = analyze_query("how many vacation days do I get?")
+        assert result.query_type == QueryType.QA

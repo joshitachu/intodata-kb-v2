@@ -14,6 +14,7 @@ from mcp.types import TextContent, Tool
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.services.log_manager import LogManager
+from mcp_server.services import memory_service
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.scanner_service import ScannerService
@@ -183,6 +184,105 @@ async def list_tools() -> list[Tool]:
                 "required": ["project_id", "chunk_id"],
             },
         ),
+        # --- Hindsight memory tools ---
+        Tool(
+            name="recall_process_memory",
+            description=(
+                "Recall process-level lessons and best practices from previous "
+                "doc-generation runs. Call before starting Phase 1 to learn from "
+                "past mistakes and optimizations. Returns a list of relevant facts."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to recall, e.g. 'process lessons', "
+                            "'common errors', 'token optimization tips'"
+                        ),
+                        "default": "process lessons and best practices",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="recall_project_memory",
+            description=(
+                "Recall prior analysis findings for a specific project. Returns "
+                "previous scan results, group structure, risk flags, health scores, "
+                "and documentation decisions. Use before re-scanning to understand "
+                "what changed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to recall, e.g. 'previous analysis', "
+                            "'risk flags', 'group structure'"
+                        ),
+                        "default": "previous analysis findings and risk flags",
+                    },
+                },
+                "required": ["project_id"],
+            },
+        ),
+        Tool(
+            name="retain_findings",
+            description=(
+                "Store analysis findings for a project into its memory bank. "
+                "Call after Phase 2 (group summaries) and Phase 4 (run summary) "
+                "to remember what was found."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "findings": {
+                        "type": "string",
+                        "description": "The findings text to store",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Context label: 'group-analysis', 'run-summary', "
+                            "'risk-update', etc."
+                        ),
+                        "default": "analysis-findings",
+                    },
+                },
+                "required": ["project_id", "findings"],
+            },
+        ),
+        Tool(
+            name="retain_process_lesson",
+            description=(
+                "Store an operational lesson learned during doc generation into "
+                "the shared process memory bank. Use for errors encountered, "
+                "performance tips, workflow optimizations."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lesson": {
+                        "type": "string",
+                        "description": "The lesson to remember",
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Context label: 'error-lesson', 'optimization', "
+                            "'workflow-tip', etc."
+                        ),
+                        "default": "process-lesson",
+                    },
+                },
+                "required": ["lesson"],
+            },
+        ),
     ]
 
 
@@ -220,6 +320,15 @@ async def _dispatch(name: str, args: dict) -> dict:
             return await _get_chunks(registry, args)
         elif name == "fetch_chunk":
             return await _fetch_chunk(registry, args)
+        # --- Hindsight memory tools (no DB session needed) ---
+        elif name == "recall_process_memory":
+            return await _recall_process_memory(args)
+        elif name == "recall_project_memory":
+            return await _recall_project_memory(args)
+        elif name == "retain_findings":
+            return await _retain_findings(args)
+        elif name == "retain_process_lesson":
+            return await _retain_process_lesson(args)
         else:
             return {"error": f"Unknown tool: {name}"}
 
@@ -298,7 +407,7 @@ async def _trigger_scan(registry: ProjectRegistry, db, args: dict) -> dict:
     await db.commit()
 
     # Use per-project output directory to avoid overwriting scans
-    project_output_dir = config.data_dir / "outputs" / project_id
+    project_output_dir = config.intodoc_output_dir / project_id
     
     log_manager.reset_log_file(project_id)
     result = await scanner_service.run_scan(
@@ -419,6 +528,50 @@ async def _fetch_chunk(registry: ProjectRegistry, args: dict) -> dict:
 
     output_dir = project.output_dir or str(config.intodoc_output_dir)
     return scanner_service.read_chunk_data(output_dir, chunk_id)
+
+
+# ---------------------------------------------------------------------------
+# Hindsight memory tool handlers
+# ---------------------------------------------------------------------------
+
+async def _recall_process_memory(args: dict) -> dict:
+    query = args.get("query", "process lessons and best practices")
+    if not config.hindsight_enabled:
+        return {"memories": [], "note": "Hindsight memory is disabled (set MCP_HINDSIGHT_ENABLED=true)"}
+    await memory_service.ensure_process_bank()
+    facts = await memory_service.recall_process_memory(query)
+    return {"memories": facts, "count": len(facts)}
+
+
+async def _recall_project_memory(args: dict) -> dict:
+    project_id = args["project_id"]
+    query = args.get("query", "previous analysis findings and risk flags")
+    if not config.hindsight_enabled:
+        return {"memories": [], "note": "Hindsight memory is disabled (set MCP_HINDSIGHT_ENABLED=true)"}
+    await memory_service.ensure_project_bank(project_id)
+    facts = await memory_service.recall_project_memory(project_id, query)
+    return {"project_id": project_id, "memories": facts, "count": len(facts)}
+
+
+async def _retain_findings(args: dict) -> dict:
+    project_id = args["project_id"]
+    findings = args["findings"]
+    context = args.get("context", "analysis-findings")
+    if not config.hindsight_enabled:
+        return {"stored": False, "note": "Hindsight memory is disabled (set MCP_HINDSIGHT_ENABLED=true)"}
+    await memory_service.ensure_project_bank(project_id)
+    await memory_service.retain_project_findings(project_id, findings, context=context)
+    return {"stored": True, "project_id": project_id, "context": context}
+
+
+async def _retain_process_lesson(args: dict) -> dict:
+    lesson = args["lesson"]
+    context = args.get("context", "process-lesson")
+    if not config.hindsight_enabled:
+        return {"stored": False, "note": "Hindsight memory is disabled (set MCP_HINDSIGHT_ENABLED=true)"}
+    await memory_service.ensure_process_bank()
+    await memory_service.retain_process_lesson(lesson, context=context)
+    return {"stored": True, "context": context}
 
 
 def run_mcp_server() -> None:

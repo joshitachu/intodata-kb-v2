@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 
-import ollama as ollama_lib
-
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -14,8 +12,9 @@ EXPAND_PROMPT = (
     "generate exactly 2 alternative phrasings that capture the same intent "
     "but use different keywords or vocabulary.\n\n"
     "Rules:\n"
+    "- Alternative 1: a MORE SPECIFIC version (add detail, expand abbreviations)\n"
+    "- Alternative 2: a MORE GENERAL version (broader terms, synonyms)\n"
     "- Each alternative should be 3-10 words\n"
-    "- Use synonyms, expand abbreviations, and rephrase\n"
     "- Do NOT add new topics — stay on the same intent\n"
     "- Output ONLY the 2 alternatives, one per line, no numbering\n\n"
     "Query: {query}\n\n"
@@ -55,14 +54,11 @@ async def expand_query(query: str) -> list[str]:
         return [query]
 
     try:
-        client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
-        response = await client.chat(
-            model=settings.ollama_router_model,
-            messages=[
-                {"role": "user", "content": EXPAND_PROMPT.format(query=query)},
-            ],
-        )
-        raw = response["message"]["content"].strip()
+        from src.generation.llm_client import generate_answer
+
+        raw = (await generate_answer([
+            {"role": "user", "content": EXPAND_PROMPT.format(query=query)},
+        ])).strip()
 
         # Parse alternatives (one per line)
         alternatives = [

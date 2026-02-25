@@ -9,20 +9,25 @@ This is a 4-phase process using parallel sub-agents for throughput.
 Phase 1: Setup         -- check scan status, load chunks + manifest
 Phase 2: Group Analysis -- parallel sub-agents (one per group), return compact text
 Phase 3: Write Docs    -- parallel sub-agents by theme, write final .md files
-Phase 4: Publish       -- write index.json + run log, call insert_to_rag
+Phase 4: Publish       -- write index.json + run log
 ```
 
 ## Phase 1: Setup
 
-1. Call `get_scan_status(project_id)` to check cache freshness.
-2. If stale or missing, call `trigger_scan(project_id)`.
-3. Call `get_chunks(project_id)`.
+1. Call `recall_process_memory()` to retrieve process lessons from previous runs.
+   - Inject any returned memories into your working context (e.g. "avoid >100K token chunks").
+2. Call `recall_project_memory(project_id)` to retrieve prior findings for this project.
+   - If memories exist, note previous group structure, health scores, risk flags.
+   - On re-scans, use this to focus on what CHANGED versus the last analysis.
+3. Call `get_scan_status(project_id)` to check cache freshness.
+4. If stale or missing, call `trigger_scan(project_id)`.
+5. Call `get_chunks(project_id)`.
    - Returns chunks with fields: `chunk_id`, `group`, `job_count`, `job_names`, `token_estimate`.
    - Group the chunk list by the `group` field. The number and names of groups are
      determined entirely by the scan data -- never assume specific names.
-4. Call `fetch_json(project_id, "manifest")` to load the dependency graph.
-5. Call `fetch_json(project_id, "connections")` to load metadata connections.
-6. Create `output/{project_id}/docs/` and `output/{project_id}/logs/`.
+6. Call `fetch_json(project_id, "manifest")` to load the dependency graph.
+7. Call `fetch_json(project_id, "connections")` to load metadata connections.
+8. Create `output/{project_id}/docs/` and `output/{project_id}/logs/`.
 
 ## Phase 2: Group Analysis (Parallel Sub-Agents)
 
@@ -210,7 +215,11 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
    [ERROR] {any errors}
    [INFO] Total elapsed: {time}
    ```
-3. Call `insert_to_rag(project_id)`.
+3. Call `retain_findings(project_id, findings, context="run-summary")` with a summary:
+   - Documents generated, health scores, risk flag counts, group structure.
+   - Example: "Generated 22 docs. Groups: Account, SalesOrder, Monitoring. Health: error_handling=72%, data_integrity=85%. 3 CRITICAL risks."
+4. If any errors occurred during generation, call `retain_process_lesson(lesson, context="error-lesson")`:
+   - Example: "Phase 2 sub-agent for Monitoring timed out at 95s. Consider splitting large groups or increasing timeout."
 
 ## Output Structure
 
@@ -239,6 +248,10 @@ No `_scratch/` directory. No intermediate JSON files. Only final docs.
 | `fetch_chunk(project_id, chunk_id)` | Get full job data for one chunk |
 | `insert_to_rag(project_id, docs?)` | Push docs to RAG pipeline |
 | `list_projects()` | List all registered projects |
+| `recall_process_memory(query?)` | Get process lessons before starting (Layer A) |
+| `recall_project_memory(project_id, query?)` | Get prior findings for a project (Layer B) |
+| `retain_findings(project_id, findings, context?)` | Store analysis findings after completion |
+| `retain_process_lesson(lesson, context?)` | Store operational lessons from errors/improvements |
 
 ## fetch_json Sections
 
