@@ -13,9 +13,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies
-COPY pyproject.toml .
-COPY src/ src/
+# Install intodoc CLI first (scanner dependency)
+COPY intodoc/pyproject.toml /tmp/intodoc/pyproject.toml
+COPY intodoc/src/ /tmp/intodoc/src/
+COPY intodoc/CLAUDE.md /tmp/intodoc/CLAUDE.md
+RUN pip install --no-cache-dir /tmp/intodoc && rm -rf /tmp/intodoc
+
+# Install mcp-server
+COPY mcp-server/pyproject.toml .
+COPY mcp-server/src/ src/
 RUN pip install --no-cache-dir .
 
 EXPOSE 8001
