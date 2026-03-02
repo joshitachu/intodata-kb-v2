@@ -1,5 +1,16 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-02 (continued 2)
+
+### [Fix]: Run Alembic migrations on backend Docker startup
+
+- **Files changed**: `RAG_pipeline/backend/Dockerfile` (line 13)
+- **Problem**: Backend container crashes with `relation "users" does not exist` because the PostgreSQL database has no tables. The Dockerfile only starts uvicorn — it never runs `alembic upgrade head` to create the tables. Migration files (001-003) are already copied into the image but never executed.
+- **Root cause**: The `CMD` in the Dockerfile only ran `uvicorn`, never ran Alembic migrations first.
+- **Change**: Replaced exec-form `CMD ["uvicorn", ...]` with shell-form `CMD ["sh", "-c", "alembic upgrade head && uvicorn ..."]` so migrations run before the API starts. Alembic is idempotent — safe on restarts.
+- **Why this approach**: Simplest fix — single CMD with `&&` ensures tables exist before uvicorn starts. No entrypoint script needed for this use case.
+- **Verification**: Needs Docker rebuild and `docker-compose up -d --build backend` to confirm migration output in logs.
+
 ## Session: 2026-03-02 (continued)
 
 ### [Fix]: Deep Dive streaming — concurrent stderr, assistant text fallback, session-id fix
