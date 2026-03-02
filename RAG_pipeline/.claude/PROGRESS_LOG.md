@@ -1,5 +1,16 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-02 (continued 3)
+
+### [Fix]: MCP server crash on restart — DuplicateTableError for "projects"
+
+- **Files changed**: `knowledge_base/mcp-server/src/mcp_server/api/app.py` (lifespan function)
+- **Problem**: MCP server crashes on restart with `asyncpg.exceptions.DuplicateTableError: relation "projects" already exists`. The `Base.metadata.create_all` emits raw `CREATE TABLE` instead of checking first, despite `checkfirst=True` being the default.
+- **Root cause**: `run_sync(Base.metadata.create_all)` with async engines doesn't reliably perform the `checkfirst` reflection — it emits `CREATE TABLE` without `IF NOT EXISTS`, crashing when tables already exist from a previous startup.
+- **Change**: Replaced bare `create_all` with explicit table-existence check: query existing table names via `dialect.get_table_names()`, filter `Base.metadata.sorted_tables` to only missing ones, then `create_all(tables=tables_to_create)`. Skips entirely if all tables exist.
+- **Why this approach**: More robust than relying on `checkfirst` with async engines. Explicit check + filtered create is idempotent and logs what it does.
+- **Verification**: Needs Docker restart to confirm no crash on second startup.
+
 ## Session: 2026-03-02 (continued 2)
 
 ### [Fix]: Run Alembic migrations on backend Docker startup

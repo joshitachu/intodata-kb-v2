@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from mcp_server.config import config
 from mcp_server.db.models import Base
@@ -24,9 +25,23 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown."""
     logging.basicConfig(level=getattr(logging, config.log_level))
     logger.info("Starting intodoc MCP Server API on :8001")
-    # Auto-create tables (e.g. generate_runs) on first run
+    # Auto-create tables on first run, skip if they already exist
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        existing = await conn.run_sync(
+            lambda sync_conn: sync_conn.dialect.get_table_names(sync_conn)
+        )
+        tables_to_create = [
+            t for t in Base.metadata.sorted_tables if t.name not in existing
+        ]
+        if tables_to_create:
+            await conn.run_sync(
+                lambda sync_conn: Base.metadata.create_all(
+                    sync_conn, tables=tables_to_create
+                )
+            )
+            logger.info("Created tables: %s", [t.name for t in tables_to_create])
+        else:
+            logger.info("All tables already exist, skipping create")
     app.state.log_manager = log_manager
     yield
     logger.info("Shutting down intodoc MCP Server API")
