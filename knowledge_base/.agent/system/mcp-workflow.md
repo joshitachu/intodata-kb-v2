@@ -14,11 +14,8 @@ Phase 4: Publish       -- write index.json + run log
 
 ## Phase 1: Setup
 
-1. Call `recall_process_memory()` to retrieve process lessons from previous runs.
-   - Inject any returned memories into your working context (e.g. "avoid >100K token chunks").
-2. Call `recall_project_memory(project_id)` to retrieve prior findings for this project.
-   - If memories exist, note previous group structure, health scores, risk flags.
-   - On re-scans, use this to focus on what CHANGED versus the last analysis.
+1. Call `recall_process_memory("doc generation best practices and common errors")` to load cross-project lessons.
+2. Call `recall_project_memory(project_id, "previous analysis findings and structure")` to load project-specific context.
 3. Call `get_scan_status(project_id)` to check cache freshness.
 4. If stale or missing, call `trigger_scan(project_id)`.
 5. Call `get_chunks(project_id)`.
@@ -52,6 +49,8 @@ Each sub-agent must:
 4. **Return a compact text summary (~3-5KB) directly back to the calling agent.**
 
 **The sub-agent writes NO files.** Analysis is returned as text.
+
+After receiving ALL group summaries, call `retain_findings(project_id, summary_text, "group-summary")` for each group to store analysis results in Hindsight memory.
 
 ### Group Summary Structure
 
@@ -206,7 +205,9 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
      ]
    }
    ```
-2. Write `output/{project_id}/logs/run_{project_id}_{timestamp}.log`:
+2. Call `retain_findings(project_id, run_summary, "run-summary")` to store the run results in Hindsight.
+3. If any errors or warnings occurred, call `retain_process_lesson(lesson, "error-recovery")` to remember what went wrong and how it was handled.
+4. Write `output/{project_id}/logs/run_{project_id}_{timestamp}.log`:
    ```
    [INFO] Groups analyzed: {list}
    [INFO] Chunks processed: {n}
@@ -215,12 +216,6 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
    [ERROR] {any errors}
    [INFO] Total elapsed: {time}
    ```
-3. Call `retain_findings(project_id, findings, context="run-summary")` with a summary:
-   - Documents generated, health scores, risk flag counts, group structure.
-   - Example: "Generated 22 docs. Groups: Account, SalesOrder, Monitoring. Health: error_handling=72%, data_integrity=85%. 3 CRITICAL risks."
-4. If any errors occurred during generation, call `retain_process_lesson(lesson, context="error-lesson")`:
-   - Example: "Phase 2 sub-agent for Monitoring timed out at 95s. Consider splitting large groups or increasing timeout."
-
 ## Output Structure
 
 ```
@@ -248,10 +243,10 @@ No `_scratch/` directory. No intermediate JSON files. Only final docs.
 | `fetch_chunk(project_id, chunk_id)` | Get full job data for one chunk |
 | `insert_to_rag(project_id, docs?)` | Push docs to RAG pipeline |
 | `list_projects()` | List all registered projects |
-| `recall_process_memory(query?)` | Get process lessons before starting (Layer A) |
-| `recall_project_memory(project_id, query?)` | Get prior findings for a project (Layer B) |
-| `retain_findings(project_id, findings, context?)` | Store analysis findings after completion |
-| `retain_process_lesson(lesson, context?)` | Store operational lessons from errors/improvements |
+| `recall_process_memory(query)` | Recall cross-project lessons before doc generation |
+| `recall_project_memory(project_id, query)` | Recall prior findings before re-scan |
+| `retain_findings(project_id, findings, context?)` | Store analysis results in memory |
+| `retain_process_lesson(lesson, context?)` | Store operational lessons learned |
 
 ## fetch_json Sections
 

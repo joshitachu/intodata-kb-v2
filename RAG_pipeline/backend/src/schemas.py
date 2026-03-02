@@ -111,6 +111,7 @@ class HealthResponse(BaseModel):
     database: ServiceStatus
     qdrant: ServiceStatus
     ollama: ServiceStatus
+    hindsight: ServiceStatus
 
 
 # --- Conversations ---

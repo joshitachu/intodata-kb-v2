@@ -3,7 +3,7 @@
     "intodoc": {
       "command": "python",
       "args": ["-m", "mcp_server", "--mcp"],
-      "cwd": "C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/mcp-server"
+      "cwd": "C:/Users/kabeljo/Documents/intodata-kb/knowledge_base/mcp-server"
     }
   }
 }

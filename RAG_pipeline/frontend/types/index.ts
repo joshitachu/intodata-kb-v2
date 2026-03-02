@@ -167,3 +167,32 @@ export const ConversationUpdateRequestSchema = z.object({
 export type ConversationUpdateRequest = z.input<
   typeof ConversationUpdateRequestSchema
 >;
+
+// --- Deep Dive ---
+
+export const DeepDiveRequestSchema = z.object({
+  project_id: z.string().min(1),
+  question: z.string().min(3),
+  session_id: z.string().optional(),
+});
+
+export type DeepDiveRequest = z.infer<typeof DeepDiveRequestSchema>;
+
+export const DeepDiveProjectSchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  platform: z.string(),
+  job_count: z.number(),
+  last_scan_at: z.string().nullable(),
+});
+
+export type DeepDiveProject = z.infer<typeof DeepDiveProjectSchema>;
+
+export const DeepDiveProjectsResponseSchema = z.object({
+  projects: z.array(DeepDiveProjectSchema),
+  total: z.number(),
+});
+
+export type DeepDiveProjectsResponse = z.infer<
+  typeof DeepDiveProjectsResponseSchema
+>;

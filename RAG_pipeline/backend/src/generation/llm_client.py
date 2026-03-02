@@ -143,8 +143,8 @@ async def generate_answer(
             return result
         except Exception as e:
             elapsed = (time.perf_counter() - t0) * 1000
-            logger.warning("%s failed (%.0fms): %s", name, elapsed, e)
-            errors.append(f"{name}: {e}")
+            logger.warning("%s failed (%.0fms): [%s] %s", name, elapsed, type(e).__name__, e)
+            errors.append(f"{name}: [{type(e).__name__}] {e}")
             continue
     raise RuntimeError(f"All LLM providers failed: {'; '.join(errors)}")
 
@@ -162,7 +162,7 @@ async def generate_answer_stream(
             logger.info("LLM streaming response from %s", name)
             return
         except Exception as e:
-            logger.warning("%s streaming failed: %s", name, e)
-            errors.append(f"{name}: {e}")
+            logger.warning("%s streaming failed: [%s] %s", name, type(e).__name__, e)
+            errors.append(f"{name}: [{type(e).__name__}] {e}")
             continue
     raise RuntimeError(f"All LLM providers failed (streaming): {'; '.join(errors)}")

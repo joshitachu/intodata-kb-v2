@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: MVP Complete (Phase 1) + All Phase 1.5 improvements + Enterprise Retrieval Quality Upgrade (Phase 2) + Configurable LLM Provider Chain + Streaming Chat UI + RAG Retrieval Quality Overhaul (Phase 3) + Latency Optimization (Phase 3.2) + **Production Bug Fixes + Voyage AI Enablement (Phase 3.3)**
-**Last session**: 2026-02-24
-**Last completed**: Auto-detect Qdrant vector dimension mismatch at startup — `ensure_collection()` now checks existing collection dim vs `get_embedding_dim()` and recreates if they differ.
+**Status**: MVP Complete (Phase 1) + All Phase 1.5 improvements + Enterprise Retrieval Quality Upgrade (Phase 2) + Configurable LLM Provider Chain + Streaming Chat UI + RAG Retrieval Quality Overhaul (Phase 3) + Latency Optimization (Phase 3.2) + **Production Bug Fixes + Voyage AI Enablement (Phase 3.3)** + **Hindsight Memory Full Integration (Phase 3.4)** + **Voyage AI Reranker (Phase 3.5)** + **Deep Dive Mode (Phase 4.1)** + **Deep Dive Streaming Fix + Chat Integration (Phase 4.2)** + **Deep Dive Streaming Repair (Phase 4.3)**
+**Last session**: 2026-03-02
+**Last completed**: Fixed Deep Dive streaming root cause — concurrent stderr reading (prevents pipe deadlock), restored assistant text as fallback (covers case where content_block_delta events don't arrive), conditional --session-id (only for multi-turn continuations), added debug logging for event diagnosis.
 
 ## What's Done
 
@@ -12,7 +12,7 @@
 - Ingestion: PDF/DOCX/PPTX/XLSX parsing, **semantic chunking** (paragraph-aware, heading-aware, slide markers), **replace-on-re-upload**, **sentence-boundary chunking** (overlap=100)
 - Retrieval:
   - **Hybrid search**: Dense (provider chain: Voyage AI → Ollama) + Sparse (hash-based, fixed TF-IDF bug) with RRF fusion
-  - **Cross-encoder reranking**: sentence-transformers ms-marco-MiniLM-L-12-v2 (upgraded from L6-v2)
+  - **Voyage AI reranking**: rerank-2.5 via API (replaced local cross-encoder ms-marco-MiniLM-L-12-v2)
   - **Query expansion**: LLM-generated alternatives via provider chain (more-specific + more-general)
   - **Chat-with-document**: Optional document_ids filter on all search functions
   - Named vectors in Qdrant (dense + sparse), payload indexes for RBAC + document_id
@@ -45,6 +45,17 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Recent Changes
 
+- **Deep Dive Streaming Repair** (2026-03-02): Fixed three compounding issues preventing Deep Dive output: (1) concurrent stderr reading via `asyncio.create_task` to prevent pipe buffer deadlock, (2) restored `assistant` text as fallback when `content_block_delta` events don't arrive (tracked via `_text_streamed_via_delta` flag), (3) made `--session-id` conditional — only used for multi-turn continuations, not first queries from search page. Added debug logging for raw events and parsed event types.
+- **Deep Dive Streaming Fix + Chat Integration** (2026-03-02): Fixed `_convert_event()` to handle `content_block_delta` events (streaming tokens were silently dropped). Added multi-turn session management (`--session-id`/`--continue`). Updated prompt for knowledge persistence (`insert_to_rag`). Integrated Deep Dive into `/chat` page with ModeToggle (Chat/Deep Dive), ProjectSelector, DeepDiveChatBubble (collapsible thinking, tool calls, streaming markdown). Build passing.
+- **Deep Dive mode** (2026-03-01): Full-stack feature — DeepDiveService (subprocess + stream-json), API endpoints (POST /mcp/deep-dive SSE, GET /mcp/deep-dive/projects), BFF routes, useDeepDive + useDeepDiveProjects hooks, ModeToggle + ProjectSelector + DeepDiveDisplay components, search page integration. Build passing.
+- **Fix markdown rendering** (2026-03-01): Installed `@tailwindcss/typography`, registered plugin, added prose CSS variable overrides for HSL theme integration, simplified `MarkdownContent.tsx` by delegating `code`/`pre`/`blockquote` styling to the plugin. Build passing.
+- **Fix Hindsight retain blocking response** (2026-02-28): `retain_interaction()` was `await`-ed at all 4 call sites, blocking HTTP response until quality bank timed out (~60s). Changed to `asyncio.create_task()` (fire-and-forget), `asyncio.gather()` (concurrent bank retains), and reduced timeout 60→15s. Response now returns immediately after LLM completes.
+- **Fix Voyage reranker 429 crash** (2026-02-28): Added retry with backoff tuned for 3 RPM free tier (`[2s, 5s, 15s]`, 3 attempts) and `Retry-After` header parsing (capped at 30s) for 429 rate limits. Added graceful fallback in `search.py` — on any reranker API failure, returns candidates by original RRF scores instead of crashing.
+- **Replace local reranker with Voyage AI rerank-2.5** (2026-02-28): Local cross-encoder returned negative scores for all candidates → nothing reached LLM. Replaced with Voyage AI `rerank-2.5` API (async httpx, 0-1 calibrated scores, `min_score=0.05`). Lowered pre-filter threshold to 0.0 in `search_and_rerank()` so reranker is the sole quality gate. Removed `sentence-transformers` dep (~500MB). 174 tests passing.
+- **Fix Hindsight memory not working on /query and /query/stream** (2026-02-28): Added Hindsight recall+retain to `rag_chain.py` (search bar queries) and `query.py` `/query/stream` endpoint. Added `memory_context` parameter to `build_messages()` in `prompt_builder.py`. Added INFO-level diagnostic logging to `hindsight_client.py`. All three query paths (search bar, streaming, conversations) now have full Hindsight integration.
+- **Fix LLM timeouts on all endpoints** (2026-02-27): Increased timeouts (Kimi 15→60s, Ollama 30→120s), eliminated non-streaming `generate_answer()` calls from streaming path via `precompute=False` parameter in `_prepare_rag_context()`, improved error logging with exception types. Streaming endpoint no longer blocks on hidden non-streaming LLM calls.
+- **Fix RBAC group mismatch — 0 search results** (2026-02-27): Admin users now bypass RBAC group filtering in `_build_search_filter()` (`backend/src/retrieval/search.py` line 35) and `query_debug()` (`backend/src/api/routes/query.py` line 68). Documents stored with `["public", project_id]` were invisible to users with `groups=["admin"]` because `"admin"` was never in `allowed_groups`.
+- **Fix NO_RESULTS_PROMPT vs Hindsight memory** (2026-02-27): Added explicit trust declaration for memory context in `NO_RESULTS_PROMPT` (`backend/src/generation/prompt_builder.py` lines 33–43). LLM was ignoring injected Hindsight memories because "NEVER make up information" caused it to treat memory context as untrusted general knowledge. Prompt now distinguishes trusted memory context from general knowledge.
 - **Fix config.py drift** (2026-02-24): Synced `config.py` with runtime expectations — removed dead groq/openrouter settings, added missing `kimi_timeout`, `kimi_temperature`, `ollama_timeout`, `reranker_min_score`, fixed `llm_providers` to `["kimi", "ollama"]`, set `query_expansion_enabled=False`. Fixes `AttributeError: 'Settings' object has no attribute 'kimi_timeout'` and `KeyError: 'groq'`.
 - **Auto-detect Qdrant dimension mismatch** (2026-02-24): `ensure_collection()` now checks existing collection's dense vector dim against `get_embedding_dim()`. If they differ (e.g. 768→1024 after Voyage AI switch), auto-deletes and recreates. No manual collection deletion needed.
 - **Fix SQLAlchemy engine log noise** (2026-02-24): Changed `echo=settings.is_dev` to `echo=False` in `backend/src/db/session.py` — SQLAlchemy's `echo=True` overrides logger level, causing INFO log flood on first request.

@@ -15,14 +15,14 @@ class Settings(BaseSettings):
     kimi_api_key: str = "sk-1FSKsQ9pKQPwcw0uPyFwsO72uQtlcIxmRNboiIOJ5EdK17MY"
     kimi_llm_model: str = "kimi-k2.5"
     kimi_temperature: float = 0.6
-    kimi_timeout: float = 15.0
+    kimi_timeout: float = 60.0
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_llm_model: str = "gemma3:12b"
     ollama_embed_model: str = "nomic-embed-text"
     ollama_router_model: str = "gemma3:4b"
-    ollama_timeout: float = 30.0
+    ollama_timeout: float = 120.0
 
     # Embedding provider chain
     embedding_providers: list[str] = ["voyage", "ollama"]
@@ -43,9 +43,9 @@ class Settings(BaseSettings):
 
     # Reranking
     reranker_enabled: bool = True
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    reranker_model: str = "rerank-2.5"
     rerank_top_n: int = 20
-    reranker_min_score: float = 0.0
+    reranker_min_score: float = 0.05
 
     # Query expansion
     query_expansion_enabled: bool = False
@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     # Hindsight memory
     hindsight_enabled: bool = False
     hindsight_url: str = "http://localhost:8888"
+    hindsight_recall_budget: str = "low"
+    hindsight_recall_max_tokens: int = 1024
 
     # App
     app_env: str = "development"

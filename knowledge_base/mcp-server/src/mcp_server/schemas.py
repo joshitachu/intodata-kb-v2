@@ -133,3 +133,24 @@ class LogFileListResponse(BaseModel):
 class StatusResponse(BaseModel):
     status: str
     message: str = ""
+
+
+# --- Deep Dive ---
+
+class DeepDiveRequest(BaseModel):
+    project_id: StrippedStr
+    question: str = Field(..., min_length=3)
+    session_id: str | None = None
+
+
+class DeepDiveProject(BaseModel):
+    id: str
+    display_name: str
+    platform: str
+    job_count: int = 0
+    last_scan_at: datetime.datetime | None = None
+
+
+class DeepDiveProjectsResponse(BaseModel):
+    projects: list[DeepDiveProject]
+    total: int

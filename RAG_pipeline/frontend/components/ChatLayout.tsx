@@ -11,12 +11,16 @@ import {
   useDeleteConversation,
 } from "@/hooks/useConversations";
 import { useStreamMessage } from "@/hooks/useStreamMessage";
+import { useDeepDive } from "@/hooks/useDeepDive";
 import type { ConversationMessageRequest } from "@/types";
+import type { ChatMode } from "./ModeToggle";
 
 export function ChatLayout() {
   const [activeConversationId, setActiveConversationId] = useState<
     number | null
   >(null);
+  const [mode, setMode] = useState<ChatMode>("chat");
+  const [selectedProject, setSelectedProject] = useState("");
 
   const queryClient = useQueryClient();
   const { data: conversationList, isLoading: isLoadingList } =
@@ -28,6 +32,8 @@ export function ChatLayout() {
 
   const { streamState, sendMessage: sendStreamMessage, reset } =
     useStreamMessage(activeConversationId);
+
+  const deepDive = useDeepDive();
 
   // When streaming is done (messageId set), invalidate caches and reset
   useEffect(() => {
@@ -89,20 +95,51 @@ export function ChatLayout() {
 
   async function handleSendMessage(request: ConversationMessageRequest) {
     if (!activeConversationId) return;
+
     setPendingUserMessage(request.query);
-    try {
-      await sendStreamMessage(request);
-    } catch (error) {
-      console.error("Failed to send message:", error);
+
+    if (mode === "deep-dive") {
+      // Route to deep dive
+      try {
+        await deepDive.query({
+          project_id: selectedProject,
+          question: request.query,
+          session_id: deepDive.state.sessionId ?? undefined,
+        });
+      } catch (error) {
+        console.error("Deep dive failed:", error);
+      }
+    } else {
+      // Normal chat flow
+      try {
+        await sendStreamMessage(request);
+      } catch (error) {
+        console.error("Failed to send message:", error);
+      }
     }
   }
 
   // Clear pending user message when stream is done
   useEffect(() => {
-    if (!streamState.isStreaming && streamState.messageId !== null) {
+    if (mode === "chat" && !streamState.isStreaming && streamState.messageId !== null) {
       setPendingUserMessage(null);
     }
-  }, [streamState.isStreaming, streamState.messageId]);
+  }, [mode, streamState.isStreaming, streamState.messageId]);
+
+  // Clear pending user message when deep dive finishes
+  useEffect(() => {
+    if (mode === "deep-dive" && !deepDive.state.isStreaming && deepDive.state.content) {
+      setPendingUserMessage(null);
+    }
+  }, [mode, deepDive.state.isStreaming, deepDive.state.content]);
+
+  function handleModeChange(newMode: ChatMode) {
+    setMode(newMode);
+    // Reset deep dive state when switching away
+    if (newMode !== "deep-dive") {
+      deepDive.reset();
+    }
+  }
 
   return (
     <div className="flex h-full">
@@ -126,6 +163,12 @@ export function ChatLayout() {
             : null
         }
         pendingUserMessage={pendingUserMessage}
+        mode={mode}
+        onModeChange={handleModeChange}
+        selectedProject={selectedProject}
+        onProjectChange={setSelectedProject}
+        deepDiveState={deepDive.state}
+        onCancelDeepDive={deepDive.cancel}
       />
     </div>
   );

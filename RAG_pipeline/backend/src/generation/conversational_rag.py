@@ -1,6 +1,7 @@
 """Conversational RAG pipeline with session-based memory."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -14,9 +15,15 @@ from src.db.models import Conversation, ConversationMessage
 from src.generation.intent_classifier import Action, QueryType, analyze_query
 from src.generation.llm_client import generate_answer, generate_answer_stream
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
-from src.generation.prompt_builder import build_memory_context, build_no_results_messages
+from src.generation.prompt_builder import build_no_results_messages
 from src.config import settings
-from src.memory.hindsight_client import recall_user_memory, retain_interaction
+from src.memory.hindsight_client import (
+    ensure_quality_bank,
+    ensure_user_bank,
+    recall_quality_insights,
+    recall_user_memory,
+    retain_interaction,
+)
 from src.retrieval.search import (
     merge_sources_by_document,
     search_and_rerank,
@@ -61,6 +68,23 @@ CONTEXT_FIRST_SYSTEM_PROMPT = (
 )
 
 
+def _build_memory_context(user_memories: list[str], quality_insights: list[str]) -> str | None:
+    """Format recalled memories as a system message section.
+
+    Returns None if no memories are available.
+    """
+    parts: list[str] = []
+    if user_memories:
+        parts.append("## What I remember about you")
+        for mem in user_memories:
+            parts.append(f"- {mem}")
+    if quality_insights:
+        parts.append("## Quality insights")
+        for insight in quality_insights:
+            parts.append(f"- {insight}")
+    return "\n".join(parts) if parts else None
+
+
 def get_previous_sources(messages: list[ConversationMessage]) -> list[DocumentSource]:
     """Get sources from the most recent assistant message that has them."""
     for msg in reversed(messages):
@@ -100,7 +124,7 @@ def build_conversational_messages_with_context(
     query: str,
     context: str,
     history: list[ConversationMessage],
-    memories: list[str] | None = None,
+    memory_context: str | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages for the context-first attempt.
 
@@ -110,9 +134,8 @@ def build_conversational_messages_with_context(
     messages: list[dict[str, str]] = []
     messages.append({"role": "system", "content": CONTEXT_FIRST_SYSTEM_PROMPT})
 
-    memory_block = build_memory_context(memories) if memories else ""
-    if memory_block:
-        messages.append({"role": "system", "content": memory_block})
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
 
     if context:
         messages.append({
@@ -190,13 +213,13 @@ def build_conversational_messages(
     sources: list[Source],
     history: list[ConversationMessage],
     reference_numbers: dict[int, int] | None = None,
-    memories: list[str] | None = None,
+    memory_context: str | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages with system prompt, context, history, and current query.
 
     Message structure:
     1. System prompt
-    2. User memories from Hindsight (optional)
+    2. Memory context (from Hindsight, if available)
     3. Context from retrieved sources (as system message)
     4. Truncated conversation history (user/assistant messages)
     5. Current user query
@@ -206,10 +229,9 @@ def build_conversational_messages(
     # 1. System prompt
     messages.append({"role": "system", "content": CONVERSATIONAL_SYSTEM_PROMPT})
 
-    # 2. User memories (Hindsight)
-    memory_block = build_memory_context(memories) if memories else ""
-    if memory_block:
-        messages.append({"role": "system", "content": memory_block})
+    # 2. Memory context
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
 
     # 3. Context from sources
     if sources:
@@ -237,8 +259,6 @@ class RAGContext:
     document_sources: list[DocumentSource]
     precomputed_answer: str | None
     """Non-None when the answer was already computed (RESPOND / SUMMARY / context-first hit)."""
-    user_memories: list[str] | None = None
-    """Recalled Hindsight memories for this user (if any)."""
 
 
 async def _prepare_rag_context(
@@ -249,6 +269,7 @@ async def _prepare_rag_context(
     top_k: int = 3,
     threshold: float = 0.4,
     user_id: str | None = None,
+    precompute: bool = True,
 ) -> RAGContext:
     """Run intent routing, search, and context building.
 
@@ -259,12 +280,18 @@ async def _prepare_rag_context(
     existing_messages = list(conversation.messages)
     has_history = len(existing_messages) > 0
 
-    # 0. Recall user memories from Hindsight (non-blocking, graceful degradation)
+    # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
     user_memories: list[str] = []
-    if user_id and settings.hindsight_enabled:
+    quality_insights: list[str] = []
+    if user_id:
+        await ensure_user_bank(user_id)
+        await ensure_quality_bank()
         user_memories = await recall_user_memory(user_id, query)
-        if user_memories:
-            logger.info("Recalled %d user memories for %s", len(user_memories), user_id)
+        quality_insights = await recall_quality_insights(query)
+    memory_context = _build_memory_context(user_memories, quality_insights)
+    if memory_context:
+        logger.info("Injecting %d user memories + %d quality insights",
+                     len(user_memories), len(quality_insights))
 
     # 1. Route query via heuristics (no LLM call)
     analysis = analyze_query(query)
@@ -273,13 +300,15 @@ async def _prepare_rag_context(
     if analysis.action == Action.RESPOND:
         # Chitchat — skip search, respond via unified no-results prompt
         history = truncate_history(existing_messages) if has_history else None
-        messages = build_no_results_messages(query, history=history)
-        answer = await generate_answer(messages)
+        messages = build_no_results_messages(query, history=history, memory_context=memory_context)
+        if precompute:
+            answer = await generate_answer(messages)
+        else:
+            answer = None
         return RAGContext(
             llm_messages=messages,
             document_sources=[],
             precomputed_answer=answer,
-            user_memories=user_memories or None,
         )
 
     if analysis.query_type == QueryType.SUMMARY:
@@ -293,29 +322,32 @@ async def _prepare_rag_context(
                 llm_messages=[],
                 document_sources=[doc_source],
                 precomputed_answer=answer,
-                user_memories=user_memories or None,
             )
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
             history = truncate_history(existing_messages) if has_history else None
-            messages = build_no_results_messages(query, history=history)
-            answer = await generate_answer(messages)
+            messages = build_no_results_messages(query, history=history, memory_context=memory_context)
+            if precompute:
+                answer = await generate_answer(messages)
+            else:
+                answer = None
             return RAGContext(
                 llm_messages=messages,
                 document_sources=[],
                 precomputed_answer=answer,
-                user_memories=user_memories or None,
             )
 
     # QA — try context-first, search only if needed
     previous_doc_sources = get_previous_sources(existing_messages)
 
-    if previous_doc_sources:
-        # Try answering from previous context + history
+    if previous_doc_sources and precompute:
+        # Try answering from previous context + history (non-streaming only)
+        # Skipped when precompute=False (streaming) to avoid blocking non-streaming call
         logger.info("Trying to answer from previous context (no search)")
         context = build_context_from_document_sources(previous_doc_sources)
         llm_messages = build_conversational_messages_with_context(
-            query, context, existing_messages, memories=user_memories or None,
+            query, context, existing_messages,
+            memory_context=memory_context,
         )
         answer = await generate_answer(llm_messages)
 
@@ -325,12 +357,15 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
-                user_memories=user_memories or None,
             )
         else:
             # LLM needs more info — fall through to search
             logger.info("[NEED_SEARCH] detected — running semantic search")
             previous_doc_sources = []  # clear so we enter search below
+    elif previous_doc_sources and not precompute:
+        # Streaming path: skip context-first optimization, go straight to search
+        logger.info("Streaming mode — skipping context-first check, going to search")
+        previous_doc_sources = []
 
     if not previous_doc_sources:
         # Search path (first message, or LLM requested search)
@@ -388,24 +423,25 @@ async def _prepare_rag_context(
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
             llm_messages = build_conversational_messages(
                 query, sources, existing_messages, reference_numbers=ref_map,
-                memories=user_memories or None,
+                memory_context=memory_context,
             )
             return RAGContext(
                 llm_messages=llm_messages,
                 document_sources=document_sources,
                 precomputed_answer=None,
-                user_memories=user_memories or None,
             )
         else:
             # No results — let LLM respond helpfully
             history = truncate_history(existing_messages) if has_history else None
-            llm_messages = build_no_results_messages(query, history=history)
-            answer = await generate_answer(llm_messages)
+            llm_messages = build_no_results_messages(query, history=history, memory_context=memory_context)
+            if precompute:
+                answer = await generate_answer(llm_messages)
+            else:
+                answer = None
             return RAGContext(
                 llm_messages=llm_messages,
                 document_sources=[],
                 precomputed_answer=answer,
-                user_memories=user_memories or None,
             )
 
 
@@ -474,15 +510,24 @@ async def run_conversational_rag(
     # Flush to get the ID assigned
     await db.flush()
 
+    # Retain interaction to Hindsight (fire-and-forget — does not block response)
+    if user_id:
+        source_names = [s.filename for s in document_sources] if document_sources else []
+        asyncio.create_task(retain_interaction(
+            user_id=user_id,
+            query=query,
+            answer=answer,
+            sources_used=source_names,
+            conversation_id=conversation.id,
+            search_result_count=len(document_sources),
+            latency_ms=latency_ms,
+            intent="qa",
+        ))
+
     logger.info(
         f"Conversational RAG completed in {latency_ms}ms, "
         f"{len(document_sources)} document sources, conversation {conversation.id}"
     )
-
-    # Retain interaction in Hindsight user memory (fire-and-forget, non-blocking)
-    if user_id and settings.hindsight_enabled:
-        summary = answer[:500] if len(answer) > 500 else answer
-        await retain_interaction(user_id, query, summary, conversation_id=conversation.id)
 
     return MessageResponse(
         id=assistant_msg.id,
@@ -534,6 +579,7 @@ async def run_conversational_rag_stream(
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
         user_id=user_id,
+        precompute=False,
     )
 
     import json
@@ -570,14 +616,23 @@ async def run_conversational_rag_stream(
     db.add(assistant_msg)
     await db.flush()
 
+    # Retain interaction to Hindsight (fire-and-forget — does not block response)
+    if user_id:
+        source_names = [s.filename for s in ctx.document_sources] if ctx.document_sources else []
+        asyncio.create_task(retain_interaction(
+            user_id=user_id,
+            query=query,
+            answer=accumulated,
+            sources_used=source_names,
+            conversation_id=conversation.id,
+            search_result_count=len(ctx.document_sources),
+            latency_ms=latency_ms,
+            intent="qa",
+        ))
+
     logger.info(
         f"Conversational RAG (stream) completed in {latency_ms}ms, "
         f"{len(ctx.document_sources)} document sources, conversation {conversation.id}"
     )
-
-    # Retain interaction in Hindsight user memory (fire-and-forget, non-blocking)
-    if user_id and settings.hindsight_enabled:
-        summary = accumulated[:500] if len(accumulated) > 500 else accumulated
-        await retain_interaction(user_id, query, summary, conversation_id=conversation.id)
 
     yield ("done", json.dumps({"message_id": assistant_msg.id, "latency_ms": latency_ms}))

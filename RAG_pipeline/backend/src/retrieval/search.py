@@ -31,7 +31,8 @@ def _build_search_filter(
 ) -> Filter | None:
     """Build Qdrant filter combining RBAC groups and optional document_ids."""
     conditions = []
-    if user_groups:
+    # Admin users see everything — skip group filter
+    if user_groups and "admin" not in user_groups:
         conditions.append(
             FieldCondition(
                 key="allowed_groups",
@@ -157,14 +158,15 @@ async def search_and_rerank(
     """
     candidates_n = rerank_candidates or settings.rerank_top_n
 
-    # Retrieve more candidates than needed for reranking
+    # Retrieve more candidates than needed for reranking.
+    # Use threshold=0.0 — the reranker is the quality gate, not the RRF threshold.
     if settings.hybrid_search_enabled:
         candidates = await search_similar_hybrid(
             client=client,
             query=query,
             user_groups=user_groups,
             top_k=candidates_n,
-            threshold=threshold,
+            threshold=0.0,
             document_ids=document_ids,
         )
     else:
@@ -173,7 +175,7 @@ async def search_and_rerank(
             query=query,
             user_groups=user_groups,
             top_k=candidates_n,
-            threshold=threshold,
+            threshold=0.0,
             document_ids=document_ids,
         )
 
@@ -183,9 +185,13 @@ async def search_and_rerank(
     if not settings.reranker_enabled:
         return candidates[:top_k]
 
-    # Rerank
+    # Rerank (with graceful fallback to original scores on API failure)
     texts = [s.text for s in candidates]
-    reranked = rerank(query, texts, top_k=top_k)
+    try:
+        reranked = await rerank(query, texts, top_k=top_k)
+    except Exception as e:
+        logger.warning(f"Reranker failed ({type(e).__name__}: {e}), falling back to original scores")
+        return candidates[:top_k]
 
     # Build reranked source list with updated scores
     result: list[Source] = []
@@ -264,7 +270,14 @@ async def search_multi_query(
     # Rerank using the ORIGINAL query (not the expanded ones)
     if settings.reranker_enabled and len(unique_sources) > top_k:
         texts = [s.text for s in unique_sources]
-        reranked = rerank(query, texts, top_k=top_k)
+        try:
+            reranked = await rerank(query, texts, top_k=top_k)
+        except Exception as e:
+            logger.warning(
+                f"Reranker failed ({type(e).__name__}: {e}), falling back to original scores"
+            )
+            unique_sources.sort(key=lambda s: s.score, reverse=True)
+            return unique_sources[:top_k]
         result: list[Source] = []
         for orig_idx, rerank_score in reranked:
             src = unique_sources[orig_idx]

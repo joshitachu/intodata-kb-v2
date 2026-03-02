@@ -43,8 +43,9 @@
 | Voyage AI embeddings | Provider chain: Voyage AI → Ollama fallback | voyage-4-large (1024-dim), +14% over OpenAI v3 Large on MTEB, first 200M tokens free | 2026-02-23 |
 | Sparse embeddings | Hash-based (not TF-IDF) | TF-IDF had vocabulary mismatch bug between ingestion and query; hash-based is stateless and deterministic | 2026-02-23 |
 | Context truncation | Per-source truncation (not drop) | All sources represented in LLM context; truncated text with `[...]` beats dropped text | 2026-02-23 |
-| Reranker upgrade | ms-marco-MiniLM-L-12-v2 (33M params) | Outperforms L6-v2 (22M) and much larger models while staying fast on CPU | 2026-02-23 |
+| Reranker | Voyage AI rerank-2.5 (API) | Local cross-encoder (ms-marco-MiniLM-L-12-v2) scored everything negative on technical docs — domain mismatch. Voyage reranker: calibrated 0-1 scores, same provider as embeddings, no local model (~500MB dep savings) | 2026-02-28 |
 | Sentence-boundary chunking | Snap to sentence endings in last 20% | Prevents mid-sentence splits that degrade embedding quality | 2026-02-23 |
+| Deep Dive mode | Claude Code CLI via subprocess, SSE streaming | Spawns `claude -p` with Q&A prompt, reads raw scan data via MCP tools, streams answer back to browser. Separate from RAG pipeline — for detailed code-level questions | 2026-03-01 |
 | LLM for routing/expansion | **Routing removed** (heuristic); expansion disabled by default | Intent classifier eliminated (0 LLM calls). Query expansion `False` by default — re-enable via `.env` if quality > speed | 2026-02-23 |
 
 ## Code Patterns
@@ -80,6 +81,9 @@
 | RAG Retrieval Quality Overhaul | 2026-02-23 | Fixed sparse embedding bug, added Kimi K2.5 + Voyage AI providers, upgraded reranker, tuned search params, improved chunking. 193 tests passing |
 | Eliminate Intent Classifier LLM Call | 2026-02-23 | Zero-LLM heuristic router, disabled query expansion. QA: 3→1 LLM calls, Chitchat: 2→1. 171 non-DB tests passing |
 | Production Bug Fixes + Voyage AI | 2026-02-24 | Fixed reranker min-score, Voyage 400 error, reranker warmup, sync/async crash, added delete_collection(). 174 non-DB tests passing |
+| Hindsight Memory Full Integration | 2026-02-28 | Added Hindsight recall+retain to rag_chain.py + /query/stream. Added memory_context to build_messages(). INFO-level diagnostics. 174 tests passing |
+| Voyage AI Reranker | 2026-02-28 | Replaced local cross-encoder with Voyage AI rerank-2.5 API. Removed sentence-transformers dep. 174 tests passing |
+| Deep Dive Mode | 2026-03-01 | Full-stack: DeepDiveService (subprocess), API endpoints (SSE), BFF routes, hooks, components, search page integration. Build passing |
 
 ## Pending Tasks
 
@@ -144,8 +148,14 @@ None currently.
 - **Intent classifier is pure overhead**: Qdrant search is ~50ms. "Skipping search for chitchat" saves 50ms but costs 3-12s for the LLM call. The `NO_RESULTS_PROMPT` handles greetings/chitchat naturally when search returns 0 results. Always route through search.
 - **Voyage AI `dimensions` param not supported**: `voyage-4-large` always returns 1024-dim natively. Passing `dimensions=` causes HTTP 400. Don't use the `dimensions` parameter with Voyage API.
 - **Reranker min-score is essential**: Without a minimum score threshold, the reranker returns top_k candidates regardless of relevance. Chitchat queries get irrelevant chunks (score -9.13) sent to LLM. Use `reranker_min_score=0.0` to filter negative scores.
+- **Hindsight must be added to ALL query paths**: Three separate query paths exist — `rag_chain.py` (/query), `query.py` (/query/stream), `conversational_rag.py` (conversations). Each needs its own recall+retain integration. Forgetting one means that endpoint silently skips memory. The pattern is always: `ensure_banks → recall → build_memory_context → inject into messages → retain after answer`.
 - **Pre-load ML models at startup**: Cross-encoder model downloads ~80MB on first use. Lazy loading means the first user request takes +100s. Call `warmup()` in the lifespan handler.
 - **Qdrant dimension mismatch on provider switch**: When changing embedding provider (e.g. Ollama 768-dim → Voyage AI 1024-dim), the existing Qdrant collection has the old dimension. `ensure_collection()` auto-detects this and recreates. All documents must be re-ingested after recreation.
+- **NO_RESULTS_PROMPT vs memory injection**: When injecting memory context as a follow-up system message, the main system prompt must explicitly declare that memory context is trusted information. Otherwise, "NEVER make up information or answer from general knowledge" causes the LLM to ignore the injected memories (it treats them as "general knowledge" it should not use).
+- **Cross-encoder domain mismatch**: MS MARCO-trained cross-encoders (e.g. `ms-marco-MiniLM-L-12-v2`) return negative scores for technical/enterprise documents — they're trained on web search relevance, not domain-specific content. When `min_score=0.0`, ALL candidates get filtered out and nothing reaches the LLM. Use a domain-agnostic reranker (e.g. Voyage AI `rerank-2.5`) that returns calibrated 0-1 scores.
+- **Reranker should be the sole quality gate**: When using a reranker, set the pre-filter (RRF/vector search) threshold to 0.0 so all candidates reach the reranker. The reranker's min_score is the quality gate, not the vector search threshold. Double-filtering drops too many candidates.
+- **subprocess stderr deadlock on Windows**: When using `subprocess.Popen` with both `stdout=PIPE` and `stderr=PIPE`, reading stdout first and stderr after can deadlock if stderr's pipe buffer fills (~4KB on Windows). Always drain stderr concurrently using `asyncio.create_task()` (or `asyncio.gather`). See `claude_service.py` and `deep_dive_service.py` for the pattern.
+- **Claude CLI `stream-json` text delivery**: Claude CLI may not emit `content_block_delta` events (or may batch them due to Windows pipe buffering). Always handle text from both `content_block_delta` (preferred, incremental) AND `assistant` events (fallback, full turn). Use a `_text_streamed_via_delta` flag to avoid duplication.
 
 ## Environment
 

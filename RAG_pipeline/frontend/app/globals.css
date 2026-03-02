@@ -52,4 +52,50 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* Prose overrides for chat-style markdown */
+  .prose {
+    --tw-prose-body: hsl(var(--foreground));
+    --tw-prose-headings: hsl(var(--foreground));
+    --tw-prose-links: hsl(var(--primary));
+    --tw-prose-bold: hsl(var(--foreground));
+    --tw-prose-code: hsl(var(--foreground));
+    --tw-prose-pre-bg: hsl(var(--muted));
+    --tw-prose-pre-code: hsl(var(--foreground));
+    --tw-prose-quotes: hsl(var(--muted-foreground));
+    --tw-prose-quote-borders: hsl(var(--border));
+    --tw-prose-counters: hsl(var(--muted-foreground));
+    --tw-prose-bullets: hsl(var(--muted-foreground));
+    --tw-prose-hr: hsl(var(--border));
+    --tw-prose-th-borders: hsl(var(--border));
+    --tw-prose-td-borders: hsl(var(--border));
+  }
+
+  .prose :where(p):not(:where([class~="not-prose"] *)) {
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+  }
+
+  .prose :where(li):not(:where([class~="not-prose"] *)) {
+    margin-top: 0.25em;
+    margin-bottom: 0.25em;
+  }
+
+  .prose :where(h1, h2, h3, h4):not(:where([class~="not-prose"] *)) {
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+  }
+
+  .prose :where(pre):not(:where([class~="not-prose"] *)) {
+    @apply rounded-lg;
+  }
+
+  .prose :where(code):not(:where(pre *)):not(:where([class~="not-prose"] *)) {
+    @apply bg-muted px-1.5 py-0.5 rounded text-sm font-normal;
+  }
+
+  .prose :where(code):not(:where(pre *)):not(:where([class~="not-prose"] *))::before,
+  .prose :where(code):not(:where(pre *)):not(:where([class~="not-prose"] *))::after {
+    content: "";
+  }
 }

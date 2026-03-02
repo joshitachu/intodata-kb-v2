@@ -14,15 +14,17 @@ logger = logging.getLogger(__name__)
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
-    """Check status of PostgreSQL, Qdrant, and Ollama."""
+    """Check status of PostgreSQL, Qdrant, Ollama, and Hindsight."""
     db_status = await _check_database()
     qdrant_status = await _check_qdrant()
     ollama_status = await _check_ollama()
+    hindsight_status = await _check_hindsight()
 
-    statuses = [db_status.status, qdrant_status.status, ollama_status.status]
-    if all(s == "ok" for s in statuses):
-        overall = "healthy"
-    elif any(s == "ok" for s in statuses):
+    # Core services determine healthy/unhealthy; Hindsight failure only degrades
+    core_statuses = [db_status.status, qdrant_status.status, ollama_status.status]
+    if all(s == "ok" for s in core_statuses):
+        overall = "healthy" if hindsight_status.status == "ok" else "degraded"
+    elif any(s == "ok" for s in core_statuses):
         overall = "degraded"
     else:
         overall = "unhealthy"
@@ -32,6 +34,7 @@ async def health_check() -> HealthResponse:
         database=db_status,
         qdrant=qdrant_status,
         ollama=ollama_status,
+        hindsight=hindsight_status,
     )
 
 
@@ -67,4 +70,18 @@ async def _check_ollama() -> ServiceStatus:
             return ServiceStatus(status="error", message=f"HTTP {resp.status_code}")
     except Exception as e:
         logger.warning(f"Ollama health check failed: {e}")
+        return ServiceStatus(status="error", message=str(e))
+
+
+async def _check_hindsight() -> ServiceStatus:
+    if not settings.hindsight_enabled:
+        return ServiceStatus(status="ok", message="disabled")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.hindsight_url}/health")
+            if resp.status_code == 200:
+                return ServiceStatus(status="ok")
+            return ServiceStatus(status="error", message=f"HTTP {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Hindsight health check failed: {e}")
         return ServiceStatus(status="error", message=str(e))

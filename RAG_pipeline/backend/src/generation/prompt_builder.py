@@ -32,8 +32,10 @@ SYSTEM_PROMPT = (
 
 NO_RESULTS_PROMPT = (
     "You are a friendly, conversational knowledge-base assistant for a company. "
-    "No relevant documents were found for the user's message. "
-    "Respond naturally and helpfully:\n"
+    "No relevant documents were found for the user's message.\n\n"
+    "If you have been provided memory context about the user (in a follow-up system message), "
+    "use it to answer personal or contextual questions — memory context is trusted information, not general knowledge.\n\n"
+    "Otherwise, respond naturally and helpfully:\n"
     "- If the user is greeting you or making small talk, respond warmly and offer to help them find information in the knowledge base.\n"
     "- If the user asked a question, let them know you couldn't find relevant documentation and suggest they rephrase or be more specific.\n"
     "- If the user is thanking you, acknowledge warmly.\n"
@@ -47,13 +49,15 @@ def build_messages(
     query: str,
     sources: list[Source],
     reference_numbers: dict[int, int] | None = None,
+    memory_context: str | None = None,
 ) -> list[dict[str, str]]:
-    """Build the chat messages list: system prompt + context + user query."""
+    """Build the chat messages list: system prompt + memory context + context + user query."""
     context = _build_context(sources, reference_numbers=reference_numbers)
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"},
-    ]
+    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
+    messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"})
+    return messages
 
 
 
@@ -111,25 +115,16 @@ def _build_context(
     return "\n".join(parts)
 
 
-def build_memory_context(memories: list[str]) -> str:
-    """Format recalled user memories into a system message block."""
-    if not memories:
-        return ""
-    lines = "\n".join(f"- {m}" for m in memories[:10])
-    return (
-        "## What you remember about this user\n"
-        f"{lines}\n\n"
-        "Use these memories to personalize your response where relevant, "
-        "but do not mention them explicitly unless the user asks."
-    )
-
-
 def build_no_results_messages(
     query: str,
     history: list[dict[str, str]] | None = None,
+    memory_context: str | None = None,
 ) -> list[dict[str, str]]:
     """Build LLM messages for when search returns no results."""
     messages: list[dict[str, str]] = [{"role": "system", "content": NO_RESULTS_PROMPT}]
+
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
 
     if history:
         messages.extend(history)

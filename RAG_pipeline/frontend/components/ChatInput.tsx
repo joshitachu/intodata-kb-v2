@@ -8,9 +8,10 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   isLoading: boolean;
   disabled?: boolean;
+  placeholder?: string;
 }
 
-export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, isLoading, disabled, placeholder }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const pendingRef = useRef(false);
 
@@ -44,7 +45,7 @@ export function ChatInput({ onSend, isLoading, disabled }: ChatInputProps) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Type your message... (Shift+Enter for new line)"
+          placeholder={placeholder ?? "Type your message... (Shift+Enter for new line)"}
           rows={1}
           className={cn(
             "flex-1 resize-none rounded-lg border border-input bg-background px-4 py-3",

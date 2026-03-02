@@ -37,7 +37,16 @@
       "Bash(git add:*)",
       "Bash(intodoc scan:*)",
       "Bash(tail:*)",
-      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb/knowledge_base/dashboard && npx tsc --noEmit 2>&1)"
+      "Bash(cd /c/Users/kabeljo/Documents/intodata-kb/knowledge_base/dashboard && npx tsc --noEmit 2>&1)",
+      "Bash(docker:*)",
+      "Bash('C:/Users/kabeljo/Documents/intodata-kb/.venv/Lib/site-packages/pg0/bin/pg0.exe' list:*)",
+      "Bash(curl:*)",
+      "Bash(\"C:\\\\Users\\\\kabeljo\\\\Documents\\\\intodata-kb\\\\.venv\\\\Scripts\\\\python.exe\":*)",
+      "Bash(\"C:\\\\Users\\\\kabeljo\\\\Documents\\\\intodata-kb\\\\.venv\\\\Scripts\\\\pip.exe\" list:*)",
+      "Bash(\"C:\\\\Users\\\\kabeljo\\\\Documents\\\\intodata-kb\\\\.venv\\\\Scripts\\\\pip.exe\" install:*)",
+      "Bash(wsl:*)",
+      "Bash(wsl.exe:*)",
+      "Bash(pip show:*)"
     ]
   },
   "enabledMcpjsonServers": [

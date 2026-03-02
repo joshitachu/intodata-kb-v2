@@ -1,0 +1,1676 @@
+{
+  "name": "sjSalesOrder_OffRamp_DWH",
+  "path": "SalesOrder/Out/sjSalesOrder_OffRamp_DWH_0.1.item",
+  "purpose": "",
+  "author": "",
+  "version": "0.1",
+  "creation_date": "2024-12-11T11:35:52.472+0100",
+  "modification_date": "2025-10-22T18:06:58.954+0200",
+  "components": [
+    {
+      "unique_name": "tFixedFlowInput_3",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "TestFile",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_1",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractJSONFields_1",
+      "component_type": "tExtractJSONFields",
+      "params": [
+        {
+          "name": "READ_BY",
+          "value": "JSONPATH",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSON_PATH_VERSION",
+          "value": "2_1_0",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSONFIELD",
+          "value": "body",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"$.Item\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JSON_LOOP_QUERY",
+          "value": "\"$.shipmentOrder\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_REJECT:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA_REJECT:REPOSITORY_SCHEMA_TYPE",
+          "value": "_XQQ0QI2IEe-H6ZVq7JrEkQ - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JDK_VERSION",
+          "value": "JDK_8",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_LOOP_AS_ROOT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT_LIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "items_cmm_input",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_se8Q4LerEe-bjYjLFzIo8w-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFlowToIterate_1",
+      "component_type": "tFlowToIterate",
+      "params": [
+        {
+          "name": "DEFAULT_MAP",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tIterateToFlow_3",
+      "component_type": "tIterateToFlow",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tExtractJSONFields_3",
+      "component_type": "tExtractJSONFields",
+      "params": [
+        {
+          "name": "READ_BY",
+          "value": "JSONPATH",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSON_PATH_VERSION",
+          "value": "2_1_0",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "JSONFIELD",
+          "value": "shipmentOrderLine",
+          "field_type": "PREV_COLUMN_LIST"
+        },
+        {
+          "name": "LOOP_QUERY",
+          "value": "\"$.Item\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JSON_LOOP_QUERY",
+          "value": "\"$\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_REJECT:SCHEMA_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA_REJECT:REPOSITORY_SCHEMA_TYPE",
+          "value": "_XQQ0QI2IEe-H6ZVq7JrEkQ - metadata",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JDK_VERSION",
+          "value": "JDK_8",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "USE_LOOP_AS_ROOT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT_LIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "items_cmm_input",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_2",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_se8Q4LerEe-bjYjLFzIo8w-tMap_2-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_2",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\"+context.parameter_Env_Prefix+\"Sales_Order_Golden_Record.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Env_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Sales_Order_Golden_Record\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "APPEND",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.parameter_Env_Prefix+\"Sales_Order_Golden_Record.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "usa_vus_clean_items",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBigQueryOutput_1",
+      "component_type": "tBigQueryOutput",
+      "params": [
+        {
+          "name": "MAPPING",
+          "value": "bigquery_id",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.resource_flow_temp_folder+\"/\"+context.parameter_Env_Prefix+\"Sales_Order_Line_Item_Golden_Record.csv\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_MODE",
+          "value": "SERVICEACCOUNT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "CLIENT_ID",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "AUTHORIZATION_CODE",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PROJECT_ID",
+          "value": "context.parameter_Project_Id",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DATASET",
+          "value": "context.parameter_Env_Prefix",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Sales_Order_Line_Item_Golden_Record\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE_TABLE_IF_NOT_EXIST",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ACTION_ON_DATA",
+          "value": "APPEND",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "BULK_FILE_ALREADY_EXIST",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTH_TYPE",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "value": "[CREDENTIAL_PATH]",
+          "field_type": "FILE"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "GS_ACCESS_TOKEN_WARNING",
+          "value": "*Note: If the Access Token Expire we won't be able to refresh it!\"",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "BUCKET_NAME",
+          "value": "context.parameter_GS_Bucket",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE",
+          "value": "\"gs://\"+context.parameter_GS_Bucket+\"/\"+context.parameter_Env_Prefix+\"Sales_Order_Line_Item_Golden_Record.csv\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "GS_FILE_HEADER",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_REGION_ENDPOINT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REGION_ENDPOINT_GS",
+          "value": "\"https://storage.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REGION_ENDPOINT_BQ",
+          "value": "\"https://bigquery.googleapis.com\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TOKEN_NAME",
+          "value": "\"C:/InToData/Vaxxinova/Talend-Studio-20230428_0423-V8.0.1/workspace/token.properties\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "USE_12_HOUR_FORMAT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_FIELD_DELIMITER",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FIELD_DELIMITER",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DROP",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\\\\\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\\\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_CUSTOM_NULL_MARKER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CUSTOM_NULL_MARKER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "RECORDS_CONTAIN_NULL_VALUE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CHECK_DISK_SPACE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"UTF-8\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "UTF-8",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "LABEL",
+          "value": "usa_vus_clean_items",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPostjob_1",
+      "component_type": "tPostjob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "cleanup_temp_file_storage_1",
+      "component_type": "cleanup_temp_file_storage",
+      "params": [
+        {
+          "name": "FAMILY",
+          "value": "Joblets",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DUMMY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STARTABLE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "START",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROCESS_TYPE_VERSION",
+          "value": "Latest",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1",
+          "value": "COMPONENT_OK",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TRIGGER_INPUT_1:COMPONENT_LIST",
+          "value": "tPostjob_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "LABEL",
+          "value": "cleanup_temp_file_storage",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "HINT",
+          "value": "<b>__UNIQUE_NAME__</b><br>__COMMENT__",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "INFORMATION",
+          "value": "false",
+          "field_type": "CHECK"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tRouteInput_1",
+      "component_type": "tRouteInput",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_1",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tPrejob_1",
+      "component_type": "tPrejob",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_2",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_3",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_4",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_2",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tRouteOutput_1",
+      "component_type": "tRouteOutput",
+      "params": [
+        {
+          "name": "NOTICE",
+          "value": "The \"Name\" with \"Body\" type will be ignored",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tLogRow_1",
+      "component_type": "tLogRow",
+      "params": [
+        {
+          "name": "ACTIVATE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "BASIC_MODE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "TABLE_PRINT",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "VERTICAL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "PRINT_UNIQUE_LABEL",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"|\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PRINT_HEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_UNIQUE_NAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_COLNAMES",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_FIXED_LENGTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRINT_CONTENT_WITH_LOG4J",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "100",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "row1",
+      "source": "tFixedFlowInput_1",
+      "target": "tExtractJSONFields_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row2",
+      "source": "tExtractJSONFields_1",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "bigQuery",
+      "source": "tMap_1",
+      "target": "tBigQueryOutput_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "shipmentOrderLinesOut",
+      "source": "tMap_1",
+      "target": "tFlowToIterate_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "iterate1",
+      "source": "tFlowToIterate_1",
+      "target": "tIterateToFlow_3",
+      "connector_name": "ITERATE",
+      "line_style": 7
+    },
+    {
+      "name": "row3",
+      "source": "tIterateToFlow_3",
+      "target": "tExtractJSONFields_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row4",
+      "source": "tExtractJSONFields_3",
+      "target": "tMap_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "SOLBigQuery",
+      "source": "tMap_2",
+      "target": "tBigQueryOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentError1",
+      "source": "tBigQueryOutput_2",
+      "target": "tSetGlobalVar_2",
+      "connector_name": "COMPONENT_ERROR",
+      "line_style": 5
+    },
+    {
+      "name": "OnComponentOk4",
+      "source": "tBigQueryOutput_2",
+      "target": "tSetGlobalVar_3",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "OnComponentOk5",
+      "source": "tBigQueryOutput_1",
+      "target": "tSetGlobalVar_3",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "OnComponentError2",
+      "source": "tBigQueryOutput_1",
+      "target": "tSetGlobalVar_2",
+      "connector_name": "COMPONENT_ERROR",
+      "line_style": 5
+    },
+    {
+      "name": "OnComponentOk2",
+      "source": "tPostjob_1",
+      "target": "cleanup_temp_file_storage_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "OnSubjobOk1",
+      "source": "cleanup_temp_file_storage_1",
+      "target": "tFixedFlowInput_2",
+      "connector_name": "TRIGGER_OUTPUT_1",
+      "line_style": 1
+    },
+    {
+      "name": "routeInput",
+      "source": "tRouteInput_1",
+      "target": "tSetGlobalVar_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "If1",
+      "source": "tSetGlobalVar_1",
+      "target": "tFixedFlowInput_1",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "If2",
+      "source": "tSetGlobalVar_1",
+      "target": "tSetGlobalVar_4",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "OnComponentOk1",
+      "source": "tPrejob_1",
+      "target": "tRouteInput_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row5",
+      "source": "tFixedFlowInput_2",
+      "target": "tRouteOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "resource_flow_temp_folder",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST": "c:/temp",
+            "PROD": "c:/temp"
+          }
+        },
+        {
+          "name": "Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST": "test_global_gr",
+            "PROD": "global_gr"
+          }
+        },
+        {
+          "name": "parameter_Env_Prefix",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST": "test_global_gr",
+            "PROD": "global_gr"
+          }
+        },
+        {
+          "name": "parameter_GS_Bucket",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST": "vaxxinova-talend",
+            "PROD": "vaxxinova-talend"
+          }
+        },
+        {
+          "name": "parameter_Project_Id",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST": "vaxxinova-dwh",
+            "PROD": "vaxxinova-dwh"
+          }
+        },
+        {
+          "name": "[CREDENTIAL_PATH]",
+          "type": "id_String",
+          "values": {
+            "Default": "",
+            "TEST": "[CREDENTIAL_PATH]",
+            "PROD": "[CREDENTIAL_PATH]"
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "row2"
+      ],
+      "output_tables": [
+        "bigQuery",
+        "shipmentOrderLinesOut"
+      ],
+      "entries": [
+        {
+          "table_name": "bigQuery",
+          "column_name": "Order_Id_Salesforce",
+          "expression": "(row2.Id != null && row2.Id.equals(\"[]\")) || row2.Id == null ? null : row2.Id"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Order_Number_Salesforce",
+          "expression": "(row2.Number != null && row2.Number.equals(\"[]\")) || row2.Number == null ? null : row2.Number"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Order_Id_Business_Central",
+          "expression": ""
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Order_Number_Business_Central",
+          "expression": ""
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Entity",
+          "expression": "(row2.Entity != null && row2.Entity.equals(\"[]\")) || row2.Entity == null ? null : row2.Entity"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Entity_Short",
+          "expression": "(row2.Entity_Short != null && row2.Entity_Short.equals(\"[]\")) || row2.Entity_Short == null ? null : row2.Entity_Short"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Currency_Code",
+          "expression": "(row2.Currency_Code != null && row2.Currency_Code.equals(\"[]\")) || row2.Currency_Code == null ? null : row2.Currency_Code"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Order_Date",
+          "expression": "row2.Order_Date == null ? null : TalendDate.parseDate(\"yyyy-MM-dd\",row2.Order_Date)"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Account_Id",
+          "expression": "(row2.Account_Id != null && row2.Account_Id.equals(\"[]\")) || row2.Account_Id == null ? null : row2.Account_Id"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Account_Number",
+          "expression": "(row2.Account_Number != null && row2.Account_Number.equals(\"[]\")) || row2.Account_Number == null ? null : row2.Account_Number"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Account_Name",
+          "expression": ""
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_Location",
+          "expression": "(row2.Shipping_Location != null && row2.Shipping_Location.equals(\"[]\")) || row2.Shipping_Location == null ? null : row2.Shipping_Location"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_Name",
+          "expression": "(row2.Shipping_Name != null && row2.Shipping_Name.equals(\"[]\")) || row2.Shipping_Name == null ? null : row2.Shipping_Name"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_Street",
+          "expression": "(row2.Shipping_Street != null && row2.Shipping_Street.equals(\"[]\")) || row2.Shipping_Street == null ? null : row2.Shipping_Street"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_City",
+          "expression": "(row2.Shipping_City != null && row2.Shipping_City.equals(\"[]\")) || row2.Shipping_City == null ? null : row2.Shipping_City"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_Country",
+          "expression": "(row2.Shipping_Country != null && row2.Shipping_Country.equals(\"[]\")) || row2.Shipping_Country == null ? null : row2.Shipping_Country"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_State",
+          "expression": "(row2.Shipping_State != null && row2.Shipping_State.equals(\"[]\")) || row2.Shipping_State == null ? null : row2.Shipping_State"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Shipping_Zipcode",
+          "expression": "(row2.Shipping_Zipcode != null && row2.Shipping_Zipcode.equals(\"[]\")) || row2.Shipping_Zipcode == null ? null : row2.Shipping_Zipcode"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Status",
+          "expression": "(row2.Status != null && row2.Status.equals(\"[]\")) || row2.Status == null ? null : row2.Status"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Last_Modified_Date",
+          "expression": "TalendDate.parseDate(\"yyyy-MM-dd'T'HH:mm:ss.SSS\", TalendDate.getDate(\"yyyy-MM-dd'T'HH:mm:ss.SSS\"))"
+        },
+        {
+          "table_name": "bigQuery",
+          "column_name": "Total_Price",
+          "expression": "BigDecimal.valueOf(Double.valueOf(row2.Total_Price))"
+        },
+        {
+          "table_name": "shipmentOrderLinesOut",
+          "column_name": "shipmentOrderLine",
+          "expression": "row2.shipmentOrderLine"
+        }
+      ],
+      "var_entries": []
+    },
+    {
+      "input_tables": [
+        "row4"
+      ],
+      "output_tables": [
+        "SOLBigQuery"
+      ],
+      "entries": [
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Order_Id_Salesforce",
+          "expression": "row4.Id"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Order_Number_Salesforce",
+          "expression": "row4.Number"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Order_Id_Business_Central",
+          "expression": ""
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Order_Number_Business_Central",
+          "expression": ""
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Line_Number",
+          "expression": "row4.Line_Number"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Sales_Order_Number",
+          "expression": "row4.Sales_Order_Number"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Entity",
+          "expression": "row4.Entity"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Entity_Short",
+          "expression": "row4.Entity_Short"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Currency_Code",
+          "expression": "row4.Currency_Code"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Unit_of_Measure",
+          "expression": "row4.Unit_of_Measure"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Status",
+          "expression": "row4.Status"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Shipment_Date",
+          "expression": "row4.Shipment_Date == null ? null : TalendDate.parseDate(\"yyyy-MM-dd HH:mm:ss.SSS\",row4.Shipment_Date)"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Product",
+          "expression": "row4.Product"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Batch",
+          "expression": "row4.Batch"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Quantity_Ordered",
+          "expression": "row4.Quantity_Ordered != null ? new BigDecimal(row4.Quantity_Ordered) : null"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Quantity_Shipped",
+          "expression": "row4.Quantity_Shipped != null ? new BigDecimal(row4.Quantity_Shipped) : null"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Quantity_Invoiced",
+          "expression": "row4.Quantity_Invoiced != null ? new BigDecimal(row4.Quantity_Invoiced) : null"
+        },
+        {
+          "table_name": "SOLBigQuery",
+          "column_name": "Price_per_Unit",
+          "expression": "row4.Price_per_Unit != null ? new BigDecimal(row4.Price_per_Unit) : null"
+        }
+      ],
+      "var_entries": []
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "SQLike",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendStringUtil",
+    "TalendString"
+  ],
+  "group": "SalesOrder",
+  "subgroup": "Out"
+}

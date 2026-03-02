@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -8,11 +9,19 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import QueryLog
+from src.generation.conversational_rag import _build_memory_context
 from src.generation.intent_classifier import Action, QueryType, analyze_query
 from src.generation.llm_client import generate_answer
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import build_messages, build_no_results_messages
 from src.config import settings
+from src.memory.hindsight_client import (
+    ensure_quality_bank,
+    ensure_user_bank,
+    recall_quality_insights,
+    recall_user_memory,
+    retain_interaction,
+)
 from src.retrieval.search import (
     merge_sources_by_document,
     search_and_rerank,
@@ -35,6 +44,17 @@ async def run_rag_query(
     """Full RAG pipeline: classify → (search → build prompt) → generate → log."""
     start = time.perf_counter()
 
+    # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
+    uid = str(user_id)
+    await ensure_user_bank(uid)
+    await ensure_quality_bank()
+    user_memories = await recall_user_memory(uid, request.query)
+    quality_insights = await recall_quality_insights(request.query)
+    memory_context = _build_memory_context(user_memories, quality_insights)
+    if memory_context:
+        logger.info("Injecting %d user memories + %d quality insights",
+                     len(user_memories), len(quality_insights))
+
     # 1. Route query via heuristics (no LLM call)
     analysis = analyze_query(request.query)
     logger.info(
@@ -46,7 +66,7 @@ async def run_rag_query(
     if analysis.action == Action.RESPOND:
         # Chitchat — skip search, respond via unified no-results prompt
         logger.info("Skipping search (respond action)")
-        messages = build_no_results_messages(request.query)
+        messages = build_no_results_messages(request.query, memory_context=memory_context)
         answer = await generate_answer(messages)
     elif analysis.query_type == QueryType.SUMMARY:
         # SUMMARY — map-reduce pipeline for full-document summarization
@@ -58,7 +78,7 @@ async def run_rag_query(
             document_sources = [doc_source]
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
-            messages = build_no_results_messages(request.query)
+            messages = build_no_results_messages(request.query, memory_context=memory_context)
             answer = await generate_answer(messages)
     else:
         # QA — run search with cleaned query
@@ -121,12 +141,12 @@ async def run_rag_query(
 
             document_sources = merge_sources_by_document(sources)
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_messages(request.query, sources, reference_numbers=ref_map)
+            messages = build_messages(request.query, sources, reference_numbers=ref_map, memory_context=memory_context)
             answer = await generate_answer(messages)
         else:
             # No results — let LLM respond helpfully instead of hardcoded string
             logger.info("No results passed threshold — using no-results fallback")
-            messages = build_no_results_messages(request.query)
+            messages = build_no_results_messages(request.query, memory_context=memory_context)
             answer = await generate_answer(messages)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
@@ -136,6 +156,18 @@ async def run_rag_query(
         document_sources = []
 
     logger.info(f"Completed in {latency_ms}ms | {len(document_sources)} document sources returned")
+
+    # Retain interaction to Hindsight (fire-and-forget — does not block response)
+    source_names = [s.filename for s in document_sources] if document_sources else []
+    asyncio.create_task(retain_interaction(
+        user_id=uid,
+        query=request.query,
+        answer=answer,
+        sources_used=source_names,
+        search_result_count=len(document_sources),
+        latency_ms=latency_ms,
+        intent=analysis.action.value,
+    ))
 
     # 3. Log the query
     log_entry = QueryLog(

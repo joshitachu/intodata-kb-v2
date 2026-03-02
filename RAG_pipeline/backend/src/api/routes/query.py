@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 
 from fastapi import APIRouter
@@ -9,10 +11,18 @@ from qdrant_client.models import Filter, FieldCondition, MatchAny, NamedVector
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.config import settings
+from src.generation.conversational_rag import _build_memory_context
 from src.generation.intent_classifier import Action, QueryType, analyze_query
 from src.generation.llm_client import generate_answer_stream
 from src.generation.prompt_builder import build_messages, build_no_results_messages
 from src.generation.rag_chain import run_rag_query
+from src.memory.hindsight_client import (
+    ensure_quality_bank,
+    ensure_user_bank,
+    recall_quality_insights,
+    recall_user_memory,
+    retain_interaction,
+)
 from src.rbac.permissions import get_user_groups
 from src.retrieval.embedder import embed_text
 from src.retrieval.search import (
@@ -30,6 +40,8 @@ from src.schemas import (
     QueryRequest,
     QueryResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["query"])
 
@@ -65,7 +77,7 @@ async def query_debug(
     query_embedding = await embed_text(body.query)
     embedding_ms = int((time.perf_counter() - embed_start) * 1000)
 
-    rbac_filter_applied = bool(user_groups)
+    rbac_filter_applied = bool(user_groups) and "admin" not in user_groups
     search_filter = Filter(
         must=[
             FieldCondition(
@@ -73,7 +85,7 @@ async def query_debug(
                 match=MatchAny(any=user_groups),
             )
         ]
-    ) if user_groups else None
+    ) if rbac_filter_applied else None
 
     results = await qdrant.query_points(
         collection_name=COLLECTION_NAME,
@@ -120,13 +132,26 @@ async def query_stream(
     - event: done    → signals end of stream
     """
     user_groups = get_user_groups(user)
+    start = time.perf_counter()
+    uid = str(user.id)
+
+    # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
+    await ensure_user_bank(uid)
+    await ensure_quality_bank()
+    user_memories = await recall_user_memory(uid, body.query)
+    quality_insights = await recall_quality_insights(body.query)
+    memory_context = _build_memory_context(user_memories, quality_insights)
+    if memory_context:
+        logger.info("Stream: Injecting %d user memories + %d quality insights",
+                     len(user_memories), len(quality_insights))
 
     # 1. Route query
     analysis = analyze_query(body.query)
 
     if analysis.action == Action.RESPOND:
-        messages = build_no_results_messages(body.query)
+        messages = build_no_results_messages(body.query, memory_context=memory_context)
         sources_data = []
+        document_sources = []
     elif analysis.query_type == QueryType.SUMMARY:
         # Summaries are too complex to stream (map-reduce), fall back to non-streaming
         result = await run_rag_query(body, user_groups, user.id, qdrant, db)
@@ -162,20 +187,36 @@ async def query_stream(
         if sources:
             document_sources = merge_sources_by_document(sources)
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_messages(body.query, sources, reference_numbers=ref_map)
+            messages = build_messages(body.query, sources, reference_numbers=ref_map, memory_context=memory_context)
             sources_data = [s.model_dump() for s in document_sources]
         else:
-            messages = build_no_results_messages(body.query)
+            messages = build_no_results_messages(body.query, memory_context=memory_context)
             sources_data = []
+            document_sources = []
 
     # 3. Stream response
     async def event_generator():
         # Send sources first so frontend can display them
         yield f"event: sources\ndata: {json.dumps(sources_data)}\n\n"
 
-        # Stream LLM tokens
+        # Stream LLM tokens and accumulate answer for retain
+        accumulated = ""
         async for token in generate_answer_stream(messages):
+            accumulated += token
             yield f"event: token\ndata: {json.dumps(token)}\n\n"
+
+        # Retain interaction to Hindsight (fire-and-forget — does not block response)
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        source_names = [s.filename for s in document_sources] if document_sources else []
+        asyncio.create_task(retain_interaction(
+            user_id=uid,
+            query=body.query,
+            answer=accumulated,
+            sources_used=source_names,
+            search_result_count=len(document_sources),
+            latency_ms=latency_ms,
+            intent=analysis.action.value,
+        ))
 
         yield "event: done\ndata: {}\n\n"
 

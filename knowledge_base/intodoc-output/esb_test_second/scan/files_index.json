@@ -1,0 +1,2386 @@
+[
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\DataOperation_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/DataOperation_0.1.item",
+    "file_type": "routine",
+    "sha256": "8531c1cb6312d5105b25afcc4c2243ea49f52eeb852098a346fd4e8cc7afe591",
+    "size_bytes": 1652,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\DataOperation_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/DataOperation_0.1.properties",
+    "file_type": "config",
+    "sha256": "e6f26aea0528ceba82f8bdb143dd5d0268db1234bbdc50fb7495560ca92acdd4",
+    "size_bytes": 1495,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\Mathematical_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/Mathematical_0.1.item",
+    "file_type": "routine",
+    "sha256": "8c2118c5c3ffd590bf6ed8256679d82e5c6316398220991933fb16dd6ffa6a3a",
+    "size_bytes": 12140,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\Mathematical_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/Mathematical_0.1.properties",
+    "file_type": "config",
+    "sha256": "22901493017a376276534e74e86bda17cf8e968f3218807cc9ca470abdf91d84",
+    "size_bytes": 1493,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\Numeric_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/Numeric_0.1.item",
+    "file_type": "routine",
+    "sha256": "47cca7d5defcf30688491f96d3340c531b05151ca1d0103335dd977026b9017c",
+    "size_bytes": 3688,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\Numeric_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/Numeric_0.1.properties",
+    "file_type": "config",
+    "sha256": "9e450b1ae992f2d7a56888c04e7a562c3d80a1b28e0f56984f19e67c96d63a00",
+    "size_bytes": 1483,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\Relational_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/Relational_0.1.item",
+    "file_type": "routine",
+    "sha256": "fe2fa53c9648e452f4e5b6c99ac42c7a2eb4009291a63cb9c9bcb5fd2424c3b8",
+    "size_bytes": 1279,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\Relational_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/Relational_0.1.properties",
+    "file_type": "config",
+    "sha256": "6e6084a2e347ba5722bca179365d62b7eed9c3d6f797f93875c4d2ca74ac968b",
+    "size_bytes": 1489,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\SQLike_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/SQLike_0.1.item",
+    "file_type": "routine",
+    "sha256": "5aab74772e5710df79e6c083b61638882ab8bae81c26394edf1414ee9f961eca",
+    "size_bytes": 5002,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\SQLike_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/SQLike_0.1.properties",
+    "file_type": "config",
+    "sha256": "7d06c4aaa71f77e653eefa03c1d3ce002a66d8c5c308e2bca784ce27d87095a7",
+    "size_bytes": 1481,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\StringHandling_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/StringHandling_0.1.item",
+    "file_type": "routine",
+    "sha256": "3513762cd68cd719b16bf87c36c1ef7c92f2079f8fba49f9bdbd5254e77534d2",
+    "size_bytes": 23807,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\StringHandling_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/StringHandling_0.1.properties",
+    "file_type": "config",
+    "sha256": "420a2cf9bb8d3da92a0ff7c4221e410feca480d5ee91808bbd7be17b0fd2b9d0",
+    "size_bytes": 1497,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendDataGenerator_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendDataGenerator_0.1.item",
+    "file_type": "routine",
+    "sha256": "737fb25b783f7d5c82087b5b4c3b60d64ff3cc3e483d5d20ff718de1224dff8e",
+    "size_bytes": 10606,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendDataGenerator_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendDataGenerator_0.1.properties",
+    "file_type": "config",
+    "sha256": "4a3bc5a90797391af696aa494da300d2850168e3b8efdcb511fbc443084409c8",
+    "size_bytes": 1507,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendDate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendDate_0.1.item",
+    "file_type": "routine",
+    "sha256": "542cfb9bc33bc538b3ec9520e3006060b359b789648bb68a78158bfcbf748bd4",
+    "size_bytes": 56583,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendDate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendDate_0.1.properties",
+    "file_type": "config",
+    "sha256": "4bd1329e703607b473adba953d1757e75dcbc93368ad607d449e666544f40717",
+    "size_bytes": 1489,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendString_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendString_0.1.item",
+    "file_type": "routine",
+    "sha256": "445c6d6a3097d4c496d2eb65ad02f127bbbfd7dfff32cca6d35938a71a3a1c5d",
+    "size_bytes": 11455,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendString_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendString_0.1.properties",
+    "file_type": "config",
+    "sha256": "1e8b7624aedb28436759c6c9133efe863bee75158b74a05e0c9ea633c3cfd9a4",
+    "size_bytes": 1493,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendStringUtil_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendStringUtil_0.1.item",
+    "file_type": "routine",
+    "sha256": "708b6f0c6931505daf6cd676c1888c130c2d9fc7d77537022ef914ca9ce77da3",
+    "size_bytes": 2189,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\code\\routines\\system\\TalendStringUtil_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/code/routines/system/TalendStringUtil_0.1.properties",
+    "file_type": "config",
+    "sha256": "0b38a6dd4ba4426f72a38b26bc3c7161dfc069c64e5ead138d2d80e4579cba55",
+    "size_bytes": 1501,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\ACTIVE_MQ_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/ACTIVE_MQ_0.1.item",
+    "file_type": "context",
+    "sha256": "34db1eac7f90eb6db7e4f3f620fadc8c5ea8479a8e87d8a4693259810b889c67",
+    "size_bytes": 12658,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\ACTIVE_MQ_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/ACTIVE_MQ_0.1.properties",
+    "file_type": "config",
+    "sha256": "2bd4e06c9f2d4837a723e57f02269677d1b0f3fae8a9c5baca47f89f707b66db",
+    "size_bytes": 2036,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\connection_activemq_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/connection_activemq_0.1.item",
+    "file_type": "context",
+    "sha256": "11c5aed821e5e0213ef798d41214b5c197b9fe9809805ab3acad9a718413a147",
+    "size_bytes": 9260,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\connection_activemq_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/connection_activemq_0.1.properties",
+    "file_type": "config",
+    "sha256": "130ad4f5430c94982a0ae34bfa40e47a06704bf0862d7612c0ea3d7508f838c5",
+    "size_bytes": 2174,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\connection_JDBC_Google_BigQuery_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/connection_JDBC_Google_BigQuery_0.1.item",
+    "file_type": "context",
+    "sha256": "9b414692a0fac924a427a62d385a67b25d54b34fd9bdfbc3e9aac39cf3f85ba1",
+    "size_bytes": 10201,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\connection_JDBC_Google_BigQuery_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/connection_JDBC_Google_BigQuery_0.1.properties",
+    "file_type": "config",
+    "sha256": "6112721b0f66bf8f5ead88fba4cbed13ebea2a3c076ffa22e705e742db33b1da",
+    "size_bytes": 2095,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Country_State_Mapping_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Country_State_Mapping_0.1.item",
+    "file_type": "context",
+    "sha256": "5370b59834a8afb1f0bd33169076652b2da49de72c27dd779e091fd79617a314",
+    "size_bytes": 5731,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Country_State_Mapping_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Country_State_Mapping_0.1.properties",
+    "file_type": "config",
+    "sha256": "2c4c3882b659d846083daa8e8434c3c90906dac8a669c81a793b175ea925b16f",
+    "size_bytes": 1735,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_BC_webhook_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_BC_webhook_0.1.item",
+    "file_type": "context",
+    "sha256": "29c4b1b7ce7a613c8eb42386d92c8b9fe35d4805af95f5672e5692993d68bd3a",
+    "size_bytes": 14086,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_BC_webhook_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_BC_webhook_0.1.properties",
+    "file_type": "config",
+    "sha256": "6bc5748252157e7f73214442db2e019c76e1da26e87662f2113db2e1a0d5e2fd",
+    "size_bytes": 2074,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_BC_webhook_api_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_BC_webhook_api_0.1.item",
+    "file_type": "context",
+    "sha256": "c29ce58ab9aa21a70713d9c235f759b4db78584154f513de73e2076a2e043be4",
+    "size_bytes": 4942,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_BC_webhook_api_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_BC_webhook_api_0.1.properties",
+    "file_type": "config",
+    "sha256": "15e33e551e95add5758e3bfa21b903f6af89d9750c63e31dae6a592097c0cdf0",
+    "size_bytes": 1720,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_BC_webhook_subscription_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_BC_webhook_subscription_0.1.item",
+    "file_type": "context",
+    "sha256": "ea9805078c61aff7e7a7bda10c12dee988c2683bbcbe4f22d348e663786314a1",
+    "size_bytes": 9109,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_BC_webhook_subscription_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_BC_webhook_subscription_0.1.properties",
+    "file_type": "config",
+    "sha256": "00398c9be5d85c3a016cf3dc52fffc62ca5f39d82022e91394fba13858242a60",
+    "size_bytes": 1848,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_SF_webhook_api_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_SF_webhook_api_0.1.item",
+    "file_type": "context",
+    "sha256": "23f38eb527cc942207f14555f64b9140048946973fb9dfea5f4c4205357d020a",
+    "size_bytes": 4937,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GEN_SF_webhook_api_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GEN_SF_webhook_api_0.1.properties",
+    "file_type": "config",
+    "sha256": "384c2a567bdfe815937b687a4aeb671f294de4efa92ea036cd555175562f7a11",
+    "size_bytes": 1720,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GithubAPI_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GithubAPI_0.1.item",
+    "file_type": "context",
+    "sha256": "469b81c2b58f11db493759886a01e81aaea89dfe942fd166edbe28ea41b756f0",
+    "size_bytes": 6275,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GithubAPI_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GithubAPI_0.1.properties",
+    "file_type": "config",
+    "sha256": "bb15a31749547e063c99a5f4c20d93f08a01e2138433d53a2ad0a6c2317b4a1d",
+    "size_bytes": 1675,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Global_Contexts_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Global_Contexts_0.1.item",
+    "file_type": "context",
+    "sha256": "be04f2f56b367c2f8ced58bf90eb950d470e1ae671df8cf58c674d0c73b958de",
+    "size_bytes": 6192,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Global_Contexts_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Global_Contexts_0.1.properties",
+    "file_type": "config",
+    "sha256": "92f9baa7580c3a62a7e624df0237253de4e22060ec151d832b2f5e7e4c00a1d5",
+    "size_bytes": 2292,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GoogleBigQuery_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GoogleBigQuery_0.1.item",
+    "file_type": "context",
+    "sha256": "9b0c0d9f27b8ba8a0af411b66a7f375f10b7f4118de12d25c1bb8ffdfcf515cc",
+    "size_bytes": 9202,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\GoogleBigQuery_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/GoogleBigQuery_0.1.properties",
+    "file_type": "config",
+    "sha256": "67ad58d6c7cbe3810b981c6bd69085460ead1624baeddb5c297bb1e17bd2d4cd",
+    "size_bytes": 2284,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Monitoring_Context_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Monitoring_Context_0.1.item",
+    "file_type": "context",
+    "sha256": "31ddc245795b54779ea4efd68f9770174b248a17abc591838bf3cb0be172f588",
+    "size_bytes": 24282,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Monitoring_Context_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Monitoring_Context_0.1.properties",
+    "file_type": "config",
+    "sha256": "d0e4635c9edda9ef285975d6646ee29906841d6146a2cb4ddcdfcea80861463a",
+    "size_bytes": 1720,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\MONITORING_SETTINGS_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/MONITORING_SETTINGS_0.1.item",
+    "file_type": "context",
+    "sha256": "7b7a1f34e0699181f30ab7a91cd23807eb0f97584a518d70978cf7fbc0949377",
+    "size_bytes": 9635,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\MONITORING_SETTINGS_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/MONITORING_SETTINGS_0.1.properties",
+    "file_type": "config",
+    "sha256": "d875a2bcde6930af79cd65f846e9d51fa4e9d7966c4b46f43741d626ff4d0fe2",
+    "size_bytes": 2124,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\MONITORING_VARIABLES_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/MONITORING_VARIABLES_0.1.item",
+    "file_type": "context",
+    "sha256": "783a40c301cecadab8827e7e946604634aa00f68f6b5fee5c09a6077e4a9f3aa",
+    "size_bytes": 21422,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\MONITORING_VARIABLES_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/MONITORING_VARIABLES_0.1.properties",
+    "file_type": "config",
+    "sha256": "c0a3c4afec7ee7f7b1abca37bdfa6dad0e1a23a80791ee8a482f72e03d74b614",
+    "size_bytes": 2181,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_PROBI_VUS_BC_environment_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_PROBI_VUS_BC_environment_0.1.item",
+    "file_type": "context",
+    "sha256": "478c729a77a9efa61e38958111f54c19190bf55f33f1539653a869a2cd1bff61",
+    "size_bytes": 29139,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_PROBI_VUS_BC_environment_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_PROBI_VUS_BC_environment_0.1.properties",
+    "file_type": "config",
+    "sha256": "5607a6e3419fea8f8765606c0903a90a414fa2e42bfa6ac69790e5da1bd9d452",
+    "size_bytes": 2312,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_Vaxxinova_Salesforce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_Vaxxinova_Salesforce_0.1.item",
+    "file_type": "context",
+    "sha256": "e1abb0dac07759f9da7eada543b01cb8c3be41719a680b40e23324ae506ad584",
+    "size_bytes": 14159,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_Vaxxinova_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_Vaxxinova_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "0d27afdb81bda8e05ebaeddfc962d56470b37c19ea74ec8f11f6fdbd8746e16d",
+    "size_bytes": 2124,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_VUS_BC_environment_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_VUS_BC_environment_0.1.item",
+    "file_type": "context",
+    "sha256": "1fce4455e1ab45e9f5ad24b8c3478dd93937585fb3757d22b605339f12c2280f",
+    "size_bytes": 26797,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_VUS_BC_environment_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_VUS_BC_environment_0.1.properties",
+    "file_type": "config",
+    "sha256": "de43b6781af789e6b7deb256fce6c89b909c1a691f418ace19609565b84c752f",
+    "size_bytes": 2270,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_VUS_environment_GC_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_VUS_environment_GC_0.1.item",
+    "file_type": "context",
+    "sha256": "b16d66f9f9bfbcb570d33171184e63b53ee8a01b49e24aaacfa20f30bd92a7f5",
+    "size_bytes": 15011,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\USA_VUS_environment_GC_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/USA_VUS_environment_GC_0.1.properties",
+    "file_type": "config",
+    "sha256": "94ee1d493396664a5b9b42b0e8c123d8024b88c9939bc1b8479ef9662a9bb7b2",
+    "size_bytes": 2114,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Vaxxinova_Salesforce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Vaxxinova_Salesforce_0.1.item",
+    "file_type": "context",
+    "sha256": "dd4468d63d3f591730874179ba2d39db70b755839d99e78d3f908f476c50eb33",
+    "size_bytes": 15452,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\context\\Vaxxinova_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/context/Vaxxinova_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "aeeeba532c2f8f8ac9df55643c75328148259c321af0a1898c67042c2321ce30",
+    "size_bytes": 2104,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\cleanup_temp_file_storage_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/cleanup_temp_file_storage_0.1.item",
+    "file_type": "joblet",
+    "sha256": "b452f3adbf32046133debda9c6b392d34b3ee3e7cc116cc444f72c3523af7a74",
+    "size_bytes": 23703,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\cleanup_temp_file_storage_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/cleanup_temp_file_storage_0.1.properties",
+    "file_type": "config",
+    "sha256": "81ac74216bb7c4580fd07cac2fc68c7ee4d4c84715b144f042d7c7fcbfb23a19",
+    "size_bytes": 2077,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\GENERIC\\BusinessCentral\\Create_Business_Central_Token_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/GENERIC/BusinessCentral/Create_Business_Central_Token_0.1.item",
+    "file_type": "joblet",
+    "sha256": "b6032629618e0187ce3bc65473ef02b7743516c9b058ff38320ade286584d143",
+    "size_bytes": 41241,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\GENERIC\\BusinessCentral\\Create_Business_Central_Token_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/GENERIC/BusinessCentral/Create_Business_Central_Token_0.1.properties",
+    "file_type": "config",
+    "sha256": "9b4d729c8e6b5898c7ecbf8ba02887a45b485ae766fe4141ff67d6f7eee3f35e",
+    "size_bytes": 2102,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\GENERIC\\BusinessCentral\\Create_Business_Central_Token_v2_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/GENERIC/BusinessCentral/Create_Business_Central_Token_v2_0.1.item",
+    "file_type": "joblet",
+    "sha256": "90936b0383de65bcd6f20da89a1516b0968c75ce826eb6721a7577d9adfcafda",
+    "size_bytes": 51105,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\GENERIC\\BusinessCentral\\Create_Business_Central_Token_v2_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/GENERIC/BusinessCentral/Create_Business_Central_Token_v2_0.1.properties",
+    "file_type": "config",
+    "sha256": "a011f9e94385e5d5b65251596c27152bb7df3a8cb01479b675bd257a017428aa",
+    "size_bytes": 2114,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\jSendToMonitoringQueue_Artemis_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/jSendToMonitoringQueue_Artemis_0.1.item",
+    "file_type": "joblet",
+    "sha256": "f5795bb90e235612792b43125afdf1005934336f9f336455fb1a1091c48aead8",
+    "size_bytes": 82748,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\jSendToMonitoringQueue_Artemis_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/jSendToMonitoringQueue_Artemis_0.1.properties",
+    "file_type": "config",
+    "sha256": "ee03ccab6b9debbcbe85b63c67c7bec825727481c4e2aa973bddf1959046dea9",
+    "size_bytes": 1642,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\Vaxxinova_Logging_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/Vaxxinova_Logging_0.1.item",
+    "file_type": "joblet",
+    "sha256": "641bc1049fb40e1cadb1904df8a563592ea7abbb9885b63fb7dfff7b189695b6",
+    "size_bytes": 19904,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\joblets\\Vaxxinova_Logging_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/joblets/Vaxxinova_Logging_0.1.properties",
+    "file_type": "config",
+    "sha256": "856538b32129bf15ec968ec977b95c554ac0cce358f786f10ad8ad93698488b6",
+    "size_bytes": 1964,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\connections\\connection_JDBC_Google_BigQuery_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/connections/connection_JDBC_Google_BigQuery_0.1.item",
+    "file_type": "connection",
+    "sha256": "62d34307d9a274c0cb98d5f8335a4a4de136c30ea2f4f4a0331993b27f020446",
+    "size_bytes": 39657,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\connections\\connection_JDBC_Google_BigQuery_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/connections/connection_JDBC_Google_BigQuery_0.1.properties",
+    "file_type": "config",
+    "sha256": "984a57c952d931786e44ca914196e5c4dd6d0f5c8c519e52ba92b02f69c8e1a6",
+    "size_bytes": 2098,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\fileXml\\itemApplicationEntries_response_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/fileXml/itemApplicationEntries_response_0.1.item",
+    "file_type": "schema",
+    "sha256": "0f2c96927b442a318fd41f29f0538b94437d9de7caf19419ba2ac6549bafa285",
+    "size_bytes": 27473,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\fileXml\\itemApplicationEntries_response_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/fileXml/itemApplicationEntries_response_0.1.properties",
+    "file_type": "config",
+    "sha256": "472efeff54a77853a8f776f4f665da5b5f0796c4b9c4ead91d31514153c27162",
+    "size_bytes": 1986,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\AccrualLedgerEntries_Response_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/AccrualLedgerEntries_Response_0.1.item",
+    "file_type": "schema",
+    "sha256": "58b4ad4264a1f65f31e2e18fc96da6e34c30ef9e8e951f028f6ee9037db82529",
+    "size_bytes": 11057,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\AccrualLedgerEntries_Response_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/AccrualLedgerEntries_Response_0.1.properties",
+    "file_type": "config",
+    "sha256": "1c95befb7aa0b237530ecaf3a82459a99818d0cef72ef6fc2d80823bcb1d2687",
+    "size_bytes": 2031,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\BC_Customer_Response_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/BC_Customer_Response_0.1.item",
+    "file_type": "schema",
+    "sha256": "f99ef98cb1d0d06131b0fef41cd55f10321a17fbcc1f5f5a92b7a271ba3826bd",
+    "size_bytes": 14212,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\BC_Customer_Response_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/BC_Customer_Response_0.1.properties",
+    "file_type": "config",
+    "sha256": "3fb94266331ae72e88753d193cc0b7346cd1875691c8b6bf08e627bd2f264997",
+    "size_bytes": 1649,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\cmm_accounts_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/cmm_accounts_0.1.item",
+    "file_type": "schema",
+    "sha256": "2237e75749082e6a830c963cc4b0f2c7e8905ecdfc067ef161f5fa93c9b1871e",
+    "size_bytes": 10847,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\cmm_accounts_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/cmm_accounts_0.1.properties",
+    "file_type": "config",
+    "sha256": "5f05bf5ca2f06d22eae6e771db7ac29c6e38a79e29bbbfa9856b12fe774a706b",
+    "size_bytes": 1591,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\cmm_item_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/cmm_item_0.1.item",
+    "file_type": "schema",
+    "sha256": "a3a10d583c4cb1bc2394f4198ddd57f516842693b4af0c25cda2a4c7ad42c63f",
+    "size_bytes": 12220,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\cmm_item_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/cmm_item_0.1.properties",
+    "file_type": "config",
+    "sha256": "e921feee30ea296a2aac9f5e57e48022827dc275bf32b7232299e7abfbed27a2",
+    "size_bytes": 1953,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\Create_Token_Response_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/Create_Token_Response_0.1.item",
+    "file_type": "schema",
+    "sha256": "792bbe354b7619cc355773e0182447677b1773cfb6864f87d44d7e6c73225632",
+    "size_bytes": 6177,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\Create_Token_Response_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/Create_Token_Response_0.1.properties",
+    "file_type": "config",
+    "sha256": "5e95ed57bb16397e5e7d3316bc68eafa6ec763bd590e0791ecd2b33bb106ca30",
+    "size_bytes": 1992,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\items_cmm_input_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/items_cmm_input_0.1.item",
+    "file_type": "schema",
+    "sha256": "caa8c326a9226b3d24455c9e78dbd7396797f0c6d64c2797352e47056462bdc7",
+    "size_bytes": 10595,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\items_cmm_input_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/items_cmm_input_0.1.properties",
+    "file_type": "config",
+    "sha256": "acdcfa2b13c1019da5957b578040814266a6ce3e7ed054e43cb16c9637d502a4",
+    "size_bytes": 1600,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\Items_response_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/Items_response_0.1.item",
+    "file_type": "schema",
+    "sha256": "beec7638d079afc8c9596b82200e0f1937dc06b1abe67a5b6448997ef064bc07",
+    "size_bytes": 13982,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\Items_response_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/Items_response_0.1.properties",
+    "file_type": "config",
+    "sha256": "9b2f3188fb31737a5f00202677065cb4840c1120b4d9adb070ec696aa3941dc8",
+    "size_bytes": 1971,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\VUS_ProBI_Customers_Response_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/VUS_ProBI_Customers_Response_0.1.item",
+    "file_type": "schema",
+    "sha256": "4e95f9f7168b620236cbec54b8bdc5882a5382fa90760167fd3314a157f3f02f",
+    "size_bytes": 8660,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\VUS_ProBI_Customers_Response_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/VUS_ProBI_Customers_Response_0.1.properties",
+    "file_type": "config",
+    "sha256": "1efda37c9ea27cfa9dbaf0260a3fb2ba0c603534ca7cdac50283b919644a6195",
+    "size_bytes": 2013,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_item_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_item_0.1.item",
+    "file_type": "schema",
+    "sha256": "2bf8a56487bc411e639d52cb534978592bcfde3647376966404f3125a42d5803",
+    "size_bytes": 10244,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_item_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_item_0.1.properties",
+    "file_type": "config",
+    "sha256": "824439108b8c6fefd0149418356119c1628b9e68a717c281b77735e999b5052b",
+    "size_bytes": 1965,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_message_example_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_message_example_0.1.item",
+    "file_type": "schema",
+    "sha256": "b67e585818f84b05a648facf0b6fd444459266944896c2c160e33dcd9f28dd53",
+    "size_bytes": 8058,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_message_example_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_message_example_0.1.properties",
+    "file_type": "config",
+    "sha256": "eeaaec49980086fe0dc5b1947d3b51767ade37cb151d4317a0a9a183f32615f5",
+    "size_bytes": 1998,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_message_multiple_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_message_multiple_0.1.item",
+    "file_type": "schema",
+    "sha256": "f8cfdb5595a38cddb6d94a3fc92a68609fa86c7da31f5a5a282baec41d9a5a76",
+    "size_bytes": 6736,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_message_multiple_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_message_multiple_0.1.properties",
+    "file_type": "config",
+    "sha256": "f5dbb0b132a07f44dfe0bf3f8579a558836a0cf3b2d98e17f0a4a17e26727ca0",
+    "size_bytes": 1627,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_subscription_values_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_subscription_values_0.1.item",
+    "file_type": "schema",
+    "sha256": "6771d6fc1cac2748c98d195d4d352401aa4fcf7952f03d161fdef8fc917fac8a",
+    "size_bytes": 7448,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\json\\webhook_subscription_values_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/json/webhook_subscription_values_0.1.properties",
+    "file_type": "config",
+    "sha256": "1582cfb26d3367905812a244db43a1097f415f1558f140144e6b03e63267249d",
+    "size_bytes": 1636,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\salesforce\\Vaxxinova_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/salesforce/Vaxxinova_0.1.item",
+    "file_type": "schema",
+    "sha256": "4c1f29f6cf4056ecfe2bd55cb6ec0dd38f30a8734565b3350f06c8b90c12f727",
+    "size_bytes": 56053,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\salesforce\\Vaxxinova_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/salesforce/Vaxxinova_0.1.properties",
+    "file_type": "config",
+    "sha256": "1df97b21363775b0c8b10b5a694a9534089ab5be107bcd22aa3c45a8c1481df9",
+    "size_bytes": 1661,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\salesforce\\Vaxxinova_Salesforce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/salesforce/Vaxxinova_Salesforce_0.1.item",
+    "file_type": "schema",
+    "sha256": "ebc8c882f3d8ad49eeec428c15ff99a623bd726b29e70c028bc95c14a8341034",
+    "size_bytes": 129695,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\metadata\\salesforce\\Vaxxinova_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/metadata/salesforce/Vaxxinova_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "40fc04ebbf159fe63e9df293d230a34fac6f790c3b53be705e940f29ce7e770a",
+    "size_bytes": 1679,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_BusinessCentral1_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_BusinessCentral1_0.1.item",
+    "file_type": "job",
+    "sha256": "7b45c00aacaf6901b4046e2f962ba42759122b47abc1b7b7c273bb420b33b456",
+    "size_bytes": 149616,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_BusinessCentral1_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_BusinessCentral1_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "ad863159ffa2a322c0af4903931534e02a8ec48b03c62700783f298ccba33133",
+    "size_bytes": 2068,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_BusinessCentral_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_BusinessCentral_0.1.item",
+    "file_type": "job",
+    "sha256": "6a108da098c27197abdaf6a59c1cd7b189e793d1dd43d2cc45cbe13cd564d324",
+    "size_bytes": 154829,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_BusinessCentral_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "a1192f846909a40d4643c11a7594f098be30f5cb02de7dd75bb2892f81273b3b",
+    "size_bytes": 2050,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_SalesForce1_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_SalesForce1_0.1.item",
+    "file_type": "job",
+    "sha256": "ed700824446b136a53d842879e2e43ca80903e186c0a298eb46dae88bb73ab7f",
+    "size_bytes": 273564,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_SalesForce1_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_SalesForce1_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "313882d2b4f4995082697cf6ca19f0bb0ce0acd432199724c7545994a55c4608",
+    "size_bytes": 2053,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_SalesForce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_SalesForce_0.1.item",
+    "file_type": "job",
+    "sha256": "96d9bb783527838299e596d7c9956c1921a4c161c744c8fe1f27a3202d0af3de",
+    "size_bytes": 273640,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\In\\sjAccount_OnRamp_SalesForce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/In/sjAccount_OnRamp_SalesForce_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "7a2058e0104aa078a24e55dc2e053623974e41923b353deaf003d6487b9f7432",
+    "size_bytes": 2035,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\Copy_of_sjAccount_OffRamp_BusinessCentral_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/Copy_of_sjAccount_OffRamp_BusinessCentral_0.1.item",
+    "file_type": "job",
+    "sha256": "d57845dd7b5d3b5f1ce18fa7170d43b6b99a310ef3138b5b18eabfc12c3505e5",
+    "size_bytes": 220111,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\Copy_of_sjAccount_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/Copy_of_sjAccount_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "70f5fbcd9d4f070aa761438579a91e28588f7ec4e78f16b65b8012abe6f55053",
+    "size_bytes": 2093,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\sAccount_OffRamp_Salesforce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/sAccount_OffRamp_Salesforce_0.1.item",
+    "file_type": "job",
+    "sha256": "e8fee7bbd90c85624e567e9b10a624d4784e1b4f268d866fcf43b8f3fb9461ba",
+    "size_bytes": 678679,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\sAccount_OffRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/sAccount_OffRamp_Salesforce_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "d080ec84ff5c1c9ff0b101cd868e709765d6363cf8621146835d191f23bc8cd1",
+    "size_bytes": 1569,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\sjAccount_OffRamp_BusinessCentral_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/sjAccount_OffRamp_BusinessCentral_0.1.item",
+    "file_type": "job",
+    "sha256": "0e6f80ac13edd70ae552757b031eed4682524a087c40399412b651abd7ec0927",
+    "size_bytes": 241011,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\sjAccount_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/sjAccount_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "be8363e205316fc67cf9b727926503f2302b5e4cd3e451749acd8596888571b6",
+    "size_bytes": 2145,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\sjAccount_OffRamp_DWH_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/sjAccount_OffRamp_DWH_0.1.item",
+    "file_type": "job",
+    "sha256": "991823bd0d54c98e30524102d6b16aefc68ec09fe6eb13138eb869d9ef539ead",
+    "size_bytes": 74484,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Out\\sjAccount_OffRamp_DWH_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Out/sjAccount_OffRamp_DWH_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "beb175015aea30f8b69c5be81c7f4e1a048c7c40749f361496f9c99084a09632",
+    "size_bytes": 2018,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Return\\sAccount_Return_Salesforce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Return/sAccount_Return_Salesforce_0.1.item",
+    "file_type": "job",
+    "sha256": "8de54963e49680278400431125e5f77cbb8d64abd61bddf9d117c72c6908b017",
+    "size_bytes": 678679,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Return\\sAccount_Return_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Return/sAccount_Return_Salesforce_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "28ab21502212146c5ff7050e6efd1bcf9d7b21145da3850ff54cffc5e85aab7b",
+    "size_bytes": 1569,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Webhook\\Account_Subscription_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Webhook/Account_Subscription_0.1.item",
+    "file_type": "job",
+    "sha256": "543ecf1fbedf5967f7b961d2f4e9b02003be5d1748daaa6d71b5a0a0966ea16c",
+    "size_bytes": 126155,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Account\\Webhook\\Account_Subscription_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Account/Webhook/Account_Subscription_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "525af548e3af120ecc41302c454f45c4fd51dce3d3c29718eadeaada3644df8a",
+    "size_bytes": 1960,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\In\\sjItem_OnRamp_BusinessCentral_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/In/sjItem_OnRamp_BusinessCentral_0.1.item",
+    "file_type": "job",
+    "sha256": "eb7c63cf3d0572cb975dc31e56a98fe6895c90e2654dce26a98c11fb73493880",
+    "size_bytes": 140218,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\In\\sjItem_OnRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/In/sjItem_OnRamp_BusinessCentral_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "97593972a275912049ace13becd84a6357be1cf444b0610d571b080c544c5fdf",
+    "size_bytes": 2038,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\In\\sjItem_OnRamp_SalesForce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/In/sjItem_OnRamp_SalesForce_0.1.item",
+    "file_type": "job",
+    "sha256": "64b8b12b5a1c20250b31ac3c59d2c6c4067f1cb21337e5e97ac7ff3dcc7920f5",
+    "size_bytes": 316723,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\In\\sjItem_OnRamp_SalesForce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/In/sjItem_OnRamp_SalesForce_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "e95e3a6080c89418c16962d92d20a47eee794a028b6d60778992f85058635318",
+    "size_bytes": 2023,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_BusinessCentral1_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_BusinessCentral1_0.1.item",
+    "file_type": "job",
+    "sha256": "0acd4f2e17d0714eaae6a16b48b8dc687c403e2482513890caa071031a97b692",
+    "size_bytes": 218159,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_BusinessCentral1_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_BusinessCentral1_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "b71cb99cef493aab522cb8ca3683a7929fc1562227d218e8dbec2aa8468cbf73",
+    "size_bytes": 2045,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_BusinessCentral_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_BusinessCentral_0.1.item",
+    "file_type": "job",
+    "sha256": "bf76ce71f17b01d2a9bc9d01356b2536f623eca474e49cd38dabc67fc8233afe",
+    "size_bytes": 220085,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "799248dffd6a42f7e839f4f7e9a19df017d1a22e3e168ae8b59e7ace40b9df88",
+    "size_bytes": 2042,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_DWH_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_DWH_0.1.item",
+    "file_type": "job",
+    "sha256": "87e0f56947c92bb125707542ba435db9162d287feea42b33a866b94050bcd6ed",
+    "size_bytes": 71011,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_DWH_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_DWH_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "c53d573d7b2a320862f114a530d1598ba0abc4c48937747de421595c5ea528da",
+    "size_bytes": 2006,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_Salesforce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_Salesforce_0.1.item",
+    "file_type": "job",
+    "sha256": "7803a8385ed11626cf432542ca7ff2dcfaf3259573ad07ae621da0297fde7566",
+    "size_bytes": 584392,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Out\\sjItem_OffRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Out/sjItem_OffRamp_Salesforce_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "5012288f2875a1fad6722c83bc555ad7a814126c02f6b153fb888068c625eedf",
+    "size_bytes": 1560,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Webhook\\Item_Subscription_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Webhook/Item_Subscription_0.1.item",
+    "file_type": "job",
+    "sha256": "f7942d4267cbba983ac0c67e9a2552a657679ca933ddb21a1e56eafed86574f2",
+    "size_bytes": 113571,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Item\\Webhook\\Item_Subscription_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Item/Webhook/Item_Subscription_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "95cc9d8cd75628f2aad812975288134967532bf72cabd23c4b35c1db2b461459",
+    "size_bytes": 1914,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Monitoring\\sjUpdate_Github_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Monitoring/sjUpdate_Github_0.1.item",
+    "file_type": "job",
+    "sha256": "aedfbddefc58833be45ca65b584108847a21e349e50b463d69fcbc5010ceb4f1",
+    "size_bytes": 99375,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\Monitoring\\sjUpdate_Github_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/Monitoring/sjUpdate_Github_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "71b37b493821e312f32f98767eff2c07c1896cb9d7f0b4a45fea316ec1c45d71",
+    "size_bytes": 1529,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\SalesOrder\\In\\sjShipmentOrder_OnRamp_SalesForce_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/SalesOrder/In/sjShipmentOrder_OnRamp_SalesForce_0.1.item",
+    "file_type": "job",
+    "sha256": "a9dada62d9580bc1c6636c45e148607ba6a0b5bcb023c106c658f9db741c9e5d",
+    "size_bytes": 782719,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\SalesOrder\\In\\sjShipmentOrder_OnRamp_SalesForce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/SalesOrder/In/sjShipmentOrder_OnRamp_SalesForce_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "e44828c50aa36200f3cb3631911c029c40f447f55ed1352f1261b2a769dae412",
+    "size_bytes": 2147,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\SalesOrder\\Out\\sjSalesOrder_OffRamp_BusinessCentral_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/SalesOrder/Out/sjSalesOrder_OffRamp_BusinessCentral_0.1.item",
+    "file_type": "job",
+    "sha256": "b027cc2b18da60c5bb066083401bf25d7d1d70343cbfe502faa5448f6092c79e",
+    "size_bytes": 401207,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\SalesOrder\\Out\\sjSalesOrder_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/SalesOrder/Out/sjSalesOrder_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "85560280f81045238d34368628519fd519a2b2ba1f26936a4b894080fd3210ec",
+    "size_bytes": 2066,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\SalesOrder\\Out\\sjSalesOrder_OffRamp_DWH_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/SalesOrder/Out/sjSalesOrder_OffRamp_DWH_0.1.item",
+    "file_type": "job",
+    "sha256": "194c1b2c5b686fc29cd69506da2421586e553c609334f7f25c585a9ea5dae60a",
+    "size_bytes": 118506,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\process\\SalesOrder\\Out\\sjSalesOrder_OffRamp_DWH_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/process/SalesOrder/Out/sjSalesOrder_OffRamp_DWH_0.1.properties",
+    "file_type": "job_properties",
+    "sha256": "84b9f793521ce188455bb2ff2e0a4226dd1265250d306bacbf42b04b839e2d13",
+    "size_bytes": 2030,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Account\\In\\rAccount_OnRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Account/In/rAccount_OnRamp_BusinessCentral_0.1.properties",
+    "file_type": "config",
+    "sha256": "c76fbb55a86ed5766229b35d80410453646f6733de709cd766cef9bb976d5c02",
+    "size_bytes": 3757,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Account\\In\\rAccount_OnRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Account/In/rAccount_OnRamp_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "d12810e422f0a81bf0a367c4533531219834290c4fa2b129523f27e8a2b9dbef",
+    "size_bytes": 3742,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Account\\Out\\rAccount_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Account/Out/rAccount_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "config",
+    "sha256": "7def08022b9bb6c6fd9a6a7f7df34eb4398a22fc1e628c0a6f3111b0d82a4b08",
+    "size_bytes": 3761,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Account\\Out\\rAccount_OffRamp_DWH_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Account/Out/rAccount_OffRamp_DWH_0.1.properties",
+    "file_type": "config",
+    "sha256": "ae6e3c98102c29721bb2522254f42a975a58c0f56f9d568de053e765b6c07260",
+    "size_bytes": 3725,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Account\\Out\\rAccount_OffRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Account/Out/rAccount_OffRamp_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "6f3186740b132b79561c1b52d421d41df3fea6c6ce33116b678a88e66f805f04",
+    "size_bytes": 3409,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Account\\Return\\rAccount_Return_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Account/Return/rAccount_Return_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "1dc0f3a2808e68c5c7a1732a2581448c311ef6c3613ba08d00e46bf98b3bb271",
+    "size_bytes": 3409,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Item\\In\\rItem_OnRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Item/In/rItem_OnRamp_BusinessCentral_0.1.properties",
+    "file_type": "config",
+    "sha256": "fa8e9beec43c25c085676f2138a5f325355df6c2c18aaa91f2c0812e08a8437e",
+    "size_bytes": 3745,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Item\\In\\rItem_OnRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Item/In/rItem_OnRamp_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "a40f43e7324dddc2f39fd83b988d051e716be0c1c501b26d4b3200ea6ab1715d",
+    "size_bytes": 3730,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Item\\Out\\rItem_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Item/Out/rItem_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "config",
+    "sha256": "f091dd781b136463aa4a273e2fa01cd3163dd232714b5e4236ac164a2b8c598d",
+    "size_bytes": 3749,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Item\\Out\\rItem_OffRamp_DWH_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Item/Out/rItem_OffRamp_DWH_0.1.properties",
+    "file_type": "config",
+    "sha256": "c5579c30f9854bd56a209cc44920c04f660049a0ac6052fb295bf614c57b7ccc",
+    "size_bytes": 3713,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Item\\Out\\rItem_OffRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Item/Out/rItem_OffRamp_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "a2ab4265961562151cc8ca14ffc6e88482c2283db5362085b1b28cd79e753e22",
+    "size_bytes": 3397,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Monitoring\\rTalendMonitoringProcessing_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Monitoring/rTalendMonitoringProcessing_0.1.properties",
+    "file_type": "config",
+    "sha256": "bb2bf4e1f23e3c079f4813cf6d65efca44d0564e4471f1159edcd626c57eaab7",
+    "size_bytes": 3367,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\SalesOrder\\In\\rShipmentOrder_OnRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/SalesOrder/In/rShipmentOrder_OnRamp_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "7d25ad96d262f0e777f9b70427ed1d752c5592df9928cc0d353ec2567e95caec",
+    "size_bytes": 3763,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\SalesOrder\\Out\\rSalesOrder_OffRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/SalesOrder/Out/rSalesOrder_OffRamp_BusinessCentral_0.1.properties",
+    "file_type": "config",
+    "sha256": "bb71c572915ccd85507857a62a2598afb16cb9d294b51140c2a87cb1620ac20b",
+    "size_bytes": 3773,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\SalesOrder\\Out\\rSalesOrder_OffRamp_DWH_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/SalesOrder/Out/rSalesOrder_OffRamp_DWH_0.1.properties",
+    "file_type": "config",
+    "sha256": "f0cdca6b898b34f91332131fde51694b926a58fc9eac3d86246f442ce3896305",
+    "size_bytes": 3737,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Service\\BusinessCentral_Rest_Discarded_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Service/BusinessCentral_Rest_Discarded_0.1.properties",
+    "file_type": "config",
+    "sha256": "1724eb91f13a9c0da50719e7187cf3d63713ae799e50b17b25086fa8ef95e170",
+    "size_bytes": 3366,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Service\\BusinessCentral_Webhook_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Service/BusinessCentral_Webhook_0.1.properties",
+    "file_type": "config",
+    "sha256": "a9b9cf6906c62e3b34d14e7e46dbd5e931bf12fad682d9393fa8429c7c53e52c",
+    "size_bytes": 3345,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Service\\Salesforce_Webhook_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Service/Salesforce_Webhook_0.1.properties",
+    "file_type": "config",
+    "sha256": "d272635ce88cee7f94eab3f6f59a71bf524af832c9a4781188972c904a481335",
+    "size_bytes": 3330,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Transport\\rTransport_OnRamp_BusinessCentral_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Transport/rTransport_OnRamp_BusinessCentral_0.1.properties",
+    "file_type": "config",
+    "sha256": "6a33e218fd55b5f0ec79465eda15396e9a29e8251fd687ebb08dc256d280b265",
+    "size_bytes": 3759,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\routes\\Transport\\rTransport_OnRamp_Salesforce_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/routes/Transport/rTransport_OnRamp_Salesforce_0.1.properties",
+    "file_type": "config",
+    "sha256": "75357a04f3f118c203c876133560f4a5b06b91ad6736a615654907b23e87a5cf",
+    "size_bytes": 3744,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "95ca8a90094e6c42d999635cfce41acd36883571e74cea7cd0e282599922a0ae",
+    "size_bytes": 780,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "727e67d55e4e1021f11f60e7d4ddc828955b1e0c4927648955dfdbb3112a9615",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeCreateDeltaTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeCreateDeltaTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "f51eb688d800e4f08f5b60303e7f5d01982125e0d68c3b837d6883f37ad87a1e",
+    "size_bytes": 736,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeCreateDeltaTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeCreateDeltaTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "83e042c1ee22c72a8758212471a384226f9cbe8e54a603c7e11bbd11b375585a",
+    "size_bytes": 1554,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeCreateTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeCreateTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "acb1b4d2c2e665a51751be95f2ee472b40b3e82df3efa5a8872103a57b7b4b78",
+    "size_bytes": 723,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeCreateTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeCreateTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "1575aca7ea261ad030182bcd04c8d5fe0983fea2890f170dd9494bb10afad2e8",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeDropTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeDropTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "f801803aff42d3f0f2b22afc062f15fa004cef4e02fd2dcffdf20bd9cabd809a",
+    "size_bytes": 77,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeDropTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeDropTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "18aa95df7c2e18c77bf480ef00f9ed212058be3d305fa2ae4c88f0dfbcfe6cdd",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "c3280806b6b81982565092a45a20b8569a8c292624d8b9d3e8759d4c86f2ec44",
+    "size_bytes": 477,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "01d002a064787d107b31b9ae14f6ebd18acb5d8a1e36232b414e73fb817d05e0",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeFilterRows_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeFilterRows_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "ec62af885e3cc8cf3c0842c2c6f2d7e2111765c3208a16766f365f42c03d16cc",
+    "size_bytes": 252,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeFilterRows_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeFilterRows_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "5b41b3ad315f8c02cb40f7984a4882eb1a4f098051ea33823f96822986664db4",
+    "size_bytes": 1542,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeMerge_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeMerge_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "56a332c56eb0a7a60badec20228226777a40fa9511f6b1ff78cb424429704981",
+    "size_bytes": 3456,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\DeltaLake\\system\\DeltaLakeMerge_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/DeltaLake/system/DeltaLakeMerge_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "2849ea383b5cb39555b7c5ee0841255849f3bd258b29e49f0a132567c58099a8",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\Aggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/Aggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "d83a1b8267641bcd19862fdb8291dfebf1a0497c7b9b8d7bca940dafd53a6068",
+    "size_bytes": 851,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\Aggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/Aggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "db7655d72924192d61ec7ada9fd12384b0e3e2b901cb65e54f75f11e6158e6ad",
+    "size_bytes": 1518,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\Commit_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/Commit_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "2db35aa37c4005aa96055e900adc9bfbbd70d106820fefcb83216b7cc3f95422",
+    "size_bytes": 7,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\Commit_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/Commit_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "64a8bd05d306653963453b5caf344ccacc006a2013bfc594c035fdbd2aad3284",
+    "size_bytes": 1512,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\DropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/DropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa36fc695d420241a85ad2a654ea210bebb94ab7d42c56332917f0f702f00d62",
+    "size_bytes": 176,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\DropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/DropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "fbb37d1629d1f4c6577cb511ecc2b9ba661dec966484373f9f203d2bc27b8cf2",
+    "size_bytes": 1530,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\DropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/DropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "314f8d5c576b13f86ffe55f6f80ec3f66ee2a570916c150fd6dd47c623646dc6",
+    "size_bytes": 181,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\DropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/DropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "cf50a304abfdb7d14aaf8f6ed3a4526d74ca063e1ca3a3fce7b6bf79053b6037",
+    "size_bytes": 1530,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\FilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/FilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bb3fba4a5a0857bb1ed92e2d67951c73ad67b6210c26e58d41d77175eb73d4cb",
+    "size_bytes": 446,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\FilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/FilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "5129e5caad169bf3b4b8363dbbc5b8f69e9c1e3168d0da19e8516be380f16896",
+    "size_bytes": 1526,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\FilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/FilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "088f0e0d88be358a176ef731acb0b819b790fbe6de5be526097a1256ed111e06",
+    "size_bytes": 262,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\FilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/FilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "da808e1b301b0496fd6a6c507df0207fdbb6ba1b9115647448b7689548c34bf2",
+    "size_bytes": 1518,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\MergeInsert_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/MergeInsert_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "21e3d4a82f04da233617a4084b48788e43e1703edac6dbbb8a0a1022378c7616",
+    "size_bytes": 2466,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\MergeInsert_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/MergeInsert_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "d45a34dcd25ad41040a68455febb16cd0a3313a86d790ad948cb73f1f3f00786",
+    "size_bytes": 1522,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\MergeUpdate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/MergeUpdate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "0dca414c3db18d90bf9ca0f0530faaaeaf0a88f129ed07451fc6564e199bc863",
+    "size_bytes": 2067,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\MergeUpdate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/MergeUpdate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "c9d320e6d0c396a87eeb5e62c248341509c108a7fc9011bd8149978288a0a412",
+    "size_bytes": 1522,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\Rollback_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/Rollback_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "9be868b5fc7744c6a5fa794bedc41fd4f93c13f4ccbc84805546b17682d2505c",
+    "size_bytes": 9,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Generic\\system\\Rollback_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Generic/system/Rollback_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "141fbe3c556c50b722eba94daeaab355daddd8326bfae4057b0ac8bcbf6057e4",
+    "size_bytes": 1516,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "73a2ce63a06dea644fd36dcf35f6b88316ed29e02e63f2a28c08d19018d812bf",
+    "size_bytes": 747,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "77b4f66f86fc6a9a9c569979061b0288b2d5f76a7d0adf4074d3b964ecb287bd",
+    "size_bytes": 1520,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveCreateSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveCreateSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "dfe56916196a06b83fe6d95fd2b2984aece6a4f8846ddd0394e854ccb84823fb",
+    "size_bytes": 1173,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveCreateSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveCreateSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "583acf39aec81459e383af8b134f7c76d81ee1374203a1ff2fdbd8567c46b1fc",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveCreateTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveCreateTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "2e112b341a7a2e4c8424928815e46b43ac313cfa0a9d670b9531eaa91616906d",
+    "size_bytes": 1316,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveCreateTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveCreateTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "b3fdf48a3d80f47b3753806cc8a8556ac616436173736104672dbf3d5a4373bf",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "c0d40ff7bd12bf1c834c5aac0f75b35dfbca69a0e9dffa538d99e791e9c6005a",
+    "size_bytes": 151,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "2e6ec278c5c9ae77bf37d616a1ec1d0185698469160bcb23dd9655bd6f37ea44",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa8131ead452c9e617fe13fba09f9055b8bb1eae42b7914e781dd87080996ca2",
+    "size_bytes": 156,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "960edece38d8769f3fd34122d9d8a6924ad1fbb8bb1d1b5c9dbac426bfc76526",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "49c338bf26f3096f4fe95741db2bd9d47e86b40b16ad29f30fb22f60be8e3df4",
+    "size_bytes": 440,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "e93ffe816afac64b2535a077f7606c6efab49406b24962e356f80bf8b570e1c6",
+    "size_bytes": 1528,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveFilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveFilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "38572ec745aff2d1b72b668cfe9cddda67ac35d472506a7a4e3e6f945f6f5acc",
+    "size_bytes": 218,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Hive\\system\\HiveFilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Hive/system/HiveFilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "5846ab69b76904e3815c27ff22bc46bfe4903b0e90a93fbfcbd16a915ee58ff4",
+    "size_bytes": 1520,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "0009a0f0da59592b7fe904ce150e133a80cb1a17a2fcc1e99c189facad3517e9",
+    "size_bytes": 852,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "db809f7ca30cf3680bb1ee1933e4ad735db1caf0d9dffcde72d5dc0ef5da8cba",
+    "size_bytes": 1524,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLCreateSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLCreateSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "b8ce9359a025115acd5c8067a692ba88e6082e49d7cd5c86ea248ae45cab0396",
+    "size_bytes": 1198,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLCreateSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLCreateSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "3d6c9c275fa7889bf9d1a98d2f87dac2fa83eb2bda152cce9f534af352dce936",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLCreateTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLCreateTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "47ef60cc61b7a472d674e0681135191831900c4d1604bd3ab5d8326e78f121fb",
+    "size_bytes": 1341,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLCreateTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLCreateTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "7c572b5426277dc84c5d1fb6385e527375d8dea26dd8f552cb0b7b1568c5065e",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa36fc695d420241a85ad2a654ea210bebb94ab7d42c56332917f0f702f00d62",
+    "size_bytes": 176,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "6c3796c53e13b9393359a5bcd5ca59de75294c1339c4ab34ee81d73b53af1c05",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "314f8d5c576b13f86ffe55f6f80ec3f66ee2a570916c150fd6dd47c623646dc6",
+    "size_bytes": 181,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "71ee0732dfbc363f84d538d3bbd29aef607ab24cf17b7012c86c647cb97aa3c0",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bb3fba4a5a0857bb1ed92e2d67951c73ad67b6210c26e58d41d77175eb73d4cb",
+    "size_bytes": 446,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "bf7f0d613793d3b4864611c98c94a4672a8c2e17f5762ea9e2b7d3095636de50",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLFilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLFilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "088f0e0d88be358a176ef731acb0b819b790fbe6de5be526097a1256ed111e06",
+    "size_bytes": 262,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\MySQL\\system\\MySQLFilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/MySQL/system/MySQLFilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "2b8b48077e701eed8a39155b6e9af635eff6c4d1d260d3a94da49d7638c110ef",
+    "size_bytes": 1524,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "81678cb9ef86ade6f5d3b70f34df73f18f8fda44fe0ad3e0d0b2a281ec3c2909",
+    "size_bytes": 901,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "315eed711689e4be844694ce20a621a08fe7a33c94d7a07d1d8f69b7e333acea",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaCreateSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaCreateSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bad1b7ac1f98b204625fbd678cd470a063be91f734d3f103205f85828c22fb9d",
+    "size_bytes": 1403,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaCreateSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaCreateSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "92a5f751248cb463214e7c50d96901be723f892aebfd494069b3b69a33a3891e",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaCreateTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaCreateTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "77b45233be2f848b24e65fed0dc65f3e081a66fa24934ef2125de13baea4d1d4",
+    "size_bytes": 1576,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaCreateTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaCreateTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "2f289f9dabfa98e237b4aafcf9189857241a892fafd964c7ddd2e9619e27d434",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "c0d40ff7bd12bf1c834c5aac0f75b35dfbca69a0e9dffa538d99e791e9c6005a",
+    "size_bytes": 151,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "25f57302cd05d7e2dbe01456cc9e4401b2435c97e3b86c76d10ffed1fc90c414",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa8131ead452c9e617fe13fba09f9055b8bb1eae42b7914e781dd87080996ca2",
+    "size_bytes": 156,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "28d93cac9736877a0fa67216953b3516ddf3ee4f97c1a83434c5075d7b35374d",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bb3fba4a5a0857bb1ed92e2d67951c73ad67b6210c26e58d41d77175eb73d4cb",
+    "size_bytes": 446,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "49fa4c2582a21f5fb61b6ce35c8f2f0fee068920aaf9c44377b031de4bd21c0a",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaFilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaFilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "088f0e0d88be358a176ef731acb0b819b790fbe6de5be526097a1256ed111e06",
+    "size_bytes": 262,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Netezza\\system\\NetezzaFilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Netezza/system/NetezzaFilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "ebaade0ed0da4ae5925b2243cc2b91fa3efe8efe3c7bcbd0fcd0217951cff875",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "7a2fb20b9823d1479751de869d43dab547852e05ef98b8aeb4cdba39655bc6a6",
+    "size_bytes": 902,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "38ef00b4a4e9af0123b949ed08b9a22fd1e94b4d59bf535cabcfdd826c5afec5",
+    "size_bytes": 1528,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleCreateSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleCreateSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bad1b7ac1f98b204625fbd678cd470a063be91f734d3f103205f85828c22fb9d",
+    "size_bytes": 1403,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleCreateSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleCreateSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "d2ba5d5d0c81dd7326c5d1b6b16731fd3cf201e423114765323b971d18507266",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleCreateTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleCreateTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "77b45233be2f848b24e65fed0dc65f3e081a66fa24934ef2125de13baea4d1d4",
+    "size_bytes": 1576,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleCreateTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleCreateTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "762cd80ae774254b01de56855af44f6a1689a01eb20be8dbefd5ecc5405f3a9b",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "c0d40ff7bd12bf1c834c5aac0f75b35dfbca69a0e9dffa538d99e791e9c6005a",
+    "size_bytes": 151,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "44b0e6d703b2ac663e8a0801245bf7db6be5da55e301abbbda6dbb1a87a5d796",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa8131ead452c9e617fe13fba09f9055b8bb1eae42b7914e781dd87080996ca2",
+    "size_bytes": 156,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "66049d5b90b9f0f9f2afdad473dd4339bc5f5aa44109811e6fdd692e03c108b6",
+    "size_bytes": 1540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bb3fba4a5a0857bb1ed92e2d67951c73ad67b6210c26e58d41d77175eb73d4cb",
+    "size_bytes": 446,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "42061100bd86f9ff71f433dacc76a73c9f8942d8bddf2ecd1b7a22518e4902be",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleFilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleFilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "088f0e0d88be358a176ef731acb0b819b790fbe6de5be526097a1256ed111e06",
+    "size_bytes": 262,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleFilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleFilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "f195abf115439ade0cfea78282aadc475115eee3e684883061c5db6e511cbd9a",
+    "size_bytes": 1528,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleMerge_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleMerge_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "68e963eaad1ae7dd2415127f8228c5d6d0ca56b872b4720c9dac519d5a5e298f",
+    "size_bytes": 3540,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Oracle\\system\\OracleMerge_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Oracle/system/OracleMerge_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "ed9f7b2035f899e80c386c6130b792f0cf3e95f2dd7c96314d9345584b81dcf4",
+    "size_bytes": 1520,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "0009a0f0da59592b7fe904ce150e133a80cb1a17a2fcc1e99c189facad3517e9",
+    "size_bytes": 852,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "71567b4ad6f72889373bd62da3c5864b1f53934b63126651ad53b6bdcfc418ed",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelCommit_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelCommit_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "2db35aa37c4005aa96055e900adc9bfbbd70d106820fefcb83216b7cc3f95422",
+    "size_bytes": 7,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelCommit_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelCommit_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "da5d114b3e3487017151de1dc7ef7cef4f1429f8f95507c44a3c04ffb3c68f6c",
+    "size_bytes": 1530,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa36fc695d420241a85ad2a654ea210bebb94ab7d42c56332917f0f702f00d62",
+    "size_bytes": 176,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "b8eb7e7b8cbaf9d399bcf53407751ab55da135090ef9701b50dddf50998117d6",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "314f8d5c576b13f86ffe55f6f80ec3f66ee2a570916c150fd6dd47c623646dc6",
+    "size_bytes": 181,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "fca274897a0f5d8a75ebb75a864e457bc4781702f5cb52cab24470a041e964fd",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bb3fba4a5a0857bb1ed92e2d67951c73ad67b6210c26e58d41d77175eb73d4cb",
+    "size_bytes": 446,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "d00dccaa2b80ad0c785bcd5e9bf18cb554a989db451c94b2cbd2f5a71eea6000",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelFilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelFilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "088f0e0d88be358a176ef731acb0b819b790fbe6de5be526097a1256ed111e06",
+    "size_bytes": 262,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelFilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelFilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "03b01196b44548eb8317f253e7c199838aa2909337e82a5e96091907e76cdfcc",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelRollback_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelRollback_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "9be868b5fc7744c6a5fa794bedc41fd4f93c13f4ccbc84805546b17682d2505c",
+    "size_bytes": 9,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\ParAccel\\system\\ParAccelRollback_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/ParAccel/system/ParAccelRollback_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "6270542dfc20948c6da6d139d5a11cd2bb69de94743e7a5bf5f53d57946961a5",
+    "size_bytes": 1534,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeCreateSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeCreateSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "cf767da97896beb6fb93da5e50549be223bdd47b24ced49293095bce79bcf7ce",
+    "size_bytes": 1336,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeCreateSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeCreateSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "165ae25b377f111ad6c521108bea4913ce507db25173a66650b569ec886ca544",
+    "size_bytes": 1556,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeCreateTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeCreateTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "3ba0816da8aaa0d115d5fa92d48cbc6e887cfacef29c737080e4359c5b380b86",
+    "size_bytes": 1511,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeCreateTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeCreateTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "fffb388ec06fbe1e00eed3ead47910dbfaf7ccce942f8a0e7831ed13864942cd",
+    "size_bytes": 1556,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "3c15ce5b8184d202325f106d552484ea71a47dabfe2c3f1b68d4e7e9ec3bb5e9",
+    "size_bytes": 54,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "7c47f3a21f8d481ca8bdfcef8cf4556fe18280948d53a063d620db9c923a300b",
+    "size_bytes": 1552,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "d922525e08e47ec88b4e7bc80f9a785269ce38a42e25c60e42bae612b2bd6442",
+    "size_bytes": 59,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "542accb0facffbb024628d117e48b6149fa6489da8d9502d6054476fea1fdca4",
+    "size_bytes": 1552,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeMerge_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeMerge_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "56a332c56eb0a7a60badec20228226777a40fa9511f6b1ff78cb424429704981",
+    "size_bytes": 3456,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Snowflake\\system\\SnowflakeMerge_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Snowflake/system/SnowflakeMerge_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "3d8a1f95ff4ae153f48c217fca0e1110b436a217755e8f150c0d2d4c9c6c9fd0",
+    "size_bytes": 1532,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataAggregate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataAggregate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "0009a0f0da59592b7fe904ce150e133a80cb1a17a2fcc1e99c189facad3517e9",
+    "size_bytes": 852,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataAggregate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataAggregate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "7360389eb1cdcb6790d0325be087c8cf05a14e35f57121f6baf57aa4a39283e1",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataColumnList_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataColumnList_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "c131b043b9e5f8ac5dbcddea50d8e090ba42542b9093ad38dd2067fe8f134cf5",
+    "size_bytes": 233,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataColumnList_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataColumnList_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "5de19fe34a081e75638a8b1004802b85275600169a0c9c881a6e5e88bffc0434",
+    "size_bytes": 1538,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataCreateSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataCreateSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "4b8a01ffa1ef997e45325a374a4489fb50d5de7b1aed852a790c33e7d32ce73a",
+    "size_bytes": 1424,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataCreateSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataCreateSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "5588de8362e8eab99b9fc1f8841898cf5261f78868b5968ac3b589df9bb0e9fb",
+    "size_bytes": 1552,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataCreateTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataCreateTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "5b3721923a38e738c3ac25c9277f2d876f5c5168b5519c3a88e51f6475fbd5af",
+    "size_bytes": 1602,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataCreateTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataCreateTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "a9c1aa973990020e2401252cd4f5a51405856329fb41884a567fa6c74ae37e10",
+    "size_bytes": 1552,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataDropSourceTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataDropSourceTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "aa36fc695d420241a85ad2a654ea210bebb94ab7d42c56332917f0f702f00d62",
+    "size_bytes": 176,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataDropSourceTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataDropSourceTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "6a4d1bda10b949e6d743b04f26ec58adbface5a2714d74d5334706a46c7841b5",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataDropTargetTable_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataDropTargetTable_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "314f8d5c576b13f86ffe55f6f80ec3f66ee2a570916c150fd6dd47c623646dc6",
+    "size_bytes": 181,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataDropTargetTable_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataDropTargetTable_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "2813b2b4bc9ce9de399314b347e0cd290c663a5f275e0f9309d8b2730a5f7bf3",
+    "size_bytes": 1548,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataFilterColumns_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataFilterColumns_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "bb3fba4a5a0857bb1ed92e2d67951c73ad67b6210c26e58d41d77175eb73d4cb",
+    "size_bytes": 446,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataFilterColumns_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataFilterColumns_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "b82b190b0ed3e85117004d4ea746234df4c065b2f988acebc6772bb7d403c4b6",
+    "size_bytes": 1544,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataFilterRow_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataFilterRow_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "088f0e0d88be358a176ef731acb0b819b790fbe6de5be526097a1256ed111e06",
+    "size_bytes": 262,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataFilterRow_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataFilterRow_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "c047675949d4f4bf6174733b0b29402113f2eccfc753645a6809944b6eeb03c9",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataTableList_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataTableList_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "56c688250214dc4ecca9bda284000971808b7283d385b9edc5a4b59887260ded",
+    "size_bytes": 211,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Teradata\\system\\TeradataTableList_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Teradata/system/TeradataTableList_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "fded3a80c46ff9aefc121dea9680206ca3141677a8015cba11b3c40d4f4543d9",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Vertica\\system\\VerticaMergeInsert_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Vertica/system/VerticaMergeInsert_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "88aff775f510036f029ef93c7b1cabc4060821f3798d4c2bbac177aa9d25d49d",
+    "size_bytes": 2417,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Vertica\\system\\VerticaMergeInsert_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Vertica/system/VerticaMergeInsert_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "7dd99ef776e399374f21e6421091d372d42043f1030ae6101801de63ce5cbadb",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Vertica\\system\\VerticaMergeUpdate_0.1.item",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Vertica/system/VerticaMergeUpdate_0.1.item",
+    "file_type": "sql_pattern",
+    "sha256": "d1d629e8b953ec5a50809a67385304478d8cecbb4392ab93a6701008e313db46",
+    "size_bytes": 2022,
+    "platform_metadata": {}
+  },
+  {
+    "path": "C:\\Users\\kabeljo\\Documents\\intodata-kb\\knowledge_base\\mcp-server\\data\\repos\\esb_test_second\\vaxxinova-talend-esb-main\\VAXXINOVA_TALEND_ESB\\sqlPatterns\\Vertica\\system\\VerticaMergeUpdate_0.1.properties",
+    "relative_path": "vaxxinova-talend-esb-main/VAXXINOVA_TALEND_ESB/sqlPatterns/Vertica/system/VerticaMergeUpdate_0.1.properties",
+    "file_type": "sql_pattern",
+    "sha256": "7338e01e21453bcfd05c7690135a77d3c0ba2f707c52caad48ea2ba9c4dbfd71",
+    "size_bytes": 1536,
+    "platform_metadata": {}
+  }
+]

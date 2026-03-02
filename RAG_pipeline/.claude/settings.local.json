@@ -32,7 +32,12 @@
       "WebFetch(domain:blog.voyageai.com)",
       "WebFetch(domain:www.codecademy.com)",
       "Bash(head:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(xargs ls:*)",
+      "WebFetch(domain:localhost)",
+      "WebFetch(domain:docs.voyageai.com)",
+      "Bash(rm:*)",
+      "Bash(claude:*)"
     ]
   }
 }

@@ -1,5 +1,192 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-02 (continued)
+
+### [Fix]: Deep Dive streaming — concurrent stderr, assistant text fallback, session-id fix
+
+- **Files changed**: `knowledge_base/mcp-server/src/mcp_server/services/deep_dive_service.py`
+- **Problem**: Deep Dive runs for ~22s and completes successfully, but the frontend only shows `Analyzing project...` status + duration. No tool calls, no streaming text, no answer content. The previous fix (adding `content_block_delta` handling) was deployed but the problem persisted.
+- **Root cause**: Three compounding issues:
+  1. **Suppressed assistant text**: We removed text from `assistant` events assuming `content_block_delta` would provide it, but Claude CLI may not emit `content_block_delta` events (or they arrive all at once due to Windows pipe buffering). This left NO text source.
+  2. **Sequential stderr read**: stderr was read AFTER stdout (lines 124-127). If Claude CLI writes enough to stderr, the pipe buffer fills → process blocks → stdout blocks → nothing streams. `claude_service.py` avoids this with concurrent reading.
+  3. **Unconditional `--session-id`**: Added to every query including search page one-shots, potentially causing unexpected CLI behavior.
+- **Changes**:
+  1. **Debug logging**: Added `logger.debug()` for raw lines and parsed event types to capture what Claude CLI actually emits
+  2. **Concurrent stderr**: Added `_drain_stderr()` inner function, started via `asyncio.create_task()` immediately after subprocess spawn. Awaited after stdout loop ends. Matches `claude_service.py` pattern.
+  3. **Assistant text fallback**: Added `__init__` with `_text_streamed_via_delta` flag. Set `True` when `content_block_delta` text arrives. In `assistant` handler, only yield text blocks if no delta text was received (fallback). Tool use blocks always emitted.
+  4. **Conditional `--session-id`**: Only added with `--continue` when `is_continuation=True` (caller passed a `session_id`). First queries from search page run without session flags.
+- **Why this approach**: Belt-and-suspenders for text delivery (delta preferred, assistant as fallback). Concurrent stderr prevents deadlock. Session flags only when needed for multi-turn. Debug logging enables diagnosis of actual event stream.
+- **Verification**: Code review — file reads correctly, `DeepDiveService()` call site compatible (no args needed). Needs runtime test.
+
+## Session: 2026-03-02
+
+### [Fix/Feature]: Fix Deep Dive streaming + Conversational Deep Dive in Chat
+
+- **Files changed**:
+  - **Backend (knowledge_base):**
+    - `mcp-server/src/mcp_server/services/deep_dive_service.py` — Fixed `_convert_event()` to handle `content_block_start`, `content_block_delta`, `content_block_stop` events (streaming tokens). Added session management (`--session-id`/`--continue` CLI flags). Updated `_QA_PROMPT` with knowledge persistence instructions (insert_to_rag). Suppressed duplicate text from `assistant` events.
+    - `mcp-server/src/mcp_server/schemas.py` (line 143) — Added `session_id: str | None = None` to `DeepDiveRequest`
+    - `mcp-server/src/mcp_server/api/routes/projects.py` (line 430) — Pass `req.session_id` to `service.query()`
+  - **Frontend (RAG_pipeline):**
+    - `frontend/types/index.ts` (line 176) — Added `session_id` to `DeepDiveRequestSchema`
+    - `frontend/hooks/useDeepDive.ts` — Added `sessionId`, `thinking` to `DeepDiveState`. Handles `session`, `thinking`, `thinking_start` events. Passes `session_id` in requests.
+    - `frontend/components/DeepDiveChatBubble.tsx` (CREATE) — Chat-bubble formatted deep dive response with collapsible thinking section, tool call progress, streaming markdown with cursor, cancel button, usage stats.
+    - `frontend/components/ModeToggle.tsx` — Refactored to support `variant="chat"` (Chat/Deep Dive toggle) alongside existing `variant="search"` (Search/Deep Dive). Discriminated union props for type safety.
+    - `frontend/components/ChatWindow.tsx` — Added `mode`, `onModeChange`, `selectedProject`, `onProjectChange`, `deepDiveState`, `onCancelDeepDive` props. Header now shows ModeToggle + ProjectSelector. Passes deep dive state to MessageList.
+    - `frontend/components/MessageList.tsx` — Added `deepDiveState`, `onCancelDeepDive` optional props. Renders `DeepDiveChatBubble` when deep dive is active instead of normal streaming bubble.
+    - `frontend/components/ChatInput.tsx` — Added optional `placeholder` prop.
+    - `frontend/components/ChatLayout.tsx` — Added `mode` state (`"chat" | "deep-dive"`), `selectedProject` state, `useDeepDive` hook. `handleSendMessage()` routes to deep dive or normal chat based on mode. Resets deep dive state on mode switch.
+    - `frontend/app/api/deep-dive/query/route.ts` — Passes `session_id` through to backend (already forwarded all parsed fields).
+- **Problem**: Deep Dive showed status + duration but no answer content. Root cause: `_convert_event()` only handled `assistant` (full turns) and `result` events — `content_block_delta` events (where streaming tokens actually come from in `stream-json` format) were silently dropped.
+- **Root cause**: Claude Code's `stream-json` format emits incremental text via `content_block_delta` events with `text_delta` type, not in `assistant` events. The original implementation expected all text in `assistant` message blocks, which are full-turn summaries that duplicate delta content.
+- **Change**:
+  1. **Streaming fix**: Added `content_block_start` (tool_use/thinking detection), `content_block_delta` (text_delta → token, thinking_delta → thinking), `content_block_stop` (suppress) handlers. Suppressed text blocks from `assistant` events to avoid duplication.
+  2. **Multi-turn sessions**: Generate UUID on first query, pass `--session-id <id>` to CLI. On follow-ups, add `--continue` flag. Yield `session` event to frontend.
+  3. **Knowledge persistence**: Added prompt instructions for agent to call `insert_to_rag()` when producing significant findings.
+  4. **Chat UI integration**: Full deep dive mode in `/chat` page with mode toggle, project selector, streaming chat bubbles with collapsible thinking + tool calls.
+- **Why this approach**: Follows Claude Code's actual `stream-json` event protocol. Session management uses CLI's native `--session-id`/`--continue` flags for multi-turn context. Frontend reuses established patterns (ModeToggle, ProjectSelector, DeepDiveDisplay visual structure, MessageBubble layout).
+- **Verification**: `npm run build` — compiled successfully, all 14 routes generated. No type errors.
+
+## Session: 2026-03-01
+
+### [Feature]: Deep Dive mode — Claude Code CLI analysis from search UI
+
+- **Files changed**:
+  - **Backend (knowledge_base):**
+    - `mcp-server/src/mcp_server/services/deep_dive_service.py` (CREATE) — new service class
+    - `mcp-server/src/mcp_server/schemas.py` (lines 137-152) — added DeepDiveRequest, DeepDiveProject, DeepDiveProjectsResponse
+    - `mcp-server/src/mcp_server/api/routes/projects.py` (lines 403-447) — added POST /mcp/deep-dive (SSE), GET /mcp/deep-dive/projects
+  - **Frontend (RAG_pipeline):**
+    - `frontend/types/index.ts` (lines 172-198) — added DeepDiveRequestSchema, DeepDiveProjectSchema, DeepDiveProjectsResponseSchema
+    - `frontend/app/api/deep-dive/query/route.ts` (CREATE) — BFF proxy for SSE stream
+    - `frontend/app/api/deep-dive/projects/route.ts` (CREATE) — BFF proxy for project list
+    - `frontend/hooks/useDeepDive.ts` (CREATE) — SSE streaming hook with AbortController
+    - `frontend/hooks/useDeepDiveProjects.ts` (CREATE) — React Query hook for project list
+    - `frontend/components/ModeToggle.tsx` (CREATE) — Search/Deep Dive pill toggle
+    - `frontend/components/ProjectSelector.tsx` (CREATE) — project dropdown with loading/empty states
+    - `frontend/components/DeepDiveDisplay.tsx` (CREATE) — tool call progress, streaming answer, usage stats
+    - `frontend/components/SearchBar.tsx` (lines 7-12, 30, 37, 42) — added `placeholder` and `disabled` props
+    - `frontend/app/page.tsx` (full rewrite) — integrated mode toggle, project selector, deep dive display
+- **Problem**: RAG pipeline generates documentation summaries, but can't answer detailed code-level questions (e.g., "what are the exact tMap expressions in job X?"). Users needed Claude Code-level analysis directly from the UI.
+- **Change**: Implemented full Deep Dive feature:
+  1. **DeepDiveService**: Reuses subprocess pattern from ClaudeService. Spawns `claude -p` with a Q&A prompt, parses stream-json events, yields SSE events (status, tool_use, token, usage, done, error).
+  2. **API endpoints**: POST /mcp/deep-dive validates project exists with scan data, then streams SSE. GET /mcp/deep-dive/projects returns projects with status ready/scanned and job_count > 0.
+  3. **BFF routes**: Next.js route handlers proxy to knowledge_base MCP server (port 8001). Query route passes SSE stream through directly (no re-parsing).
+  4. **useDeepDive hook**: Same SSE parsing pattern as useStreamMessage. Handles token/tool_use/usage/done/error/status events. AbortController for cancellation.
+  5. **UI components**: ModeToggle (pill toggle), ProjectSelector (dropdown with loading/empty states), DeepDiveDisplay (tool call progress with animated spinners, streaming markdown answer, cancel button, usage stats).
+  6. **Search page integration**: Mode state drives which UI elements render. Deep Dive disables search bar until project selected. handleSearch routes to either search.mutate() or deepDive.query() based on mode.
+- **Why this approach**: Reuses established patterns (subprocess spawning from ClaudeService, SSE parsing from useStreamMessage, BFF proxy from existing routes, React Query from useConversations). No new dependencies needed. Stream-through SSE proxy avoids double-parsing in Next.js. The Q&A prompt instructs Claude Code to use MCP tools strategically — read scan data before answering, only fetch what's needed.
+- **Verification**: `npm run build` — compiled successfully, all 14 routes generated including /api/deep-dive/projects and /api/deep-dive/query.
+
+### [Fix]: Markdown rendering — install @tailwindcss/typography and wire up prose styles
+
+- **Files changed**: `frontend/package.json`, `frontend/tailwind.config.ts`, `frontend/app/globals.css`, `frontend/components/MarkdownContent.tsx`
+- **Problem**: `MarkdownContent` component used `prose prose-sm` Tailwind classes but `@tailwindcss/typography` plugin was never installed. The `prose` classes were no-ops — headings, lists, code blocks, blockquotes all rendered unstyled.
+- **Root cause**: Missing `@tailwindcss/typography` dependency. The plugin that provides all `prose-*` utility styles was never added to the project.
+- **Change**:
+  1. `npm install @tailwindcss/typography` — added the plugin dependency
+  2. `tailwind.config.ts` — imported `typography` from `@tailwindcss/typography` and added it to `plugins: [typography]`
+  3. `globals.css` — added custom prose CSS variable overrides to integrate with existing HSL theme variables (foreground, muted, border, primary colors), tightened paragraph/list/heading spacing for chat-style layout, styled inline code with `bg-muted` + removed backtick pseudo-elements
+  4. `MarkdownContent.tsx` — updated prose class to `prose prose-sm prose-neutral dark:prose-invert max-w-none`, removed manual component overrides for `code`, `pre`, `blockquote` (now handled by typography plugin + CSS overrides), kept citation link processing (`p`, `li`, `a` overrides)
+- **Why this approach**: The typography plugin is the standard Tailwind solution for styling rendered markdown. Custom CSS variable overrides ensure consistency with the existing HSL-based theme. Removing redundant component overrides simplifies the code — the CSS layer handles `code`, `pre`, and `blockquote` styling.
+- **Verification**: `npm run build` — compiled successfully with 0 errors, all 12 routes generated.
+
+## Session: 2026-02-28
+
+### [Fix]: Hindsight retain blocking HTTP response + quality bank timeout
+
+- **Files changed**: `backend/src/memory/hindsight_client.py` (lines 8, 31, 137-228), `backend/src/generation/rag_chain.py` (lines 4, 161-169), `backend/src/api/routes/query.py` (lines 4, 210-218), `backend/src/generation/conversational_rag.py` (lines 4, 515-524, 621-630)
+- **Problem**: `retain_interaction()` was called with `await` at all 4 call sites despite comments saying "fire-and-forget". The quality bank retain was timing out (`asyncio.TimeoutError` after 60s), adding ~60s latency to user requests. The HTTP 200 response was blocked until both retains completed. Additionally, user bank and quality bank retains ran sequentially — if the user bank took 5s and quality bank timed out at 60s, total blocking time was 65s.
+- **Root cause**: The code used `await retain_interaction(...)` which blocks the coroutine until both retains complete. Inside `retain_interaction()`, the two bank retains were sequential (one after the other), not concurrent. The Hindsight client timeout was set to 60s, far too long for a non-critical background operation.
+- **Change**:
+  1. `hindsight_client.py`: Added `import asyncio`. Reduced client timeout from 60s to 15s. Extracted two helper coroutines `_retain_user_bank()` and `_retain_quality_bank()` from the monolithic `retain_interaction()`. Changed `retain_interaction()` to use `asyncio.gather(..., return_exceptions=True)` so both banks run concurrently and one failure doesn't cancel the other.
+  2. `rag_chain.py`: Added `import asyncio`. Changed `await retain_interaction(...)` → `asyncio.create_task(retain_interaction(...))` so it truly fires and forgets.
+  3. `query.py`: Added `import asyncio`. Same `await` → `asyncio.create_task()` change in the streaming endpoint's `event_generator()`.
+  4. `conversational_rag.py`: Added `import asyncio`. Same change at both call sites — `run_conversational_rag()` (non-streaming) and `run_conversational_rag_stream()` (streaming).
+- **Why this approach**: `asyncio.create_task()` schedules the coroutine on the event loop without awaiting its result — the HTTP response returns immediately. `asyncio.gather(return_exceptions=True)` runs both bank retains concurrently and converts exceptions to return values instead of propagating them. 15s timeout is generous for a memory write but fails fast enough to not waste resources.
+- **Verification**: `pytest tests/ --ignore=tests/test_db` — 174 passed, 0 failed
+
+### [Fix]: Voyage reranker retry backoff too short for free tier (3 RPM)
+
+- **Files changed**: `backend/src/retrieval/reranker.py` (lines 14, 49-54)
+- **Problem**: Retry backoff [1s, 2s, 4s] is too short for Voyage free tier (3 RPM limit). All 3 retries fire within ~7s total, but the per-minute rate limit window doesn't reset that fast. Result: all retries fail → falls back to RRF scores every time, reranker is effectively never used.
+- **Root cause**: Backoff times were set for transient network errors, not API rate limits with 20s+ reset windows.
+- **Change**: Increased backoff to `[2.0, 5.0, 15.0]` (22s total wait). Added `Retry-After` header parsing — if Voyage includes it, we use that (capped at 30s) instead of the fixed schedule.
+- **Why this approach**: 22s total wait gives the per-minute rate limit time to reset. `Retry-After` is the standard mechanism for servers to communicate the exact wait time. Graceful fallback to RRF scores still exists as safety net if all retries fail.
+- **Verification**: `pytest tests/test_retrieval/test_reranker.py` — 8 passed, 0 failed
+
+### [Fix]: Voyage reranker 429 rate-limit crash — add retry + graceful fallback
+
+- **Files changed**: `backend/src/retrieval/reranker.py` (lines 13-68), `backend/src/retrieval/search.py` (lines 189-193, 269-276)
+- **Problem**: Voyage AI rerank API returns `429 Too Many Requests` which causes an unhandled `httpx.HTTPStatusError` that crashes the entire streaming response. No retry, no fallback — the user sees a broken connection.
+- **Root cause**: `reranker.py` called `response.raise_for_status()` without any retry logic. `search.py` called `rerank()` without a try/except, so any API error propagated up and killed the request.
+- **Change**:
+  1. `reranker.py`: Added retry loop with exponential backoff (1s, 2s, 4s) for 429 responses. Up to 3 attempts. Non-429 HTTP errors still raise immediately. Network/timeout errors also retry with backoff.
+  2. `search.py`: Wrapped both `rerank()` call sites in try/except. On failure, logs a warning and falls back to returning candidates sorted by original RRF scores (truncated to `top_k`). The user still gets results — just without reranking.
+- **Why this approach**: Rate limits are transient — retry with backoff is the standard fix. Graceful fallback ensures the pipeline never crashes due to a reranker API issue. RRF scores from Voyage embeddings are already decent quality, so skipping reranking is acceptable degradation.
+- **Verification**: `pytest tests/test_retrieval/test_reranker.py tests/test_retrieval/test_search.py` — 23 passed, 0 failed
+
+### [Fix]: Replace local cross-encoder reranker with Voyage AI rerank API
+
+- **Files changed**: `backend/src/retrieval/reranker.py` (full rewrite), `backend/src/retrieval/search.py` (lines 161-180, 189, 269), `backend/src/config.py` (lines 46-48), `backend/pyproject.toml` (line 24), `backend/tests/test_retrieval/test_reranker.py` (full rewrite)
+- **Problem**: Documents retrieved from Qdrant (20 results via hybrid RRF search) never reach the LLM. The local cross-encoder reranker (`ms-marco-MiniLM-L-12-v2`) returns negative scores for all candidates, and `min_score=0.0` filters them all out. Every query ends with "No results passed threshold" → LLM gets no context → generic answer.
+- **Root cause**: The local model is trained on MS MARCO web search data and doesn't understand the technical document domain. It scores everything as negative ("irrelevant"). Voyage embeddings already produce good relevance rankings that the reranker then overrides with bad ones.
+- **Change**:
+  1. `reranker.py`: Full rewrite — replaced `sentence_transformers.CrossEncoder` with async `httpx` call to Voyage AI `rerank-2.5` API. Function `rerank()` is now `async`. Returns properly calibrated 0-1 scores. `warmup()` is now a no-op (no local model to pre-load). Removed `_model` singleton and `_get_model()`.
+  2. `search.py`: Added `await` to two `rerank()` calls — `search_and_rerank()` line 189 and `search_multi_query()` line 269. Lowered pre-filter threshold to `0.0` in `search_and_rerank()` (lines 169, 178) so all RRF candidates reach the reranker (reranker is the quality gate, not the RRF threshold).
+  3. `config.py`: Changed `reranker_model` from `"cross-encoder/ms-marco-MiniLM-L-12-v2"` to `"rerank-2.5"`. Changed `reranker_min_score` from `0.0` to `0.05` (Voyage scores are 0-1; 0.05 filters truly irrelevant).
+  4. `pyproject.toml`: Removed `"sentence-transformers>=2.2.0"` dependency — saves ~500MB of deps (torch, transformers, etc.).
+  5. `test_reranker.py`: Full rewrite — all 8 tests now async, mock `httpx.AsyncClient` instead of `CrossEncoder`, test Voyage API payload format, 0-1 score ranges, min_score filtering.
+- **Why this approach**: Voyage AI is already the embedding provider — using their reranker keeps the same domain understanding. API-based reranker eliminates ~100MB model download, ~500MB dependency chain, and cold-start latency. Properly calibrated 0-1 scores work naturally with threshold filtering.
+- **Verification**: `pytest tests/ --ignore=tests/test_db` — 174 passed, 0 failed. All 8 reranker tests pass. DB test errors are pre-existing (`aiosqlite` not installed).
+
+### [Fix]: Hindsight memory not working — missing integration in /query and /query/stream endpoints
+
+- **Files changed**: `backend/src/generation/rag_chain.py` (added Hindsight imports + recall/retain calls), `backend/src/generation/prompt_builder.py` (added `memory_context` param to `build_messages()`), `backend/src/api/routes/query.py` (added Hindsight recall/retain to `/query/stream`), `backend/src/memory/hindsight_client.py` (added INFO-level diagnostic logging)
+- **Problem**: Hindsight memory was only integrated in the conversational RAG pipeline (`conversational_rag.py`). The `/api/v1/query` endpoint (via `rag_chain.py`) and `/api/v1/query/stream` endpoint (in `query.py`) had zero Hindsight integration — no recall, no retain, no memory context injection. Every search bar query was a missed learning signal.
+- **Root cause**: (1) `rag_chain.py` was written before Hindsight integration and never updated. (2) `build_messages()` in `prompt_builder.py` didn't accept `memory_context`, so even after adding recall to `rag_chain.py`, memories couldn't be injected into the LLM prompt when search results were found. (3) `/query/stream` built messages inline and was similarly disconnected. (4) `hindsight_client.py` had no INFO-level diagnostic logging — failures were silent at default log level.
+- **Change**:
+  1. `prompt_builder.py`: Added `memory_context: str | None = None` parameter to `build_messages()`. When provided, injects a system message after the system prompt, before the user query — same pattern as `build_no_results_messages()`.
+  2. `rag_chain.py`: Added imports for Hindsight functions + `_build_memory_context` from `conversational_rag.py`. Before search: calls `ensure_user_bank`, `ensure_quality_bank`, `recall_user_memory`, `recall_quality_insights`. Passes `memory_context` to all `build_messages()` and `build_no_results_messages()` calls. After generating answer: calls `retain_interaction()` with query, answer, sources, latency, intent.
+  3. `query.py`: Added same Hindsight recall pattern to `query_stream()`. Added `logging` import and logger. Recall happens before search. `memory_context` passed to both `build_messages()` and `build_no_results_messages()`. Streamed tokens are accumulated, then `retain_interaction()` is called inside `event_generator()` after streaming completes (before the `done` event).
+  4. `hindsight_client.py`: Added INFO-level logs for: recall returning N memories (or "disabled"), retain starting/completing (or "disabled"). Upgraded all `except Exception` blocks to capture `as e` and log `type(e).__name__` in the warning message.
+- **Why this approach**: Reuses existing Hindsight infrastructure from `conversational_rag.py` — same pattern of ensure_bank → recall → inject → retain. No new dependencies. `_build_memory_context` helper is imported rather than duplicated. Diagnostic logging makes it possible to verify Hindsight is working at default INFO level without enabling DEBUG.
+- **Verification**: `pytest backend/tests/ --ignore=tests/test_db` — 174 passed, 0 failed
+
+## Session: 2026-02-27
+
+### [Fix]: LLM timeouts on both `/query` and conversation streaming endpoints
+
+- **Files changed**: `backend/src/config.py` (lines 18, 25), `backend/src/generation/llm_client.py` (lines 144-148, 164-167), `backend/src/generation/conversational_rag.py` (lines 263-444, 578-582)
+- **Problem**: Both Kimi and Ollama time out on all non-streaming `generate_answer()` calls. Kimi hits 15s timeout, Ollama hits 30s timeout with empty error message. Streaming endpoint also fails because `_prepare_rag_context()` makes hidden non-streaming `generate_answer()` calls before streaming begins (RESPOND path, context-first check, no-results fallback).
+- **Root cause**: (1) Timeouts too short — Kimi 15s and Ollama 30s insufficient for models with context/memories, especially on cold start. (2) Streaming path called `_prepare_rag_context()` which precomputed answers via non-streaming `generate_answer()` in 4 places, blocking before any tokens could stream. (3) `httpx.TimeoutException` wasn't logged with exception type, producing empty error messages.
+- **Change**:
+  1. `config.py`: `kimi_timeout` 15.0 → 60.0, `ollama_timeout` 30.0 → 120.0
+  2. `llm_client.py`: Error logging now includes `type(e).__name__` in both `generate_answer()` and `generate_answer_stream()` — e.g. `[TimeoutException]` instead of empty string
+  3. `conversational_rag.py`: Added `precompute: bool = True` parameter to `_prepare_rag_context()`. When `precompute=False`, all `generate_answer()` calls are skipped — returns `precomputed_answer=None` with `llm_messages` set, so the caller can stream via `generate_answer_stream()`. Context-first optimization is skipped entirely in streaming mode (always goes to search). `run_conversational_rag_stream` now passes `precompute=False`. Non-streaming `run_conversational_rag` unchanged (uses default `precompute=True`).
+- **Why this approach**: Minimal change — one boolean parameter controls precompute behavior. Streaming callers skip non-streaming LLM calls entirely. Non-streaming callers keep existing behavior with higher timeouts. Context-first optimization is acceptable to skip in streaming mode since users see tokens flowing immediately.
+- **Verification**: `pytest backend/tests/ --ignore=tests/test_db` — 174 passed, 0 failed
+
+### [Fix]: Qdrant search returns 0 results due to RBAC group mismatch
+
+- **Files changed**: `backend/src/retrieval/search.py` (line 35), `backend/src/api/routes/query.py` (line 68)
+- **Problem**: Qdrant returns 0 raw results on every query. Documents exist in Qdrant but `MatchAny(any=["admin"])` filter finds nothing because documents are stored with `allowed_groups = ["public", project_id]` — never `"admin"`.
+- **Root cause**: The `admin` role was treated as a regular RBAC group. During ingestion, documents get `allowed_groups = ["public", "<project_id>"]`, but the search user has `groups=["admin"]`. The filter requires `"admin" IN allowed_groups` which never matches.
+- **Change**:
+  1. `search.py:_build_search_filter()`: Changed `if user_groups:` to `if user_groups and "admin" not in user_groups:` — admin users skip the group filter entirely and see all documents.
+  2. `query.py:query_debug()`: Changed `rbac_filter_applied = bool(user_groups)` to `bool(user_groups) and "admin" not in user_groups`, and the conditional filter now uses `rbac_filter_applied` instead of `user_groups`.
+- **Why this approach**: Standard RBAC behavior — admin role bypasses access filters. Minimal change (one condition added per file). All search paths flow through `_build_search_filter()`, so the fix covers `/query`, `/query/stream`, `/conversations`, and `/query/debug`.
+- **Verification**: Restart backend, send query — `Qdrant returned N raw results` should now be > 0 for admin users.
+
+### [Fix]: NO_RESULTS_PROMPT conflicts with Hindsight memory injection
+
+- **Files changed**: `backend/src/generation/prompt_builder.py` (lines 33–43)
+- **Problem**: LLM replies "I don't have access to your personal information" even though Hindsight memories are correctly injected into the prompt. Logs confirm `Injecting 5 user memories + 3 quality insights`.
+- **Root cause**: `NO_RESULTS_PROMPT` contains "NEVER make up information or answer from general knowledge." The LLM treats injected memory context as "general knowledge" and refuses to use it — the prompt gives no indication that memory context is a trusted source.
+- **Change**: Added a paragraph to `NO_RESULTS_PROMPT` explicitly telling the LLM that memory context (provided in a follow-up system message) is trusted information and should be used to answer personal/contextual questions. The "NEVER make up information" rule still applies to general knowledge, but no longer conflicts with injected memories.
+- **Why this approach**: Minimal change — only the system prompt text was updated. No code logic changes needed. The memory injection pipeline was already working correctly; only the prompt wording caused the conflict.
+- **Verification**: Restart backend, open new conversation, ask "what is my name?" — LLM should now use injected memories to answer.
+
 ## Session: 2026-02-24 (Fix config.py drift)
 
 ### [Fix]: Sync config.py with runtime expectations — missing settings crash backend

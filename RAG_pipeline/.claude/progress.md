@@ -97,7 +97,31 @@
 - [x] 3 new reranker tests + updated existing test mocks
 - [x] 174 non-DB tests passing (no regressions)
 
-## Phase 4 — Future
+## Phase 4.1 — Deep Dive Mode (COMPLETE)
+
+- [x] DeepDiveService: subprocess pattern reuse from ClaudeService, stream-json parsing, SSE event yielding
+- [x] Backend API: POST /mcp/deep-dive (SSE streaming), GET /mcp/deep-dive/projects
+- [x] Frontend BFF routes: /api/deep-dive/query (SSE pass-through), /api/deep-dive/projects
+- [x] Frontend hooks: useDeepDive (SSE streaming + AbortController), useDeepDiveProjects (React Query)
+- [x] Frontend components: ModeToggle, ProjectSelector, DeepDiveDisplay
+- [x] Search page integration: mode toggle, project selector, conditional rendering
+- [x] SearchBar: added placeholder + disabled props
+- [x] Build passing (14 routes)
+
+## Phase 4.2 — Deep Dive Streaming Fix + Chat Integration (COMPLETE)
+
+- [x] Fix `_convert_event()` to handle `content_block_delta` events (streaming tokens)
+- [x] Add `content_block_start` handler for tool_use and thinking block detection
+- [x] Suppress duplicate text from `assistant` full-turn events
+- [x] Multi-turn session management (`--session-id`/`--continue` CLI flags, UUID generation)
+- [x] Knowledge persistence: `insert_to_rag` instructions in `_QA_PROMPT`
+- [x] Frontend: `session_id` in DeepDiveRequest schema, `sessionId`/`thinking` in DeepDiveState
+- [x] Frontend: `DeepDiveChatBubble` component (collapsible thinking, tool calls, streaming markdown, cancel, usage stats)
+- [x] Frontend: `ModeToggle` refactored for `variant="chat"` (Chat/Deep Dive) and `variant="search"` (Search/Deep Dive)
+- [x] Frontend: `ChatLayout`/`ChatWindow`/`MessageList`/`ChatInput` wired for deep dive mode
+- [x] Build passing (14 routes)
+
+## Phase 5 — Future
 
 - [ ] Integration Agent (Slack, SharePoint, etc.) — deferred until company tooling known
 - [ ] JWT/OAuth authentication

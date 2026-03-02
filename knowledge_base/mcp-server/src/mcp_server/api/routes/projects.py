@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import datetime
+import json
 import shutil
 import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.schemas import (
     AddRepoRequest,
+    DeepDiveProject,
+    DeepDiveProjectsResponse,
+    DeepDiveRequest,
     GenerateRequest,
     GenerateRunListResponse,
     GenerateRunResponse,
@@ -26,6 +31,7 @@ from mcp_server.schemas import (
     StatusResponse,
 )
 from mcp_server.services.claude_service import ClaudeService
+from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.scanner_service import ScannerService
@@ -398,3 +404,63 @@ async def get_log_content(project_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Log file not found")
     content = log_path.read_text(encoding="utf-8", errors="replace")
     return {"filename": filename, "content": content}
+
+
+# --- Deep Dive ---
+
+
+@router.post("/deep-dive")
+async def deep_dive_query(req: DeepDiveRequest):
+    """Stream deep-dive analysis via Claude Code CLI (SSE)."""
+    # Validate project exists and has scan data
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(req.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
+        if project.status not in ("ready", "scanned") or project.job_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project '{req.project_id}' has no scan data (status={project.status}, jobs={project.job_count})",
+            )
+
+    service = DeepDiveService()
+
+    async def event_stream():
+        async for event in service.query(req.project_id, req.question, session_id=req.session_id):
+            event_type = event.get("type", "message")
+            data = event.get("data", "")
+            if isinstance(data, dict):
+                data = json.dumps(data)
+            yield f"event: {event_type}\ndata: {data}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/deep-dive/projects", response_model=DeepDiveProjectsResponse)
+async def deep_dive_projects():
+    """List projects available for deep dive (scanned with job data)."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        all_projects = await registry.list_projects()
+
+        available = [
+            DeepDiveProject(
+                id=p.id,
+                display_name=p.display_name,
+                platform=p.platform,
+                job_count=p.job_count,
+                last_scan_at=p.last_scan_at,
+            )
+            for p in all_projects
+            if p.status in ("ready", "scanned") and p.job_count > 0
+        ]
+
+        return DeepDiveProjectsResponse(projects=available, total=len(available))
