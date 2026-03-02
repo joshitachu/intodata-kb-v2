@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import inspect
 
 from mcp_server.config import config
 from mcp_server.db.models import Base
@@ -27,8 +27,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting intodoc MCP Server API on :8001")
     # Auto-create tables on first run, skip if they already exist
     async with engine.begin() as conn:
-        existing = await conn.run_sync(
-            lambda sync_conn: sync_conn.dialect.get_table_names(sync_conn)
+        existing = set(
+            await conn.run_sync(
+                lambda sync_conn: inspect(sync_conn).get_table_names()
+            )
         )
         tables_to_create = [
             t for t in Base.metadata.sorted_tables if t.name not in existing
