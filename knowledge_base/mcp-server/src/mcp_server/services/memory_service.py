@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from hindsight_client import Hindsight
+try:
+    from hindsight_client import Hindsight
+except ImportError:
+    Hindsight = None
 
 from mcp_server.config import config
 
@@ -21,8 +24,10 @@ PROCESS_BANK = "agent-process"
 _client: Hindsight | None = None
 
 
-def _get_client() -> Hindsight:
+def _get_client() -> Hindsight | None:
     global _client
+    if Hindsight is None:
+        return None
     if _client is None:
         _client = Hindsight(base_url=config.hindsight_url, timeout=10.0)
     return _client

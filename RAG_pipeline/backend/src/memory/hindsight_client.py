@@ -11,7 +11,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from hindsight_client import Hindsight
+try:
+    from hindsight_client import Hindsight
+except ImportError:
+    Hindsight = None
 
 from src.config import settings
 
@@ -24,9 +27,11 @@ MAX_QUALITY_INSIGHTS = 3
 _client: Hindsight | None = None
 
 
-def _get_client() -> Hindsight:
+def _get_client() -> Hindsight | None:
     """Lazy-init the Hindsight client singleton."""
     global _client
+    if Hindsight is None:
+        return None
     if _client is None:
         _client = Hindsight(base_url=settings.hindsight_url, timeout=50.0)
     return _client
