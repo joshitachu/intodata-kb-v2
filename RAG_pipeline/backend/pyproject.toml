@@ -23,7 +23,6 @@ dependencies = [
     "scikit-learn>=1.5.0",
 
     "openai>=1.0.0",
-    "hindsight-client>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +34,7 @@ dev = [
     "aiosqlite>=0.20.0",
     "ruff>=0.8.0",
 ]
+hindsight = ["hindsight-client>=0.1.0"]
 
 [build-system]
 requires = ["setuptools>=70.0"]
