@@ -6,7 +6,7 @@ COPY pyproject.toml .
 COPY src/ src/
 COPY alembic/ alembic/
 COPY alembic.ini .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[hindsight]"
 
 EXPOSE 8000
 
