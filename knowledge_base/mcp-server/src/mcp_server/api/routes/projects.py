@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
@@ -18,11 +18,14 @@ from mcp_server.schemas import (
     DeepDiveProject,
     DeepDiveProjectsResponse,
     DeepDiveRequest,
+    DocFileInfo,
+    DocListResponse,
     GenerateRequest,
     GenerateRunListResponse,
     GenerateRunResponse,
     LogFileListResponse,
     LogFileResponse,
+    PdfGenerateResponse,
     ProjectListResponse,
     ProjectResponse,
     PushToRagRequest,
@@ -404,6 +407,84 @@ async def get_log_content(project_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Log file not found")
     content = log_path.read_text(encoding="utf-8", errors="replace")
     return {"filename": filename, "content": content}
+
+
+# --- Documentation (PDF) ---
+
+
+@router.get("/projects/{project_id}/docs", response_model=DocListResponse)
+async def list_project_docs(project_id: str):
+    """List all documentation files for a project with metadata."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    from mcp_server.services.pdf_service import PdfService
+
+    svc = PdfService()
+    docs = svc.list_docs(project_id)
+    return DocListResponse(
+        project_id=project_id,
+        docs=[DocFileInfo(**d) for d in docs],
+        total=len(docs),
+    )
+
+
+@router.get("/projects/{project_id}/docs/{filename}")
+async def download_doc(project_id: str, filename: str):
+    """Download a specific doc file (md or pdf)."""
+    # Validate extension
+    if not filename.endswith((".md", ".pdf")):
+        raise HTTPException(status_code=400, detail="Only .md and .pdf files are supported")
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    from mcp_server.services.pdf_service import PdfService
+
+    svc = PdfService()
+    path = svc.get_doc_path(project_id, filename)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    media_type = "application/pdf" if filename.endswith(".pdf") else "text/markdown; charset=utf-8"
+    return FileResponse(
+        path=str(path),
+        media_type=media_type,
+        filename=filename,
+    )
+
+
+@router.post("/projects/{project_id}/generate-pdfs", response_model=PdfGenerateResponse)
+async def generate_pdfs(project_id: str):
+    """Generate PDF files for all markdown docs in a project."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    from mcp_server.services.pdf_service import PdfService
+
+    svc = PdfService()
+    result = svc.convert_project(project_id)
+
+    status = "completed" if result["failed"] == 0 else "partial"
+    if result["converted"] == 0 and result["failed"] > 0:
+        status = "failed"
+
+    return PdfGenerateResponse(
+        project_id=project_id,
+        status=status,
+        converted=result["converted"],
+        failed=result["failed"],
+        errors=result["errors"],
+    )
 
 
 # --- Deep Dive ---

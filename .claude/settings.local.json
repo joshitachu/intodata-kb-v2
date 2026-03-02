@@ -34,7 +34,9 @@
       "WebFetch(domain:supermemory.ai)",
       "WebFetch(domain:api.github.com)",
       "Bash(pandoc:*)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(npx tsc:*)",
+      "Bash(ls:*)"
     ]
   }
 }

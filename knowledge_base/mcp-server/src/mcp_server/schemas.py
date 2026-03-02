@@ -135,6 +135,30 @@ class StatusResponse(BaseModel):
     message: str = ""
 
 
+# --- Documentation (PDF) ---
+
+class DocFileInfo(BaseModel):
+    name: str
+    type: str
+    size_bytes: int
+    has_pdf: bool = False
+    modified_at: str
+
+
+class DocListResponse(BaseModel):
+    project_id: str
+    docs: list[DocFileInfo]
+    total: int
+
+
+class PdfGenerateResponse(BaseModel):
+    project_id: str
+    status: str
+    converted: int = 0
+    failed: int = 0
+    errors: list[str] = []
+
+
 # --- Deep Dive ---
 
 class DeepDiveRequest(BaseModel):

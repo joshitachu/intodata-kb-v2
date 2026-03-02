@@ -39,6 +39,25 @@ services:
       retries: 3
       start_period: 20s
 
+  kb-server:
+    build:
+      context: ../knowledge_base/mcp-server
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      MCP_DATABASE_URL: postgresql+asyncpg://admin:voetbal123@postgres:5432/intodata_kb
+      MCP_PROJECT_ROOT: /app
+      MCP_DATA_DIR: /app/data
+      MCP_INTODOC_OUTPUT_DIR: /app/intodoc-output
+    volumes:
+      - ../knowledge_base/output:/app/output
+      - ../knowledge_base/intodoc-output:/app/intodoc-output
+      - ../knowledge_base/mcp-server/data:/app/data
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
 volumes:
   qdrant_data:
   hindsight_data:

@@ -168,6 +168,52 @@ export type ConversationUpdateRequest = z.input<
   typeof ConversationUpdateRequestSchema
 >;
 
+// --- Project Docs ---
+
+export const DocFileInfoSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  size_bytes: z.number(),
+  has_pdf: z.boolean(),
+  modified_at: z.string(),
+});
+
+export type DocFileInfo = z.infer<typeof DocFileInfoSchema>;
+
+export const DocListResponseSchema = z.object({
+  project_id: z.string(),
+  docs: z.array(DocFileInfoSchema),
+  total: z.number(),
+});
+
+export type DocListResponse = z.infer<typeof DocListResponseSchema>;
+
+export const PdfGenerateResponseSchema = z.object({
+  project_id: z.string(),
+  status: z.string(),
+  converted: z.number(),
+  failed: z.number(),
+  errors: z.array(z.string()),
+});
+
+export type PdfGenerateResponse = z.infer<typeof PdfGenerateResponseSchema>;
+
+export const DocsProjectSchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  platform: z.string(),
+  doc_count: z.number(),
+});
+
+export type DocsProject = z.infer<typeof DocsProjectSchema>;
+
+export const DocsProjectsResponseSchema = z.object({
+  projects: z.array(DocsProjectSchema),
+  total: z.number(),
+});
+
+export type DocsProjectsResponse = z.infer<typeof DocsProjectsResponseSchema>;
+
 // --- Deep Dive ---
 
 export const DeepDiveRequestSchema = z.object({
