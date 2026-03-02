@@ -163,6 +163,20 @@ def upgrade() -> None:
         ),
     )
 
+    # Seed default admin user and role
+    op.execute(
+        "INSERT INTO roles (id, name, description) VALUES (1, 'admin', 'Administrator') "
+        "ON CONFLICT DO NOTHING"
+    )
+    op.execute(
+        "INSERT INTO users (id, username, email) VALUES (1, 'admin', 'admin@intodata.local') "
+        "ON CONFLICT DO NOTHING"
+    )
+    op.execute(
+        "INSERT INTO user_roles (user_id, role_id) VALUES (1, 1) "
+        "ON CONFLICT DO NOTHING"
+    )
+
 
 def downgrade() -> None:
     op.drop_table("ingestion_jobs")

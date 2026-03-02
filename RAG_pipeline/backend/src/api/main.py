@@ -28,6 +28,24 @@ async def lifespan(app: FastAPI):
         from src.retrieval.reranker import warmup as warmup_reranker
         warmup_reranker()
 
+    # Ensure default admin user exists (seed data)
+    from src.db.session import get_db
+    from src.db.models import User, Role
+    from sqlalchemy import select
+    async for db in get_db():
+        admin = (await db.execute(select(User).where(User.id == 1))).scalar_one_or_none()
+        if admin is None:
+            role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one_or_none()
+            if role is None:
+                role = Role(id=1, name="admin", description="Administrator")
+                db.add(role)
+                await db.flush()
+            user = User(id=1, username="admin", email="admin@intodata.local")
+            user.roles.append(role)
+            db.add(user)
+            await db.commit()
+            logger.info("Seeded default admin user (id=1)")
+
     yield
     logger.info("Shutting down IntoData KB API")
     # Cleanup: close Qdrant client if open
