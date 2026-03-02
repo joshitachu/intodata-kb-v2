@@ -49,6 +49,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://admin:voetbal123@postgres:5432/intodata_kb
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       HINDSIGHT_URL: http://hindsight:8888
+      HINDSIGHT_ENABLED: "true"
     depends_on:
       - postgres
       - qdrant
