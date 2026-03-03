@@ -5,13 +5,12 @@ Wants=docker.service
 
 [Service]
 Type=simple
-User=deploy
-Group=deploy
-WorkingDirectory=/opt/intodata-kb/knowledge_base
-EnvironmentFile=/opt/intodata-kb/.env.production
+User=root
+Group=root
+WorkingDirectory=/root/intodoc/intodata-kb-v2/knowledge_base
 ExecStart=/opt/intodata-kb/venv/bin/python -m mcp_server \
     --serve \
-    --static-dir /opt/intodata-kb/knowledge_base/dashboard/dist
+    --static-dir /root/intodoc/intodata-kb-v2/knowledge_base/dashboard/dist
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
