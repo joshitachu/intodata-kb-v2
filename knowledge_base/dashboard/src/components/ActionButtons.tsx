@@ -1,4 +1,4 @@
-import { useScan, useGenerate, usePushToRag } from "../hooks/useProjects";
+import { useScan, useGenerate, usePushToRag, useResetStatus } from "../hooks/useProjects";
 
 interface Props {
   projectId: string;
@@ -10,6 +10,7 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
   const scan = useScan();
   const generate = useGenerate();
   const push = usePushToRag();
+  const resetStatus = useResetStatus();
 
   const busy = status === "scanning" || status === "generating";
 
@@ -52,6 +53,15 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
       >
         Generate IR
       </button>
+      {busy && (
+        <button
+          className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+          disabled={resetStatus.isPending}
+          onClick={() => resetStatus.mutate(projectId)}
+        >
+          Reset
+        </button>
+      )}
     </div>
   );
 }

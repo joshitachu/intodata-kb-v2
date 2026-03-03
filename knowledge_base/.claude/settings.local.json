@@ -46,7 +46,8 @@
       "Bash(\"C:\\\\Users\\\\kabeljo\\\\Documents\\\\intodata-kb\\\\.venv\\\\Scripts\\\\pip.exe\" install:*)",
       "Bash(wsl:*)",
       "Bash(wsl.exe:*)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(dd bs=1:*)"
     ]
   },
   "enabledMcpjsonServers": [

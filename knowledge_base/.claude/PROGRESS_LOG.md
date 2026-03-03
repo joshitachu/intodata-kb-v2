@@ -5,6 +5,25 @@ what was done, what changed, and lessons learned.
 
 ---
 
+## 2026-03-03 -- Fix stuck "generating" status in dashboard
+
+**What was done:**
+- Added `refetchInterval: 10_000` to `useProjects()` hook so project list polls every 10s
+- Added `POST /mcp/reset-status` backend endpoint to reset stuck generating/scanning projects
+- Added `ResetStatusRequest` schema to `schemas.py`
+- Added `resetStatus()` to API client and `useResetStatus()` mutation hook
+- Added red "Reset" button to ActionButtons (visible only when status is generating/scanning)
+- The reset endpoint sets project status to `error`, marks running GenerateRun/ScanRun records as `failed`
+- Updated `mcp-server.md` and `dashboard.md` to reflect new endpoint and features
+
+**Files changed:** 7 files (5 source, 2 docs)
+
+**Lessons learned:**
+- SSE-only UI updates are fragile -- always pair with polling as a fallback
+- Stuck states need an explicit user escape hatch (reset button) since disabling all actions locks the user out
+
+---
+
 ## 2026-02-19 -- Documentation Restructuring
 
 **What was done:**

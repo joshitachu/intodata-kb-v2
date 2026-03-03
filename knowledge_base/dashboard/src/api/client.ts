@@ -55,6 +55,12 @@ export const api = {
       body: JSON.stringify({ project_id: projectId }),
     }),
 
+  resetStatus: (projectId: string) =>
+    request<import("../types").StatusResponse>("/mcp/reset-status", {
+      method: "POST",
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+
   getStatus: (projectId: string) =>
     request<{
       project_id: string;

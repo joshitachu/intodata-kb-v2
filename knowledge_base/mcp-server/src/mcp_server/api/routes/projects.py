@@ -29,6 +29,7 @@ from mcp_server.schemas import (
     ProjectListResponse,
     ProjectResponse,
     PushToRagRequest,
+    ResetStatusRequest,
     ScanRequest,
     ScanStatusResponse,
     StatusResponse,
@@ -343,6 +344,46 @@ async def list_projects():
             projects=[_project_to_response(p) for p in projects],
             total=len(projects),
         )
+
+
+@router.post("/reset-status", response_model=StatusResponse)
+async def reset_status(req: ResetStatusRequest):
+    """Reset a stuck generating/scanning project back to error state."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(req.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
+
+        if project.status not in ("generating", "scanning"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project status is '{project.status}', not generating/scanning. Nothing to reset.",
+            )
+
+        await registry.update_status(
+            req.project_id, "error", error_message="Manually reset by user"
+        )
+
+        # Mark any running GenerateRun/ScanRun records as failed
+        from sqlalchemy import update
+        from mcp_server.db.models import GenerateRun, ScanRun
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await db.execute(
+            update(GenerateRun)
+            .where(GenerateRun.project_id == req.project_id, GenerateRun.status == "running")
+            .values(status="failed", completed_at=now, error_message="Manually reset by user")
+        )
+        await db.execute(
+            update(ScanRun)
+            .where(ScanRun.project_id == req.project_id, ScanRun.status == "running")
+            .values(status="failed", completed_at=now)
+        )
+
+        await db.commit()
+
+    return StatusResponse(status="reset", message=f"Project '{req.project_id}' status reset to error.")
 
 
 def _run_to_response(r) -> GenerateRunResponse:

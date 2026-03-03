@@ -5,6 +5,7 @@ export function useProjects() {
   return useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
+    refetchInterval: 10_000,
   });
 }
 
@@ -46,6 +47,14 @@ export function usePushToRag() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (projectId: string) => api.pushToRag(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useResetStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.resetStatus(projectId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }

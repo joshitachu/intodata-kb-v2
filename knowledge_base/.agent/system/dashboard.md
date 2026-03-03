@@ -18,6 +18,7 @@ triggering scans, viewing logs, and pushing docs to the RAG pipeline.
 - **View logs** -- Real-time log streaming via SSE during scan/generation
 - **Push to RAG** -- Send generated docs to the RAG pipeline
 - **Generate docs** -- Spawn Claude Code CLI for documentation generation
+- **Reset stuck status** -- Reset projects stuck in generating/scanning back to error state
 
 ## API Integration
 
@@ -25,7 +26,8 @@ The dashboard communicates with the MCP REST API server on port 8001.
 API client is in `src/api/client.ts`.
 
 Key hooks:
-- `useProjects()` -- Fetch and manage project list
+- `useProjects()` -- Fetch and manage project list (polls every 10s)
+- `useResetStatus()` -- Reset stuck generating/scanning projects
 - `useLogStream()` -- Subscribe to SSE log events
 
 ## Source Structure
@@ -42,7 +44,7 @@ dashboard/src/
     useLogStream.ts         -- SSE log streaming hook
   components/
     ProjectList.tsx         -- Project table with status and actions
-    ActionButtons.tsx       -- Scan, Generate, Push to RAG buttons
+    ActionButtons.tsx       -- Scan, Generate, Push to RAG, Reset buttons
     StatusBadge.tsx         -- Color-coded status indicator
     LogPanel.tsx            -- Real-time log output panel
     AddRepoDialog.tsx       -- Dialog for registering new projects

@@ -56,6 +56,10 @@ class PushToRagRequest(BaseModel):
     project_id: StrippedStr
 
 
+class ResetStatusRequest(BaseModel):
+    project_id: StrippedStr
+
+
 # --- Scan Status ---
 
 class ScanStatusResponse(BaseModel):

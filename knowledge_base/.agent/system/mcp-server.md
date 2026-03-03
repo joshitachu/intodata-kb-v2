@@ -43,6 +43,7 @@ All endpoints are under `/mcp/` prefix:
 | POST | `/mcp/scan` | Trigger scan (background task) |
 | POST | `/mcp/generate` | Spawn Claude Code CLI for doc generation |
 | POST | `/mcp/push-to-rag` | Push docs to RAG pipeline |
+| POST | `/mcp/reset-status` | Reset stuck generating/scanning project to error |
 | GET | `/mcp/status/{project_id}` | Get project scan status |
 | GET | `/mcp/projects` | List all projects |
 | GET | `/health` | Health check |
@@ -85,7 +86,7 @@ mcp-server/src/mcp_server/
     claude_service.py   -- Spawn Claude Code CLI
     log_manager.py      -- Log file management + streaming
   db/
-    models.py          -- SQLAlchemy models (Project, ScanRun)
+    models.py          -- SQLAlchemy models (Project, ScanRun, GenerateRun)
     session.py         -- Async session factory
 ```
 
