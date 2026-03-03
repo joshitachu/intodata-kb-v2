@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -13,19 +14,27 @@ def main() -> None:
     group.add_argument("--serve", action="store_true", help="Run as FastAPI REST API on :8001")
     parser.add_argument("--host", default="0.0.0.0", help="API host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8001, help="API port (default: 8001)")
+    parser.add_argument(
+        "--static-dir",
+        default=None,
+        help="Path to dashboard dist/ directory to serve static files",
+    )
     args = parser.parse_args()
 
     if args.mcp:
         from mcp_server.mcp.server import run_mcp_server
         run_mcp_server()
     else:
+        if args.static_dir:
+            os.environ["DASHBOARD_DIST_DIR"] = args.static_dir
+
         import uvicorn
         from mcp_server.api.app import app  # noqa: F401
         uvicorn.run(
             "mcp_server.api.app:app",
             host=args.host,
             port=args.port,
-            reload=True,
+            reload=not args.static_dir,
         )
 
 

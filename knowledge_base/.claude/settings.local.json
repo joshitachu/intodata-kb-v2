@@ -47,7 +47,23 @@
       "Bash(wsl:*)",
       "Bash(wsl.exe:*)",
       "Bash(pip show:*)",
-      "Bash(dd bs=1:*)"
+      "Bash(dd bs=1:*)",
+      "mcp__intodoc__add_repo",
+      "mcp__intodoc__fetch_json",
+      "mcp__intodoc__trigger_scan",
+      "mcp__intodoc__get_scan_status",
+      "mcp__intodoc__insert_to_rag",
+      "mcp__intodoc__list_projects",
+      "mcp__intodoc__get_chunks",
+      "mcp__intodoc__fetch_chunk",
+      "mcp__intodoc__get_analysis_prompts",
+      "mcp__intodoc__get_reference_docs",
+      "mcp__intodoc__recall_process_memory",
+      "mcp__intodoc__recall_project_memory",
+      "mcp__intodoc__retain_findings",
+      "mcp__intodoc__retain_process_lesson",
+      "WebFetch(domain:www.starlette.io)",
+      "WebFetch(domain:tedboy.github.io)"
     ]
   },
   "enabledMcpjsonServers": [

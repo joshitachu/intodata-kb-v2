@@ -295,7 +295,7 @@ class ScannerService:
         """Compute chunk definitions from scan data.
 
         Groups jobs by their group field, then splits large groups into
-        sub-chunks of ~80K tokens (matching intodoc's distiller logic).
+        sub-chunks of ~30K tokens (matching intodoc's distiller logic).
 
         Returns:
             dict with "chunks" list and "total_chunks" count.
@@ -332,9 +332,9 @@ class ScannerService:
                 size = len(json.dumps(job))
                 group_jobs.setdefault(group, []).append((name, size))
 
-        # Build chunks: split groups exceeding 320KB (~80K tokens at 4 chars/token)
-        TOKEN_LIMIT = 80_000
-        BYTE_LIMIT = TOKEN_LIMIT * 4  # ~320KB
+        # Build chunks: split groups exceeding 120KB (~30K tokens at 4 chars/token)
+        TOKEN_LIMIT = 30_000
+        BYTE_LIMIT = TOKEN_LIMIT * 4  # ~120KB
 
         chunks: list[dict] = []
         for group in sorted(group_jobs.keys()):
@@ -380,6 +380,11 @@ class ScannerService:
                         "job_names": [n for n, _ in current_jobs],
                         "token_estimate": current_bytes // 4,
                     })
+
+        # Add estimated overhead to token_estimate (connections + contexts + routines + manifest)
+        OVERHEAD_ESTIMATE = 5000  # ~5K tokens
+        for chunk in chunks:
+            chunk["token_estimate"] += OVERHEAD_ESTIMATE
 
         return {
             "chunks": chunks,
@@ -447,15 +452,21 @@ class ScannerService:
             all_conns = self._load_connections(output_dir)
             connections = [c for c in all_conns if c.get("name") in conn_refs]
 
-        # Load related contexts (match by group name in context name)
+        # Load and filter manifest to only include this chunk's jobs
+        manifest = self._load_filtered_manifest(output_dir, job_names)
+
+        # Load related contexts -- filter by actual usage in manifest
+        context_names_used: set[str] = set()
+        for ctx_list in manifest.get("job_contexts_used", {}).values():
+            if isinstance(ctx_list, list):
+                context_names_used.update(ctx_list)
+            elif isinstance(ctx_list, str):
+                context_names_used.add(ctx_list)
         all_contexts = self._load_contexts(output_dir)
         related_contexts = [
             c for c in all_contexts
-            if group.lower() in c.get("name", "").lower()
+            if c.get("name") in context_names_used
         ]
-
-        # Load and filter manifest to only include this chunk's jobs
-        manifest = self._load_filtered_manifest(output_dir, job_names)
 
         # Load related routines
         routine_refs: set[str] = set()
@@ -469,7 +480,7 @@ class ScannerService:
                 if r.get("name") in routine_refs and not r.get("is_system", False)
             ]
 
-        return {
+        response = {
             "chunk_id": chunk_id,
             "group": group,
             "job_count": len(jobs),
@@ -478,8 +489,84 @@ class ScannerService:
             "related_contexts": related_contexts,
             "related_routines": routines,
             "manifest": manifest,
-            "token_estimate": sum(len(json.dumps(j)) for j in jobs) // 4,
         }
+
+        # Dynamic sizing: ensure response fits within Claude Code's tool result limit
+        MAX_RESPONSE_BYTES = 90_000  # ~22K tokens, safely under 25K limit
+
+        serialized = json.dumps(response, separators=(",", ":"), default=str)
+
+        if len(serialized) <= MAX_RESPONSE_BYTES:
+            response["token_estimate"] = len(serialized) // 4
+            return response
+
+        # Level 1: Strip routines (usually standard library, least useful)
+        response["related_routines"] = []
+        response["_stripped"] = ["routines"]
+        serialized = json.dumps(response, separators=(",", ":"), default=str)
+        if len(serialized) <= MAX_RESPONSE_BYTES:
+            response["token_estimate"] = len(serialized) // 4
+            return response
+
+        # Level 2: Strip raw_properties from components (already distilled)
+        for job in response["jobs"]:
+            for comp in job.get("components", []):
+                comp.pop("raw_properties", None)
+        response["_stripped"].append("raw_properties")
+        serialized = json.dumps(response, separators=(",", ":"), default=str)
+        if len(serialized) <= MAX_RESPONSE_BYTES:
+            response["token_estimate"] = len(serialized) // 4
+            return response
+
+        # Level 3: Strip contexts (sub-agent can call fetch_json if needed)
+        response["related_contexts"] = []
+        response["_stripped"].append("contexts")
+        serialized = json.dumps(response, separators=(",", ":"), default=str)
+        if len(serialized) <= MAX_RESPONSE_BYTES:
+            response["token_estimate"] = len(serialized) // 4
+            return response
+
+        # Level 4: Strip manifest (sub-agent can call fetch_json if needed)
+        response["manifest"] = {}
+        response["_stripped"].append("manifest")
+        serialized = json.dumps(response, separators=(",", ":"), default=str)
+        if len(serialized) <= MAX_RESPONSE_BYTES:
+            response["token_estimate"] = len(serialized) // 4
+            return response
+
+        # Level 5: Truncate large params in components
+        # (e.g., Salesforce components with 60KB+ param lists)
+        COMP_PARAMS_MAX = 2000  # max chars for serialized params per component
+        for job in response["jobs"]:
+            for comp in job.get("components", []):
+                params = comp.get("params")
+                if not params:
+                    continue
+                param_str = json.dumps(params, separators=(",", ":"), default=str)
+                if len(param_str) > COMP_PARAMS_MAX:
+                    # Keep only essential params (connection refs, modes, schemas)
+                    if isinstance(params, list):
+                        essential = [
+                            p for p in params
+                            if isinstance(p, dict) and any(
+                                kw in (p.get("name", "") or "").upper()
+                                for kw in ("PROPERTY_TYPE", "REPOSITORY", "SCHEMA",
+                                           "CONNECTION", "ACTION", "MODULE", "TABLE",
+                                           "QUERY", "ENDPOINT", "URL", "MODE",
+                                           "LABEL", "FORMAT")
+                            )
+                        ]
+                        comp["params"] = essential
+                        comp["_params_truncated"] = True
+                    elif isinstance(params, dict):
+                        for k, v in list(params.items()):
+                            s = json.dumps(v, separators=(",", ":"), default=str) if not isinstance(v, str) else v
+                            if len(s) > 200:
+                                params[k] = s[:200] + "..."
+        response["_stripped"].append("large_params")
+        serialized = json.dumps(response, separators=(",", ":"), default=str)
+        response["token_estimate"] = len(serialized) // 4
+        return response
 
     def _load_connections(self, output_dir: str) -> list[dict]:
         """Load all metadata connections from scan data."""
@@ -599,3 +686,88 @@ class ScannerService:
             group = job.get("group") or "Global"
             groups[group] = groups.get(group, 0) + 1
         return [{"group": g, "job_count": c} for g, c in sorted(groups.items())]
+
+    def get_analysis_prompts(self, platform: str = "talend") -> dict:
+        """Read all analysis prompt files + best_practices.yaml for a platform.
+
+        Returns a single dict with all prompts bundled together, eliminating
+        the need for sub-agents to make 16+ individual Read calls.
+        """
+        prompts_dir = (
+            config.project_root
+            / "intodoc"
+            / "src"
+            / "intodoc"
+            / "platforms"
+            / platform
+            / "prompts"
+        )
+        if not prompts_dir.exists():
+            return {"error": f"Prompts directory not found: {prompts_dir}"}
+
+        prompts: dict[str, str] = {}
+        for f in sorted(prompts_dir.glob("*.txt")):
+            try:
+                prompts[f.stem] = f.read_text(encoding="utf-8")
+            except OSError:
+                prompts[f.stem] = f"(error reading {f.name})"
+
+        # Also include best_practices.yaml if present
+        bp_file = prompts_dir.parent / "best_practices.yaml"
+        if bp_file.exists():
+            try:
+                prompts["best_practices"] = bp_file.read_text(encoding="utf-8")
+            except OSError:
+                pass
+
+        return {
+            "platform": platform,
+            "prompt_count": len(prompts),
+            "prompts": prompts,
+        }
+
+    # Reference doc -> agent group mapping
+    _AGENT_REFERENCE_DOCS: dict[str, list[str]] = {
+        "Overview": ["00_PROJECT_OVERVIEW"],
+        "Architecture": ["01_COMPONENT_INVENTORY", "02_ARCHITECTURE", "03_EXECUTION_LOGIC"],
+        "Data": ["04_DATA_FLOWS", "16_SCHEMA_DICTIONARY", "17_DATA_QUALITY"],
+        "Business": ["09_CUSTOM_CODE", "10_BUSINESS_LOGIC"],
+        "Operations": ["07_ERROR_HANDLING", "08_STATE_SIDE_EFFECTS", "11_KNOWN_ISSUES"],
+        "Config": ["05_ENVIRONMENT_CONFIG", "20_SECURITY_ACCESS", "21_PERFORMANCE"],
+        "External": ["06_EXTERNAL_SYSTEMS", "19_SCHEDULING_SLA"],
+        "Patterns": ["18_NAMING_CONVENTIONS", "22_CROSS_REGION", "23_REUSABILITY"],
+        "UserDocs": ["12_CHANGE_LOG", "13_RUNBOOK", "14_GLOSSARY_FAQ", "15_ONBOARDING"],
+        "Preventive": ["25_PREVENTIVE_ANALYSIS"],
+    }
+
+    def get_reference_docs(self, agent_group: str) -> dict:
+        """Read reference docs for a specific doc agent group.
+
+        Returns the content of matching reference docs from intodoc/reference-docs/,
+        eliminating the need for sub-agents to make individual Read calls.
+        """
+        ref_dir = config.project_root / "intodoc" / "reference-docs"
+        if not ref_dir.exists():
+            return {"error": f"Reference docs directory not found: {ref_dir}"}
+
+        doc_names = self._AGENT_REFERENCE_DOCS.get(agent_group)
+        if doc_names is None:
+            return {
+                "error": f"Unknown agent group: {agent_group}",
+                "available_groups": list(self._AGENT_REFERENCE_DOCS.keys()),
+            }
+
+        docs: dict[str, str] = {}
+        for name in doc_names:
+            md_file = ref_dir / f"{name}.md"
+            if md_file.exists():
+                try:
+                    docs[name] = md_file.read_text(encoding="utf-8")
+                except OSError:
+                    docs[name] = f"(error reading {md_file.name})"
+
+        return {
+            "agent_group": agent_group,
+            "doc_count": len(docs),
+            "docs": docs,
+        }

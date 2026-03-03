@@ -1,0 +1,21 @@
+[Unit]
+Description=intodoc MCP Server (Knowledge Base API + Dashboard)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/intodata-kb/knowledge_base
+EnvironmentFile=/opt/intodata-kb/.env.production
+ExecStart=/opt/intodata-kb/venv/bin/python -m mcp_server \
+    --serve \
+    --static-dir /opt/intodata-kb/knowledge_base/dashboard/dist
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

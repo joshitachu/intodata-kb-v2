@@ -17,7 +17,7 @@ class MCPServerConfig(BaseSettings):
 
     # PostgreSQL (same DB as RAG pipeline)
     database_url: str = (
-        "postgresql+asyncpg://postgres:voetbal123@localhost:5432/intodata_kb"
+        "postgresql+asyncpg://admin:voetbal123@localhost:5432/intodata_kb"
     )
 
     # RAG pipeline base URL

@@ -33,7 +33,7 @@ class IntodocConfig(BaseSettings):
     max_concurrent: int = Field(default=5, description="Max concurrent LLM calls")
 
     # Chunker
-    target_chunk_tokens: int = Field(default=80_000, description="Target tokens per analysis chunk")
+    target_chunk_tokens: int = Field(default=30_000, description="Target tokens per analysis chunk")
 
     # Qdrant
     qdrant_url: str = Field(default="", description="Qdrant endpoint URL for RAG export")

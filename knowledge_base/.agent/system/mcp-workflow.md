@@ -6,7 +6,7 @@ This is a 4-phase process using parallel sub-agents for throughput.
 ## Workflow Overview
 
 ```
-Phase 1: Setup         -- check scan status, load chunks + manifest
+Phase 1: Setup         -- check scan status, load chunks + manifest + prompts
 Phase 2: Group Analysis -- parallel sub-agents (one per group), return compact text
 Phase 3: Write Docs    -- parallel sub-agents by theme, write final .md files
 Phase 4: Publish       -- write index.json + run log
@@ -14,17 +14,19 @@ Phase 4: Publish       -- write index.json + run log
 
 ## Phase 1: Setup
 
-1. Call `recall_process_memory("doc generation best practices and common errors")` to load cross-project lessons.
-2. Call `recall_project_memory(project_id, "previous analysis findings and structure")` to load project-specific context.
+1. Call `recall_process_memory("doc generation best practices and common errors")` to load cross-project lessons (if Hindsight enabled).
+2. Call `recall_project_memory(project_id, "previous analysis findings and structure")` to load project-specific context (if Hindsight enabled).
 3. Call `get_scan_status(project_id)` to check cache freshness.
 4. If stale or missing, call `trigger_scan(project_id)`.
 5. Call `get_chunks(project_id)`.
    - Returns chunks with fields: `chunk_id`, `group`, `job_count`, `job_names`, `token_estimate`.
+   - Each chunk targets ~30K tokens (~120KB). Overhead (connections, contexts, routines, manifest)
+     is added on top but kept compact via tight filtering and no JSON indent.
    - Group the chunk list by the `group` field. The number and names of groups are
      determined entirely by the scan data -- never assume specific names.
 6. Call `fetch_json(project_id, "manifest")` to load the dependency graph.
 7. Call `fetch_json(project_id, "connections")` to load metadata connections.
-8. Create `output/{project_id}/docs/` and `output/{project_id}/logs/`.
+8. Directories `output/{project_id}/docs/` and `output/{project_id}/logs/` are pre-created by the orchestrator.
 
 ## Phase 2: Group Analysis (Parallel Sub-Agents)
 
@@ -40,17 +42,22 @@ The number of sub-agents is dynamic:
 Each sub-agent receives:
 - The project_id and its group name
 - The list of chunk_ids in its group
-- Instructions to read the prompt files listed in the Analysis Prompt Reference below
+- The manifest and connections (from Phase 1 -- passed inline)
 
 Each sub-agent must:
-1. Read the relevant prompt files (listed below) using the Read tool.
+1. Call `get_analysis_prompts()` to load analysis guidance.
 2. Call `fetch_chunk(project_id, chunk_id)` for every chunk in its group.
-3. Analyze ALL chunks across ALL dimensions using the prompt file guidance.
+3. Analyze ALL chunks across ALL dimensions using the prompt guidance.
 4. **Return a compact text summary (~3-5KB) directly back to the calling agent.**
 
 **The sub-agent writes NO files.** Analysis is returned as text.
 
-After receiving ALL group summaries, call `retain_findings(project_id, summary_text, "group-summary")` for each group to store analysis results in Hindsight memory.
+**Sub-agents must NOT:**
+- Call `fetch_json` for manifest/connections (passed inline)
+- Use TodoWrite, mkdir, ls, wc, or ASCII validation scripts
+- Read .agent/ docs, CLAUDE.md, or mcp-workflow.md
+
+After receiving ALL group summaries, call `retain_findings(project_id, summary_text, "group-summary")` for each group to store analysis results in Hindsight memory (if enabled).
 
 ### Group Summary Structure
 
@@ -124,23 +131,6 @@ PREVENTIVE_RISKS:
     {chain description} | blast_radius: {CRITICAL/HIGH/MEDIUM}
 ```
 
-### Prompt Files for Group Sub-Agents
-
-Before analyzing, read these prompt files (use the Read tool -- one read per file):
-
-| Dimension | Prompt Files |
-|-----------|-------------|
-| Components + Execution | `intodoc/src/intodoc/platforms/talend/prompts/p01_inventory.txt`, `p02_execution.txt` |
-| External Systems | `intodoc/src/intodoc/platforms/talend/prompts/p05_external_systems.txt` |
-| Data Flows + Schema | `intodoc/src/intodoc/platforms/talend/prompts/p03_data_flows.txt`, `p11_schema.txt` |
-| Business Logic + Quality | `intodoc/src/intodoc/platforms/talend/prompts/p09_business_logic.txt`, `p08_custom_code.txt`, `p12_data_quality.txt` |
-| Operations | `intodoc/src/intodoc/platforms/talend/prompts/p04_environment.txt`, `p06_error_handling.txt`, `p07_state.txt`, `p14_scheduling.txt`, `p15_security.txt`, `p16_performance.txt` |
-| Patterns | `intodoc/src/intodoc/platforms/talend/prompts/p13_naming.txt`, `p18_reusability.txt` |
-| Preventive Analysis | `intodoc/src/intodoc/platforms/talend/prompts/p22_preventive_analysis.txt` |
-
-Also read (once, before spawning group sub-agents):
-- `intodoc/src/intodoc/platforms/talend/best_practices.yaml`
-
 ## Phase 3: Write Documents (Parallel Sub-Agents by Theme)
 
 After receiving ALL group summaries, spawn doc-writing sub-agents in parallel.
@@ -148,10 +138,10 @@ After receiving ALL group summaries, spawn doc-writing sub-agents in parallel.
 Each doc agent receives:
 - The relevant group summaries (the full text blocks from Phase 2)
 - The manifest JSON
-- The specific reference doc(s) from `intodoc/reference-docs/` for format and depth
 
-**Each doc agent reads the matching reference doc(s) to understand structure.**
-**Each doc agent writes its .md files directly to `output/{project_id}/docs/`.**
+Each doc agent must:
+1. Call `get_reference_docs(agent_group)` to load format templates in ONE call (replaces individual Read calls).
+2. Write final .md files directly to `output/{project_id}/docs/`.
 
 ### Doc Agent Groups
 
@@ -205,8 +195,8 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
      ]
    }
    ```
-2. Call `retain_findings(project_id, run_summary, "run-summary")` to store the run results in Hindsight.
-3. If any errors or warnings occurred, call `retain_process_lesson(lesson, "error-recovery")` to remember what went wrong and how it was handled.
+2. Call `retain_findings(project_id, run_summary, "run-summary")` to store the run results in Hindsight (if enabled).
+3. If any errors or warnings occurred, call `retain_process_lesson(lesson, "error-recovery")` to remember what went wrong and how it was handled (if Hindsight enabled).
 4. Write `output/{project_id}/logs/run_{project_id}_{timestamp}.log`:
    ```
    [INFO] Groups analyzed: {list}
@@ -239,8 +229,10 @@ No `_scratch/` directory. No intermediate JSON files. Only final docs.
 | `fetch_json(project_id, section?)` | Read cached scan JSON (segmented) |
 | `trigger_scan(project_id, force?)` | Run intodoc scan subprocess |
 | `get_scan_status(project_id)` | Check cache freshness |
-| `get_chunks(project_id)` | Get chunk definitions (chunk_id, group, job_count, token_estimate) |
+| `get_chunks(project_id)` | Get chunk definitions (~30K tokens each) |
 | `fetch_chunk(project_id, chunk_id)` | Get full job data for one chunk |
+| `get_analysis_prompts(platform?)` | Get ALL analysis prompts bundled (replaces 16+ Reads) |
+| `get_reference_docs(agent_group)` | Get reference docs for a doc agent group (replaces individual Reads) |
 | `insert_to_rag(project_id, docs?)` | Push docs to RAG pipeline |
 | `list_projects()` | List all registered projects |
 | `recall_process_memory(query)` | Recall cross-project lessons before doc generation |

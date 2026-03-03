@@ -151,7 +151,7 @@ async def list_tools() -> list[Tool]:
             name="get_chunks",
             description=(
                 "Returns chunk definitions for a project's scan data. "
-                "Each chunk is an LLM-sized group of jobs (~80K tokens). "
+                "Each chunk is an LLM-sized group of jobs (~30K tokens). "
                 "Returns chunk_id, group, job_count, job_names, token_estimate "
                 "for each chunk. Use fetch_chunk to load actual job data."
             ),
@@ -182,6 +182,47 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["project_id", "chunk_id"],
+            },
+        ),
+        Tool(
+            name="get_analysis_prompts",
+            description=(
+                "Returns all analysis prompt files and best_practices.yaml "
+                "bundled as a single dict. Eliminates the need for sub-agents "
+                "to make 16+ individual Read calls for prompt files."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "Integration platform (default: talend)",
+                        "default": "talend",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="get_reference_docs",
+            description=(
+                "Returns reference doc content for a specific doc agent group. "
+                "Groups: Overview, Architecture, Data, Business, Operations, "
+                "Config, External, Patterns, UserDocs, Preventive. "
+                "Eliminates the need for sub-agents to make individual Read calls."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_group": {
+                        "type": "string",
+                        "description": (
+                            "Doc agent group name: Overview, Architecture, Data, "
+                            "Business, Operations, Config, External, Patterns, "
+                            "UserDocs, Preventive"
+                        ),
+                    },
+                },
+                "required": ["agent_group"],
             },
         ),
         Tool(
@@ -271,10 +312,10 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         result = await _dispatch(name, arguments)
-        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+        return [TextContent(type="text", text=json.dumps(result, separators=(",", ":"), default=str))]
     except Exception as e:
         logger.error(f"Tool {name} failed: {e}")
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}, separators=(",", ":")))]
 
 
 async def _dispatch(name: str, args: dict) -> dict:
@@ -301,6 +342,10 @@ async def _dispatch(name: str, args: dict) -> dict:
             return await _get_chunks(registry, args)
         elif name == "fetch_chunk":
             return await _fetch_chunk(registry, args)
+        elif name == "get_analysis_prompts":
+            return _get_analysis_prompts(args)
+        elif name == "get_reference_docs":
+            return _get_reference_docs(args)
         elif name == "recall_process_memory":
             return await _recall_process_memory(args)
         elif name == "recall_project_memory":
@@ -508,6 +553,16 @@ async def _fetch_chunk(registry: ProjectRegistry, args: dict) -> dict:
 
     output_dir = project.output_dir or str(config.intodoc_output_dir)
     return scanner_service.read_chunk_data(output_dir, chunk_id)
+
+
+def _get_analysis_prompts(args: dict) -> dict:
+    platform = args.get("platform", "talend")
+    return scanner_service.get_analysis_prompts(platform)
+
+
+def _get_reference_docs(args: dict) -> dict:
+    agent_group = args["agent_group"]
+    return scanner_service.get_reference_docs(agent_group)
 
 
 async def _recall_process_memory(args: dict) -> dict:

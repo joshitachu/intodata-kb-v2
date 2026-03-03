@@ -139,7 +139,7 @@ class TalendDistiller:
                 group_tokens += job_token_cache[jid]
 
             # If chunk is too large, split into sub-chunks
-            if group_tokens > 100_000:
+            if group_tokens > 40_000:
                 sub_chunks = self._split_chunk(
                     group, distilled_jobs, scan_result, job_token_cache
                 )
@@ -449,7 +449,7 @@ class TalendDistiller:
         scan_result: ScanResult,
         job_token_cache: dict[int, int],
     ) -> list[AnalysisChunk]:
-        """Split a large group into smaller chunks (~80K tokens each)."""
+        """Split a large group into smaller chunks (~30K tokens each)."""
         chunks: list[AnalysisChunk] = []
         current_jobs: list[ParsedJob] = []
         current_tokens = 0
@@ -461,7 +461,7 @@ class TalendDistiller:
                 job_token_cache[jid] = len(job.model_dump_json()) // 4
             job_tokens = job_token_cache[jid]
 
-            if current_tokens + job_tokens > 80_000 and current_jobs:
+            if current_tokens + job_tokens > 30_000 and current_jobs:
                 chunks.append(
                     self._make_chunk(group, chunk_idx, current_jobs, scan_result)
                 )

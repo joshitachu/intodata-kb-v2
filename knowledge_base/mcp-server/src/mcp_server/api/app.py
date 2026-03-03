@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
 
 from mcp_server.config import config
@@ -57,10 +61,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:3000",  # Alternate dev
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,3 +74,21 @@ app.include_router(health.router)
 app.include_router(projects.router, prefix="/mcp")
 app.include_router(webhook.router)
 app.include_router(logs.router)
+
+# --- Static file serving for production dashboard ---
+_dist_dir = os.environ.get("DASHBOARD_DIST_DIR")
+if _dist_dir:
+    _dist_path = Path(_dist_dir)
+    if _dist_path.is_dir():
+        # Serve JS/CSS bundles at /assets
+        _assets = _dist_path / "assets"
+        if _assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+
+        # SPA catch-all: serve index.html for any non-API path
+        @app.get("/{full_path:path}")
+        async def _serve_spa(full_path: str):
+            index = _dist_path / "index.html"
+            return FileResponse(str(index))
+
+        logger.info("Serving dashboard from %s", _dist_path)
