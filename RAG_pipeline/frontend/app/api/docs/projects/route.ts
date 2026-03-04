@@ -1,11 +1,15 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { DocsProjectsResponseSchema } from "@/types";
 
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const res = await fetch(`${KB_API_URL}/mcp/projects`);
+    const cookieHeader = request.headers.get("cookie") || "";
+
+    const res = await fetch(`${KB_API_URL}/mcp/projects`, {
+      headers: { Cookie: cookieHeader },
+    });
 
     if (!res.ok) {
       const text = await res.text();

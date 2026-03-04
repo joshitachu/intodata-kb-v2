@@ -7,10 +7,11 @@ Wants=docker.service
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/root/intodoc/intodata-kb-v2/knowledge_base
+WorkingDirectory=/opt/intodata-kb/knowledge_base
+EnvironmentFile=/opt/intodata-kb/.env.production
 ExecStart=/opt/intodata-kb/venv/bin/python -m mcp_server \
     --serve \
-    --static-dir /root/intodoc/intodata-kb-v2/knowledge_base/dashboard/dist
+    --port 8002
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

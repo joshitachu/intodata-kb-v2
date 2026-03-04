@@ -23,6 +23,11 @@ dependencies = [
     "scikit-learn>=1.5.0",
 
     "openai>=1.0.0",
+
+    # Auth
+    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
+    "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]

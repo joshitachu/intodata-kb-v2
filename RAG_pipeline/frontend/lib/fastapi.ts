@@ -1,7 +1,22 @@
+import { cookies } from "next/headers";
+
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
 interface FetchOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
+}
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get("access_token");
+    if (token) {
+      return { Cookie: `access_token=${token.value}` };
+    }
+  } catch {
+    // cookies() not available in client context — that's fine
+  }
+  return {};
 }
 
 export async function fastapiFetch<T>(
@@ -9,12 +24,13 @@ export async function fastapiFetch<T>(
   options: FetchOptions = {},
 ): Promise<T> {
   const { body, headers, ...rest } = options;
+  const authHeaders = await getAuthHeaders();
 
   const res = await fetch(`${FASTAPI_URL}${path}`, {
     ...rest,
     headers: {
       "Content-Type": "application/json",
-      "X-User-Id": "1", // Phase 1: hardcoded user
+      ...authHeaders,
       ...headers,
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -36,10 +52,12 @@ export async function fastapiUpload<T>(
   path: string,
   formData: FormData,
 ): Promise<T> {
+  const authHeaders = await getAuthHeaders();
+
   const res = await fetch(`${FASTAPI_URL}${path}`, {
     method: "POST",
     headers: {
-      "X-User-Id": "1", // Phase 1: hardcoded user
+      ...authHeaders,
     },
     body: formData,
   });

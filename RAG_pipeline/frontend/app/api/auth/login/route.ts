@@ -1,0 +1,34 @@
+import { NextRequest, NextResponse } from "next/server";
+
+const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+
+    const res = await fetch(`${FASTAPI_URL}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: data.detail || "Login failed" },
+        { status: res.status },
+      );
+    }
+
+    // Forward Set-Cookie headers from FastAPI to browser
+    const response = NextResponse.json(data);
+    const setCookies = res.headers.getSetCookie();
+    for (const cookie of setCookies) {
+      response.headers.append("Set-Cookie", cookie);
+    }
+    return response;
+  } catch {
+    return NextResponse.json({ error: "Login failed" }, { status: 500 });
+  }
+}

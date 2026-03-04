@@ -36,7 +36,9 @@
       "Bash(pandoc:*)",
       "Bash(xargs grep:*)",
       "Bash(npx tsc:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(alembic upgrade:*)",
+      "Bash(alembic stamp:*)"
     ]
   }
 }

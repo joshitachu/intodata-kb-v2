@@ -7,10 +7,14 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const parsed = DeepDiveRequestSchema.parse(body);
+    const cookieHeader = request.headers.get("cookie") || "";
 
     const upstream = await fetch(`${KB_API_URL}/mcp/deep-dive`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: cookieHeader,
+      },
       body: JSON.stringify(parsed),
     });
 

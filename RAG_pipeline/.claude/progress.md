@@ -121,10 +121,25 @@
 - [x] Frontend: `ChatLayout`/`ChatWindow`/`MessageList`/`ChatInput` wired for deep dive mode
 - [x] Build passing (14 routes)
 
-## Phase 5 — Future
+## Phase 5.1 — JWT Authentication System (COMPLETE)
+
+- [x] Backend auth core: password hashing (bcrypt), JWT tokens (python-jose), refresh token rotation
+- [x] Auth endpoints: POST /login (rate-limited 5/min), /logout, /refresh, GET /me — httpOnly cookies
+- [x] Admin endpoints: CRUD users (create, update, deactivate, reset-password) + CRUD roles
+- [x] Updated dependencies.py: JWT cookie auth replaces X-User-Id header, AdminUser dependency
+- [x] Alembic migration 004: auth columns on users + refresh_tokens table
+- [x] Frontend: middleware route protection, login page, auth proxy routes, useAuth hook, AuthProvider
+- [x] Frontend: admin panel (/admin/users) with user management table
+- [x] Sidebar: logout button, admin link for superadmins
+- [x] MCP server: JWT cookie validation on /mcp, /logs, /webhook routes (shared JWT_SECRET_KEY)
+- [x] Dashboard: credentials:"include" on all fetches, 401→redirect to login, auth check on mount
+- [x] Rate limiting: slowapi on login endpoint (5/minute per IP)
+- [x] Docker: JWT_SECRET_KEY + ADMIN_DEFAULT_PASSWORD env vars in docker-compose.yml
+- [x] Default admin creds: admin/admin (set via ADMIN_DEFAULT_PASSWORD env var)
+
+## Phase 6 — Future
 
 - [ ] Integration Agent (Slack, SharePoint, etc.) — deferred until company tooling known
-- [ ] JWT/OAuth authentication
 - [ ] E2E testing with real Docker services
 - [ ] Frontend: document selector for chat-with-doc
 - [ ] Re-index CLI tool

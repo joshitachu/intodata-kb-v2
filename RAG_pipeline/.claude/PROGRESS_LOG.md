@@ -1,5 +1,57 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-04
+
+### [Feature]: Full JWT authentication system
+
+- **Files changed**:
+  - `backend/pyproject.toml` — added python-jose, passlib[bcrypt], slowapi deps
+  - `backend/src/config.py` — added jwt_secret_key, jwt_algorithm, access/refresh token expiry, admin_default_password settings
+  - `backend/src/db/models/user.py` — added password_hash, is_active, is_superadmin, last_login_at columns + RefreshToken model
+  - `backend/src/db/models/__init__.py` — exported RefreshToken
+  - `backend/src/auth/__init__.py` — new module init
+  - `backend/src/auth/security.py` — hash_password, verify_password, create/decode JWT tokens, hash_token
+  - `backend/src/auth/service.py` — AuthService class (authenticate, create/rotate/revoke tokens)
+  - `backend/src/api/routes/auth.py` — POST /login (rate-limited 5/min), /logout, /refresh, GET /me endpoints with httpOnly cookies
+  - `backend/src/api/routes/admin.py` — CRUD for users (create, update, deactivate, reset-password) and roles, all behind AdminUser dependency
+  - `backend/src/api/dependencies.py` — replaced X-User-Id header auth with JWT cookie auth (access_token cookie), added AdminUser dependency
+  - `backend/src/api/main.py` — registered auth + admin routers, updated CORS origins, added slowapi rate limiter, updated admin seed with password hash
+  - `backend/alembic/versions/004_add_auth_fields.py` — migration: add auth columns to users, create refresh_tokens table, set admin as superadmin
+  - `frontend/middleware.ts` — route protection (redirect to /login if no access_token cookie)
+  - `frontend/app/login/page.tsx` — login page with form, error handling, rate limit feedback
+  - `frontend/app/api/auth/login/route.ts` — proxy to FastAPI, forwards Set-Cookie headers
+  - `frontend/app/api/auth/logout/route.ts` — proxy logout
+  - `frontend/app/api/auth/refresh/route.ts` — proxy token refresh
+  - `frontend/app/api/auth/me/route.ts` — proxy current user info
+  - `frontend/hooks/useAuth.ts` — auth hook with user state, logout, periodic token refresh (12min)
+  - `frontend/components/AuthProvider.tsx` — React context for auth state
+  - `frontend/components/Layout.tsx` — conditionally hide sidebar on /login
+  - `frontend/components/Sidebar.tsx` — added logout button, admin link for superadmins
+  - `frontend/lib/fastapi.ts` — replaced X-User-Id header with access_token cookie forwarding
+  - `frontend/app/api/conversations/[id]/messages/stream/route.ts` — replaced X-User-Id with cookie forwarding
+  - `frontend/app/layout.tsx` — wrapped with AuthProvider via providers.tsx
+  - `frontend/app/providers.tsx` — added AuthProvider
+  - `frontend/app/admin/layout.tsx` — admin-only access guard
+  - `frontend/app/admin/users/page.tsx` — user management table (create, deactivate, activate, reset password)
+  - `frontend/app/api/admin/users/route.ts` — proxy GET/POST users
+  - `frontend/app/api/admin/users/[id]/route.ts` — proxy PUT/DELETE user
+  - `frontend/app/api/admin/users/[id]/reset-password/route.ts` — proxy password reset
+  - `frontend/app/api/admin/roles/route.ts` — proxy GET/POST roles
+  - `knowledge_base/mcp-server/pyproject.toml` — added python-jose dep
+  - `knowledge_base/mcp-server/src/mcp_server/config.py` — added jwt_secret_key, jwt_algorithm settings
+  - `knowledge_base/mcp-server/src/mcp_server/api/app.py` — added JWT cookie validation dependency on /mcp, /logs, /webhook routes; restricted CORS
+  - `knowledge_base/dashboard/src/api/client.ts` — added credentials:"include", 401→redirect to login
+  - `knowledge_base/dashboard/src/hooks/useAuth.ts` — verify auth on mount, redirect if unauthorized
+  - `knowledge_base/dashboard/src/App.tsx` — wrapped in auth check, shows loading/redirect
+  - `knowledge_base/dashboard/nginx.conf` — added Cookie header forwarding to proxy locations
+  - `docker-compose.yml` — added JWT_SECRET_KEY and ADMIN_DEFAULT_PASSWORD env vars to backend + dashboard
+  - `.env.production.template` — added JWT_SECRET_KEY and ADMIN_DEFAULT_PASSWORD
+- **Problem**: App used hardcoded X-User-Id:1 header — no login, no password protection, all endpoints open
+- **Root cause**: Phase 1 placeholder auth was never replaced
+- **Change**: Full JWT auth system with httpOnly cookies, bcrypt password hashing, access+refresh token rotation, rate-limited login, admin user management panel, cross-service JWT validation (RAG backend + MCP server + dashboard)
+- **Why this approach**: JWT with httpOnly cookies — stateless (no session store), works across both frontends (Next.js on :3000, dashboard on :8001), secure against XSS (httpOnly), shared secret enables MCP server to validate tokens independently
+- **Verification**: Needs Docker rebuild + `alembic upgrade head` to test E2E. Manual verification checklist: login with admin/admin, verify cookie set, access protected routes, test admin panel CRUD, verify dashboard redirect, test rate limiting, test token refresh
+
 ## Session: 2026-03-02 (continued 3)
 
 ### [Fix]: MCP server crash on restart — DuplicateTableError for "projects"

@@ -1,13 +1,22 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 
 interface LayoutProps {
   children: ReactNode;
 }
 
+const NO_LAYOUT_PATHS = ["/login"];
+
 export function Layout({ children }: LayoutProps) {
+  const pathname = usePathname();
+
+  if (NO_LAYOUT_PATHS.some((p) => pathname.startsWith(p))) {
+    return <>{children}</>;
+  }
+
   return (
     <div className="flex h-screen">
       <Sidebar />

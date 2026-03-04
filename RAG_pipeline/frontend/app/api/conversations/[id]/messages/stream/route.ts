@@ -9,6 +9,7 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
   const body = await request.json();
+  const cookieHeader = request.headers.get("cookie") || "";
 
   const res = await fetch(
     `${FASTAPI_URL}/api/v1/conversations/${id}/messages/stream`,
@@ -16,7 +17,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-User-Id": "1", // Phase 1: hardcoded user
+        Cookie: cookieHeader,
       },
       body: JSON.stringify(body),
     },

@@ -4,15 +4,19 @@ import { PdfGenerateResponseSchema } from "@/types";
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   const { projectId } = await params;
+  const cookieHeader = request.headers.get("cookie") || "";
 
   try {
     const res = await fetch(
       `${KB_API_URL}/mcp/projects/${projectId}/generate-pdfs`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { Cookie: cookieHeader },
+      },
     );
 
     if (!res.ok) {

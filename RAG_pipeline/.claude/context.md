@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: MVP Complete (Phase 1) + All Phase 1.5 improvements + Enterprise Retrieval Quality Upgrade (Phase 2) + Configurable LLM Provider Chain + Streaming Chat UI + RAG Retrieval Quality Overhaul (Phase 3) + Latency Optimization (Phase 3.2) + **Production Bug Fixes + Voyage AI Enablement (Phase 3.3)** + **Hindsight Memory Full Integration (Phase 3.4)** + **Voyage AI Reranker (Phase 3.5)** + **Deep Dive Mode (Phase 4.1)** + **Deep Dive Streaming Fix + Chat Integration (Phase 4.2)** + **Deep Dive Streaming Repair (Phase 4.3)**
-**Last session**: 2026-03-02
-**Last completed**: Fixed Deep Dive streaming root cause — concurrent stderr reading (prevents pipe deadlock), restored assistant text as fallback (covers case where content_block_delta events don't arrive), conditional --session-id (only for multi-turn continuations), added debug logging for event diagnosis.
+**Status**: MVP Complete (Phase 1) + All Phase 1.5 improvements + Enterprise Retrieval Quality Upgrade (Phase 2) + Configurable LLM Provider Chain + Streaming Chat UI + RAG Retrieval Quality Overhaul (Phase 3) + Latency Optimization (Phase 3.2) + **Production Bug Fixes + Voyage AI Enablement (Phase 3.3)** + **Hindsight Memory Full Integration (Phase 3.4)** + **Voyage AI Reranker (Phase 3.5)** + **Deep Dive Mode (Phase 4.1)** + **Deep Dive Streaming Fix + Chat Integration (Phase 4.2)** + **Deep Dive Streaming Repair (Phase 4.3)** + **JWT Authentication System (Phase 5.1)**
+**Last session**: 2026-03-04
+**Last completed**: Full JWT authentication system — replaced X-User-Id header auth with JWT httpOnly cookies, login/logout/refresh endpoints, admin user management panel, rate limiting, cross-service JWT validation (RAG backend + MCP server + dashboard), Alembic migration 004.
 
 ## What's Done
 
@@ -22,7 +22,8 @@
 - **Intent classifier**: Zero-LLM heuristic router (keyword-based summary detection, all queries go through SEARCH)
 - **Map-reduce summarization**: Full-document summaries via parallel map → reduce
 - **Numbered citations**: LLM uses `[1]`, `[2]` format with `[Reference N: filename]` headers
-- RBAC: Header-based auth (X-User-Id), role-to-group mapping for Qdrant filtering
+- **Auth**: JWT httpOnly cookies (access 15min + refresh 7d rotation), bcrypt passwords, rate-limited login, admin panel for user management
+- RBAC: JWT cookie auth (was X-User-Id header), role-to-group mapping for Qdrant filtering
 - API routes: /health, /api/v1/query, /api/v1/query/debug, /api/v1/query/stream (SSE), /api/v1/documents, /api/v1/ingest
 - Conversations: /api/v1/conversations with conversational RAG pipeline
 - Feature flags: `hybrid_search_enabled`, `reranker_enabled`, `query_expansion_enabled`
@@ -91,6 +92,6 @@ cd frontend && npm run dev    # http://localhost:3000
 - [ ] Frontend: Update Zod schemas for new default top_k=5, threshold=0.3
 - [ ] Frontend: document selector for chat-with-doc
 - [ ] Integration Agent (when company tooling is known)
-- [ ] JWT/OAuth authentication
+- [x] **DONE**: JWT authentication system (httpOnly cookies, admin panel, rate limiting, cross-service validation)
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.

@@ -3,10 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ projectId: string; filename: string }> },
 ) {
   const { projectId, filename } = await params;
+  const cookieHeader = request.headers.get("cookie") || "";
 
   // Validate extension
   if (!filename.endsWith(".md") && !filename.endsWith(".pdf")) {
@@ -19,6 +20,7 @@ export async function GET(
   try {
     const res = await fetch(
       `${KB_API_URL}/mcp/projects/${projectId}/docs/${filename}`,
+      { headers: { Cookie: cookieHeader } },
     );
 
     if (!res.ok) {

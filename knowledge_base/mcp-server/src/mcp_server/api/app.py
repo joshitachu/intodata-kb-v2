@@ -7,10 +7,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from jose import JWTError, jwt
 from sqlalchemy import inspect
 
 from mcp_server.config import config
@@ -53,6 +54,27 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down intodoc MCP Server API")
 
 
+# --- JWT auth dependency ---
+
+async def require_auth(
+    access_token: str | None = Cookie(default=None),
+) -> dict:
+    """Validate JWT from access_token cookie. Returns decoded payload."""
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(
+            access_token,
+            config.jwt_secret_key,
+            algorithms=[config.jwt_algorithm],
+        )
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
 app = FastAPI(
     title="intodoc MCP Server",
     version="0.1.0",
@@ -61,7 +83,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in config.allowed_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,10 +92,20 @@ app.add_middleware(
 # Import and register routes
 from mcp_server.api.routes import health, logs, projects, webhook  # noqa: E402
 
-app.include_router(health.router)
-app.include_router(projects.router, prefix="/mcp")
-app.include_router(webhook.router)
-app.include_router(logs.router)
+app.include_router(health.router)  # /health stays open
+app.include_router(
+    projects.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    webhook.router,
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    logs.router,
+    dependencies=[Depends(require_auth)],
+)
 
 # --- Static file serving for production dashboard ---
 _dist_dir = os.environ.get("DASHBOARD_DIST_DIR")

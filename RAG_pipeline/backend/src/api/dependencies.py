@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import logging
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Cookie, Depends, HTTPException
+from jose import JWTError
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth.security import decode_token
 from src.config import settings
 from src.db.session import get_db
 from src.db.models import User
+
+logger = logging.getLogger(__name__)
 
 
 # --- Database session ---
@@ -33,27 +37,44 @@ async def get_qdrant() -> AsyncQdrantClient:
 QdrantClient = Annotated[AsyncQdrantClient, Depends(get_qdrant)]
 
 
-# --- Current user (Phase 1: header-based) ---
+# --- Current user (JWT cookie auth) ---
 
 async def get_current_user(
     db: DBSession,
-    x_user_id: Annotated[str | None, Header()] = None,
+    access_token: Annotated[str | None, Cookie()] = None,
 ) -> User:
-    """Resolve current user from X-User-Id header. Phase 1: simple header auth."""
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
+    """Resolve current user from access_token httpOnly cookie."""
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        user_id = int(x_user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="X-User-Id must be an integer")
+        payload = decode_token(access_token)
+        user_id = int(payload["sub"])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
-        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="User account is deactivated")
 
     return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+# --- Admin user ---
+
+async def require_admin(user: CurrentUser) -> User:
+    """Require the current user to be a superadmin."""
+    if not user.is_superadmin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+AdminUser = Annotated[User, Depends(require_admin)]

@@ -42,6 +42,11 @@ class MCPServerConfig(BaseSettings):
     hindsight_enabled: bool = False
     hindsight_url: str = "http://localhost:8888"
 
+    # Auth (shared with RAG backend)
+    jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
+    jwt_algorithm: str = "HS256"
+    allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
+
     # App
     log_level: str = "INFO"
 

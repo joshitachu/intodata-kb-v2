@@ -11,7 +11,7 @@
 | LLM | Ollama (Mistral or Llama 3) | Local, no API costs | 2026-02-05 |
 | Vector DB | Qdrant (Docker) | HNSW, payload filtering for RBAC | 2026-02-05 |
 | Relational DB | PostgreSQL (async) | Users, roles, doc metadata, audit | 2026-02-05 |
-| Auth (Phase 1) | Header-based (X-User-Id) | Simple for dev; JWT/OAuth later | 2026-02-05 |
+| Auth | JWT httpOnly cookies (access 15min + refresh 7d) | Stateless, works across both frontends, secure against XSS; was header-based X-User-Id | 2026-03-04 |
 | Frontend | Next.js App Router + Tailwind + shadcn/ui | SSR, route handlers as BFF proxy | 2026-02-05 |
 | State mgmt | React Query | Server state caching | 2026-02-05 |
 | API pattern | BFF via Next.js route.ts → FastAPI | Client never calls FastAPI directly | 2026-02-05 |
@@ -84,6 +84,7 @@
 | Hindsight Memory Full Integration | 2026-02-28 | Added Hindsight recall+retain to rag_chain.py + /query/stream. Added memory_context to build_messages(). INFO-level diagnostics. 174 tests passing |
 | Voyage AI Reranker | 2026-02-28 | Replaced local cross-encoder with Voyage AI rerank-2.5 API. Removed sentence-transformers dep. 174 tests passing |
 | Deep Dive Mode | 2026-03-01 | Full-stack: DeepDiveService (subprocess), API endpoints (SSE), BFF routes, hooks, components, search page integration. Build passing |
+| JWT Authentication System | 2026-03-04 | Full auth: JWT cookies, bcrypt passwords, refresh token rotation, admin panel, rate limiting, MCP server JWT validation, dashboard auth. Alembic migration 004 |
 
 ## Pending Tasks
 
@@ -157,6 +158,10 @@ None currently.
 - **subprocess stderr deadlock on Windows**: When using `subprocess.Popen` with both `stdout=PIPE` and `stderr=PIPE`, reading stdout first and stderr after can deadlock if stderr's pipe buffer fills (~4KB on Windows). Always drain stderr concurrently using `asyncio.create_task()` (or `asyncio.gather`). See `claude_service.py` and `deep_dive_service.py` for the pattern.
 - **Claude CLI `stream-json` text delivery**: Claude CLI may not emit `content_block_delta` events (or may batch them due to Windows pipe buffering). Always handle text from both `content_block_delta` (preferred, incremental) AND `assistant` events (fallback, full turn). Use a `_text_streamed_via_delta` flag to avoid duplication.
 
+- **JWT cookie auth across services**: RAG backend (port 8000) issues cookies. Next.js (port 3000) proxies auth endpoints and forwards cookies to FastAPI. MCP server (port 8002) validates JWT independently using shared `JWT_SECRET_KEY`. Dashboard (port 8001/nginx) forwards cookies via `proxy_set_header Cookie`. All services must share the same JWT_SECRET_KEY.
+- **Refresh token cookie path**: Refresh token cookie path is `/api/v1/auth/refresh` — browser only sends it to that endpoint. Access token cookie path is `/` — sent on every request.
+- **Default admin password**: Set via `ADMIN_DEFAULT_PASSWORD` env var (default: "admin"). The lifespan handler seeds the admin user on first boot and also back-fills the password hash for existing admin users that were created before auth was added.
+
 ## Environment
 
 - Platform: Windows (OneDrive path)
@@ -171,8 +176,9 @@ None currently.
 intodata-kb/
 ├── backend/
 │   ├── src/
-│   │   ├── api/          # FastAPI app, routes, dependencies
-│   │   ├── db/           # SQLAlchemy models, session
+│   │   ├── api/          # FastAPI app, routes (auth, admin, query, etc.), dependencies
+│   │   ├── auth/         # JWT security (hash, tokens), AuthService
+│   │   ├── db/           # SQLAlchemy models (User, Role, RefreshToken, etc.), session
 │   │   ├── ingestion/    # Parser, chunker, metadata, pipeline
 │   │   ├── retrieval/    # Embedder, vector store, search
 │   │   ├── generation/   # LLM client, prompt builder, RAG chain

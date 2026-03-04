@@ -1,13 +1,27 @@
 const BASE = "";
 
+function getLoginUrl(): string {
+  if (import.meta.env.VITE_LOGIN_URL) {
+    return import.meta.env.VITE_LOGIN_URL;
+  }
+  return `${window.location.protocol}//${window.location.hostname}:3000/login`;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...options.headers as Record<string, string> },
+    credentials: "include",
     ...options,
   });
+
+  if (res.status === 401) {
+    window.location.href = `${getLoginUrl()}?redirect=${encodeURIComponent(window.location.href)}`;
+    throw new Error("Not authenticated");
+  }
+
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`${res.status}: ${detail}`);
@@ -29,8 +43,16 @@ export const api = {
     form.append("file", file);
     form.append("project_id", projectId);
     form.append("platform", platform);
-    return fetch(`${BASE}/mcp/upload-zip`, { method: "POST", body: form }).then(
+    return fetch(`${BASE}/mcp/upload-zip`, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+    }).then(
       (r) => {
+        if (r.status === 401) {
+          window.location.href = `${getLoginUrl()}?redirect=${encodeURIComponent(window.location.href)}`;
+          throw new Error("Not authenticated");
+        }
         if (!r.ok) throw new Error(`Upload failed: ${r.status}`);
         return r.json() as Promise<import("../types").Project>;
       }

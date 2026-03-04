@@ -212,18 +212,22 @@ OLLAMA_LLM_MODEL=llama3.1:8b
 QDRANT_URL=http://localhost:6333
 DATABASE_URL=postgresql://postgres:changeme@localhost:5432/intodata_kb
 
+# Auth (shared between backend + MCP server)
+JWT_SECRET_KEY=change-me-in-production-use-a-strong-random-key
+ADMIN_DEFAULT_PASSWORD=admin
+
 # frontend/.env
 VITE_API_URL=http://localhost:8000/api/v1
 ```
 
 ## Key Features
 
+- **Authentication**: JWT httpOnly cookies (access 15min + refresh 7d rotation), bcrypt passwords, rate-limited login (5/min), admin user management panel. Default creds: admin/admin
 - Document ingestion (PDF, DOCX, PPTX)
 - Text chunking (500 tokens, 50 overlap)
 - Vector search with RBAC filtering
 - RAG with local LLM
 - Source citations in responses
-- Slack message history (next phase)
 
 ## Out of Scope
 

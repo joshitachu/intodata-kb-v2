@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     hindsight_recall_budget: str = "low"
     hindsight_recall_max_tokens: int = 1024
 
+    # Auth
+    jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 15
+    refresh_token_expire_days: int = 7
+    admin_default_password: str = "admin"
+    cookie_secure: bool = False
+    cookie_domain: str = ""
+    allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

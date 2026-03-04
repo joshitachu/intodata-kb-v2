@@ -95,23 +95,24 @@ npm ci
 npm run build
 echo "[OK] Dashboard built at $INSTALL_DIR/knowledge_base/dashboard/dist"
 
-# ── 7. Docker Compose ───────────────────────────────────────────────────────
+# ── 7. Set ownership ─────────────────────────────────────────────────────────
+
+chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+echo "[OK] Ownership set to $SERVICE_USER"
+
+# ── 8. Docker Compose ───────────────────────────────────────────────────────
 
 cd "$INSTALL_DIR"
-docker compose up -d --build
+docker compose --env-file .env.production up -d --build
 echo "[OK] Docker services started"
 
-# ── 8. Install systemd service ──────────────────────────────────────────────
+# ── 9. Install systemd service ──────────────────────────────────────────────
 
 cp "$INSTALL_DIR/deploy/mcp-server.service" /etc/systemd/system/mcp-server.service
 systemctl daemon-reload
 systemctl enable mcp-server
 systemctl restart mcp-server
 echo "[OK] mcp-server.service installed and started"
-
-# ── 9. Set ownership ────────────────────────────────────────────────────────
-
-chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 

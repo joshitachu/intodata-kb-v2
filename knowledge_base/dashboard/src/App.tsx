@@ -5,9 +5,28 @@ import LogPanel from "./components/LogPanel";
 import ProjectList from "./components/ProjectList";
 import RunHistory from "./components/RunHistory";
 import { useLogStream } from "./hooks/useLogStream";
+import { useAuth } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
 export default function App() {
+  const auth = useAuth();
+
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-gray-500">Verifying authentication...</p>
+      </div>
+    );
+  }
+
+  if (!auth.authenticated) {
+    return null; // Redirecting to login
+  }
+
+  return <AppContent />;
+}
+
+function AppContent() {
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(true);

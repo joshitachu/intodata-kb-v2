@@ -49,10 +49,9 @@ async def _voyage_embed_batch(texts: list[str]) -> list[list[float]]:
     import asyncio
     from openai import AsyncOpenAI
 
-    # Split into sub-batches to stay under Voyage free-tier 10K TPM limit.
-    # Each chunk averages ~400 tokens; 8 chunks * 400 = ~3200 tokens per sub-batch.
-    SUB_BATCH_SIZE = 8
-    SUB_BATCH_DELAY = 22  # seconds between sub-batches
+    # Voyage paid-tier limits: up to 128 inputs per request, high TPM.
+    SUB_BATCH_SIZE = 128
+    SUB_BATCH_DELAY = 1  # courtesy delay between sub-batches
 
     client = AsyncOpenAI(
         base_url="https://api.voyageai.com/v1",
