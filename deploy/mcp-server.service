@@ -8,7 +8,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/intodata-kb/knowledge_base
-EnvironmentFile=/opt/intodata-kb/.env.production
+EnvironmentFile=/opt/intodata-kb/.env
 ExecStart=/opt/intodata-kb/venv/bin/python -m mcp_server \
     --serve \
     --port 8002

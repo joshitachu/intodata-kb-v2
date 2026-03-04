@@ -66,12 +66,12 @@ fi
 
 # ── 4. Create env file from template if missing ─────────────────────────────
 
-if [ ! -f "$INSTALL_DIR/.env.production" ]; then
+if [ ! -f "$INSTALL_DIR/.env" ]; then
     if [ -f "$INSTALL_DIR/.env.production.template" ]; then
-        cp "$INSTALL_DIR/.env.production.template" "$INSTALL_DIR/.env.production"
-        echo "[WARN] Created .env.production from template -- review and update values!"
+        cp "$INSTALL_DIR/.env.production.template" "$INSTALL_DIR/.env"
+        echo "[WARN] Created .env from template -- review and update values!"
     else
-        echo "[WARN] No .env.production found. Create one before starting the service."
+        echo "[WARN] No .env found. Create one before starting the service."
     fi
 fi
 
@@ -103,7 +103,7 @@ echo "[OK] Ownership set to $SERVICE_USER"
 # ── 8. Docker Compose ───────────────────────────────────────────────────────
 
 cd "$INSTALL_DIR"
-docker compose --env-file .env.production up -d --build
+docker compose up -d --build
 echo "[OK] Docker services started"
 
 # ── 9. Install systemd service ──────────────────────────────────────────────
