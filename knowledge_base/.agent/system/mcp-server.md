@@ -20,7 +20,7 @@ The server runs in two modes via `python -m mcp_server`:
 | `get_scan_status` | `project_id` | Cache age, job count, status |
 | `get_chunks` | `project_id` | Chunk definitions (chunk_id, group, job_count, token_estimate) |
 | `fetch_chunk` | `project_id`, `chunk_id` | Full job data for one chunk |
-| `insert_to_rag` | `project_id`, `docs?` | Push .md files to RAG pipeline |
+| `insert_to_rag` | `project_id`, `docs?` | Push .md files to RAG pipeline (note: doc generation no longer calls this -- RAG push is server-side via `_run_generate_background`) |
 | `list_projects` | -- | All registered projects with status |
 
 ### fetch_json Sections

@@ -12,17 +12,17 @@ class Settings(BaseSettings):
     llm_providers: list[str] = ["kimi", "ollama"]
 
     # Kimi (Moonshot AI)
-    kimi_api_key: str = "sk-1FSKsQ9pKQPwcw0uPyFwsO72uQtlcIxmRNboiIOJ5EdK17MY"
+    kimi_api_key: str = ""
     kimi_llm_model: str = "kimi-k2.5"
     kimi_temperature: float = 0.6
     kimi_timeout: float = 60.0
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    ollama_llm_model: str = "gemma3:12b"
+    ollama_llm_model: str = "gemma3:4b"
     ollama_embed_model: str = "nomic-embed-text"
     ollama_router_model: str = "gemma3:4b"
-    ollama_timeout: float = 120.0
+    ollama_timeout: float = 300.0
 
     # Embedding provider chain
     embedding_providers: list[str] = ["voyage", "ollama"]
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # Auth
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 15
+    access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
     admin_default_password: str = "admin"
     cookie_secure: bool = False

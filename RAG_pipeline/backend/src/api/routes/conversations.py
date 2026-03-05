@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -24,6 +25,8 @@ from src.schemas import (
     DocumentSource,
     MessageResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -269,16 +272,21 @@ async def send_message_stream(
     user_groups = [role.name for role in user.roles]
 
     async def event_generator():
-        async for event_type, data in run_conversational_rag_stream(
-            conversation=conversation,
-            query=request.query,
-            user_groups=user_groups,
-            qdrant=qdrant,
-            db=db,
-            top_k=request.top_k,
-            threshold=request.threshold,
-            user_id=str(user.id),
-        ):
-            yield f"event: {event_type}\ndata: {data}\n\n"
+        try:
+            async for event_type, data in run_conversational_rag_stream(
+                conversation=conversation,
+                query=request.query,
+                user_groups=user_groups,
+                qdrant=qdrant,
+                db=db,
+                top_k=request.top_k,
+                threshold=request.threshold,
+                user_id=str(user.id),
+            ):
+                yield f"event: {event_type}\ndata: {data}\n\n"
+        except Exception as e:
+            logger.error("Conversation stream failed: %s", e, exc_info=True)
+            yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
+            yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

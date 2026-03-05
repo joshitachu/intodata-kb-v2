@@ -65,7 +65,7 @@ database connection issues, missing project, scan in progress.
 ## RAG Pipeline Issues
 
 ### Ollama not running
-**Symptom**: `insert_to_rag` fails with connection error.
+**Symptom**: RAG push fails with connection error (server-side after generation, or manual `insert_to_rag`).
 **Fix**: Start Ollama and pull the embedding model:
 ```bash
 ollama pull nomic-embed-text

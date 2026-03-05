@@ -27,16 +27,16 @@ End-to-end guide for generating documentation for a project using the MCP agent 
    - Phase 1: Setup (manifest, connections)
    - Phase 2: Group Analysis (parallel sub-agents per group)
    - Phase 3: Write Docs (parallel sub-agents by theme)
-   - Phase 4: Publish (index.json, run log, insert_to_rag)
+   - Phase 4: Publish (index.json, run log; RAG push is automatic server-side)
 
 4. **Verify output**
    Check `output/{project_id}/docs/` for generated markdown files.
+   (Claude Code writes to `docs_staging/`; the server swaps to `docs/` on success.)
    Verify `index.json` lists all generated documents.
 
-5. **Push to RAG** (optional)
-   ```
-   insert_to_rag(project_id)
-   ```
+5. **RAG push** (automatic)
+   The server pushes docs to RAG automatically after successful generation via `RagBridge.push_docs()`.
+   Manual push is still available via the dashboard's "Push to RAG" button or `POST /mcp/push-to-rag`.
 
 6. **Log the run**
    Update `.claude/PROGRESS_LOG.md` with:

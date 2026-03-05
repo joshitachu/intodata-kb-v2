@@ -36,8 +36,13 @@ function LoginForm() {
         return;
       }
 
-      router.push(redirect);
-      router.refresh();
+      // If redirect is an external URL (e.g. dashboard on port 8001), use window.location
+      if (redirect.startsWith("http")) {
+        window.location.href = redirect;
+      } else {
+        router.push(redirect);
+        router.refresh();
+      }
     } catch {
       setError("Network error. Please try again.");
     } finally {

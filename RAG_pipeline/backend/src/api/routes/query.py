@@ -5,7 +5,7 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from qdrant_client.models import Filter, FieldCondition, MatchAny, NamedVector
 
@@ -55,13 +55,20 @@ async def query(
 ) -> QueryResponse:
     """Run a RAG query: embed → search → generate answer with citations."""
     user_groups = get_user_groups(user)
-    return await run_rag_query(
-        request=body,
-        user_groups=user_groups,
-        user_id=user.id,
-        qdrant=qdrant,
-        db=db,
-    )
+    try:
+        return await run_rag_query(
+            request=body,
+            user_groups=user_groups,
+            user_id=user.id,
+            qdrant=qdrant,
+            db=db,
+        )
+    except RuntimeError as e:
+        logger.error("RAG query failed: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail=f"LLM generation failed: {e}",
+        )
 
 
 @router.post("/query/debug", response_model=DebugSearchResponse)
@@ -196,28 +203,33 @@ async def query_stream(
 
     # 3. Stream response
     async def event_generator():
-        # Send sources first so frontend can display them
-        yield f"event: sources\ndata: {json.dumps(sources_data)}\n\n"
+        try:
+            # Send sources first so frontend can display them
+            yield f"event: sources\ndata: {json.dumps(sources_data)}\n\n"
 
-        # Stream LLM tokens and accumulate answer for retain
-        accumulated = ""
-        async for token in generate_answer_stream(messages):
-            accumulated += token
-            yield f"event: token\ndata: {json.dumps(token)}\n\n"
+            # Stream LLM tokens and accumulate answer for retain
+            accumulated = ""
+            async for token in generate_answer_stream(messages):
+                accumulated += token
+                yield f"event: token\ndata: {json.dumps(token)}\n\n"
 
-        # Retain interaction to Hindsight (fire-and-forget — does not block response)
-        latency_ms = int((time.perf_counter() - start) * 1000)
-        source_names = [s.filename for s in document_sources] if document_sources else []
-        asyncio.create_task(retain_interaction(
-            user_id=uid,
-            query=body.query,
-            answer=accumulated,
-            sources_used=source_names,
-            search_result_count=len(document_sources),
-            latency_ms=latency_ms,
-            intent=analysis.action.value,
-        ))
+            # Retain interaction to Hindsight (fire-and-forget — does not block response)
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            source_names = [s.filename for s in document_sources] if document_sources else []
+            asyncio.create_task(retain_interaction(
+                user_id=uid,
+                query=body.query,
+                answer=accumulated,
+                sources_used=source_names,
+                search_result_count=len(document_sources),
+                latency_ms=latency_ms,
+                intent=analysis.action.value,
+            ))
 
-        yield "event: done\ndata: {}\n\n"
+            yield "event: done\ndata: {}\n\n"
+        except Exception as e:
+            logger.error("Streaming query failed: %s", e, exc_info=True)
+            yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
+            yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

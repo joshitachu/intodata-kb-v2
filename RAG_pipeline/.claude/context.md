@@ -22,7 +22,7 @@
 - **Intent classifier**: Zero-LLM heuristic router (keyword-based summary detection, all queries go through SEARCH)
 - **Map-reduce summarization**: Full-document summaries via parallel map → reduce
 - **Numbered citations**: LLM uses `[1]`, `[2]` format with `[Reference N: filename]` headers
-- **Auth**: JWT httpOnly cookies (access 15min + refresh 7d rotation), bcrypt passwords, rate-limited login, admin panel for user management
+- **Auth**: JWT httpOnly cookies (access 60min + refresh 7d rotation), bcrypt passwords, rate-limited login, admin panel for user management
 - RBAC: JWT cookie auth (was X-User-Id header), role-to-group mapping for Qdrant filtering
 - API routes: /health, /api/v1/query, /api/v1/query/debug, /api/v1/query/stream (SSE), /api/v1/documents, /api/v1/ingest
 - Conversations: /api/v1/conversations with conversational RAG pipeline

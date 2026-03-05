@@ -17,6 +17,8 @@ interface UseAuthReturn {
   isLoading: boolean;
   isAuthenticated: boolean;
   logout: () => Promise<void>;
+  /** Attempt a token refresh on 401. Returns true if refreshed (caller should retry). */
+  handleUnauthorized: () => Promise<boolean>;
 }
 
 export function useAuth(): UseAuthReturn {
@@ -52,29 +54,52 @@ export function useAuth(): UseAuthReturn {
     fetchUser();
   }, [fetchUser]);
 
-  // Set up periodic token refresh (every 12 minutes, before 15-min expiry)
+  // Attempt a token refresh; returns true on success, false on failure.
+  const tryRefresh = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/refresh", { method: "POST" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Intercept a 401 response: try refreshing the token once.
+  // If the refresh succeeds, returns true so the caller can retry.
+  // If the refresh fails, redirects to login and returns false.
+  const handleUnauthorized = useCallback(async (): Promise<boolean> => {
+    const refreshed = await tryRefresh();
+    if (refreshed) return true;
+    setUser(null);
+    router.push("/login");
+    router.refresh();
+    return false;
+  }, [tryRefresh, router]);
+
+  // Set up periodic token refresh (every 10 minutes, before 60-min expiry)
   useEffect(() => {
     if (!user) return;
 
     const interval = setInterval(
       async () => {
-        const res = await fetch("/api/auth/refresh", { method: "POST" });
-        if (!res.ok) {
+        const ok = await tryRefresh();
+        if (!ok) {
           setUser(null);
           router.push("/login");
           router.refresh();
         }
       },
-      12 * 60 * 1000,
+      10 * 60 * 1000,
     );
 
     return () => clearInterval(interval);
-  }, [user, router]);
+  }, [user, router, tryRefresh]);
 
   return {
     user,
     isLoading,
     isAuthenticated: user !== null,
     logout,
+    handleUnauthorized,
   };
 }

@@ -222,7 +222,7 @@ VITE_API_URL=http://localhost:8000/api/v1
 
 ## Key Features
 
-- **Authentication**: JWT httpOnly cookies (access 15min + refresh 7d rotation), bcrypt passwords, rate-limited login (5/min), admin user management panel. Default creds: admin/admin
+- **Authentication**: JWT httpOnly cookies (access 60min + refresh 7d rotation), bcrypt passwords, rate-limited login (5/min), admin user management panel. Default creds: admin/admin
 - Document ingestion (PDF, DOCX, PPTX)
 - Text chunking (500 tokens, 50 overlap)
 - Vector search with RBAC filtering

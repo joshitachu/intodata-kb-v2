@@ -11,7 +11,7 @@
 | LLM | Ollama (Mistral or Llama 3) | Local, no API costs | 2026-02-05 |
 | Vector DB | Qdrant (Docker) | HNSW, payload filtering for RBAC | 2026-02-05 |
 | Relational DB | PostgreSQL (async) | Users, roles, doc metadata, audit | 2026-02-05 |
-| Auth | JWT httpOnly cookies (access 15min + refresh 7d) | Stateless, works across both frontends, secure against XSS; was header-based X-User-Id | 2026-03-04 |
+| Auth | JWT httpOnly cookies (access 60min + refresh 7d) | Stateless, works across both frontends, secure against XSS; was header-based X-User-Id. Access token was 15min but caused session timeouts every 5-10min (cookie max_age expired + tight refresh margin) | 2026-03-05 |
 | Frontend | Next.js App Router + Tailwind + shadcn/ui | SSR, route handlers as BFF proxy | 2026-02-05 |
 | State mgmt | React Query | Server state caching | 2026-02-05 |
 | API pattern | BFF via Next.js route.ts → FastAPI | Client never calls FastAPI directly | 2026-02-05 |

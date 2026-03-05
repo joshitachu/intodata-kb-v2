@@ -34,10 +34,10 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 ## Rules
 
 1. **Read `.agent/README.md` first** -- it tells you which docs to read for your task
-2. **Log every session** to `.claude/PROGRESS_LOG.md` -- date, actions, lessons learned
+2. **Read `.claude/` files before starting work** -- read `context.md`, `PROJECT_MEMORY.md`, `progress.md`, and `PROGRESS_LOG.md` at session start. Follow the unified logging rules in root `CLAUDE.md` (section "Logging Rules") for all changes -- same format, same discipline as `RAG_pipeline/`.
 3. **Credential filter first** -- never send raw credentials to any LLM
 4. **ASCII-only Markdown** -- no Unicode box-drawing characters in generated docs
-5. **No intermediate files** -- only final `.md` docs in `output/{project_id}/docs/`
+5. **No intermediate files** -- only final `.md` docs in `output/{project_id}/docs/` (generated via `docs_staging/`, see Documentation Generation)
 6. **Never hardcode group names** -- use whatever `get_chunks()` returns
 7. **Never call `trigger_scan()`** unless cache is explicitly stale or missing
 
@@ -47,6 +47,18 @@ The MCP-based 4-phase documentation workflow is documented in:
 **`.agent/system/mcp-workflow.md`**
 
 This is the primary method for generating project documentation. Follow it exactly.
+
+### Safe Re-Runs (Staging Directory)
+
+Doc generation uses a **staging directory** (`docs_staging/`) to protect existing docs:
+
+1. Claude Code writes new docs to `output/{project_id}/docs_staging/`
+2. On **success**: old `docs/` is removed, `docs_staging/` is renamed to `docs/`, then server pushes to RAG automatically
+3. On **failure**: `docs_staging/` is deleted, old `docs/` remains intact, `doc_count` unchanged
+
+Key files: `claude_service.py` (prompt + staging dir setup), `projects.py:_run_generate_background` (swap logic + server-side RAG push).
+
+**Do NOT** add `insert_to_rag` back to the Claude Code prompt -- RAG push is handled server-side in `_run_generate_background` via `RagBridge.push_docs()`.
 
 ## Code Conventions
 

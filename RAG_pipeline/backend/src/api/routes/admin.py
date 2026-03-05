@@ -100,10 +100,12 @@ async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
         password_hash=hash_password(body.password),
     )
 
-    # Attach roles
+    # Attach roles (always set explicitly to avoid lazy-load in async context)
     if body.role_ids:
         roles_result = await db.execute(select(Role).where(Role.id.in_(body.role_ids)))
         user.roles = list(roles_result.scalars().all())
+    else:
+        user.roles = []
 
     db.add(user)
     await db.flush()

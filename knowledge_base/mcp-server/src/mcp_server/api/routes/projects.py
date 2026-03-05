@@ -238,44 +238,95 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
 
 
 async def _run_generate_background(project_id: str, run_id: int, log_mgr):
-    """Background task: spawn Claude Code for doc generation."""
+    """Background task: spawn Claude Code for doc generation.
+
+    Uses a staging directory (docs_staging/) so that existing docs survive
+    if generation fails.  Only on success is the staging dir swapped in.
+    """
     claude = ClaudeService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
     result = await claude.generate_docs(project_id)
 
     success = result.get("success", False)
 
-    # Count generated docs
-    docs_dir = config.project_root / "output" / project_id / "docs"
-    doc_count = len(list(docs_dir.glob("*.md"))) if docs_dir.exists() else 0
+    output_dir = config.project_root / "output" / project_id
+    staging_dir = output_dir / "docs_staging"
+    docs_dir = output_dir / "docs"
 
     # Get log file path
     log_path = log_mgr.get_current_log_path(project_id)
     log_file = log_path.name if log_path else None
 
-    async with async_session_factory() as db:
-        registry = ProjectRegistry(db)
-        if success:
+    if success:
+        # Count docs produced in staging
+        doc_count = len(list(staging_dir.glob("*.md"))) if staging_dir.exists() else 0
+
+        if doc_count > 0:
+            # Atomic swap: remove old docs, rename staging → docs
+            if docs_dir.exists():
+                shutil.rmtree(docs_dir, ignore_errors=True)
+            staging_dir.rename(docs_dir)
+
+            # Push new docs to RAG server-side
+            try:
+                bridge = RagBridge(log_manager=log_mgr)
+                await bridge.push_docs(project_id=project_id, output_dir=str(docs_dir))
+            except Exception as e:
+                await log_mgr.emit(
+                    project_id,
+                    f"RAG push failed (docs are saved): {e}",
+                    level="warning",
+                )
+        else:
+            # Generation "succeeded" but produced no docs — clean staging
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
+
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
             await registry.update_status(project_id, "ready")
             await registry.update_generate_result(project_id, doc_count=doc_count)
-        else:
-            await registry.update_status(project_id, "error", error_message="Doc generation failed")
+            await registry.complete_generate_run(
+                run_id,
+                status="completed",
+                cost_usd=result.get("cost_usd"),
+                duration_ms=result.get("duration_ms"),
+                duration_api_ms=result.get("duration_api_ms"),
+                input_tokens=result.get("input_tokens"),
+                output_tokens=result.get("output_tokens"),
+                num_turns=result.get("num_turns"),
+                session_id=result.get("session_id"),
+                doc_count=doc_count,
+                error_message=None,
+                log_file=log_file,
+            )
+            await db.commit()
+    else:
+        # Generation failed — clean staging, preserve old docs
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
-        await registry.complete_generate_run(
-            run_id,
-            status="completed" if success else "failed",
-            cost_usd=result.get("cost_usd"),
-            duration_ms=result.get("duration_ms"),
-            duration_api_ms=result.get("duration_api_ms"),
-            input_tokens=result.get("input_tokens"),
-            output_tokens=result.get("output_tokens"),
-            num_turns=result.get("num_turns"),
-            session_id=result.get("session_id"),
-            doc_count=doc_count,
-            error_message=None if success else "Doc generation failed",
-            log_file=log_file,
-        )
-        await db.commit()
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            await registry.update_status(
+                project_id, "error", error_message="Doc generation failed"
+            )
+            # Keep existing doc_count — old docs are still on disk
+            await registry.complete_generate_run(
+                run_id,
+                status="failed",
+                cost_usd=result.get("cost_usd"),
+                duration_ms=result.get("duration_ms"),
+                duration_api_ms=result.get("duration_api_ms"),
+                input_tokens=result.get("input_tokens"),
+                output_tokens=result.get("output_tokens"),
+                num_turns=result.get("num_turns"),
+                session_id=result.get("session_id"),
+                doc_count=None,
+                error_message="Doc generation failed",
+                log_file=log_file,
+            )
+            await db.commit()
 
     # Signal SSE subscribers that generation is done
     await log_mgr.emit_done(project_id)

@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { fastapiUpload } from "@/lib/fastapi";
 import { IngestResponseSchema } from "@/types";
 
+export const config = {
+  api: {
+    bodyParser: false,
+    responseLimit: false,
+  },
+  maxDuration: 300,
+};
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();

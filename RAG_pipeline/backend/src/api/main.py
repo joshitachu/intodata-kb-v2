@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     from src.db.session import get_db
     from src.db.models import User, Role
     from src.auth.security import hash_password
-    from sqlalchemy import select
+    from sqlalchemy import select, text
     async for db in get_db():
         admin = (await db.execute(select(User).where(User.id == 1))).scalar_one_or_none()
         if admin is None:
@@ -55,6 +55,10 @@ async def lifespan(app: FastAPI):
             )
             user.roles.append(role)
             db.add(user)
+            await db.flush()
+            # Reset sequences after explicit-ID inserts to avoid duplicate key errors
+            await db.execute(text("SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))"))
+            await db.execute(text("SELECT setval('roles_id_seq', (SELECT MAX(id) FROM roles))"))
             await db.commit()
             logger.info("Seeded default admin user (id=1) with password")
         elif admin.password_hash is None:

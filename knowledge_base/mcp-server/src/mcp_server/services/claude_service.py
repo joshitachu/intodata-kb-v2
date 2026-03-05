@@ -13,6 +13,7 @@ import traceback
 
 from mcp_server.config import config
 from mcp_server.services.log_manager import LogManager
+from mcp_server.services.token_refresh import ensure_token_fresh
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +81,18 @@ class ClaudeService:
         """
         output_dir = config.project_root / "output" / project_id
 
-        # Clean previous docs to avoid "File has not been read yet" errors
-        docs_dir = output_dir / "docs"
-        if docs_dir.exists():
-            shutil.rmtree(docs_dir, ignore_errors=True)
+        # Use a staging directory so old docs survive if generation fails
+        staging_dir = output_dir / "docs_staging"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
-        (output_dir / "docs").mkdir(parents=True, exist_ok=True)
-        (output_dir / "logs").mkdir(parents=True, exist_ok=True)
+        for d in [
+            staging_dir,
+            staging_dir / "_analysis",
+            output_dir / "logs",
+        ]:
+            d.mkdir(parents=True, exist_ok=True)
+            d.chmod(0o777)
 
         # Build Hindsight memory steps conditionally
         hindsight_phase1 = ""
@@ -111,71 +117,154 @@ PHASE 1 -- SETUP:
    - Call get_chunks('{project_id}'). Group chunks by 'group' field.
    - Call fetch_json('{project_id}', 'manifest') for dependency graph.
    - Call fetch_json('{project_id}', 'connections') for metadata connections.
-   - Directories output/{project_id}/docs/ and logs/ are pre-created.
+   - Directories output/{project_id}/docs_staging/, output/{project_id}/docs_staging/_analysis/, and logs/ are pre-created.
 
 PHASE 2 -- GROUP ANALYSIS (parallel sub-agents):
    Spawn one sub-agent per group (all in parallel). Each sub-agent:
    1. Receives: project_id, group name, chunk_ids, manifest, connections.
    2. Calls get_analysis_prompts() to load analysis guidance.
-   3. Calls fetch_chunk('{project_id}', chunk_id) for each chunk in its group.
-   4. Analyzes ALL chunks across ALL dimensions using the prompt guidance.
-   5. Returns a compact text summary (~3-5KB) directly -- NO files written.
+   3. Calls get_reference_docs('all') to understand what detail the final docs need.
+   4. Calls fetch_chunk('{project_id}', chunk_id) for each chunk in its group.
+   5. Analyzes ALL chunks across ALL dimensions using the prompt guidance.
+   6. Writes a RICH structured analysis file to output/{project_id}/docs_staging/_analysis/{{group}}.md (target: 15-40KB).
+   7. Returns a ~2KB navigation summary to the orchestrator (group name, job count, key findings, section list).
 
-   Each summary must follow this structure:
+   The analysis file (output/{project_id}/docs_staging/_analysis/{{group}}.md) MUST contain ALL of the following sections:
+
+   ## HEADER
    GROUP: {{name}} | CHUNKS: {{ids}} | JOB_COUNT: {{n}}
-   Sections: COMPONENTS, EXECUTION_FLOW, DATA_FLOWS, BUSINESS_RULES (BR-{{GRP}}-NNN),
-   EXTERNAL_SYSTEMS, ERROR_HANDLING, CUSTOM_CODE, ENVIRONMENT, SCHEDULING,
-   NAMING_PATTERNS, CROSS_GROUP_REFS, RISK_FLAGS, PREVENTIVE_RISKS.
+
+   ## COMPONENTS
+   Full inventory: every job name, type, purpose, input/output connections.
+
+   ## EXECUTION_FLOW
+   Ordered execution sequences with trigger conditions. Include parent-child relationships.
+
+   ## DATA_FLOWS
+   Column-level lineage for key data flows. For EVERY tMap component:
+   - Source table.column -> target table.column mapping
+   - The FULL tMap expression (do NOT truncate)
+   - Human-readable explanation of what the expression does
+   - Filter/reject conditions
+
+   ## BUSINESS_RULES
+   EVERY business rule with structured format:
+   - BR-{{GRP}}-NNN: rule ID
+   - Expression: the actual code/expression implementing the rule
+   - Implementing job: which job contains it
+   - Domain: what business area it covers
+   - Impact: what happens if the rule is violated
+   Include rules from tMap expressions, tJavaRow, tJava, WHERE clauses, filter conditions.
+
+   ## SCHEMA_DICTIONARY
+   EVERY table and view referenced:
+   - Table/view name
+   - Column names, data types, nullable flag
+   - Which jobs READ from it, which jobs WRITE to it
+   - Key constraints if visible
+
+   ## SOURCE_SQL
+   EVERY SQL query in FULL (not truncated). Include:
+   - Which component/job contains it
+   - Whether it's a source query, lookup, or DML
+
+   ## EXTERNAL_SYSTEMS
+   All external connections: databases, APIs, file systems, FTP, etc.
+   Include connection parameters (host patterns, ports, database names).
+
+   ## ERROR_HANDLING
+   Per-job error handling rating (GOOD / PARTIAL / MISSING).
+   Specific gaps: which jobs lack try/catch, which have silent failures.
+   Die-on-error settings per subjob.
+
+   ## CUSTOM_CODE
+   All tJava, tJavaRow, tJavaFlex code blocks in full.
+   Hidden business rules embedded in custom code.
+   Utility routines and their purpose.
+
+   ## ENVIRONMENT_CONFIG
+   Every context variable with PROD vs TEST/DEV differences.
+   Connection strings (sanitized), file paths, feature flags.
+
+   ## SCHEDULING
+   Trigger types, cron expressions, execution windows, dependencies between jobs.
+
+   ## NAMING_PATTERNS
+   Observed naming conventions for jobs, schemas, tables, variables.
+
+   ## CROSS_GROUP_REFS
+   Dependencies on other groups: shared tables, shared context vars, execution ordering.
+
+   ## RISK_FLAGS
+   Preventive risks with structured format:
+   - Severity: CRITICAL / HIGH / MEDIUM / LOW
+   - Affected jobs
+   - Description of the risk
+   - Recommended remediation
 
    IMPORTANT for sub-agents:
    - Do NOT call fetch_json for manifest/connections -- use what was passed inline.
    - Do NOT use TodoWrite, mkdir, ls, wc, or ASCII validation scripts.
    - Do NOT read .agent/ docs, CLAUDE.md, or mcp-workflow.md.
+   - Write the analysis file using the Write tool to output/{project_id}/docs_staging/_analysis/{{group}}.md.
+   - Be EXHAUSTIVE. Include every expression, every rule, every column. Depth over brevity.
 
 PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
-   After ALL group summaries are collected, spawn doc-writing sub-agents in parallel.
+   After ALL Phase 2 sub-agents complete, spawn 5 doc-assembly sub-agents in parallel.
    Each doc agent:
-   1. Calls get_reference_docs(agent_group) to load format templates in ONE call.
-   2. Receives relevant group summaries + manifest.
-   3. Writes final .md files to output/{project_id}/docs/.
+   1. Reads ALL files in output/{project_id}/docs_staging/_analysis/ (every group's analysis).
+   2. Calls get_reference_docs(agent_group) to load format templates in ONE call.
+   3. Receives the manifest.
+   4. Writes final .md files to output/{project_id}/docs_staging/.
 
-   Doc agent groups and outputs:
-   | Agent       | Writes                                           |
-   |-------------|--------------------------------------------------|
-   | Overview    | 00_PROJECT_OVERVIEW.md                            |
-   | Architecture| 01_COMPONENT_INVENTORY, 02_ARCHITECTURE, 03_EXECUTION_LOGIC |
-   | Data        | 04_DATA_FLOWS, 16_SCHEMA_DICTIONARY, 17_DATA_QUALITY |
-   | Business    | 10_BUSINESS_LOGIC, 09_CUSTOM_CODE                 |
-   | Operations  | 07_ERROR_HANDLING, 08_STATE_SIDE_EFFECTS, 11_KNOWN_ISSUES |
-   | Config      | 05_ENVIRONMENT_CONFIG, 20_SECURITY_ACCESS, 21_PERFORMANCE |
-   | External    | 06_EXTERNAL_SYSTEMS, 19_SCHEDULING_SLA            |
-   | Patterns    | 18_NAMING_CONVENTIONS, 22_CROSS_REGION*, 23_REUSABILITY |
-   | UserDocs    | 14_GLOSSARY_FAQ, 15_ONBOARDING, 13_RUNBOOK, 12_CHANGE_LOG |
-   | Preventive  | 25_PREVENTIVE_ANALYSIS                            |
+   The 5 doc-assembly agents:
+   | Agent         | Writes                                                                          |
+   |---------------|---------------------------------------------------------------------------------|
+   | Core          | 00_PROJECT_OVERVIEW, 01_COMPONENT_INVENTORY, 02_ARCHITECTURE, 03_EXECUTION_LOGIC |
+   | Data          | 04_DATA_FLOWS, 16_SCHEMA_DICTIONARY, 17_DATA_QUALITY                            |
+   | Business+Ops  | 07_ERROR_HANDLING, 08_STATE_SIDE_EFFECTS, 09_CUSTOM_CODE, 10_BUSINESS_LOGIC, 11_KNOWN_ISSUES |
+   | Config+External | 05_ENVIRONMENT_CONFIG, 06_EXTERNAL_SYSTEMS, 19_SCHEDULING_SLA, 20_SECURITY_ACCESS, 21_PERFORMANCE |
+   | User+Meta     | 12_CHANGE_LOG, 13_RUNBOOK, 14_GLOSSARY_FAQ, 15_ONBOARDING, 18_NAMING_CONVENTIONS, 22_CROSS_REGION*, 23_REUSABILITY, 25_PREVENTIVE_ANALYSIS |
    *22_CROSS_REGION only if 2+ groups exist.
+
+   Each doc agent MUST:
+   - Read EVERY _analysis/{{group}}.md file to get full detail across all groups.
+   - Cross-reference data from multiple groups to build comprehensive docs.
+   - Match the depth and structure shown in reference docs from get_reference_docs().
+   - Include specific expressions, column names, job names -- not just summaries.
 
    Skip any doc with no meaningful content. Always generate: 00-04, 06, 07, 10, 13-15, 25.
 
    Quality standards:
    - Every doc MUST have a table of contents
    - Use plain ASCII tables (no Unicode box-drawing)
-   - Business rules: BR-{{GROUP}}-NNN tags
+   - Business rules: BR-{{GROUP}}-NNN tags with full expressions
    - Risk items: CRITICAL / HIGH / MEDIUM / LOW severity
-   - Include job names and component refs for traceability
+   - Include job names, component refs, and actual code/expressions for traceability
+   - Schema docs must include column-level detail (names, types, nullable)
+   - Data flow docs must include tMap expressions with explanations
 
-PHASE 4 -- PUBLISH:
-   - Write output/{project_id}/docs/index.json mapping docs to groups.
+PHASE 4 -- CLEANUP & PUBLISH:
+   - Delete the output/{project_id}/docs_staging/_analysis/ directory and all its contents.
+   - Write output/{project_id}/docs_staging/index.json mapping docs to groups.
    - Write output/{project_id}/logs/run_{project_id}_{{timestamp}}.log.
-   - Call insert_to_rag('{project_id}') to push docs to vector index.
+   - Do NOT call insert_to_rag -- the server will push docs to RAG automatically after successful generation.
 {hindsight_phase4}
 PROHIBITED ACTIONS:
    - Do NOT use TodoWrite tool.
    - Do NOT run ASCII/Unicode validation scripts.
    - Do NOT read .agent/ docs or CLAUDE.md or mcp-workflow.md.
-   - Do NOT create _scratch/ directories or intermediate files.
+   - Do NOT create _scratch/ directories or other intermediate files (the _analysis/ directory is allowed).
    - Do NOT run mkdir, ls, wc for verification -- directories are pre-created.
-   - Only final .md docs go to output/{project_id}/docs/.
+   - Only final .md docs and _analysis/ files go to output/{project_id}/docs_staging/.
 """
+
+        # Ensure OAuth token is fresh before spawning CLI
+        if not ensure_token_fresh():
+            msg = "Claude OAuth token expired and refresh failed. Run 'claude login' as the service user to re-authenticate."
+            logger.error(msg)
+            await self.log_manager.emit(project_id, msg, level="error")
+            return {"success": False}
 
         # Resolve full path so .CMD/.BAT scripts work on Windows
         # (subprocess.Popen without shell=True only finds .exe by bare name)

@@ -14,6 +14,7 @@ import uuid
 from collections.abc import AsyncGenerator
 
 from mcp_server.config import config
+from mcp_server.services.token_refresh import ensure_token_fresh
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,11 @@ class DeepDiveService:
         self._text_streamed_via_delta = False  # Reset per-query
 
         prompt = _QA_PROMPT.format(project_id=project_id, question=question)
+
+        # Ensure OAuth token is fresh before spawning CLI
+        if not ensure_token_fresh():
+            yield {"type": "error", "data": "Claude OAuth token expired and refresh failed. Run 'claude login' as the service user to re-authenticate."}
+            return
 
         # Resolve CLI path (handles .cmd/.bat on Windows)
         resolved_cmd = shutil.which(config.claude_command)

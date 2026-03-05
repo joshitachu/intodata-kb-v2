@@ -122,6 +122,12 @@ export function useStreamMessage(conversationId: number | null) {
                 } catch {
                   // ignore parse error
                 }
+              } else if (currentEvent === "error") {
+                setStreamState((prev) => ({
+                  ...prev,
+                  isStreaming: false,
+                  error: data,
+                }));
               } else if (currentEvent === "done") {
                 try {
                   const result = JSON.parse(data) as {

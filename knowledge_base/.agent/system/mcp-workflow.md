@@ -26,7 +26,7 @@ Phase 4: Publish       -- write index.json + run log
      determined entirely by the scan data -- never assume specific names.
 6. Call `fetch_json(project_id, "manifest")` to load the dependency graph.
 7. Call `fetch_json(project_id, "connections")` to load metadata connections.
-8. Directories `output/{project_id}/docs/` and `output/{project_id}/logs/` are pre-created by the orchestrator.
+8. Directories `output/{project_id}/docs_staging/` and `output/{project_id}/logs/` are pre-created by the orchestrator. Claude Code writes to `docs_staging/`; the server swaps it to `docs/` on success.
 
 ## Phase 2: Group Analysis (Parallel Sub-Agents)
 
@@ -141,7 +141,7 @@ Each doc agent receives:
 
 Each doc agent must:
 1. Call `get_reference_docs(agent_group)` to load format templates in ONE call (replaces individual Read calls).
-2. Write final .md files directly to `output/{project_id}/docs/`.
+2. Write final .md files directly to `output/{project_id}/docs_staging/`.
 
 ### Doc Agent Groups
 
@@ -184,7 +184,7 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
 
 ## Phase 4: Publish
 
-1. Write `output/{project_id}/docs/index.json` mapping each document to its source groups:
+1. Write `output/{project_id}/docs_staging/index.json` mapping each document to its source groups:
    ```json
    {
      "project_id": "...",
@@ -233,7 +233,7 @@ No `_scratch/` directory. No intermediate JSON files. Only final docs.
 | `fetch_chunk(project_id, chunk_id)` | Get full job data for one chunk |
 | `get_analysis_prompts(platform?)` | Get ALL analysis prompts bundled (replaces 16+ Reads) |
 | `get_reference_docs(agent_group)` | Get reference docs for a doc agent group (replaces individual Reads) |
-| `insert_to_rag(project_id, docs?)` | Push docs to RAG pipeline |
+| `insert_to_rag(project_id, docs?)` | Push docs to RAG pipeline (not used during generation -- server handles RAG push automatically) |
 | `list_projects()` | List all registered projects |
 | `recall_process_memory(query)` | Recall cross-project lessons before doc generation |
 | `recall_project_memory(project_id, query)` | Recall prior findings before re-scan |

@@ -32,7 +32,7 @@ Rules extracted from past generation runs. Read this BEFORE starting any generat
 ## Process Rules
 
 - Background sub-agents may return empty output files even when completed. Use `TaskOutput` or `resume` to retrieve results. Plan for fallback if retrieval fails for some agents.
-- The `insert_to_rag` tool reads from `intodoc-output/{project_id}/docs/`, NOT `output/{project_id}/docs/`. Copy or write docs to both locations, or copy before calling insert_to_rag.
+- Doc generation now uses a staging directory (`docs_staging/`). Claude Code writes to `docs_staging/`, the server swaps it to `docs/` on success and pushes to RAG automatically. Do NOT call `insert_to_rag` from the generation prompt -- it is handled server-side in `_run_generate_background`.
 - Very large docs (e.g. 17_DATA_QUALITY.md with 1,102 embedded rules) may fail RAG ingestion with 500 errors. Consider splitting or trimming oversized docs.
 
 ## Run History

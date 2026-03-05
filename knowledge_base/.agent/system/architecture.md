@@ -28,7 +28,7 @@ The platform operates in two modes:
 - Phase 1: Setup (load scan data via MCP)
 - Phase 2: Group Analysis (parallel sub-agents read prompts + analyze chunks)
 - Phase 3: Write Docs (parallel sub-agents write .md files to `output/`)
-- Phase 4: Publish (`index.json` + `insert_to_rag`)
+- Phase 4: Publish (`index.json` + run log; RAG push is handled server-side)
 - No LLM API keys needed -- Claude Code IS the LLM
 - No Jinja2 templates for doc generation -- docs written directly by agents
 
@@ -59,8 +59,8 @@ Source Code (XML, properties, configs, etc.)
     -> Scan Cache (intodoc-output/ JSON files)
     -> MCP Server (serves chunks, manifest, connections)
     -> Claude Code Agent (reads prompts p01-p22, analyzes chunks)
-    -> Documentation (up to 25 markdown docs in output/{project_id}/docs/)
-    -> RAG Pipeline (insert_to_rag -> Qdrant vector store)
+    -> Documentation (up to 25 markdown docs in output/{project_id}/docs_staging/)
+    -> Server swaps docs_staging/ -> docs/ on success, then pushes to RAG via RagBridge
 ```
 
 ### Legacy CLI Path (still functional)
