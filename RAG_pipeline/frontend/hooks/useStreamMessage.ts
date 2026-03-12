@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { ConversationMessageRequest, DocumentSource } from "@/types";
+import type { ConversationMessageRequest, DocumentSource, UsageStats } from "@/types";
 
 export interface StreamState {
   isStreaming: boolean;
@@ -10,6 +10,7 @@ export interface StreamState {
   error: string | null;
   messageId: number | null;
   latencyMs: number | null;
+  usage: UsageStats | null;
 }
 
 const INITIAL_STATE: StreamState = {
@@ -19,6 +20,7 @@ const INITIAL_STATE: StreamState = {
   error: null,
   messageId: null,
   latencyMs: null,
+  usage: null,
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -45,6 +47,7 @@ export function useStreamMessage(conversationId: number | null) {
         error: null,
         messageId: null,
         latencyMs: null,
+        usage: null,
       });
 
       try {
@@ -119,6 +122,13 @@ export function useStreamMessage(conversationId: number | null) {
                     ...prev,
                     content: prev.content + token,
                   }));
+                } catch {
+                  // ignore parse error
+                }
+              } else if (currentEvent === "usage") {
+                try {
+                  const usage = JSON.parse(data) as UsageStats;
+                  setStreamState((prev) => ({ ...prev, usage }));
                 } catch {
                   // ignore parse error
                 }

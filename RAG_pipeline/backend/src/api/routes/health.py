@@ -45,7 +45,7 @@ async def _check_database() -> ServiceStatus:
         return ServiceStatus(status="ok")
     except Exception as e:
         logger.warning(f"Database health check failed: {e}")
-        return ServiceStatus(status="error", message=str(e))
+        return ServiceStatus(status="error", message="Service unavailable")
 
 
 async def _check_qdrant() -> ServiceStatus:
@@ -55,10 +55,10 @@ async def _check_qdrant() -> ServiceStatus:
             resp = await client.get(settings.qdrant_url, headers=headers)
             if resp.status_code == 200:
                 return ServiceStatus(status="ok")
-            return ServiceStatus(status="error", message=f"HTTP {resp.status_code}")
+            return ServiceStatus(status="error", message="Service unavailable")
     except Exception as e:
         logger.warning(f"Qdrant health check failed: {e}")
-        return ServiceStatus(status="error", message=str(e))
+        return ServiceStatus(status="error", message="Service unavailable")
 
 
 async def _check_ollama() -> ServiceStatus:
@@ -67,10 +67,10 @@ async def _check_ollama() -> ServiceStatus:
             resp = await client.get(f"{settings.ollama_base_url}/api/tags")
             if resp.status_code == 200:
                 return ServiceStatus(status="ok")
-            return ServiceStatus(status="error", message=f"HTTP {resp.status_code}")
+            return ServiceStatus(status="error", message="Service unavailable")
     except Exception as e:
         logger.warning(f"Ollama health check failed: {e}")
-        return ServiceStatus(status="error", message=str(e))
+        return ServiceStatus(status="error", message="Service unavailable")
 
 
 async def _check_hindsight() -> ServiceStatus:
@@ -81,7 +81,7 @@ async def _check_hindsight() -> ServiceStatus:
             resp = await client.get(f"{settings.hindsight_url}/health")
             if resp.status_code == 200:
                 return ServiceStatus(status="ok")
-            return ServiceStatus(status="error", message=f"HTTP {resp.status_code}")
+            return ServiceStatus(status="error", message="Service unavailable")
     except Exception as e:
         logger.warning(f"Hindsight health check failed: {e}")
-        return ServiceStatus(status="error", message=str(e))
+        return ServiceStatus(status="error", message="Service unavailable")

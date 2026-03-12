@@ -4,6 +4,7 @@ import { MessageSquare, Trash2, MoreVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ConversationResponse } from "@/types";
 import { useState } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface ConversationItemProps {
   conversation: ConversationResponse;
@@ -19,6 +20,7 @@ export function ConversationItem({
   onDelete,
 }: ConversationItemProps) {
   const [showMenu, setShowMenu] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const title =
     conversation.title || `Conversation ${conversation.id}`;
@@ -70,7 +72,7 @@ export function ConversationItem({
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowMenu(false);
-                  onDelete();
+                  setShowDeleteConfirm(true);
                 }}
                 className="flex items-center gap-2 w-full px-3 py-2 text-sm text-destructive hover:bg-muted"
               >
@@ -81,6 +83,17 @@ export function ConversationItem({
           </>
         )}
       </div>
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete Conversation"
+        message={`Delete "${title}"? All messages will be permanently removed.`}
+        confirmLabel="Delete"
+        onConfirm={() => {
+          setShowDeleteConfirm(false);
+          onDelete();
+        }}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 }

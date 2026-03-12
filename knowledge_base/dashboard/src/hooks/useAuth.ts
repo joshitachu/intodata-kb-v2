@@ -5,18 +5,29 @@ function getLoginUrl(): string {
   if (import.meta.env.VITE_LOGIN_URL) {
     return import.meta.env.VITE_LOGIN_URL;
   }
-  return `${window.location.protocol}//${window.location.hostname}:3000/login`;
+  return `${window.location.protocol}//${window.location.hostname}/login`;
+}
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  is_superadmin: boolean;
+  permissions: string[];
 }
 
 interface AuthState {
   authenticated: boolean;
   loading: boolean;
+  user: AuthUser | null;
+  error: string | null;
 }
 
 export function useAuth(): AuthState {
   const [state, setState] = useState<AuthState>({
     authenticated: false,
     loading: true,
+    user: null,
+    error: null,
   });
 
   useEffect(() => {
@@ -27,14 +38,30 @@ export function useAuth(): AuthState {
           credentials: "include",
         });
         if (res.ok) {
-          setState({ authenticated: true, loading: false });
+          const data = await res.json();
+          setState({
+            authenticated: true,
+            loading: false,
+            user: {
+              id: data.id,
+              username: data.username,
+              is_superadmin: data.is_superadmin,
+              permissions: data.permissions ?? [],
+            },
+            error: null,
+          });
         } else {
           const loginUrl = getLoginUrl();
           window.location.href = `${loginUrl}?redirect=${encodeURIComponent(window.location.href)}`;
         }
-      } catch {
-        const loginUrl = getLoginUrl();
-        window.location.href = `${loginUrl}?redirect=${encodeURIComponent(window.location.href)}`;
+      } catch (err) {
+        // Show error instead of silently redirecting on network failures
+        setState({
+          authenticated: false,
+          loading: false,
+          user: null,
+          error: err instanceof Error ? err.message : "Authentication failed — check network connection",
+        });
       }
     }
     verify();

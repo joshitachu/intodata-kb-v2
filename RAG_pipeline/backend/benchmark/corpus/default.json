@@ -1,0 +1,87 @@
+{
+  "name": "Vaxxinova Talend Integration Baseline",
+  "description": "Curated Q&A pairs from Vaxxinova Talend documentation for RAG quality benchmarking.",
+  "version": "1.0",
+  "entries": [
+    {
+      "id": "q01",
+      "question": "What databases does the Vaxxinova Talend integration connect to?",
+      "expected_answer": "The integration connects to databases including PostgreSQL, Oracle, and SQL Server for data synchronization.",
+      "expected_sources": ["vaxxinova"],
+      "category": "factual",
+      "difficulty": "easy"
+    },
+    {
+      "id": "q02",
+      "question": "How does error handling work in the ETL jobs?",
+      "expected_answer": "ETL jobs use tLogCatcher and tDie components for error handling, with logging to both console and database tables.",
+      "expected_sources": ["vaxxinova"],
+      "category": "conceptual",
+      "difficulty": "medium"
+    },
+    {
+      "id": "q03",
+      "question": "What is the scheduling configuration for the data sync jobs?",
+      "expected_answer": "Data sync jobs are scheduled via TAC (Talend Administration Center) with configurable cron expressions.",
+      "expected_sources": ["vaxxinova"],
+      "category": "factual",
+      "difficulty": "medium"
+    },
+    {
+      "id": "q04",
+      "question": "Describe the data flow from source to target in the main integration pipeline.",
+      "expected_answer": "Data flows from source databases through extraction components, transformation mappings (tMap), and into target systems via bulk load or row-by-row insert.",
+      "expected_sources": ["vaxxinova"],
+      "category": "conceptual",
+      "difficulty": "hard"
+    },
+    {
+      "id": "q05",
+      "question": "What authentication methods are used for API connections?",
+      "expected_answer": "API connections use OAuth2 or API key authentication depending on the endpoint.",
+      "expected_sources": ["vaxxinova"],
+      "category": "factual",
+      "difficulty": "medium"
+    },
+    {
+      "id": "q06",
+      "question": "How are context variables used across jobs?",
+      "expected_answer": "Context variables are defined at job and project level, with environment-specific values loaded from context groups for dev/test/prod.",
+      "expected_sources": ["vaxxinova"],
+      "category": "conceptual",
+      "difficulty": "medium"
+    },
+    {
+      "id": "q07",
+      "question": "What transformations does the tMap component perform in the main job?",
+      "expected_answer": "The tMap component performs field mapping, data type conversion, lookup joins, filtering, and expression-based transformations.",
+      "expected_sources": ["vaxxinova"],
+      "category": "factual",
+      "difficulty": "hard"
+    },
+    {
+      "id": "q08",
+      "question": "What is the purpose of the staging tables in the integration?",
+      "expected_answer": "Staging tables serve as intermediate storage for extracted data before transformation and final loading into target tables.",
+      "expected_sources": ["vaxxinova"],
+      "category": "conceptual",
+      "difficulty": "easy"
+    },
+    {
+      "id": "q09",
+      "question": "How does the integration handle incremental data loads?",
+      "expected_answer": "Incremental loads use timestamp-based change detection, comparing source record modification dates against the last successful sync timestamp.",
+      "expected_sources": ["vaxxinova"],
+      "category": "conceptual",
+      "difficulty": "hard"
+    },
+    {
+      "id": "q10",
+      "question": "What logging and monitoring capabilities are available?",
+      "expected_answer": "The integration provides logging via tLogRow and tFileOutputDelimited components, with execution stats tracked in the TAC management console.",
+      "expected_sources": ["vaxxinova"],
+      "category": "factual",
+      "difficulty": "medium"
+    }
+  ]
+}

@@ -51,9 +51,39 @@ export interface GenerateRun {
   log_file: string | null;
 }
 
+export interface ScanRun {
+  id: number;
+  project_id: string;
+  triggered_by: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  job_count: number;
+  log_file: string | null;
+}
+
+export interface DocFile {
+  name: string;
+  type: string;
+  size_bytes: number;
+  has_pdf: boolean;
+  modified_at: string;
+}
+
 export interface LogFile {
   filename: string;
   project_id: string;
   timestamp: string;
   size_bytes: number;
+}
+
+export interface ProjectUsage {
+  project_id: string;
+  total_generate_runs: number;
+  completed_generate_runs: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd: number;
+  total_scan_runs: number;
+  completed_scan_runs: number;
 }

@@ -100,13 +100,88 @@ echo "[OK] Dashboard built at $INSTALL_DIR/knowledge_base/dashboard/dist"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 echo "[OK] Ownership set to $SERVICE_USER"
 
-# ── 8. Docker Compose ───────────────────────────────────────────────────────
+# ── 8. Firewall (UFW) ──────────────────────────────────────────────────────
+
+if command -v ufw &>/dev/null; then
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp   # SSH
+    ufw allow 80/tcp   # HTTP (redirect to HTTPS)
+    ufw allow 443/tcp  # HTTPS
+    ufw --force enable
+    echo "[OK] UFW firewall configured (22, 80, 443 only)"
+else
+    echo "[WARN] UFW not found, skipping firewall setup"
+fi
+
+# ── 9. fail2ban ────────────────────────────────────────────────────────────
+
+if ! command -v fail2ban-client &>/dev/null; then
+    apt-get install -y fail2ban
+fi
+cp "$INSTALL_DIR/deploy/jail.local" /etc/fail2ban/jail.local
+systemctl enable fail2ban
+systemctl restart fail2ban
+echo "[OK] fail2ban configured"
+
+# ── 10. PostgreSQL backup cron ─────────────────────────────────────────────
+
+cp "$INSTALL_DIR/deploy/backup-postgres.sh" /opt/intodata-kb/backup-postgres.sh
+chmod +x /opt/intodata-kb/backup-postgres.sh
+# Add daily cron job if not already present
+CRON_CMD="0 2 * * * /opt/intodata-kb/backup-postgres.sh >> /var/log/intodata-backup.log 2>&1"
+(crontab -l 2>/dev/null | grep -qF "backup-postgres.sh") || (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
+echo "[OK] Daily PostgreSQL backup cron installed (02:00)"
+
+# ── 11. Validate secrets before starting ────────────────────────────────────
+
+if [ -f "$INSTALL_DIR/.env" ]; then
+    # Source the .env file to check values
+    _JWT=$(grep -E '^JWT_SECRET_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+    _PG=$(grep -E '^POSTGRES_PASSWORD=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+
+    INSECURE_DEFAULTS="change-me-in-production-use-a-strong-random-key changeme admin password secret"
+    _fail=0
+    for _default in $INSECURE_DEFAULTS; do
+        if [ "$_JWT" = "$_default" ]; then
+            echo "ERROR: JWT_SECRET_KEY is set to an insecure default ('$_default')."
+            echo "       Generate a strong key: openssl rand -hex 32"
+            _fail=1
+        fi
+        if [ "$_PG" = "$_default" ]; then
+            echo "ERROR: POSTGRES_PASSWORD is set to an insecure default ('$_default')."
+            echo "       Generate a strong password: openssl rand -hex 16"
+            _fail=1
+        fi
+    done
+
+    if [ -z "$_JWT" ]; then
+        echo "ERROR: JWT_SECRET_KEY is not set in .env"
+        _fail=1
+    fi
+    if [ -z "$_PG" ]; then
+        echo "ERROR: POSTGRES_PASSWORD is not set in .env"
+        _fail=1
+    fi
+    if [ ${#_JWT} -lt 32 ] && [ -n "$_JWT" ]; then
+        echo "WARNING: JWT_SECRET_KEY is shorter than 32 characters. Consider using: openssl rand -hex 32"
+    fi
+
+    if [ "$_fail" -eq 1 ]; then
+        echo ""
+        echo "Aborting deployment. Fix the .env file and re-run."
+        exit 1
+    fi
+    echo "[OK] Secrets validated"
+fi
+
+# ── 12. Docker Compose ──────────────────────────────────────────────────────
 
 cd "$INSTALL_DIR"
 docker compose up -d --build
 echo "[OK] Docker services started"
 
-# ── 9. Install systemd service ──────────────────────────────────────────────
+# ── 13. Install systemd service ─────────────────────────────────────────────
 
 cp "$INSTALL_DIR/deploy/mcp-server.service" /etc/systemd/system/mcp-server.service
 systemctl daemon-reload
@@ -120,7 +195,7 @@ echo ""
 echo "=== Deployment complete ==="
 echo ""
 echo "Services:"
-echo "  Dashboard + MCP API:  http://$(hostname -I | awk '{print $1}'):8001"
+echo "  Dashboard + MCP API:  http://$(hostname -I | awk '{print $1}'):8002"
 echo "  RAG Chat UI:          http://$(hostname -I | awk '{print $1}'):3000"
 echo ""
 echo "Status commands:"
@@ -133,7 +208,7 @@ echo "  1. Install Ollama:  curl -fsSL https://ollama.com/install.sh | sh"
 echo "  2. Pull models:     ollama pull nomic-embed-text && ollama pull gemma3:12b"
 echo "  3. Install Claude:  npm install -g @anthropic-ai/claude-code"
 echo "  4. Authenticate:    claude login"
-echo "  5. Open firewall:   ufw allow 3000/tcp && ufw allow 8001/tcp"
+echo "  5. Configure Caddy: sudo bash deploy/caddy-install.sh <your-domain>"
 echo ""
 echo "Claude Code MCP config (~/.claude.json or project .mcp.json):"
 echo '  {'

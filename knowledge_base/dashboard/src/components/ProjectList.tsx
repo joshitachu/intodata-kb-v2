@@ -7,6 +7,7 @@ interface Props {
   onAction: (projectId: string) => void;
   activeProject?: string | null;
   onSelect: (projectId: string) => void;
+  canManageProjects?: boolean;
 }
 
 function formatDate(d: string | null): string {
@@ -14,7 +15,7 @@ function formatDate(d: string | null): string {
   return new Date(d).toLocaleString();
 }
 
-export default function ProjectList({ onAction, activeProject, onSelect }: Props) {
+export default function ProjectList({ onAction, activeProject, onSelect, canManageProjects = true }: Props) {
   const { data, isLoading, error } = useProjects();
 
   if (isLoading) {
@@ -50,7 +51,7 @@ export default function ProjectList({ onAction, activeProject, onSelect }: Props
             <th className="px-4 py-2 font-medium">Jobs</th>
             <th className="px-4 py-2 font-medium">Docs</th>
             <th className="px-4 py-2 font-medium">Last Scan</th>
-            <th className="px-4 py-2 font-medium">Actions</th>
+            {canManageProjects && <th className="px-4 py-2 font-medium">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -84,13 +85,15 @@ export default function ProjectList({ onAction, activeProject, onSelect }: Props
               <td className="px-4 py-3 text-xs text-gray-500">
                 {formatDate(p.last_scan_at)}
               </td>
-              <td className="px-4 py-3">
-                <ActionButtons
-                  projectId={p.id}
-                  status={p.status}
-                  onAction={onAction}
-                />
-              </td>
+              {canManageProjects && (
+                <td className="px-4 py-3">
+                  <ActionButtons
+                    projectId={p.id}
+                    status={p.status}
+                    onAction={onAction}
+                  />
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.models import QueryLog
 from src.generation.conversational_rag import _build_memory_context
 from src.generation.intent_classifier import Action, QueryType, analyze_query
-from src.generation.llm_client import generate_answer
+from src.generation.llm_client import generate_answer, get_last_usage
+from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import build_messages, build_no_results_messages
 from src.config import settings
@@ -40,6 +41,7 @@ async def run_rag_query(
     user_id: int,
     qdrant: AsyncQdrantClient,
     db: AsyncSession,
+    project_ids: list[str] | None = None,
 ) -> QueryResponse:
     """Full RAG pipeline: classify → (search → build prompt) → generate → log."""
     start = time.perf_counter()
@@ -81,7 +83,7 @@ async def run_rag_query(
             messages = build_no_results_messages(request.query, memory_context=memory_context)
             answer = await generate_answer(messages)
     else:
-        # QA — run search with cleaned query
+        # QA — run search with cleaned query (project-level RBAC)
         doc_ids = request.document_ids
         if settings.query_expansion_enabled:
             sources = await search_multi_query(
@@ -91,6 +93,7 @@ async def run_rag_query(
                 top_k=request.top_k,
                 threshold=request.threshold,
                 document_ids=doc_ids,
+                project_ids=project_ids,
             )
         elif settings.reranker_enabled:
             sources = await search_and_rerank(
@@ -100,6 +103,7 @@ async def run_rag_query(
                 top_k=request.top_k,
                 threshold=request.threshold,
                 document_ids=doc_ids,
+                project_ids=project_ids,
             )
         elif settings.hybrid_search_enabled:
             sources = await search_similar_hybrid(
@@ -109,6 +113,7 @@ async def run_rag_query(
                 top_k=request.top_k,
                 threshold=request.threshold,
                 document_ids=doc_ids,
+                project_ids=project_ids,
             )
         else:
             sources = await search_similar(
@@ -118,6 +123,7 @@ async def run_rag_query(
                 top_k=request.top_k,
                 threshold=request.threshold,
                 document_ids=doc_ids,
+                project_ids=project_ids,
             )
 
         if sources:
@@ -150,6 +156,28 @@ async def run_rag_query(
             answer = await generate_answer(messages)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
+
+    # Persist token usage
+    usage = get_last_usage()
+    if usage:
+        try:
+            from src.db.models import QueryUsage
+            entry = QueryUsage(
+                user_id=user_id,
+                interface="rag_query",
+                query_text=request.query[:500],
+                model_name=usage.model,
+                provider=usage.provider,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                embedding_tokens=get_last_embed_tokens(),
+                cost_usd=usage.cost_usd,
+                latency_ms=latency_ms,
+                llm_ms=usage.latency_ms,
+            )
+            db.add(entry)
+        except Exception as e:
+            logger.warning("Failed to persist query usage: %s", e)
 
     # Build document-level sources (empty list for chitchat/no-results)
     if not sources:

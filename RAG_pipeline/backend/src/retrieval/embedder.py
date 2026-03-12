@@ -14,6 +14,20 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Thread-local storage for last embedding token count (same pattern as llm_client._last_usage)
+import threading
+
+_local = threading.local()
+
+
+def get_last_embed_tokens() -> int | None:
+    """Return token count from the most recent embedding call, or None."""
+    return getattr(_local, "last_embed_tokens", None)
+
+
+def _set_embed_tokens(count: int | None) -> None:
+    _local.last_embed_tokens = count
+
 
 def get_embedding_dim() -> int:
     """Return the embedding dimension based on the active provider."""
@@ -42,6 +56,7 @@ async def _voyage_embed_single(text: str) -> list[float]:
         model=settings.voyage_embed_model,
         input=text,
     )
+    _set_embed_tokens(getattr(response.usage, "total_tokens", None))
     return response.data[0].embedding
 
 
@@ -58,11 +73,15 @@ async def _voyage_embed_batch(texts: list[str]) -> list[list[float]]:
         api_key=settings.voyage_api_key,
     )
 
+    total_tokens = 0
+
     if len(texts) <= SUB_BATCH_SIZE:
         response = await client.embeddings.create(
             model=settings.voyage_embed_model,
             input=texts,
         )
+        total_tokens += getattr(response.usage, "total_tokens", 0) or 0
+        _set_embed_tokens(total_tokens if total_tokens > 0 else None)
         return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
 
     # Process in sub-batches with delays
@@ -80,24 +99,28 @@ async def _voyage_embed_batch(texts: list[str]) -> list[list[float]]:
             model=settings.voyage_embed_model,
             input=sub_batch,
         )
+        total_tokens += getattr(response.usage, "total_tokens", 0) or 0
         batch_embeddings = [
             item.embedding
             for item in sorted(response.data, key=lambda x: x.index)
         ]
         all_embeddings.extend(batch_embeddings)
 
+    _set_embed_tokens(total_tokens if total_tokens > 0 else None)
     return all_embeddings
 
 
 async def _ollama_embed_single(text: str) -> list[float]:
     client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
     response = await client.embed(model=settings.ollama_embed_model, input=text)
+    _set_embed_tokens(response.get("prompt_eval_count"))
     return response["embeddings"][0]
 
 
 async def _ollama_embed_batch(texts: list[str]) -> list[list[float]]:
     client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
     response = await client.embed(model=settings.ollama_embed_model, input=texts)
+    _set_embed_tokens(response.get("prompt_eval_count"))
     return response["embeddings"]
 
 

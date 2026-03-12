@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Phase 2 Complete (Universal IR) + MCP doc generation operational + Dashboard with project management + JWT auth
-**Last session**: 2026-03-05
-**Last completed**: Unified documentation standards across sub-projects (root logging rules, .claude/ files for KB)
+**Status**: Round 2 optimizations COMPLETE. Doc gen target ~29-33 min (was 51.5 min). Needs deploy + test.
+**Last session**: 2026-03-11
+**Last completed**: Round 2 optimizations: Phase 2.5 analysis condensation (per-agent briefings ~100-150KB instead of 688KB), pre-bundled analysis prompts + reference docs (eliminates MCP dependency), large group splitting (>40 jobs auto-split), rebalanced Phase 3 agents (Core 4/Data+Ops 8/Config+User 13 docs).
 
 ## What's Done
 
@@ -49,9 +49,13 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Recent Changes
 
-- **Unified documentation standards** (2026-03-05): Added root-level logging rules, session start requirements, and populated KB .claude/ files (context.md, progress.md, expanded PROJECT_MEMORY.md) to match RAG_pipeline's documentation depth.
-- **Fix stuck "generating" status** (2026-03-03): Added polling fallback to SSE-only dashboard updates, reset endpoint for stuck projects, red Reset button in UI.
-- **Documentation restructuring** (2026-02-19): Adopted AI Jason's .agent folder pattern, rewrote CLAUDE.md to ~65 lines with pointers, created SOPs and system docs.
+- **Phase 1 consolidation** (2026-03-11): Security: fixed git clone command injection (URL validation + `--` separator). UX: Fixed useAuth to surface network errors. Added favicon. Deployment: MCP server Dockerfile now runs as non-root (appuser). Testing: Added Vitest setup + 4 API client tests.
+- **Round 2 doc gen optimizations** (2026-03-11): Phase 2.5 condensation, pre-bundled analysis prompts + reference docs, large group splitting, rebalanced Phase 3 (Core/Data+Ops/Config+User). Target: ~29-33 min.
+- **Doc gen speed optimization + token fix** (2026-03-11): Fixed token extraction (wrong field names). Added `_preprocess_scan_data()` pre-processing step. Phase 2 reads markdown instead of raw JSON. Phase 3 uses 3 inline-data agents instead of 5 file-reading agents. Added file-reading guidance.
+- **Doc gen + deep dive token persistence** (2026-03-11): Added `RagBridge.post_usage()` method. Doc generation calls it after `complete_generate_run`. Deep dive SSE stream intercepts usage events and persists via `post_usage(interface="deep_dive", ...)`.
+- **Per-project usage widget + ROADMAP.md** (2026-03-10): Added `GET /projects/{id}/usage` endpoint, usage widget in ProjectSettings, created root ROADMAP.md
+- **Unified documentation standards** (2026-03-05): Added root-level logging rules, session start requirements, and populated KB .claude/ files
+- **Fix stuck "generating" status** (2026-03-03): Added polling fallback, reset endpoint, Reset button in UI
 
 ## Blockers
 
@@ -59,11 +63,17 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Next Steps
 
-- [ ] Phase 3: Migration code generation (not started)
+- [ ] Restart MCP server: `sudo systemctl restart mcp-server`
+- [ ] Test doc generation → verify Round 2 optimizations work
+- [ ] Check DB tokens: `docker exec postgres psql -U admin -d intodata_kb -c "SELECT id, input_tokens, output_tokens, cost_usd FROM generate_runs ORDER BY id DESC LIMIT 5"`
+- [ ] Monitor generation time — target ~29-33 min (down from 51.5 min)
+- [ ] Verify Phase 2.5 briefing files are created correctly
+- [ ] Verify large group splitting works (USA group → 2 parts)
+- [ ] Record baseline benchmark run on VPS (`python -m benchmark run --tag baseline-v1`)
+- [ ] Deploy Phase 1 code to VPS (`docker compose up -d --build backend`)
+- [ ] Phase 2: Workato scanner (needs sample data from user)
 - [ ] MuleSoft scanner plugin
 - [ ] dbt scanner plugin
-- [ ] Dashboard: scan history view
-- [ ] Dashboard: doc preview/download
 - [ ] E2E testing of doc generation pipeline
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.

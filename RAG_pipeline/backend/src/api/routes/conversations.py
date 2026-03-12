@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -15,6 +15,7 @@ from src.generation.conversational_rag import (
     run_conversational_rag,
     run_conversational_rag_stream,
 )
+from src.rbac.permissions import get_user_project_ids
 from src.schemas import (
     ConversationCreateRequest,
     ConversationDetailResponse,
@@ -50,7 +51,7 @@ async def list_conversations(
     db: DBSession,
     user: CurrentUser,
     skip: int = 0,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=100),
 ) -> ConversationListResponse:
     """List user's conversations, sorted by most recently updated."""
     # Count total
@@ -221,8 +222,9 @@ async def send_message(
     if conversation.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Get user's groups for RBAC filtering
+    # Get user's groups and project access for RBAC filtering
     user_groups = [role.name for role in user.roles]
+    project_ids = await get_user_project_ids(user, db)
 
     # Run conversational RAG pipeline
     response = await run_conversational_rag(
@@ -234,6 +236,7 @@ async def send_message(
         top_k=request.top_k,
         threshold=request.threshold,
         user_id=str(user.id),
+        project_ids=project_ids,
     )
 
     return response
@@ -268,8 +271,9 @@ async def send_message_stream(
     if conversation.user_id != user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Get user's groups for RBAC filtering
+    # Get user's groups and project access for RBAC filtering
     user_groups = [role.name for role in user.roles]
+    project_ids = await get_user_project_ids(user, db)
 
     async def event_generator():
         try:
@@ -282,6 +286,7 @@ async def send_message_stream(
                 top_k=request.top_k,
                 threshold=request.threshold,
                 user_id=str(user.id),
+                project_ids=project_ids,
             ):
                 yield f"event: {event_type}\ndata: {data}\n\n"
         except Exception as e:

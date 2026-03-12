@@ -13,6 +13,8 @@ from src.api.dependencies import CurrentUser, DBSession
 from src.auth.security import decode_token
 from src.auth.service import AuthService
 from src.config import settings
+from src.rbac.permissions import get_user_permissions
+from src.services.audit_service import AuditService
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -64,6 +66,7 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superadmin: bool
     roles: list[str]
+    permissions: list[str] = []
 
 
 @router.post("/login")
@@ -77,6 +80,15 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
     access, refresh = await svc.create_tokens(user)
     _set_auth_cookies(response, access, refresh)
 
+    audit = AuditService(db)
+    await audit.log(
+        user_id=user.id,
+        username=user.username,
+        action="login",
+        resource_type="session",
+        ip_address=request.client.host if request.client else None,
+    )
+
     return {
         "message": "Login successful",
         "user": UserResponse(
@@ -86,6 +98,7 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
             is_active=user.is_active,
             is_superadmin=user.is_superadmin,
             roles=[r.name for r in user.roles],
+            permissions=sorted(get_user_permissions(user)),
         ),
     }
 
@@ -101,6 +114,7 @@ async def logout(request: Request, db: DBSession, response: Response):
 
 
 @router.post("/refresh")
+@limiter.limit("10/minute")
 async def refresh(request: Request, db: DBSession, response: Response):
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
@@ -126,4 +140,5 @@ async def me(user: CurrentUser):
         is_active=user.is_active,
         is_superadmin=user.is_superadmin,
         roles=[r.name for r in user.roles],
+        permissions=sorted(get_user_permissions(user)),
     )

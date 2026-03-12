@@ -1,14 +1,15 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.config import settings
-from src.api.routes import health, query, documents, ingest, test, conversations
+from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
 
@@ -35,7 +36,7 @@ async def lifespan(app: FastAPI):
 
     # Ensure default admin user exists (seed data)
     from src.db.session import get_db
-    from src.db.models import User, Role
+    from src.db.models import User, Role, Permission, role_permissions
     from src.auth.security import hash_password
     from sqlalchemy import select, text
     async for db in get_db():
@@ -68,12 +69,31 @@ async def lifespan(app: FastAPI):
             await db.commit()
             logger.info("Updated existing admin user with password hash")
 
+        # Ensure RBAC permissions exist (idempotent)
+        existing_perms = (await db.execute(select(Permission.codename))).scalars().all()
+        if not existing_perms:
+            # Tables may not exist yet (pre-migration); skip seeding
+            logger.info("No permissions table data yet, skipping RBAC seed (run migration 006)")
+        else:
+            # Ensure admin role has all permissions
+            admin_role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one_or_none()
+            if admin_role:
+                all_perms = (await db.execute(select(Permission))).scalars().all()
+                existing_perm_ids = {p.codename for p in admin_role.permissions}
+                for perm in all_perms:
+                    if perm.codename not in existing_perm_ids:
+                        admin_role.permissions.append(perm)
+                await db.commit()
+
     yield
     logger.info("Shutting down IntoData KB API")
     # Cleanup: close Qdrant client if open
     from src.api.dependencies import _qdrant_client
     if _qdrant_client is not None:
         await _qdrant_client.close()
+    # Cleanup: close singleton LLM clients
+    from src.generation.llm_client import cleanup_llm_clients
+    await cleanup_llm_clients()
 
 
 app = FastAPI(
@@ -87,20 +107,34 @@ from src.api.routes.auth import limiter  # noqa: E402
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if settings.cookie_secure:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.allowed_origins.split(",") if o.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Cookie"],
 )
 
 # Routes
 app.include_router(health.router)
-app.include_router(test.router)
 app.include_router(auth_routes.router, prefix="/api/v1")
 app.include_router(admin_routes.router, prefix="/api/v1")
 app.include_router(query.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
 app.include_router(ingest.router, prefix="/api/v1")
 app.include_router(conversations.router, prefix="/api/v1")
+app.include_router(benchmark.router, prefix="/api/v1")
+app.include_router(usage.router, prefix="/api/v1")

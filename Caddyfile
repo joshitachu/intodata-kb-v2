@@ -1,0 +1,50 @@
+{$CADDY_DOMAIN:localhost} {
+	# Global security headers
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+		-Server
+	}
+
+	# RAG backend API
+	handle /api/v1/* {
+		reverse_proxy localhost:8000
+	}
+
+	# Health endpoint (RAG backend)
+	handle /health {
+		reverse_proxy localhost:8000
+	}
+
+	# Dashboard + MCP API
+	handle /dashboard* {
+		reverse_proxy localhost:8002
+	}
+
+	handle /mcp/* {
+		reverse_proxy localhost:8002
+	}
+
+	handle /assets/* {
+		reverse_proxy localhost:8002
+	}
+
+	# SSE log streaming
+	handle /logs/* {
+		reverse_proxy localhost:8002
+	}
+
+	# Webhook
+	handle /webhook/* {
+		reverse_proxy localhost:8002
+	}
+
+	# RAG frontend (default catch-all)
+	handle {
+		reverse_proxy localhost:3000
+	}
+}

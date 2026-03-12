@@ -76,3 +76,37 @@ export function useLogFiles(projectId: string | null) {
     refetchInterval: 10_000,
   });
 }
+
+export function useScanRuns(projectId: string | null) {
+  return useQuery({
+    queryKey: ["scan-runs", projectId],
+    queryFn: () => api.listScanRuns(projectId!),
+    enabled: !!projectId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useDocs(projectId: string | null) {
+  return useQuery({
+    queryKey: ["docs", projectId],
+    queryFn: () => api.listDocs(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, data }: { projectId: string; data: { display_name?: string; platform?: string } }) =>
+      api.updateProject(projectId, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useProjectUsage(projectId: string | null) {
+  return useQuery({
+    queryKey: ["project-usage", projectId],
+    queryFn: () => api.getProjectUsage(projectId!),
+    enabled: !!projectId,
+  });
+}

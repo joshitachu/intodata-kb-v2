@@ -13,6 +13,7 @@ from src.auth.security import decode_token
 from src.config import settings
 from src.db.session import get_db
 from src.db.models import User
+from src.rbac.permissions import has_permission
 
 logger = logging.getLogger(__name__)
 
@@ -78,3 +79,23 @@ async def require_admin(user: CurrentUser) -> User:
 
 
 AdminUser = Annotated[User, Depends(require_admin)]
+
+
+# --- Permission-based access control ---
+
+def require_permission(codename: str):
+    """Dependency factory: require a specific permission codename."""
+
+    async def _check(user: CurrentUser) -> User:
+        if not has_permission(user, codename):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission required: {codename}",
+            )
+        return user
+
+    return _check
+
+
+ManagerUser = Annotated[User, Depends(require_permission("manage_users"))]
+ProjectManager = Annotated[User, Depends(require_permission("assign_projects"))]

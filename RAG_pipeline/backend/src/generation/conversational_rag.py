@@ -11,9 +11,10 @@ import tiktoken
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import Conversation, ConversationMessage
+from src.db.models import Conversation, ConversationMessage, QueryUsage
 from src.generation.intent_classifier import Action, QueryType, analyze_query
-from src.generation.llm_client import generate_answer, generate_answer_stream
+from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
+from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import build_no_results_messages
 from src.config import settings
@@ -270,6 +271,7 @@ async def _prepare_rag_context(
     threshold: float = 0.4,
     user_id: str | None = None,
     precompute: bool = True,
+    project_ids: list[str] | None = None,
 ) -> RAGContext:
     """Run intent routing, search, and context building.
 
@@ -376,6 +378,7 @@ async def _prepare_rag_context(
                 user_groups=user_groups,
                 top_k=top_k,
                 threshold=threshold,
+                project_ids=project_ids,
             )
         elif settings.reranker_enabled:
             sources = await search_and_rerank(
@@ -384,6 +387,7 @@ async def _prepare_rag_context(
                 user_groups=user_groups,
                 top_k=top_k,
                 threshold=threshold,
+                project_ids=project_ids,
             )
         elif settings.hybrid_search_enabled:
             sources = await search_similar_hybrid(
@@ -392,6 +396,7 @@ async def _prepare_rag_context(
                 user_groups=user_groups,
                 top_k=top_k,
                 threshold=threshold,
+                project_ids=project_ids,
             )
         else:
             sources = await search_similar(
@@ -400,6 +405,7 @@ async def _prepare_rag_context(
                 user_groups=user_groups,
                 top_k=top_k,
                 threshold=threshold,
+                project_ids=project_ids,
             )
 
         if sources:
@@ -454,6 +460,7 @@ async def run_conversational_rag(
     top_k: int = 3,
     threshold: float = 0.4,
     user_id: str | None = None,
+    project_ids: list[str] | None = None,
 ) -> MessageResponse:
     """Run the conversational RAG pipeline with context-first search.
 
@@ -469,7 +476,7 @@ async def run_conversational_rag(
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id,
+        user_id=user_id, project_ids=project_ids,
     )
 
     if ctx.precomputed_answer is not None:
@@ -478,6 +485,28 @@ async def run_conversational_rag(
         answer = await generate_answer(ctx.llm_messages)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
+
+    # Persist token usage
+    usage = get_last_usage()
+    if usage:
+        try:
+            entry = QueryUsage(
+                user_id=int(user_id) if user_id else None,
+                interface="conversation",
+                query_text=query[:500],
+                model_name=usage.model,
+                provider=usage.provider,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                embedding_tokens=get_last_embed_tokens(),
+                cost_usd=usage.cost_usd,
+                latency_ms=latency_ms,
+                llm_ms=usage.latency_ms,
+                conversation_id=conversation.id,
+            )
+            db.add(entry)
+        except Exception as db_err:
+            logger.warning("Failed to persist conversation usage: %s", db_err)
 
     # Safety: strip any [NEED_SEARCH] marker that leaked into the final answer
     answer = answer.replace("[NEED_SEARCH]", "").strip()
@@ -548,6 +577,7 @@ async def run_conversational_rag_stream(
     top_k: int = 3,
     threshold: float = 0.4,
     user_id: str | None = None,
+    project_ids: list[str] | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """Streaming version of conversational RAG.
 
@@ -578,8 +608,7 @@ async def run_conversational_rag_stream(
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id,
-        precompute=False,
+        user_id=user_id, precompute=False, project_ids=project_ids,
     )
 
     import json
@@ -604,6 +633,18 @@ async def run_conversational_rag_stream(
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
+    # Emit usage event (token counts + cost)
+    usage = get_last_usage()
+    usage_data = {
+        "input_tokens": usage.input_tokens if usage else 0,
+        "output_tokens": usage.output_tokens if usage else 0,
+        "model": usage.model if usage else "",
+        "provider": usage.provider if usage else "",
+        "cost_usd": usage.cost_usd if usage else 0.0,
+        "latency_ms": latency_ms,
+    }
+    yield ("usage", json.dumps(usage_data))
+
     # Save assistant message
     sources_db = [s.model_dump() for s in ctx.document_sources] if ctx.document_sources else None
     assistant_msg = ConversationMessage(
@@ -615,6 +656,28 @@ async def run_conversational_rag_stream(
     )
     db.add(assistant_msg)
     await db.flush()
+
+    # Persist usage to DB
+    if usage:
+        try:
+            from src.db.models import QueryUsage
+            entry = QueryUsage(
+                user_id=int(user_id) if user_id else None,
+                interface="conversation",
+                query_text=query[:500],
+                model_name=usage.model,
+                provider=usage.provider,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                embedding_tokens=get_last_embed_tokens(),
+                cost_usd=usage.cost_usd,
+                latency_ms=latency_ms,
+                llm_ms=usage.latency_ms,
+                conversation_id=conversation.id,
+            )
+            db.add(entry)
+        except Exception as db_err:
+            logger.warning("Failed to persist conversation usage: %s", db_err)
 
     # Retain interaction to Hindsight (fire-and-forget — does not block response)
     if user_id:

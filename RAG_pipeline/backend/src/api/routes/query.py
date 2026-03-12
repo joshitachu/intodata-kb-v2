@@ -5,15 +5,17 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from qdrant_client.models import Filter, FieldCondition, MatchAny, NamedVector
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
+from src.api.routes.auth import limiter
 from src.config import settings
 from src.generation.conversational_rag import _build_memory_context
 from src.generation.intent_classifier import Action, QueryType, analyze_query
-from src.generation.llm_client import generate_answer_stream
+from src.db.models import QueryUsage
+from src.generation.llm_client import generate_answer_stream, get_last_usage
 from src.generation.prompt_builder import build_messages, build_no_results_messages
 from src.generation.rag_chain import run_rag_query
 from src.memory.hindsight_client import (
@@ -23,8 +25,8 @@ from src.memory.hindsight_client import (
     recall_user_memory,
     retain_interaction,
 )
-from src.rbac.permissions import get_user_groups
-from src.retrieval.embedder import embed_text
+from src.rbac.permissions import get_user_groups, get_user_project_ids
+from src.retrieval.embedder import embed_text, get_last_embed_tokens
 from src.retrieval.search import (
     merge_sources_by_document,
     search_and_rerank,
@@ -47,7 +49,9 @@ router = APIRouter(tags=["query"])
 
 
 @router.post("/query", response_model=QueryResponse)
+@limiter.limit("30/minute")
 async def query(
+    request: Request,
     body: QueryRequest,
     user: CurrentUser,
     db: DBSession,
@@ -55,6 +59,7 @@ async def query(
 ) -> QueryResponse:
     """Run a RAG query: embed → search → generate answer with citations."""
     user_groups = get_user_groups(user)
+    project_ids = await get_user_project_ids(user, db)
     try:
         return await run_rag_query(
             request=body,
@@ -62,6 +67,7 @@ async def query(
             user_id=user.id,
             qdrant=qdrant,
             db=db,
+            project_ids=project_ids,
         )
     except RuntimeError as e:
         logger.error("RAG query failed: %s", e)
@@ -125,7 +131,9 @@ async def query_debug(
 
 
 @router.post("/query/stream")
+@limiter.limit("30/minute")
 async def query_stream(
+    request: Request,
     body: QueryRequest,
     user: CurrentUser,
     db: DBSession,
@@ -139,6 +147,7 @@ async def query_stream(
     - event: done    → signals end of stream
     """
     user_groups = get_user_groups(user)
+    project_ids = await get_user_project_ids(user, db)
     start = time.perf_counter()
     uid = str(user.id)
 
@@ -161,34 +170,38 @@ async def query_stream(
         document_sources = []
     elif analysis.query_type == QueryType.SUMMARY:
         # Summaries are too complex to stream (map-reduce), fall back to non-streaming
-        result = await run_rag_query(body, user_groups, user.id, qdrant, db)
+        result = await run_rag_query(body, user_groups, user.id, qdrant, db, project_ids=project_ids)
         async def _non_stream():
             yield f"event: token\ndata: {json.dumps(result.answer)}\n\n"
             yield f"event: sources\ndata: {json.dumps([s.model_dump() for s in result.sources])}\n\n"
             yield "event: done\ndata: {}\n\n"
         return StreamingResponse(_non_stream(), media_type="text/event-stream")
     else:
-        # 2. Search
+        # 2. Search (with project-level RBAC)
         doc_ids = body.document_ids
         if settings.query_expansion_enabled:
             sources = await search_multi_query(
                 qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold, document_ids=doc_ids,
+                top_k=body.top_k, threshold=body.threshold,
+                document_ids=doc_ids, project_ids=project_ids,
             )
         elif settings.reranker_enabled:
             sources = await search_and_rerank(
                 qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold, document_ids=doc_ids,
+                top_k=body.top_k, threshold=body.threshold,
+                document_ids=doc_ids, project_ids=project_ids,
             )
         elif settings.hybrid_search_enabled:
             sources = await search_similar_hybrid(
                 qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold, document_ids=doc_ids,
+                top_k=body.top_k, threshold=body.threshold,
+                document_ids=doc_ids, project_ids=project_ids,
             )
         else:
             sources = await search_similar(
                 qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold, document_ids=doc_ids,
+                top_k=body.top_k, threshold=body.threshold,
+                document_ids=doc_ids, project_ids=project_ids,
             )
 
         if sources:
@@ -213,8 +226,42 @@ async def query_stream(
                 accumulated += token
                 yield f"event: token\ndata: {json.dumps(token)}\n\n"
 
-            # Retain interaction to Hindsight (fire-and-forget — does not block response)
             latency_ms = int((time.perf_counter() - start) * 1000)
+
+            # Emit usage event (token counts + cost)
+            usage = get_last_usage()
+            usage_data = {
+                "input_tokens": usage.input_tokens if usage else 0,
+                "output_tokens": usage.output_tokens if usage else 0,
+                "model": usage.model if usage else "",
+                "provider": usage.provider if usage else "",
+                "cost_usd": usage.cost_usd if usage else 0.0,
+                "latency_ms": latency_ms,
+            }
+            yield f"event: usage\ndata: {json.dumps(usage_data)}\n\n"
+
+            # Persist usage to DB (fire-and-forget)
+            if usage:
+                try:
+                    entry = QueryUsage(
+                        user_id=user.id,
+                        interface="rag_query",
+                        query_text=body.query[:500],
+                        model_name=usage.model,
+                        provider=usage.provider,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        embedding_tokens=get_last_embed_tokens(),
+                        cost_usd=usage.cost_usd,
+                        latency_ms=latency_ms,
+                        llm_ms=usage.latency_ms,
+                    )
+                    db.add(entry)
+                    await db.commit()
+                except Exception as db_err:
+                    logger.warning("Failed to persist query usage: %s", db_err)
+
+            # Retain interaction to Hindsight (fire-and-forget — does not block response)
             source_names = [s.filename for s in document_sources] if document_sources else []
             asyncio.create_task(retain_interaction(
                 user_id=uid,

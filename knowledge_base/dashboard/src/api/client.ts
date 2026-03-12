@@ -4,7 +4,7 @@ function getLoginUrl(): string {
   if (import.meta.env.VITE_LOGIN_URL) {
     return import.meta.env.VITE_LOGIN_URL;
   }
-  return `${window.location.protocol}//${window.location.hostname}:3000/login`;
+  return `${window.location.protocol}//${window.location.hostname}/login`;
 }
 
 async function request<T>(
@@ -107,5 +107,31 @@ export const api = {
   getLogContent: (projectId: string, filename: string) =>
     request<{ filename: string; content: string }>(
       `/mcp/logs/${projectId}/${filename}`
+    ),
+
+  updateProject: (projectId: string, data: { display_name?: string; platform?: string }) =>
+    request<import("../types").Project>(`/mcp/projects/${projectId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  listScanRuns: (projectId: string) =>
+    request<{ runs: import("../types").ScanRun[]; total: number }>(
+      `/mcp/scan-runs/${projectId}`
+    ),
+
+  listDocs: (projectId: string) =>
+    request<{ project_id: string; docs: import("../types").DocFile[]; total: number }>(
+      `/mcp/projects/${projectId}/docs`
+    ),
+
+  getDocContent: (projectId: string, filename: string) =>
+    request<{ filename: string; content: string }>(
+      `/mcp/projects/${projectId}/docs/${filename}/content`
+    ),
+
+  getProjectUsage: (projectId: string) =>
+    request<import("../types").ProjectUsage>(
+      `/mcp/projects/${projectId}/usage`
     ),
 };

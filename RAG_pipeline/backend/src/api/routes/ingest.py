@@ -1,11 +1,29 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
+from src.api.routes.auth import limiter
+from src.config import settings
 from src.ingestion.pipeline import ingest_document, ingest_text
 from src.rbac.permissions import get_user_groups
 from src.schemas import IngestResponse, MarkdownIngestRequest
+
+
+async def verify_ingest_api_key(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Verify Bearer token matches MCP_INGEST_API_KEY.
+
+    If no key is configured, the endpoint is open (backwards-compatible).
+    """
+    if not settings.mcp_ingest_api_key:
+        return
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or token != settings.mcp_ingest_api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
 router = APIRouter(tags=["ingest"])
 
@@ -14,7 +32,9 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
 @router.post("/ingest", response_model=IngestResponse)
+@limiter.limit("10/minute")
 async def ingest(
+    request: Request,
     file: UploadFile,
     db: DBSession,
     qdrant: QdrantClient,
@@ -57,13 +77,13 @@ async def ingest(
     )
 
 
-@router.post("/ingest/md", response_model=IngestResponse)
+@router.post("/ingest/md", response_model=IngestResponse, dependencies=[Depends(verify_ingest_api_key)])
 async def ingest_markdown(
     request: MarkdownIngestRequest,
     db: DBSession,
     qdrant: QdrantClient,
 ) -> IngestResponse:
-    """Ingest raw markdown text directly (no file upload, no auth required).
+    """Ingest raw markdown text directly (no file upload, requires API key).
 
     Used by the MCP server to push generated documentation into the RAG pipeline.
     Idempotent: re-ingesting the same filename replaces the previous version.

@@ -128,6 +128,32 @@ class ProjectRegistry:
         )
         await self.db.flush()
 
+    async def update_project(
+        self,
+        project_id: str,
+        *,
+        display_name: str | None = None,
+        platform: str | None = None,
+    ) -> Project | None:
+        """Update editable fields on a project."""
+        project = await self.get_project(project_id)
+        if not project:
+            return None
+        if display_name is not None:
+            project.display_name = display_name
+        if platform is not None:
+            project.platform = platform
+        await self.db.flush()
+        return project
+
+    async def list_scan_runs(self, project_id: str) -> list[ScanRun]:
+        result = await self.db.execute(
+            select(ScanRun)
+            .where(ScanRun.project_id == project_id)
+            .order_by(ScanRun.started_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def update_rag_push(self, project_id: str) -> None:
         now = datetime.datetime.now(datetime.timezone.utc)
         await self.db.execute(

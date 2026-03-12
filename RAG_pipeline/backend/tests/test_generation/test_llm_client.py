@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.generation.llm_client import generate_answer, generate_answer_stream
+from src.generation.usage import UsageStats
 
 
 MESSAGES = [
@@ -24,7 +25,7 @@ async def test_first_provider_success():
         patch("src.generation.llm_client._ollama_generate", new_callable=AsyncMock) as mock_ollama,
     ):
         mock_settings.llm_providers = ["kimi", "ollama"]
-        mock_kimi.return_value = "Kimi answer"
+        mock_kimi.return_value = ("Kimi answer", UsageStats(provider="kimi", model="kimi-k2.5"))
 
         result = await generate_answer(MESSAGES)
 
@@ -42,7 +43,7 @@ async def test_fallback_to_ollama():
     ):
         mock_settings.llm_providers = ["kimi", "ollama"]
         mock_kimi.side_effect = Exception("Kimi rate limited")
-        mock_ollama.return_value = "Ollama answer"
+        mock_ollama.return_value = ("Ollama answer", UsageStats(provider="ollama", model="gemma3:4b"))
 
         result = await generate_answer(MESSAGES)
 
@@ -74,7 +75,7 @@ async def test_custom_provider_order():
         patch("src.generation.llm_client._kimi_generate", new_callable=AsyncMock) as mock_kimi,
     ):
         mock_settings.llm_providers = ["ollama"]
-        mock_ollama.return_value = "Ollama first"
+        mock_ollama.return_value = ("Ollama first", UsageStats(provider="ollama", model="gemma3:4b"))
 
         result = await generate_answer(MESSAGES)
 

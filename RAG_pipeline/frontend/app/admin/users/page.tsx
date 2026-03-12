@@ -24,6 +24,13 @@ interface CreateFormData {
   role_ids: number[];
 }
 
+interface PasswordResetState {
+  userId: number;
+  username: string;
+  password: string;
+  confirm: string;
+}
+
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -36,7 +43,10 @@ export default function AdminUsersPage() {
     role_ids: [],
   });
   const [error, setError] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [passwordReset, setPasswordReset] = useState<PasswordResetState | null>(null);
+  const [confirmDeactivate, setConfirmDeactivate] = useState<AdminUser | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -44,9 +54,11 @@ export default function AdminUsersPage() {
       if (res.ok) {
         const data = await res.json();
         setUsers(data.users);
+      } else {
+        setError("Failed to load users");
       }
     } catch {
-      // ignore
+      setError("Network error loading users");
     }
   }, []);
 
@@ -58,13 +70,21 @@ export default function AdminUsersPage() {
         setRoles(data.roles);
       }
     } catch {
-      // ignore
+      // roles are optional for display
     }
   }, []);
 
   useEffect(() => {
     Promise.all([fetchUsers(), fetchRoles()]).then(() => setLoading(false));
   }, [fetchUsers, fetchRoles]);
+
+  // Auto-clear success message
+  useEffect(() => {
+    if (successMsg) {
+      const timer = setTimeout(() => setSuccessMsg(""), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMsg]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -77,22 +97,34 @@ export default function AdminUsersPage() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.error || "Failed to create user");
+        setError(data?.error || data?.detail || "Failed to create user");
         return;
       }
       setShowCreate(false);
       setCreateForm({ username: "", email: "", password: "", role_ids: [] });
+      setSuccessMsg("User created successfully");
       await fetchUsers();
     } catch {
       setError("Network error");
     }
   }
 
-  async function handleDeactivate(userId: number) {
+  async function handleDeactivateConfirmed() {
+    if (!confirmDeactivate) return;
+    const userId = confirmDeactivate.id;
+    setConfirmDeactivate(null);
     setActionLoading(userId);
     try {
-      await fetch(`/api/admin/users/${userId}`, { method: "DELETE" });
+      const res = await fetch(`/api/admin/users/${userId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setError(data?.detail || "Failed to deactivate user");
+        return;
+      }
+      setSuccessMsg("User deactivated");
       await fetchUsers();
+    } catch {
+      setError("Network error");
     } finally {
       setActionLoading(null);
     }
@@ -106,23 +138,40 @@ export default function AdminUsersPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_active: true }),
       });
+      setSuccessMsg("User activated");
       await fetchUsers();
     } finally {
       setActionLoading(null);
     }
   }
 
-  async function handleResetPassword(userId: number) {
-    const newPassword = prompt("Enter new password (min 4 chars):");
-    if (!newPassword || newPassword.length < 4) return;
-    setActionLoading(userId);
+  async function handleResetPasswordSubmit() {
+    if (!passwordReset) return;
+    if (passwordReset.password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
+    if (passwordReset.password !== passwordReset.confirm) {
+      setError("Passwords do not match");
+      return;
+    }
+    setActionLoading(passwordReset.userId);
+    setError("");
     try {
-      await fetch(`/api/admin/users/${userId}/reset-password`, {
+      const res = await fetch(`/api/admin/users/${passwordReset.userId}/reset-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_password: newPassword }),
+        body: JSON.stringify({ new_password: passwordReset.password }),
       });
-      alert("Password reset successfully");
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setError(data?.detail || "Failed to reset password");
+        return;
+      }
+      setPasswordReset(null);
+      setSuccessMsg(`Password reset for ${passwordReset.username}`);
+    } catch {
+      setError("Network error");
     } finally {
       setActionLoading(null);
     }
@@ -143,6 +192,23 @@ export default function AdminUsersPage() {
           {showCreate ? "Cancel" : "Create User"}
         </button>
       </div>
+
+      {/* Success toast */}
+      {successMsg && (
+        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-md">
+          <p className="text-sm text-green-700">{successMsg}</p>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md flex justify-between items-center">
+          <p className="text-sm text-red-700">{error}</p>
+          <button onClick={() => setError("")} className="text-red-400 hover:text-red-600 text-sm ml-2">
+            dismiss
+          </button>
+        </div>
+      )}
 
       {showCreate && (
         <form
@@ -172,14 +238,14 @@ export default function AdminUsersPage() {
             />
             <input
               type="password"
-              placeholder="Password"
+              placeholder="Password (min 8 chars)"
               value={createForm.password}
               onChange={(e) =>
                 setCreateForm({ ...createForm, password: e.target.value })
               }
               className="px-3 py-2 border rounded-md text-sm"
               required
-              minLength={4}
+              minLength={8}
             />
           </div>
           {roles.length > 0 && (
@@ -201,7 +267,6 @@ export default function AdminUsersPage() {
               ))}
             </div>
           )}
-          {error && <p className="text-sm text-red-600">{error}</p>}
           <button
             type="submit"
             className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
@@ -209,6 +274,82 @@ export default function AdminUsersPage() {
             Create
           </button>
         </form>
+      )}
+
+      {/* Password Reset Modal */}
+      {passwordReset && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+            <h3 className="text-lg font-semibold mb-4">
+              Reset Password: {passwordReset.username}
+            </h3>
+            <div className="space-y-3">
+              <input
+                type="password"
+                placeholder="New password (min 8 characters)"
+                value={passwordReset.password}
+                onChange={(e) =>
+                  setPasswordReset({ ...passwordReset, password: e.target.value })
+                }
+                className="w-full px-3 py-2 border rounded-md text-sm"
+                autoFocus
+                minLength={8}
+              />
+              <input
+                type="password"
+                placeholder="Confirm password"
+                value={passwordReset.confirm}
+                onChange={(e) =>
+                  setPasswordReset({ ...passwordReset, confirm: e.target.value })
+                }
+                className="w-full px-3 py-2 border rounded-md text-sm"
+                minLength={8}
+              />
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => { setPasswordReset(null); setError(""); }}
+                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetPasswordSubmit}
+                disabled={actionLoading === passwordReset.userId}
+                className="px-4 py-2 text-sm text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
+              >
+                Reset Password
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deactivate Confirmation Modal */}
+      {confirmDeactivate && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
+            <h3 className="text-lg font-semibold mb-2">Confirm Deactivation</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Are you sure you want to deactivate user <strong>{confirmDeactivate.username}</strong>?
+              They will be unable to log in.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDeactivate(null)}
+                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeactivateConfirmed}
+                className="px-4 py-2 text-sm text-white bg-red-600 rounded-md hover:bg-red-700"
+              >
+                Deactivate
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="bg-white border rounded-lg overflow-hidden">
@@ -276,7 +417,14 @@ export default function AdminUsersPage() {
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
                     <button
-                      onClick={() => handleResetPassword(u.id)}
+                      onClick={() =>
+                        setPasswordReset({
+                          userId: u.id,
+                          username: u.username,
+                          password: "",
+                          confirm: "",
+                        })
+                      }
                       disabled={actionLoading === u.id}
                       className="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50"
                     >
@@ -284,7 +432,7 @@ export default function AdminUsersPage() {
                     </button>
                     {u.is_active ? (
                       <button
-                        onClick={() => handleDeactivate(u.id)}
+                        onClick={() => setConfirmDeactivate(u)}
                         disabled={actionLoading === u.id || u.is_superadmin}
                         className="text-xs text-red-600 hover:text-red-800 disabled:opacity-50"
                         title={u.is_superadmin ? "Cannot deactivate admin" : ""}

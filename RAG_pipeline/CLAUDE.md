@@ -19,11 +19,15 @@ intodata-kb/
 │   └── PROJECT_MEMORY.md      # Architecture decisions, patterns, gotchas
 ├── backend/
 │   ├── src/
-│   │   ├── api/routes/        # FastAPI endpoints
+│   │   ├── api/routes/        # FastAPI endpoints (query, auth, admin, conversations, benchmark, ingest)
+│   │   ├── auth/              # JWT auth (service.py, security.py)
+│   │   ├── services/          # Audit service
+│   │   ├── db/models/         # User, Role, Permission, QueryUsage, BenchmarkRun, etc.
 │   │   ├── ingestion/         # Document processing
 │   │   ├── retrieval/         # Vector search
-│   │   ├── generation/        # LLM client
-│   │   └── rbac/              # Access control
+│   │   ├── generation/        # LLM client, usage tracking, RAG chain
+│   │   └── rbac/              # Access control (permissions.py, auth.py)
+│   ├── benchmark/             # Benchmarking framework (runner, judge, report, corpus)
 │   └── tests/
 └── frontend/
     └── tests/
@@ -212,9 +216,11 @@ OLLAMA_LLM_MODEL=llama3.1:8b
 QDRANT_URL=http://localhost:6333
 DATABASE_URL=postgresql://postgres:changeme@localhost:5432/intodata_kb
 
-# Auth (shared between backend + MCP server)
+# Auth
 JWT_SECRET_KEY=change-me-in-production-use-a-strong-random-key
 ADMIN_DEFAULT_PASSWORD=admin
+COOKIE_DOMAIN=                    # Empty for localhost, set for production domain
+COOKIE_SECURE=false               # Set true when behind HTTPS
 
 # frontend/.env
 VITE_API_URL=http://localhost:8000/api/v1
@@ -223,11 +229,93 @@ VITE_API_URL=http://localhost:8000/api/v1
 ## Key Features
 
 - **Authentication**: JWT httpOnly cookies (access 60min + refresh 7d rotation), bcrypt passwords, rate-limited login (5/min), admin user management panel. Default creds: admin/admin
+- **RBAC**: 3 roles (admin, manager, developer), 9 permissions, project-level access control
+- **Token/Cost Tracking**: Automatic usage persistence on all query paths, admin usage dashboard
+- **Benchmarking**: CLI framework for precision@5, LLM-as-judge relevance, latency, cost metrics
 - Document ingestion (PDF, DOCX, PPTX)
 - Text chunking (500 tokens, 50 overlap)
 - Vector search with RBAC filtering
 - RAG with local LLM
 - Source citations in responses
+
+---
+
+## Auth System
+
+JWT httpOnly cookie authentication with token rotation:
+
+- **Access token**: 60min expiry, stored in httpOnly cookie on `/`
+- **Refresh token**: 7-day expiry, stored in httpOnly cookie on `/api/v1/auth/refresh`, rotated on use
+- **Endpoints**: `POST /auth/login`, `POST /auth/logout`, `POST /auth/refresh`, `GET /auth/me`
+- **Dependencies**: `CurrentUser`, `AdminUser`, `ProjectManager`, `ManagerUser` (in `src/api/dependencies.py`)
+- **Cookie settings**: `COOKIE_DOMAIN`, `COOKIE_SECURE`, `samesite=lax`
+- **Rate limiting**: 5/min login, 10/min refresh (via slowapi)
+- **Password hashing**: bcrypt
+- **Token storage**: Refresh token SHA-256 hashes in `refresh_tokens` table
+
+## RBAC System
+
+Role-based access control with 3 default roles and 9 permissions:
+
+- **Roles**: admin (all perms), manager (project management), developer (query + view)
+- **Permissions**: `manage_users`, `manage_roles`, `assign_projects`, `view_all_projects`, `manage_projects`, `view_assigned_projects`, `query_rag`, `ingest_documents`, `view_audit_logs`
+- **Project assignments**: Filter Qdrant queries via `_build_search_filter()` in `src/retrieval/search.py`
+- **Admin endpoints**: User CRUD (`/admin/users`), Role CRUD (`/admin/roles`), project assignments (`/admin/project-assignments`), audit logs (`/admin/audit-logs`), permissions listing (`/admin/permissions`)
+- **Permission checks**: `has_permission()`, `get_user_permissions()`, `can_view_all_projects()` in `src/rbac/permissions.py`
+- **Superadmin**: Bypasses all permission checks
+
+## Token/Cost Tracking
+
+Automatic token usage and cost tracking for all LLM interactions:
+
+- **Model**: `QueryUsage` in `src/db/models/query_usage.py` (15 fields: user_id, interface, query_text, model_name, provider, input/output/embedding tokens, cost_usd, latency/embedding/search/llm ms, project_id, conversation_id)
+- **Persistence**: Automatic on all query paths:
+  - Non-streaming RAG query (`rag_chain.py:run_rag_query()`)
+  - Non-streaming conversation (`conversational_rag.py:run_conversational_rag()`)
+  - Streaming conversation (`conversational_rag.py:run_conversational_rag_stream()`)
+- **Usage tracking**: `UsageStats` / `StreamUsageStats` dataclasses in `src/generation/usage.py`
+- **Cost calculation**: `MODEL_PRICING` table with per-million-token pricing (Kimi, Ollama, Voyage)
+- **SSE event**: `event: usage` emitted after stream completes (input_tokens, output_tokens, model, provider, cost_usd, latency_ms)
+- **Admin endpoints**: `GET /admin/usage/summary` (aggregated by interface/model/day), `GET /admin/usage/recent` (paginated list)
+- **Thread-local storage**: `get_last_usage()` in `llm_client.py` returns stats from the most recent LLM call
+
+## Benchmarking
+
+Automated RAG quality benchmarking framework:
+
+- **CLI**: `python -m benchmark run|list|show|compare` (in `backend/benchmark/`)
+- **Model**: `BenchmarkRun` in `src/db/models/benchmark.py` with JSONB results field
+- **Metrics**: precision@5, LLM-as-judge relevance (1-5 scale), latency, tokens, cost
+- **Test corpus**: `benchmark/corpus/default.json` (10 Q&A pairs)
+- **API**: `GET /benchmark/runs` (list all), `GET /benchmark/runs/{id}` (details with per-question results)
+- **Frontend**: `/admin/benchmark` page with runs list + detail drill-down, summary cards, color-coded relevance
+
+## External Usage Recording
+
+The KB MCP server posts usage records for doc generation and deep dive to the RAG backend:
+
+- **Endpoint**: `POST /api/v1/usage/record` (Bearer auth via `MCP_INGEST_API_KEY`)
+- **Accepts**: `interface`, `model_name`, `provider`, `input_tokens`, `output_tokens`, `cost_usd`, `latency_ms`, `project_id`, `query_text`
+- **Route**: `src/api/routes/usage.py`
+- **Called by**: `RagBridge.post_usage()` in `knowledge_base/mcp-server`
+
+## Embedding Token Tracking
+
+Embedding token counts from Voyage AI and Ollama are captured per call:
+
+- **Storage**: Thread-local `_last_embed_tokens` in `src/retrieval/embedder.py`
+- **Access**: `get_last_embed_tokens()` — returns token count from most recent embedding call
+- **Populated**: All 4 `QueryUsage` creation sites include `embedding_tokens=get_last_embed_tokens()`
+
+## Frontend Permission Guards
+
+Admin UI elements are filtered by user permissions:
+
+- **Hook**: `usePermissions()` in `frontend/hooks/usePermissions.ts` — wraps `useAuthContext()`, provides `hasPermission(codename)`, `hasAnyAdminPermission`, convenience booleans
+- **Sidebar**: Admin sub-links filtered by required permission (Users→`manage_users`, Roles→`manage_roles`, Projects→`assign_projects`, Usage→`manage_users`, Benchmark→`manage_users`)
+- **Admin layout**: Checks `hasAnyAdminPermission` (any admin permission grants access, not just `manage_users`)
+
+---
 
 ## Out of Scope
 

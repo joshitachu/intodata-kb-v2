@@ -4,14 +4,15 @@ import { User, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
-import type { MessageResponse } from "@/types";
+import type { MessageResponse, UsageStats } from "@/types";
 
 interface MessageBubbleProps {
   message: MessageResponse;
   isStreaming?: boolean;
+  usage?: UsageStats | null;
 }
 
-export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
+export function MessageBubble({ message, isStreaming, usage }: MessageBubbleProps) {
   const isUser = message.role === "user";
 
   return (
@@ -59,10 +60,20 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
           </div>
         )}
 
-        {message.latency_ms && (
-          <p className="text-xs text-muted-foreground">
-            {message.latency_ms}ms
-          </p>
+        {(message.latency_ms || usage) && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {message.latency_ms && <span>{message.latency_ms}ms</span>}
+            {usage && usage.input_tokens > 0 && (
+              <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+                {usage.input_tokens + usage.output_tokens} tokens
+              </span>
+            )}
+            {usage && usage.cost_usd > 0 && (
+              <span className="bg-green-50 text-green-700 px-1.5 py-0.5 rounded">
+                ${usage.cost_usd.toFixed(4)}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>

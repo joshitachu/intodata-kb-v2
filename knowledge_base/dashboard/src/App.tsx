@@ -1,10 +1,14 @@
 import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import AddRepoDialog from "./components/AddRepoDialog";
+import DocPreview from "./components/DocPreview";
 import LogPanel from "./components/LogPanel";
 import ProjectList from "./components/ProjectList";
+import ProjectSettings from "./components/ProjectSettings";
 import RunHistory from "./components/RunHistory";
+import ScanHistory from "./components/ScanHistory";
 import { useLogStream } from "./hooks/useLogStream";
+import { useProjects } from "./hooks/useProjects";
 import { useAuth } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
@@ -23,17 +27,27 @@ export default function App() {
     return null; // Redirecting to login
   }
 
-  return <AppContent />;
+  const canManageProjects =
+    auth.user?.is_superadmin ||
+    auth.user?.permissions?.includes("manage_projects") ||
+    false;
+
+  return <AppContent canManageProjects={canManageProjects} />;
 }
 
-function AppContent() {
+type DetailTab = "generate" | "scans" | "docs" | "settings";
+
+function AppContent({ canManageProjects }: { canManageProjects: boolean }) {
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(true);
-  const [runHistoryOpen, setRunHistoryOpen] = useState(true);
+  const [detailTab, setDetailTab] = useState<DetailTab>("generate");
   const [selectedLogFile, setSelectedLogFile] = useState<string | null>(null);
   const { logs, clear, done, logFile } = useLogStream(activeProject);
+  const { data: projectsData } = useProjects();
   const queryClient = useQueryClient();
+
+  const activeProjectObj = projectsData?.projects.find((p) => p.id === activeProject) ?? null;
 
   // When generation completes, switch to the historical log file and refresh queries
   useEffect(() => {
@@ -43,6 +57,7 @@ function AppContent() {
       setLogOpen(true);
     }
     queryClient.invalidateQueries({ queryKey: ["generate-runs", activeProject] });
+    queryClient.invalidateQueries({ queryKey: ["scan-runs", activeProject] });
     queryClient.invalidateQueries({ queryKey: ["log-files", activeProject] });
     queryClient.invalidateQueries({ queryKey: ["projects"] });
   }, [done, logFile, activeProject, queryClient]);
@@ -54,17 +69,26 @@ function AppContent() {
     }
   }
 
+  const tabs: { key: DetailTab; label: string }[] = [
+    { key: "generate", label: "Generation History" },
+    { key: "scans", label: "Scan History" },
+    { key: "docs", label: "Documentation" },
+    { key: "settings", label: "Settings" },
+  ];
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="bg-white border-b px-6 py-4 flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-800">intodoc Control Panel</h1>
-        <button
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
-          onClick={() => setShowAddRepo(true)}
-        >
-          Add Repo
-        </button>
+        {canManageProjects && (
+          <button
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+            onClick={() => setShowAddRepo(true)}
+          >
+            Add Repo
+          </button>
+        )}
       </header>
 
       {/* Project table */}
@@ -73,27 +97,47 @@ function AppContent() {
           <ProjectList
             onAction={(id) => setActiveProject(id)}
             activeProject={activeProject}
+            canManageProjects={canManageProjects}
             onSelect={(id) => {
               setActiveProject(id);
               setSelectedLogFile(null);
               setLogOpen(true);
-              setRunHistoryOpen(true);
+              setDetailTab("generate");
             }}
           />
         </div>
 
-        {/* Run history (collapsible) */}
+        {/* Detail panels (tabbed) */}
         {activeProject && (
           <div>
-            <button
-              className="text-sm text-gray-500 hover:text-gray-700 mb-2"
-              onClick={() => setRunHistoryOpen(!runHistoryOpen)}
-            >
-              {runHistoryOpen ? "Hide" : "Show"} Generation History
-              <span className="ml-2 text-xs text-gray-400">({activeProject})</span>
-            </button>
-            {runHistoryOpen && (
+            <div className="flex items-center gap-1 mb-3 border-b">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                    detailTab === tab.key
+                      ? "border-blue-600 text-blue-600"
+                      : "border-transparent text-gray-500 hover:text-gray-700"
+                  }`}
+                  onClick={() => setDetailTab(tab.key)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+              <span className="ml-auto text-xs text-gray-400 pb-2">{activeProject}</span>
+            </div>
+
+            {detailTab === "generate" && (
               <RunHistory projectId={activeProject} onViewLog={handleViewLog} />
+            )}
+            {detailTab === "scans" && (
+              <ScanHistory projectId={activeProject} />
+            )}
+            {detailTab === "docs" && (
+              <DocPreview projectId={activeProject} />
+            )}
+            {detailTab === "settings" && (
+              <ProjectSettings project={activeProjectObj} />
             )}
           </div>
         )}

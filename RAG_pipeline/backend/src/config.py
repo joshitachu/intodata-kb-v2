@@ -26,16 +26,16 @@ class Settings(BaseSettings):
 
     # Embedding provider chain
     embedding_providers: list[str] = ["voyage", "ollama"]
-    voyage_api_key: str = "pa-nu8c97r7H4mYSWwuEbbeYkTO3px2a3hbFYpCyxAN-gv"
+    voyage_api_key: str = ""
     voyage_embed_model: str = "voyage-4-large"
     voyage_embed_dim: int = 1024
 
     # Qdrant
-    qdrant_api_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.fd5QDZ8upKoKMF5wq3ykD4qQ30X3i6HLX9NvD7WdMC8"
-    qdrant_url: str = "https://8dbbe97c-2931-45fb-8c46-836c7fbcd3e7.europe-west3-0.gcp.cloud.qdrant.io:443"
+    qdrant_api_key: str = ""
+    qdrant_url: str = "http://localhost:6333"
 
     # PostgreSQL
-    database_url: str = "postgresql+asyncpg://postgres:voetbal123@localhost:5432/intodata_kb"
+    database_url: str = "postgresql+asyncpg://admin:@localhost:5432/intodata_kb"
 
     # Hybrid search
     hybrid_search_enabled: bool = True
@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     hindsight_url: str = "http://localhost:8888"
     hindsight_recall_budget: str = "low"
     hindsight_recall_max_tokens: int = 1024
+    hindsight_timeout: float = 120.0
 
     # Auth
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
@@ -72,6 +73,9 @@ class Settings(BaseSettings):
     cookie_domain: str = ""
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
 
+    # MCP ingestion auth
+    mcp_ingest_api_key: str = ""
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"
@@ -80,5 +84,16 @@ class Settings(BaseSettings):
     def is_dev(self) -> bool:
         return self.app_env == "development"
 
+    def validate_production_secrets(self) -> None:
+        """In production mode, ensure secrets are not left at default values."""
+        if self.app_env != "production":
+            return
+        if self.jwt_secret_key == "change-me-in-production-use-a-strong-random-key":
+            raise ValueError(
+                "CRITICAL: JWT_SECRET_KEY is still the default value. "
+                "Set a strong random secret in production."
+            )
+
 
 settings = Settings()
+settings.validate_production_secrets()

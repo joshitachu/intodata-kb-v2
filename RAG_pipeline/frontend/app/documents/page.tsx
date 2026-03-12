@@ -1,12 +1,21 @@
 "use client";
 
+import { useState } from "react";
 import { FileText, Trash2, Loader2 } from "lucide-react";
 import { DocumentUpload } from "@/components/DocumentUpload";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useDocuments, useDeleteDocument } from "@/hooks/useDocuments";
 
 export default function DocumentsPage() {
   const { data, isLoading, error } = useDocuments();
   const deleteDoc = useDeleteDocument();
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; filename: string } | null>(null);
+
+  function handleDeleteConfirmed() {
+    if (!deleteTarget) return;
+    deleteDoc.mutate(deleteTarget.id);
+    setDeleteTarget(null);
+  }
 
   return (
     <div className="max-w-4xl mx-auto py-8">
@@ -58,7 +67,7 @@ export default function DocumentsPage() {
                   </p>
                 </div>
                 <button
-                  onClick={() => deleteDoc.mutate(doc.id)}
+                  onClick={() => setDeleteTarget({ id: doc.id, filename: doc.filename })}
                   disabled={deleteDoc.isPending}
                   className="p-2 text-muted-foreground hover:text-destructive disabled:opacity-50"
                   title="Delete document"
@@ -74,6 +83,15 @@ export default function DocumentsPage() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete Document"
+        message={`Are you sure you want to delete "${deleteTarget?.filename}"? This will also remove all associated vector embeddings and cannot be undone.`}
+        confirmLabel="Delete"
+        onConfirm={handleDeleteConfirmed}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

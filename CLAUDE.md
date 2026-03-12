@@ -117,7 +117,7 @@ OLLAMA_BASE_URL=http://localhost:11434       # Host machine Ollama
 
 # RAG backend
 QDRANT_URL=http://localhost:6333
-DATABASE_URL=postgresql+asyncpg://admin:voetbal123@localhost:5432/intodata_kb
+DATABASE_URL=postgresql+asyncpg://admin:${POSTGRES_PASSWORD}@localhost:5432/intodata_kb
 
 # Models
 OLLAMA_EMBED_MODEL=nomic-embed-text

@@ -17,7 +17,7 @@ class MCPServerConfig(BaseSettings):
 
     # PostgreSQL (same DB as RAG pipeline)
     database_url: str = (
-        "postgresql+asyncpg://admin:voetbal123@localhost:5432/intodata_kb"
+        "postgresql+asyncpg://admin:@localhost:5432/intodata_kb"
     )
 
     # RAG pipeline base URL
@@ -44,6 +44,7 @@ class MCPServerConfig(BaseSettings):
 
     # Auth (shared with RAG backend)
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
+    ingest_api_key: str = ""
     jwt_algorithm: str = "HS256"
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
 

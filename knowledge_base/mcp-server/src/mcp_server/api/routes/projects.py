@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import shutil
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import text
 
+from mcp_server.api.permissions import require_project_access
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.schemas import (
@@ -28,11 +31,15 @@ from mcp_server.schemas import (
     PdfGenerateResponse,
     ProjectListResponse,
     ProjectResponse,
+    ProjectUsageResponse,
     PushToRagRequest,
     ResetStatusRequest,
     ScanRequest,
     ScanStatusResponse,
+    ScanRunListResponse,
+    ScanRunResponse,
     StatusResponse,
+    UpdateProjectRequest,
 )
 from mcp_server.services.claude_service import ClaudeService
 from mcp_server.services.deep_dive_service import DeepDiveService
@@ -74,6 +81,9 @@ async def add_repo(req: AddRepoRequest):
         local_path = str(path.resolve())
         repo_url = None
     elif url.startswith(("http://", "https://", "git@")):
+        # Validate URL to prevent command injection
+        if not re.match(r"^https?://[^\s;|&]+$", url) and not re.match(r"^git@[^\s;|&]+$", url):
+            raise HTTPException(status_code=400, detail="Invalid git URL format")
         source_type = "git"
         repo_url = url
         clone_dir = config.repos_dir / req.project_id
@@ -81,7 +91,7 @@ async def add_repo(req: AddRepoRequest):
             import subprocess
             try:
                 subprocess.run(
-                    ["git", "clone", url, str(clone_dir)],
+                    ["git", "clone", "--", url, str(clone_dir)],
                     check=True,
                     capture_output=True,
                 )
@@ -117,6 +127,8 @@ async def upload_zip(
 ):
     """Upload a ZIP file, unpack, register, and trigger scan."""
     project_id = project_id.strip()
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", project_id) or len(project_id) > 100:
+        raise HTTPException(400, "Invalid project_id: alphanumeric, hyphens, underscores only")
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="File must be a .zip")
 
@@ -152,6 +164,7 @@ async def upload_zip(
 @router.post("/scan", response_model=StatusResponse)
 async def scan_project(req: ScanRequest, request: Request, background_tasks: BackgroundTasks):
     """Trigger an `intodoc scan` for a project (runs in background)."""
+    await require_project_access(request, req.project_id)
     log_mgr = request.app.state.log_manager
 
     async with async_session_factory() as db:
@@ -218,6 +231,7 @@ async def _run_scan_background(
 @router.post("/generate", response_model=StatusResponse)
 async def generate_docs(req: GenerateRequest, request: Request, background_tasks: BackgroundTasks):
     """Spawn Claude Code CLI to generate docs (runs in background)."""
+    await require_project_access(request, req.project_id)
     log_mgr = request.app.state.log_manager
 
     async with async_session_factory() as db:
@@ -268,8 +282,8 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
             staging_dir.rename(docs_dir)
 
             # Push new docs to RAG server-side
+            bridge = RagBridge(log_manager=log_mgr)
             try:
-                bridge = RagBridge(log_manager=log_mgr)
                 await bridge.push_docs(project_id=project_id, output_dir=str(docs_dir))
             except Exception as e:
                 await log_mgr.emit(
@@ -277,6 +291,21 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
                     f"RAG push failed (docs are saved): {e}",
                     level="warning",
                 )
+
+            # Persist token usage to RAG backend
+            try:
+                await bridge.post_usage(
+                    interface="doc_generation",
+                    project_id=project_id,
+                    input_tokens=result.get("input_tokens"),
+                    output_tokens=result.get("output_tokens"),
+                    cost_usd=result.get("cost_usd"),
+                    latency_ms=result.get("duration_ms"),
+                    model_name=result.get("model_name", "claude"),
+                    provider="anthropic",
+                )
+            except Exception as e:
+                logger.warning("Failed to post doc_generation usage: %s", e)
         else:
             # Generation "succeeded" but produced no docs — clean staging
             if staging_dir.exists():
@@ -335,6 +364,7 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
 @router.post("/push-to-rag", response_model=StatusResponse)
 async def push_to_rag(req: PushToRagRequest, request: Request):
     """Push generated .md files from output dir to RAG pipeline."""
+    await require_project_access(request, req.project_id)
     log_mgr = request.app.state.log_manager
 
     async with async_session_factory() as db:
@@ -385,16 +415,176 @@ async def get_status(project_id: str):
         )
 
 
+async def _get_user_permission_codenames(db, user_id: int) -> set[str]:
+    """Fetch permission codenames for a user via raw SQL (avoids importing RAG models)."""
+    result = await db.execute(text("""
+        SELECT DISTINCT p.codename
+        FROM permissions p
+        JOIN role_permissions rp ON rp.permission_id = p.id
+        JOIN user_roles ur ON ur.role_id = rp.role_id
+        WHERE ur.user_id = :uid
+    """), {"uid": user_id})
+    return {row[0] for row in result.fetchall()}
+
+
+async def _get_user_is_superadmin(db, user_id: int) -> bool:
+    result = await db.execute(
+        text("SELECT is_superadmin FROM users WHERE id = :uid"),
+        {"uid": user_id},
+    )
+    row = result.fetchone()
+    return bool(row and row[0])
+
+
+async def _get_assigned_project_ids(db, user_id: int) -> set[str]:
+    result = await db.execute(
+        text("SELECT project_id FROM project_assignments WHERE user_id = :uid"),
+        {"uid": user_id},
+    )
+    return {row[0] for row in result.fetchall()}
+
+
 @router.get("/projects", response_model=ProjectListResponse)
-async def list_projects():
-    """List all registered projects."""
+async def list_projects(request: Request):
+    """List projects, filtered by assignment if user lacks view_all_projects."""
+    auth_payload = getattr(request.state, "auth_payload", None)
+
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
-        projects = await registry.list_projects()
+        all_projects = await registry.list_projects()
+
+        # If no auth payload, return all (shouldn't happen due to require_auth)
+        if not auth_payload:
+            return ProjectListResponse(
+                projects=[_project_to_response(p) for p in all_projects],
+                total=len(all_projects),
+            )
+
+        user_id = int(auth_payload.get("sub", 0))
+        is_superadmin = await _get_user_is_superadmin(db, user_id)
+
+        if is_superadmin:
+            return ProjectListResponse(
+                projects=[_project_to_response(p) for p in all_projects],
+                total=len(all_projects),
+            )
+
+        perms = await _get_user_permission_codenames(db, user_id)
+        if "view_all_projects" in perms:
+            return ProjectListResponse(
+                projects=[_project_to_response(p) for p in all_projects],
+                total=len(all_projects),
+            )
+
+        # Filter to assigned projects only
+        assigned_ids = await _get_assigned_project_ids(db, user_id)
+        filtered = [p for p in all_projects if p.id in assigned_ids]
         return ProjectListResponse(
-            projects=[_project_to_response(p) for p in projects],
-            total=len(projects),
+            projects=[_project_to_response(p) for p in filtered],
+            total=len(filtered),
         )
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(project_id: str, req: UpdateProjectRequest, request: Request):
+    """Update editable project fields (display_name, platform)."""
+    await require_project_access(request, project_id)
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.update_project(
+            project_id,
+            display_name=req.display_name,
+            platform=req.platform,
+        )
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        await db.commit()
+        return _project_to_response(project)
+
+
+@router.get("/projects/{project_id}/usage", response_model=ProjectUsageResponse)
+async def get_project_usage(project_id: str):
+    """Get aggregated usage stats (tokens, cost, run counts) for a project."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+        # Aggregate generate runs
+        gen_result = await db.execute(text("""
+            SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+                COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+                COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+                COALESCE(SUM(cost_usd), 0.0) AS cost_usd
+            FROM generate_runs
+            WHERE project_id = :pid
+        """), {"pid": project_id})
+        gen_row = gen_result.fetchone()
+
+        # Aggregate scan runs
+        scan_result = await db.execute(text("""
+            SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
+            FROM scan_runs
+            WHERE project_id = :pid
+        """), {"pid": project_id})
+        scan_row = scan_result.fetchone()
+
+        return ProjectUsageResponse(
+            project_id=project_id,
+            total_generate_runs=gen_row[0] if gen_row else 0,
+            completed_generate_runs=gen_row[1] if gen_row else 0,
+            total_input_tokens=int(gen_row[2]) if gen_row else 0,
+            total_output_tokens=int(gen_row[3]) if gen_row else 0,
+            total_cost_usd=float(gen_row[4]) if gen_row else 0.0,
+            total_scan_runs=scan_row[0] if scan_row else 0,
+            completed_scan_runs=scan_row[1] if scan_row else 0,
+        )
+
+
+@router.get("/scan-runs/{project_id}", response_model=ScanRunListResponse)
+async def list_scan_runs(project_id: str):
+    """List all scan runs for a project (newest first)."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        runs = await registry.list_scan_runs(project_id)
+        return ScanRunListResponse(
+            runs=[
+                ScanRunResponse(
+                    id=r.id,
+                    project_id=r.project_id,
+                    triggered_by=r.triggered_by,
+                    status=r.status,
+                    started_at=r.started_at,
+                    completed_at=r.completed_at,
+                    job_count=r.job_count,
+                    log_file=r.log_file,
+                )
+                for r in runs
+            ],
+            total=len(runs),
+        )
+
+
+@router.get("/projects/{project_id}/docs/{filename}/content")
+async def get_doc_content(project_id: str, filename: str):
+    """Return raw markdown content for inline preview."""
+    if not filename.endswith(".md"):
+        raise HTTPException(status_code=400, detail="Only .md files can be previewed")
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    docs_dir = config.project_root / "output" / project_id / "docs"
+    file_path = docs_dir / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    return {"filename": filename, "content": content}
 
 
 @router.post("/reset-status", response_model=StatusResponse)
@@ -598,11 +788,30 @@ async def deep_dive_query(req: DeepDiveRequest):
             )
 
     service = DeepDiveService()
+    bridge = RagBridge()
 
     async def event_stream():
         async for event in service.query(req.project_id, req.question, session_id=req.session_id):
             event_type = event.get("type", "message")
             data = event.get("data", "")
+
+            # Intercept usage events to persist token counts
+            if event_type == "usage" and isinstance(data, dict):
+                try:
+                    await bridge.post_usage(
+                        interface="deep_dive",
+                        project_id=req.project_id,
+                        input_tokens=data.get("input_tokens"),
+                        output_tokens=data.get("output_tokens"),
+                        cost_usd=data.get("cost_usd"),
+                        latency_ms=data.get("duration_ms") or data.get("latency_ms"),
+                        model_name=data.get("model", "claude"),
+                        provider="anthropic",
+                        query_text=req.question[:500] if req.question else None,
+                    )
+                except Exception:
+                    pass  # Don't break the SSE stream
+
             if isinstance(data, dict):
                 data = json.dumps(data)
             yield f"event: {event_type}\ndata: {data}\n\n"

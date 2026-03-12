@@ -28,17 +28,45 @@ logger = logging.getLogger(__name__)
 def _build_search_filter(
     user_groups: list[str],
     document_ids: list[int] | None = None,
+    project_ids: list[str] | None = None,
 ) -> Filter | None:
-    """Build Qdrant filter combining RBAC groups and optional document_ids."""
+    """Build Qdrant filter combining RBAC groups, project access, and optional document_ids.
+
+    Args:
+        user_groups: Role-based groups for allowed_groups filtering.
+        document_ids: Optional list of specific document IDs to restrict search to.
+        project_ids: Optional list of project IDs the user has access to.
+            None means no project restriction (admin/superadmin).
+            Empty list means user has no project assignments → no results.
+    """
     conditions = []
     # Admin users see everything — skip group filter
     if user_groups and "admin" not in user_groups:
+        # Build the set of allowed group values: user's role groups + assigned project_ids
+        allowed_values = list(user_groups)
+        if project_ids is not None:
+            allowed_values.extend(project_ids)
+        # Always include "public" so public docs are visible
+        if "public" not in allowed_values:
+            allowed_values.append("public")
         conditions.append(
             FieldCondition(
                 key="allowed_groups",
-                match=MatchAny(any=user_groups),
+                match=MatchAny(any=allowed_values),
             )
         )
+    elif project_ids is not None and not user_groups:
+        # Non-admin user with no role groups but has project assignments
+        allowed_values = list(project_ids)
+        if "public" not in allowed_values:
+            allowed_values.append("public")
+        conditions.append(
+            FieldCondition(
+                key="allowed_groups",
+                match=MatchAny(any=allowed_values),
+            )
+        )
+
     if document_ids:
         conditions.append(
             FieldCondition(
@@ -58,6 +86,7 @@ async def search_similar(
     top_k: int = 5,
     threshold: float = 0.3,
     document_ids: list[int] | None = None,
+    project_ids: list[str] | None = None,
 ) -> list[Source]:
     """Embed query, search Qdrant with RBAC filtering, return sources above threshold.
 
@@ -68,8 +97,8 @@ async def search_similar(
     embed_ms = int((time.perf_counter() - embed_start) * 1000)
     logger.info(f"Embedded query in {embed_ms}ms: {query[:80]!r}")
 
-    search_filter = _build_search_filter(user_groups, document_ids)
-    logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids} | top_k={top_k}")
+    search_filter = _build_search_filter(user_groups, document_ids, project_ids)
+    logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids}, project_ids={project_ids} | top_k={top_k}")
 
     results = await client.query_points(
         collection_name=COLLECTION_NAME,
@@ -91,6 +120,7 @@ async def search_similar_hybrid(
     threshold: float = 0.25,
     prefetch_limit: int | None = None,
     document_ids: list[int] | None = None,
+    project_ids: list[str] | None = None,
 ) -> list[Source]:
     """Hybrid search: dense + sparse with Reciprocal Rank Fusion (RRF).
 
@@ -105,8 +135,8 @@ async def search_similar_hybrid(
     embed_ms = int((time.perf_counter() - embed_start) * 1000)
     logger.info(f"Embedded query (dense + sparse) in {embed_ms}ms: {query[:80]!r}")
 
-    search_filter = _build_search_filter(user_groups, document_ids)
-    logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids} | top_k={top_k}")
+    search_filter = _build_search_filter(user_groups, document_ids, project_ids)
+    logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids}, project_ids={project_ids} | top_k={top_k}")
 
     # Prefetch from both indexes, fuse with RRF
     results = await client.query_points(
@@ -145,6 +175,7 @@ async def search_and_rerank(
     threshold: float = 0.25,
     rerank_candidates: int | None = None,
     document_ids: list[int] | None = None,
+    project_ids: list[str] | None = None,
 ) -> list[Source]:
     """Search with hybrid retrieval then rerank with cross-encoder.
 
@@ -168,6 +199,7 @@ async def search_and_rerank(
             top_k=candidates_n,
             threshold=0.0,
             document_ids=document_ids,
+            project_ids=project_ids,
         )
     else:
         candidates = await search_similar(
@@ -177,6 +209,7 @@ async def search_and_rerank(
             top_k=candidates_n,
             threshold=0.0,
             document_ids=document_ids,
+            project_ids=project_ids,
         )
 
     if not candidates:
@@ -218,6 +251,7 @@ async def search_multi_query(
     top_k: int = 5,
     threshold: float = 0.25,
     document_ids: list[int] | None = None,
+    project_ids: list[str] | None = None,
 ) -> list[Source]:
     """Multi-query search with query expansion + deduplication + reranking.
 
@@ -241,6 +275,7 @@ async def search_multi_query(
                 top_k=settings.rerank_top_n if settings.reranker_enabled else top_k,
                 threshold=threshold,
                 document_ids=document_ids,
+                project_ids=project_ids,
             )
         else:
             sources = await search_similar(
@@ -250,6 +285,7 @@ async def search_multi_query(
                 top_k=settings.rerank_top_n if settings.reranker_enabled else top_k,
                 threshold=threshold,
                 document_ids=document_ids,
+                project_ids=project_ids,
             )
         all_sources.extend(sources)
 

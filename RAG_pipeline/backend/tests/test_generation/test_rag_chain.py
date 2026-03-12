@@ -67,7 +67,7 @@ async def test_rag_query_with_sources(mock_qdrant, mock_db):
     assert response.sources[0].filename == "doc.pdf"
     assert response.latency_ms >= 0
     # Verify query was logged
-    mock_db.add.assert_called_once()
+    assert mock_db.add.call_count >= 1  # QueryUsage + QueryLog
 
 
 async def test_rag_query_no_sources_calls_llm_fallback(mock_qdrant, mock_db):
@@ -95,7 +95,7 @@ async def test_rag_query_no_sources_calls_llm_fallback(mock_qdrant, mock_db):
     # The no-results prompt should be in the messages
     call_messages = mock_gen.call_args[0][0]
     assert "no relevant documents" in call_messages[0]["content"].lower()
-    mock_db.add.assert_called_once()
+    assert mock_db.add.call_count >= 1  # QueryUsage + QueryLog
 
 
 async def test_rag_query_greeting_goes_through_search(mock_qdrant, mock_db):

@@ -1,10 +1,12 @@
 "use client";
 
 import { useAuthContext } from "@/components/AuthProvider";
+import { usePermissions } from "@/hooks/usePermissions";
 import type { ReactNode } from "react";
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
-  const { user, isLoading } = useAuthContext();
+  const { isLoading } = useAuthContext();
+  const { hasAnyAdminPermission } = usePermissions();
 
   if (isLoading) {
     return (
@@ -14,7 +16,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user?.is_superadmin) {
+  if (!hasAnyAdminPermission) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center">

@@ -89,6 +89,7 @@ class DeepDiveService:
             "--dangerously-skip-permissions",
             "--output-format", "stream-json",
             "--verbose",
+            "--max-turns", "50",
         ]
 
         # Only use session flags for multi-turn (chat mode follow-ups)

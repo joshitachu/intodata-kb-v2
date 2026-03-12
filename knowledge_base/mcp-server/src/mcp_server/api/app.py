@@ -7,12 +7,13 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from sqlalchemy import inspect
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from mcp_server.config import config
 from mcp_server.db.models import Base
@@ -57,9 +58,13 @@ async def lifespan(app: FastAPI):
 # --- JWT auth dependency ---
 
 async def require_auth(
+    request: Request,
     access_token: str | None = Cookie(default=None),
 ) -> dict:
-    """Validate JWT from access_token cookie. Returns decoded payload."""
+    """Validate JWT from access_token cookie. Returns decoded payload.
+
+    Also stores the payload on request.state.auth_payload for downstream use.
+    """
     if not access_token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -70,6 +75,7 @@ async def require_auth(
         )
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
+        request.state.auth_payload = payload
         return payload
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -81,12 +87,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if os.environ.get("MCP_COOKIE_SECURE", "").lower() == "true":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in config.allowed_origins.split(",") if o.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Cookie"],
 )
 
 # Import and register routes

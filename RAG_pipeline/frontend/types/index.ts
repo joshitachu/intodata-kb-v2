@@ -87,6 +87,19 @@ export const HealthResponseSchema = z.object({
 
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 
+// --- Token Usage ---
+
+export const UsageStatsSchema = z.object({
+  input_tokens: z.number(),
+  output_tokens: z.number(),
+  model: z.string(),
+  provider: z.string(),
+  cost_usd: z.number(),
+  latency_ms: z.number(),
+});
+
+export type UsageStats = z.infer<typeof UsageStatsSchema>;
+
 // --- Query History (client-side) ---
 
 export interface QueryHistoryEntry {
@@ -95,6 +108,7 @@ export interface QueryHistoryEntry {
   answer: string;
   sources: DocumentSource[];
   latency_ms: number;
+  usage?: UsageStats;
   timestamp: Date;
 }
 

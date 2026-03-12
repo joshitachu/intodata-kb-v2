@@ -14,6 +14,7 @@ interface AuthUser {
   is_active: boolean;
   is_superadmin: boolean;
   roles: string[];
+  permissions: string[];
 }
 
 interface AuthContextValue {

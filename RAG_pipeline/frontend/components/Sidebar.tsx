@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Search, MessageSquare, FileText, BookOpen, Settings, LogOut, Shield } from "lucide-react";
+import { Search, MessageSquare, FileText, BookOpen, Settings, LogOut, Shield, Users, KeyRound, FolderKanban, BarChart3, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const navItems = [
   { href: "/", label: "Search", icon: Search },
@@ -17,6 +18,20 @@ const navItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuthContext();
+  const { hasAnyAdminPermission, hasPermission } = usePermissions();
+
+  // Admin sub-links with their required permissions
+  const adminSubLinks = [
+    { href: "/admin/users", label: "Users", icon: Users, perm: "manage_users" as const },
+    { href: "/admin/roles", label: "Roles", icon: KeyRound, perm: "manage_roles" as const },
+    { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, perm: "assign_projects" as const },
+    { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "manage_users" as const },
+    { href: "/admin/benchmark", label: "Benchmark", icon: FlaskConical, perm: "manage_users" as const },
+  ];
+
+  const visibleAdminLinks = adminSubLinks.filter(
+    (link) => hasPermission(link.perm),
+  );
 
   return (
     <aside className="w-56 border-r bg-card flex flex-col h-full">
@@ -41,19 +56,40 @@ export function Sidebar() {
             {label}
           </Link>
         ))}
-        {user?.is_superadmin && (
-          <Link
-            href="/admin/users"
-            className={cn(
-              "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
-              pathname.startsWith("/admin")
-                ? "bg-secondary text-secondary-foreground font-medium"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        {hasAnyAdminPermission && (
+          <>
+            <Link
+              href={visibleAdminLinks[0]?.href ?? "/admin/users"}
+              className={cn(
+                "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
+                pathname.startsWith("/admin")
+                  ? "bg-secondary text-secondary-foreground font-medium"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              <Shield className="h-4 w-4" />
+              Admin
+            </Link>
+            {pathname.startsWith("/admin") && visibleAdminLinks.length > 0 && (
+              <div className="ml-4 space-y-0.5">
+                {visibleAdminLinks.map(({ href, label, icon: Icon }) => (
+                  <Link
+                    key={href}
+                    href={href}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors",
+                      pathname === href
+                        ? "bg-secondary/70 text-secondary-foreground font-medium"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {label}
+                  </Link>
+                ))}
+              </div>
             )}
-          >
-            <Shield className="h-4 w-4" />
-            Admin
-          </Link>
+          </>
         )}
       </nav>
 

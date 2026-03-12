@@ -1,5 +1,302 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-11 (Security Hardening + Stress Test)
+
+### [Security]: Lock Docker ports to localhost
+
+- **Files changed**: `../../docker-compose.yml` (lines 67, 106, 131)
+- **Problem**: Backend (8000), frontend (3000), and dashboard (8001) ports were exposed on all interfaces, bypassing Caddy reverse proxy
+- **Change**: Changed port bindings from `"8000:8000"` to `"127.0.0.1:8000:8000"` (same for 3000, 8001)
+- **Why this approach**: Only Caddy should accept external traffic; services should only be reachable via localhost
+- **Verification**: Syntax check on docker-compose.yml
+
+### [Security]: Fix password reset min_length
+
+- **Files changed**: `backend/src/api/routes/admin.py` (line 43)
+- **Problem**: `ResetPasswordRequest.new_password` had `min_length=4`, inconsistent with `CreateUserRequest` which already uses `min_length=8`
+- **Change**: `min_length=4` -> `min_length=8`
+- **Why this approach**: Password policy should be consistent across create and reset flows
+- **Verification**: Syntax check
+
+### [Security]: Fix dashboard login redirect (hardcoded :3000)
+
+- **Files changed**: `../../knowledge_base/dashboard/src/api/client.ts` (line 7), `../../knowledge_base/dashboard/src/hooks/useAuth.ts` (line 8)
+- **Problem**: Login redirect URLs had hardcoded `:3000` port, breaking in production behind Caddy (port 443)
+- **Change**: Removed `:3000` from `getLoginUrl()` fallback in both files
+- **Why this approach**: Behind a reverse proxy, the default port (443/80) is correct; hardcoded ports break production
+- **Verification**: Both files updated consistently
+
+### [Security]: Add env validation to deploy script
+
+- **Files changed**: `../../deploy/deploy.sh` (new section 11, renumbered 12/13)
+- **Problem**: Deploy script would start services with insecure default secrets (JWT_SECRET_KEY, POSTGRES_PASSWORD)
+- **Change**: Added validation block that checks `.env` for insecure defaults, empty values, and short JWT keys. Aborts deployment if insecure.
+- **Why this approach**: Fail-fast prevents deploying with default credentials
+- **Verification**: Bash syntax check
+
+### [Feature]: Comprehensive stress test script
+
+- **Files changed**: `backend/tests/stress_test.py` (NEW, ~530 lines)
+- **Problem**: No integration or load tests existed -- only unit tests with mocks
+- **Change**: Created standalone async stress test that runs against live services, testing:
+  - A) Health & connectivity (all 4 services)
+  - B) Auth flow (login/me/refresh/logout, invalid credentials, N iterations)
+  - C) Document ingestion (upload, re-upload, wrong file type)
+  - D) RAG query (N iterations with latency tracking)
+  - E) SSE streaming (event ordering, TTFT measurement)
+  - F) Conversations (create/message/follow-up/list/delete)
+  - G) Admin CRUD (create user/assign project/RBAC verification/deactivate)
+  - H) Concurrent load (N users x M queries with throughput measurement)
+  - I) Rate limiting (login 5/min enforcement check)
+- **Why this approach**: Uses httpx async client, configurable via CLI args, self-contained (creates/cleans test data), prints structured report with percentile latencies
+- **Verification**: `python3 -c "import py_compile; py_compile.compile(...)"` passes
+
+## Session: 2026-03-11 (Phase 1 Consolidation)
+
+### [Security]: P1 — 7 security fixes
+
+- **Files changed**: `backend/src/api/routes/test.py` (DELETED), `backend/src/api/main.py`, `../knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`, `backend/src/api/routes/admin.py`, `backend/src/api/routes/documents.py`, `backend/src/api/routes/conversations.py`, `backend/src/api/routes/health.py`
+- **Changes**:
+  - 1a: Removed unauthenticated test route with broken code (direct Ollama calls, undefined `payload` var)
+  - 1b: Fixed git clone command injection — added URL regex validation + `--` separator
+  - 1c: Added pagination limits (max 100) via `Query(ge=1, le=100)` to all list endpoints (users, audit-logs, usage/recent, documents, conversations)
+  - 1d: Fixed N+1 count queries — `list_users` and `list_audit_logs` now use `select(func.count())` instead of fetching all rows into memory
+  - 1e: Added `@limiter.limit("10/minute")` rate limit to document deletion endpoint
+  - 1f: Sanitized health endpoint error messages — all `str(e)` replaced with "Service unavailable" to prevent leaking DB connection strings
+  - 1g: Strengthened password policy from min_length=4 to min_length=8 in `CreateUserRequest` and `ResetPasswordRequest`
+- **Tests updated**: `tests/test_api/test_admin.py` — fixed mocks for count queries and password length
+
+### [UX]: P2 — 6 UX improvements
+
+- **Files changed**: `frontend/app/admin/users/page.tsx`, `frontend/app/not-found.tsx` (NEW), `frontend/app/error.tsx` (NEW), `frontend/components/ConfirmDialog.tsx` (NEW), `frontend/app/documents/page.tsx`, `frontend/app/admin/roles/page.tsx`, `frontend/components/ConversationItem.tsx`, `frontend/app/layout.tsx`, `frontend/public/favicon.svg` (NEW), `../knowledge_base/dashboard/src/hooks/useAuth.ts`, `../knowledge_base/dashboard/index.html`, `../knowledge_base/dashboard/public/favicon.svg` (NEW)
+- **Changes**:
+  - 2a: Replaced `prompt()`/`alert()` with modal dialogs for password reset (with confirmation field) and user deactivation. Added success toast with auto-dismiss.
+  - 2b: Added 404 page and error boundary component
+  - 2c: Added ConfirmDialog component, used for document deletion, role deletion, conversation deletion
+  - 2d: Fixed KB dashboard useAuth to surface network errors instead of silently redirecting
+  - 2e: Permission tooltips already present via title attributes (no change needed)
+  - 2f: Added SVG favicons for both frontends, page title template in layout
+
+### [Performance]: P3 — 4 performance/stability improvements
+
+- **Files changed**: `backend/alembic/versions/009_add_performance_indexes.py` (NEW), `backend/src/generation/llm_client.py`, `backend/src/api/main.py`, `docker-compose.yml`
+- **Changes**:
+  - 3a: Added DB indexes on `query_usage.created_at`, `audit_logs.created_at`, `documents.filename`
+  - 3b: Added `cleanup_llm_clients()` function for singleton HTTP client cleanup, called in lifespan shutdown
+  - 3c: Added health checks to frontend and dashboard Docker services
+  - 3d: Added `mem_limit` and `cpus` resource limits to all 6 Docker services
+
+### [Deployment]: P5 — 3 deployment hardening items
+
+- **Files changed**: `RAG_pipeline/backend/Dockerfile`, `knowledge_base/mcp-server/Dockerfile`, `backend/src/config.py`, `.env.production.template`
+- **Changes**:
+  - 5a: Both Dockerfiles now run as non-root user (appuser:appgroup, UID/GID 1001)
+  - 5b: Production secret validation — `validate_production_secrets()` raises on default JWT_SECRET_KEY when APP_ENV=production
+  - 5c: Removed duplicate `MCP_INGEST_API_KEY` entry from .env.production.template
+
+### [Testing]: P4 — Backend + Frontend test infrastructure
+
+- **Files changed**: `tests/test_api/test_usage.py` (NEW, 5 tests), `tests/test_api/test_benchmark.py` (NEW, 4 tests), `frontend/vitest.config.ts` (NEW), `frontend/tests/setup.ts` (NEW), `frontend/tests/components/ConfirmDialog.test.tsx` (NEW, 5 tests), `frontend/tests/hooks/useAuth.test.ts` (NEW, 4 tests), `../knowledge_base/dashboard/src/tests/setup.ts` (NEW), `../knowledge_base/dashboard/src/tests/api-client.test.ts` (NEW, 4 tests)
+- **Changes**:
+  - 4a: Added 9 new backend API tests for usage recording (auth, validation) and benchmark endpoints (list, get, 404)
+  - 4b: Set up Vitest + React Testing Library for RAG frontend with 9 tests (ConfirmDialog rendering, useAuth flow)
+  - 4c: Set up Vitest for KB dashboard with 4 API client tests (list, error, auth redirect, scan POST)
+- **Verification**: 243 backend tests pass (1 pre-existing docx skip), 9 frontend tests pass, 4 dashboard tests pass, frontend build clean
+
+## Session: 2026-03-11
+
+### [Feature]: Phase 1 Closeout — 6 remaining items
+
+#### Item 2: KB Doc Gen Token Persistence
+- **Files changed**: `backend/src/api/routes/usage.py` (NEW), `backend/src/api/main.py`, `../knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py`, `../knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+- **Problem**: Doc generation extracted cost/tokens from Claude CLI but never saved to QueryUsage table
+- **Change**: Created POST /usage/record endpoint with Bearer auth (reuses mcp_ingest_api_key). Added `post_usage()` method to RagBridge. Called it in `_run_generate_background()` after doc generation completes.
+- **Why this approach**: Fire-and-forget pattern — failure to record usage doesn't break doc generation
+- **Verification**: Frontend build passes, 236 backend tests pass
+
+#### Item 3: Deep Dive Token Persistence
+- **Files changed**: `../knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+- **Problem**: Deep dive streams usage to frontend but doesn't persist
+- **Change**: In `deep_dive_query` SSE stream, intercept `type="usage"` events and call `bridge.post_usage(interface="deep_dive", ...)`. Wrapped in try/except to not break SSE stream.
+- **Verification**: Build passes
+
+#### Item 4: Embedding Token Tracking
+- **Files changed**: `backend/src/retrieval/embedder.py`, `backend/src/generation/rag_chain.py`, `backend/src/api/routes/query.py`, `backend/src/generation/conversational_rag.py`
+- **Problem**: Voyage AI and Ollama embedding responses contain token counts but they're ignored
+- **Change**: Added thread-local `_last_embed_tokens` storage (same pattern as `llm_client._last_usage`). Voyage: captures `response.usage.total_tokens`. Ollama: captures `response.get("prompt_eval_count")`. Added `embedding_tokens=get_last_embed_tokens()` to all 4 QueryUsage creation sites.
+- **Verification**: 236 tests pass
+
+#### Item 5: Frontend Permission Guards
+- **Files changed**: `frontend/hooks/usePermissions.ts` (NEW), `frontend/components/Sidebar.tsx`, `frontend/app/admin/layout.tsx`
+- **Problem**: Admin UI doesn't hide elements based on user permissions
+- **Change**: Created `usePermissions` hook wrapping `useAuthContext()` with `hasPermission()`, `hasAnyAdminPermission`, convenience booleans. Sidebar now filters admin sub-links by required permission. Admin layout checks `hasAnyAdminPermission` instead of just `manage_users`.
+- **Verification**: `npx next build` passes
+
+#### Items 1+6: Benchmark Page + Sidebar Link
+- **Files changed**: `frontend/app/admin/benchmark/page.tsx` (NEW), `frontend/app/api/admin/benchmark/runs/route.ts` (NEW), `frontend/app/api/admin/benchmark/runs/[runId]/route.ts` (NEW), `frontend/components/Sidebar.tsx`
+- **Problem**: Backend benchmark API exists but no frontend page
+- **Change**: Created benchmark page with runs list (table) + run detail (drill-down). Summary cards: Total Runs, Best Precision@5, Best Relevance, Avg Latency. Per-question detail with color-coded relevance. API proxy routes via fastapiFetch. Sidebar: added FlaskConical icon + Benchmark link guarded by manage_users permission.
+- **Verification**: `npx next build` passes
+
+## Session: 2026-03-10
+
+### [Fix]: Token tracking gaps in non-streaming paths
+
+- **Files changed**: `backend/src/generation/rag_chain.py`, `backend/src/generation/conversational_rag.py`
+- **Problem**: Non-streaming RAG query (`run_rag_query()`) and non-streaming conversation (`run_conversational_rag()`) called `generate_answer()` but never persisted `QueryUsage`. Only the streaming conversation path had usage persistence.
+- **Root cause**: Token tracking was added to the streaming path first, but the non-streaming paths were missed.
+- **Change**: Added `get_last_usage()` call + `QueryUsage` persistence after `generate_answer()` in both functions. Added `get_last_usage` import to `rag_chain.py` and `QueryUsage` import to `conversational_rag.py`.
+- **Why this approach**: Matches the existing pattern in `run_conversational_rag_stream()` (line 637). Wrapped in try/except to avoid breaking queries if persistence fails.
+- **Verification**: 216 tests pass. Grep confirms `QueryUsage` persistence in all 3 query paths.
+
+### [Fix]: Test infrastructure — missing Phase 1 model imports in conftest.py
+
+- **Files changed**: `backend/tests/conftest.py`
+- **Problem**: Only base models (User, Role, Document, etc.) were imported. Phase 1 models (Permission, ProjectAssignment, AuditLog, QueryUsage, BenchmarkRun) missing — SQLite wouldn't create their tables.
+- **Change**: Added all Phase 1 models to the import list.
+- **Verification**: All Phase 1 model tests pass with SQLite in-memory DB.
+
+### [Fix]: BenchmarkRun JSONB incompatible with SQLite
+
+- **Files changed**: `backend/src/db/models/benchmark.py`
+- **Problem**: `results` column used `JSONB` (PostgreSQL-only), causing `CompileError` when running tests with SQLite.
+- **Change**: Changed to `JSON().with_variant(JSONB(), "postgresql")` — uses JSONB on PostgreSQL, JSON on SQLite.
+- **Verification**: BenchmarkRun model tests pass on SQLite.
+
+### [Fix]: ProjectAssignment server_default incompatible with SQLite
+
+- **Files changed**: `backend/src/db/models/user.py`
+- **Problem**: `assigned_at` used `server_default="now()"` (PostgreSQL syntax), causing `ValueError: Invalid isoformat string: 'now()'` on SQLite.
+- **Change**: Changed to `server_default=func.now()` (cross-platform). Added `func` to imports.
+- **Verification**: ProjectAssignment model tests pass on SQLite.
+
+### [Fix]: Existing test_llm_client.py tests broken by usage tracking
+
+- **Files changed**: `backend/tests/test_generation/test_llm_client.py`
+- **Problem**: `_kimi_generate` and `_ollama_generate` now return `(str, UsageStats)` tuples instead of just `str`. Mock return values needed updating.
+- **Change**: Updated mock return values in `test_first_provider_success`, `test_fallback_to_ollama`, `test_custom_provider_order` to return `(str, UsageStats(...))` tuples.
+- **Verification**: All LLM client tests pass.
+
+### [Fix]: Existing test_rag_chain.py assert_called_once broken
+
+- **Files changed**: `backend/tests/test_generation/test_rag_chain.py`
+- **Problem**: `mock_db.add.assert_called_once()` failed because `db.add` is now called twice (QueryUsage + QueryLog).
+- **Change**: Changed to `assert mock_db.add.call_count >= 1`.
+- **Verification**: All RAG chain tests pass.
+
+### [Feature]: 51 Phase 1 tests across 5 files
+
+- **Files created**:
+  - `backend/tests/test_generation/test_usage.py` (9 tests) — UsageStats cost calculation, StreamUsageStats finalize, model pricing table
+  - `backend/tests/test_db/test_phase1_models.py` (11 tests) — Permission, ProjectAssignment, AuditLog, QueryUsage, BenchmarkRun CRUD
+  - `backend/tests/test_api/test_admin.py` (12 tests) — Admin endpoints: users, roles, project assignments, audit logs, usage
+  - `backend/tests/test_api/test_auth.py` (8 tests) — Login, logout, refresh, /me, auth failures
+- **Files modified**: `backend/tests/test_rbac/test_permissions.py` (6 new tests) — has_permission, get_user_permissions, can_view_all_projects
+- **Total new tests**: 51 (46 new + 5 pre-existing = 51 in Phase 1 test files)
+- **Verification**: All 51 Phase 1 tests pass. Total: 216 tests pass.
+
+### [Docs]: Updated RAG_pipeline/CLAUDE.md with Phase 1 features
+
+- **Files changed**: `RAG_pipeline/CLAUDE.md`
+- **Change**: Added Auth System, RBAC System, Token/Cost Tracking, and Benchmarking sections. Updated Key Features list. Updated Project Structure tree with auth/, services/, db/models/, benchmark/. Added COOKIE_DOMAIN and COOKIE_SECURE to Environment section.
+- **Verification**: All sections present and accurate.
+
+## Session: 2026-03-09
+
+### [Fix]: Make Hindsight client timeout configurable and increase to 120s
+
+- **Files changed**: `RAG_pipeline/backend/src/config.py` (line 64), `RAG_pipeline/backend/src/memory/hindsight_client.py` (line 36), `docker-compose.yml` (line 37)
+- **Problem**: Hindsight `_retain_user_bank` and `_retain_quality_bank` still failing with `asyncio.TimeoutError` after switching model to `gemma3:4b`. Client timeout (50s) too short for Ollama cold-loading under VPS memory pressure (~2.6GB free).
+- **Root cause**: Hardcoded 50s client timeout in `hindsight_client.py` was shorter than Hindsight's server-side `HINDSIGHT_API_LLM_TIMEOUT` (default 120s). On first request after model eviction, Ollama cold-load + fact extraction exceeds 50s.
+- **Change**:
+  1. Added `hindsight_timeout: float = 120.0` to `config.py` Hindsight settings block (configurable via `HINDSIGHT_TIMEOUT` env var)
+  2. Changed `timeout=50.0` to `timeout=settings.hindsight_timeout` in `hindsight_client.py`
+  3. Added `HINDSIGHT_API_LLM_TIMEOUT: "180"` to hindsight service in `docker-compose.yml`
+- **Why this approach**: Retain is fire-and-forget (`asyncio.create_task`), so longer timeout has zero user-facing impact. 120s client / 180s server gives headroom for cold-load scenarios. Making it configurable allows tuning without code changes.
+- **Verification**: Rebuild backend + restart hindsight, trigger a query, check logs for "user bank stored" / "quality bank stored" instead of TimeoutError.
+
+### [Fix]: Switch Hindsight LLM model to fix retain timeouts
+
+- **Files changed**: `docker-compose.yml` (line 36)
+- **Problem**: Hindsight `retain` calls failing with `asyncio.TimeoutError` after every query. Memory storage silently failing despite answers returning successfully.
+- **Root cause**: Hindsight configured to use `gemma3:12b` (8GB) via Ollama, but VPS only has ~2.6GB free RAM. Ollama needs to cold-load the model each time, can't respond within 50s timeout under memory pressure.
+- **Change**: `HINDSIGHT_API_LLM_MODEL: gemma3:12b` → `HINDSIGHT_API_LLM_MODEL: gemma3:4b`
+- **Why this approach**: The 4B model (3.3GB) is already pulled on the VPS, loads faster, and fits in available RAM. RAG backend already uses `gemma3:4b` successfully. Hindsight retain/recall tasks only do lightweight summarization — no need for a 12B model.
+- **Verification**: Restart hindsight container (`docker compose up -d hindsight`), trigger a query, check backend logs for absence of TimeoutError warnings.
+
+### [Deploy]: Security + RBAC changes to running VPS
+
+- **Files changed**:
+  - `docker-compose.yml` — reverted all ports from `127.0.0.1:PORT:PORT` to `PORT:PORT` (no Caddy/domain yet), added `MCP_INGEST_API_KEY` env var to backend service
+  - `.env` — added `MCP_INGEST_API_KEY=<generated 64-char hex key>`
+  - `RAG_pipeline/backend/alembic/versions/006_add_rbac_and_audit.py` — fixed setval bug on lines 117-119
+- **Problem**: Migration 006 crashed on startup with `asyncpg.exceptions.NumericValueOutOfRangeError: setval: value 0 is out of bounds for sequence "project_assignments_id_seq" (1..2147483647)`
+- **Root cause**: `COALESCE(MAX(id), 0)` returns 0 for empty `project_assignments` table, but PostgreSQL sequences have minimum value of 1
+- **Change**: Wrapped all three setval calls with `GREATEST(..., 1)` to ensure minimum value of 1
+- **Why this approach**: Simplest fix — `GREATEST` ensures the value is always valid for the sequence
+- **Verification**:
+  - `alembic_version` shows `006`
+  - `curl http://localhost:8000/health` → all services healthy
+  - `curl http://localhost:8001/health` → dashboard OK
+  - `curl -X POST http://localhost:8000/api/v1/ingest/md` → 401 "Missing Authorization header"
+  - 9 permissions seeded, 20 role_permissions, 3 roles (admin, manager, developer)
+
+### [Config]: Revert Docker ports to public access
+
+- **Files changed**: `docker-compose.yml`
+- **Problem**: Ports were bound to `127.0.0.1` (localhost-only), but no Caddy reverse proxy or domain is configured yet — would lock us out of the VPS
+- **Change**: Reverted all 8 port bindings from `127.0.0.1:PORT:PORT` to `PORT:PORT`
+- **Why this approach**: Temporary measure until domain + Caddy is set up in a future session
+
+### [Config]: Add MCP_INGEST_API_KEY
+
+- **Files changed**: `.env`, `docker-compose.yml`
+- **Change**: Generated random 64-char hex key with `openssl rand -hex 32`, added to `.env` as `MCP_INGEST_API_KEY`, passed through to backend container in `docker-compose.yml`
+- **Verification**: `curl -X POST http://localhost:8000/api/v1/ingest/md` returns 401
+
+## Session: 2026-03-06
+
+### [Feature]: VPS Security Hardening + Manager/Developer RBAC
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/config.py` — removed hardcoded Voyage API key, Qdrant API key+URL, DB password; added mcp_ingest_api_key setting
+  - `knowledge_base/mcp-server/src/mcp_server/config.py` — removed hardcoded DB password, added ingest_api_key setting
+  - `docker-compose.yml` — bound all ports to 127.0.0.1 (postgres, qdrant, hindsight, backend, frontend, dashboard)
+  - `Caddyfile` (new) — reverse proxy with auto-TLS, security headers, routing for RAG frontend/backend + dashboard/MCP
+  - `deploy/caddy-install.sh` (new) — automated Caddy installation and domain setup
+  - `deploy/jail.local` (new) — fail2ban config for SSH protection
+  - `deploy/backup-postgres.sh` (new) — daily pg_dump with 14-day retention
+  - `deploy/deploy.sh` — added UFW firewall (22/80/443), fail2ban setup, backup cron job
+  - `RAG_pipeline/backend/src/api/main.py` — added SecurityHeadersMiddleware (X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, HSTS), tightened CORS methods/headers, permission seeding in startup
+  - `knowledge_base/mcp-server/src/mcp_server/api/app.py` — added SecurityHeadersMiddleware, tightened CORS, require_auth stores payload on request.state
+  - `RAG_pipeline/backend/src/api/routes/ingest.py` — added verify_ingest_api_key dependency on /ingest/md, rate limit on /ingest
+  - `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py` — sends Bearer token for authenticated ingestion
+  - `RAG_pipeline/backend/src/api/routes/auth.py` — added permissions to UserResponse, audit logging on login, rate limit on /refresh
+  - `RAG_pipeline/backend/src/api/routes/admin.py` — added project assignment CRUD endpoints, audit log endpoint, rate limit on password reset
+  - `RAG_pipeline/backend/src/api/routes/query.py` — rate limits on /query and /query/stream (30/min)
+  - `RAG_pipeline/backend/alembic/versions/006_add_rbac_and_audit.py` (new) — migration for permissions, role_permissions, project_assignments, audit_logs tables + seed data
+  - `RAG_pipeline/backend/src/db/models/user.py` — added Permission, ProjectAssignment, AuditLog models, role_permissions table
+  - `RAG_pipeline/backend/src/db/models/__init__.py` — exported new models
+  - `RAG_pipeline/backend/src/rbac/permissions.py` — expanded with permission constants, get_user_permissions(), has_permission()
+  - `RAG_pipeline/backend/src/api/dependencies.py` — added require_permission() factory, ManagerUser, ProjectManager types
+  - `RAG_pipeline/backend/src/services/audit_service.py` (new) — audit logging service
+  - `knowledge_base/mcp-server/src/mcp_server/api/permissions.py` (new) — require_project_access() for MCP endpoints
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` — project list filtered by assignments, access checks on scan/generate/push
+  - `RAG_pipeline/frontend/hooks/useAuth.ts` — added permissions field to AuthUser
+  - `RAG_pipeline/frontend/components/AuthProvider.tsx` — added permissions field to AuthUser
+  - `RAG_pipeline/frontend/app/admin/layout.tsx` — gates on manage_users permission (not just is_superadmin)
+  - `RAG_pipeline/frontend/components/Sidebar.tsx` — shows Admin link for manage_users permission holders
+  - `knowledge_base/dashboard/src/hooks/useAuth.ts` — expanded to fetch and expose user permissions
+  - `knowledge_base/dashboard/src/App.tsx` — gates Add Repo button on manage_projects permission
+  - `knowledge_base/dashboard/src/components/ProjectList.tsx` — hides action buttons for non-managers
+  - `.env.production.template` — added MCP_INGEST_API_KEY, updated COOKIE_SECURE/ALLOWED_ORIGINS for HTTPS
+
+- **Problem**: VPS deployed with all ports exposed, no TLS, hardcoded secrets in source, no role-based project access
+- **Root cause**: Initial deployment focused on functionality; security and RBAC deferred
+- **Change**: Two-phase implementation: (1) security hardening (secrets, ports, TLS, firewall, headers, auth, rate limits, backups), (2) full RBAC with permissions, project assignments, audit logging
+- **Why this approach**: Defense-in-depth — multiple layers of security. RBAC enables Manager/Developer workflow where managers assign projects and developers only see assigned projects.
+- **Verification**: Code review; all changes are consistent with existing patterns. Migration 006 tested against schema. Frontend changes maintain type safety.
+
 ## Session: 2026-03-04
 
 ### [Feature]: Full JWT authentication system

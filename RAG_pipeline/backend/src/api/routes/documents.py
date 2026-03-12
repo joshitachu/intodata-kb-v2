@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from sqlalchemy import func, select
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
+from src.api.routes.auth import limiter
 from src.db.models import Document
 from src.retrieval.vector_store import delete_document_points
 from src.schemas import DocumentListResponse, DocumentResponse
@@ -17,7 +18,7 @@ async def list_documents(
     db: DBSession,
     user: CurrentUser,
     skip: int = 0,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=100),
 ) -> DocumentListResponse:
     """List all documents with pagination."""
     total_result = await db.execute(select(func.count(Document.id)))
@@ -47,7 +48,9 @@ async def list_documents(
 
 
 @router.delete("/documents/{document_id}", status_code=204)
+@limiter.limit("10/minute")
 async def delete_document(
+    request: Request,
     document_id: int,
     db: DBSession,
     qdrant: QdrantClient,

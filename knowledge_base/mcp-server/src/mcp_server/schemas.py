@@ -36,28 +36,39 @@ class ProjectListResponse(BaseModel):
     total: int
 
 
+PROJECT_ID_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
+
+
 class AddRepoRequest(BaseModel):
     url: str = Field(..., description="Git URL, local path, or 'zip'")
-    project_id: StrippedStr = Field(..., description="Unique project identifier")
+    project_id: StrippedStr = Field(
+        ..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN,
+        description="Unique project identifier",
+    )
     platform: str = Field(default="talend", description="Integration platform")
     display_name: str | None = None
 
 
 class ScanRequest(BaseModel):
-    project_id: StrippedStr
+    project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     force: bool = False
 
 
 class GenerateRequest(BaseModel):
-    project_id: StrippedStr
+    project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
 
 
 class PushToRagRequest(BaseModel):
-    project_id: StrippedStr
+    project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
 
 
 class ResetStatusRequest(BaseModel):
-    project_id: StrippedStr
+    project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
+
+
+class UpdateProjectRequest(BaseModel):
+    display_name: str | None = None
+    platform: str | None = None
 
 
 # --- Scan Status ---
@@ -92,6 +103,24 @@ class RagPushResult(BaseModel):
 class MarkdownDoc(BaseModel):
     filename: str
     content: str
+
+
+# --- Scan Run ---
+
+class ScanRunResponse(BaseModel):
+    id: int
+    project_id: str
+    triggered_by: str
+    status: str
+    started_at: datetime.datetime | None = None
+    completed_at: datetime.datetime | None = None
+    job_count: int = 0
+    log_file: str | None = None
+
+
+class ScanRunListResponse(BaseModel):
+    runs: list[ScanRunResponse]
+    total: int
 
 
 # --- Generate Run ---
@@ -166,7 +195,7 @@ class PdfGenerateResponse(BaseModel):
 # --- Deep Dive ---
 
 class DeepDiveRequest(BaseModel):
-    project_id: StrippedStr
+    project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     question: str = Field(..., min_length=3)
     session_id: str | None = None
 
@@ -182,3 +211,16 @@ class DeepDiveProject(BaseModel):
 class DeepDiveProjectsResponse(BaseModel):
     projects: list[DeepDiveProject]
     total: int
+
+
+# --- Project Usage ---
+
+class ProjectUsageResponse(BaseModel):
+    project_id: str
+    total_generate_runs: int = 0
+    completed_generate_runs: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cost_usd: float = 0.0
+    total_scan_runs: int = 0
+    completed_scan_runs: int = 0

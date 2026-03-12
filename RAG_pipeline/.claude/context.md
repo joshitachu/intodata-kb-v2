@@ -1,12 +1,12 @@
 # Current State
 
-**Status**: MVP Complete (Phase 1) + All Phase 1.5 improvements + Enterprise Retrieval Quality Upgrade (Phase 2) + Configurable LLM Provider Chain + Streaming Chat UI + RAG Retrieval Quality Overhaul (Phase 3) + Latency Optimization (Phase 3.2) + **Production Bug Fixes + Voyage AI Enablement (Phase 3.3)** + **Hindsight Memory Full Integration (Phase 3.4)** + **Voyage AI Reranker (Phase 3.5)** + **Deep Dive Mode (Phase 4.1)** + **Deep Dive Streaming Fix + Chat Integration (Phase 4.2)** + **Deep Dive Streaming Repair (Phase 4.3)** + **JWT Authentication System (Phase 5.1)**
-**Last session**: 2026-03-04
-**Last completed**: Full JWT authentication system — replaced X-User-Id header auth with JWT httpOnly cookies, login/logout/refresh endpoints, admin user management panel, rate limiting, cross-service JWT validation (RAG backend + MCP server + dashboard), Alembic migration 004.
+**Status**: Phase 1 CONSOLIDATION COMPLETE. All 5 priorities (25 items) implemented (2026-03-11).
+**Last session**: 2026-03-11
+**Last completed**: Phase 1 consolidation — P1: 7 security fixes (test route removed, git injection fixed, pagination limits, N+1 count fixes, rate limiting, error sanitization, password policy), P2: 6 UX improvements (modals, error pages, confirm dialogs, favicons), P3: 4 performance items (DB indexes, client cleanup, Docker health checks + resource limits), P4: 22 new tests (9 backend API + 9 frontend + 4 dashboard), P5: 3 deployment hardening (non-root Docker, secret validation, template fix). 243 backend tests, 9 frontend tests, 4 dashboard tests all passing. Frontend build clean.
 
 ## What's Done
 
-### Backend (174 non-DB tests passing)
+### Backend (216 tests passing)
 - FastAPI app with CORS, lifespan events
 - Database: SQLAlchemy async models (User, Role, Document, QueryLog, IngestionJob)
 - Ingestion: PDF/DOCX/PPTX/XLSX parsing, **semantic chunking** (paragraph-aware, heading-aware, slide markers), **replace-on-re-upload**, **sentence-boundary chunking** (overlap=100)
@@ -23,7 +23,8 @@
 - **Map-reduce summarization**: Full-document summaries via parallel map → reduce
 - **Numbered citations**: LLM uses `[1]`, `[2]` format with `[Reference N: filename]` headers
 - **Auth**: JWT httpOnly cookies (access 60min + refresh 7d rotation), bcrypt passwords, rate-limited login, admin panel for user management
-- RBAC: JWT cookie auth (was X-User-Id header), role-to-group mapping for Qdrant filtering
+- **RBAC**: Full permission system (9 codenames), Manager/Developer roles, project assignments, audit logging
+- **Security**: Hardcoded secrets removed, localhost-only Docker ports, Caddy auto-TLS, UFW+fail2ban, security headers, CORS tightened, ingestion API key auth, extended rate limiting, daily PostgreSQL backups
 - API routes: /health, /api/v1/query, /api/v1/query/debug, /api/v1/query/stream (SSE), /api/v1/documents, /api/v1/ingest
 - Conversations: /api/v1/conversations with conversational RAG pipeline
 - Feature flags: `hybrid_search_enabled`, `reranker_enabled`, `query_expansion_enabled`
@@ -46,6 +47,7 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Recent Changes
 
+- **Deploy Security + RBAC to VPS** (2026-03-09): Deployed all Phase 6.1/6.2 changes to running VPS. Reverted docker-compose ports to public (no Caddy yet). Added MCP_INGEST_API_KEY to .env and docker-compose.yml. Fixed migration 006 setval bug (`GREATEST(..., 1)` to avoid 0 on empty sequences). Migration 006 applied successfully — permissions, role_permissions, project_assignments, audit_logs tables created and seeded. All services healthy.
 - **Fix MCP server DuplicateTableError** (2026-03-02): MCP server `create_all` now checks existing tables first before creating — fixes crash on restart when `projects` table already exists.
 - **Fix Docker startup crash** (2026-03-02): Backend Dockerfile now runs `alembic upgrade head` before `uvicorn` startup. Fixes `relation "users" does not exist` crash when PostgreSQL has no tables.
 - **Deep Dive Streaming Repair** (2026-03-02): Fixed three compounding issues preventing Deep Dive output: (1) concurrent stderr reading via `asyncio.create_task` to prevent pipe buffer deadlock, (2) restored `assistant` text as fallback when `content_block_delta` events don't arrive (tracked via `_text_streamed_via_delta` flag), (3) made `--session-id` conditional — only used for multi-turn continuations, not first queries from search page. Added debug logging for raw events and parsed event types.
@@ -83,15 +85,13 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Next Steps
 
-- [x] **DONE**: Added Kimi + Voyage API key placeholders to `.env` — replace with real keys
-- [x] **DONE**: Fixed Voyage AI 400 error (removed unsupported `dimensions` param)
-- [x] **DONE**: Added reranker min-score filtering + warmup at startup
-- [x] **DONE**: Fixed sync/async crash in streaming endpoint
-- [x] **DONE**: Auto-detect dimension mismatch in `ensure_collection()` — backend now auto-deletes and recreates collection on startup if dim changed
-- [ ] E2E testing with real Docker services + new providers
+- Phase 1 consolidation is COMPLETE. Ready for Phase 2.
+- [ ] Deploy consolidation to VPS: `docker compose up -d --build` + run migration 009
+- [ ] Run verification: `docker compose exec backend whoami` (should show appuser)
+- [ ] Verify health endpoint returns generic errors (no connection strings)
+- [ ] Test git clone URL validation (try injection payloads)
+- [ ] Phase 2: Workato scanner plugin
 - [ ] Frontend: Update Zod schemas for new default top_k=5, threshold=0.3
 - [ ] Frontend: document selector for chat-with-doc
-- [ ] Integration Agent (when company tooling is known)
-- [x] **DONE**: JWT authentication system (httpOnly cookies, admin panel, rate limiting, cross-service validation)
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.

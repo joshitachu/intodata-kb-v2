@@ -19,6 +19,7 @@ class RagBridge:
     def __init__(self, log_manager: LogManager | None = None) -> None:
         self.base_url = config.rag_base_url
         self.log_manager = log_manager
+        self._api_key = config.ingest_api_key
 
     async def push_markdown(
         self,
@@ -40,10 +41,15 @@ class RagBridge:
             "metadata": metadata or {},
         }
 
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{self.base_url}/api/v1/ingest/md",
                 json=payload,
+                headers=headers,
             )
             resp.raise_for_status()
             return resp.json()
@@ -107,6 +113,47 @@ class RagBridge:
             )
 
         return result
+
+    async def post_usage(
+        self,
+        interface: str,
+        project_id: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_usd: float | None = None,
+        latency_ms: int | None = None,
+        model_name: str | None = None,
+        provider: str | None = None,
+        query_text: str | None = None,
+    ) -> None:
+        """POST usage record to RAG backend (fire-and-forget with warning on failure)."""
+        payload = {
+            "interface": interface,
+            "project_id": project_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": cost_usd,
+            "latency_ms": latency_ms,
+            "model_name": model_name,
+            "provider": provider,
+            "query_text": query_text,
+        }
+
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{self.base_url}/api/v1/usage/record",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                logger.info("Posted usage record: interface=%s project=%s", interface, project_id)
+        except Exception as e:
+            logger.warning("Failed to post usage record: %s", e)
 
     def _read_md_files(self, output_dir: str) -> list[dict]:
         """Read all .md files from a directory tree."""

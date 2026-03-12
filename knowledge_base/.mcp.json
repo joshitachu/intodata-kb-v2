@@ -1,9 +1,17 @@
 {
   "mcpServers": {
     "intodoc": {
-      "command": "python",
+      "command": "/opt/intodata-kb/venv/bin/python",
       "args": ["-m", "mcp_server", "--mcp"],
-      "cwd": "C:/Users/kabeljo/Documents/intodata-kb/knowledge_base/mcp-server"
+      "cwd": "/root/intodoc/intodata-kb-v2/knowledge_base/mcp-server",
+      "env": {
+        "MCP_INTODOC_OUTPUT_DIR": "/opt/intodata-kb/knowledge_base/intodoc-output",
+        "MCP_DATA_DIR": "/opt/intodata-kb/knowledge_base/data",
+        "MCP_PROJECT_ROOT": "/opt/intodata-kb/knowledge_base",
+        "MCP_DATABASE_URL": "postgresql+asyncpg://admin:${POSTGRES_PASSWORD}@localhost:5432/intodata_kb",
+        "MCP_RAG_BASE_URL": "http://localhost:8000",
+        "MCP_INTODOC_COMMAND": "/opt/intodata-kb/venv/bin/intodoc"
+      }
     }
   }
 }

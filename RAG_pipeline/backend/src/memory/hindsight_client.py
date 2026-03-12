@@ -33,7 +33,7 @@ def _get_client() -> Hindsight | None:
     if Hindsight is None:
         return None
     if _client is None:
-        _client = Hindsight(base_url=settings.hindsight_url, timeout=50.0)
+        _client = Hindsight(base_url=settings.hindsight_url, timeout=settings.hindsight_timeout)
     return _client
 
 

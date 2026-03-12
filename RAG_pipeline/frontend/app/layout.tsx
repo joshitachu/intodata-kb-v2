@@ -7,8 +7,14 @@ import { Layout } from "@/components/Layout";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "IntoData Knowledge Base",
+  title: {
+    default: "IntoData Knowledge Base",
+    template: "%s | IntoData KB",
+  },
   description: "RAG-powered knowledge base for company documents",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({

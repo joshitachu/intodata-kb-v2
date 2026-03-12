@@ -89,6 +89,7 @@ export function MessageList({
               created_at: new Date().toISOString(),
             }}
             isStreaming={streamingMessage.isStreaming}
+            usage={streamingMessage.usage}
           />
         )}
 
