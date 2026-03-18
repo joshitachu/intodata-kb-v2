@@ -692,28 +692,48 @@ class ScannerService:
 
         Returns a single dict with all prompts bundled together, eliminating
         the need for sub-agents to make 16+ individual Read calls.
+
+        Prompt resolution order:
+        1. Platform-specific prompts (platforms/{platform}/prompts/)
+        2. Shared prompts (platforms/_shared/prompts/) -- only for passes
+           not covered by the platform
         """
-        prompts_dir = (
+        platforms_root = (
             config.project_root
             / "intodoc"
             / "src"
             / "intodoc"
             / "platforms"
-            / platform
-            / "prompts"
         )
-        if not prompts_dir.exists():
-            return {"error": f"Prompts directory not found: {prompts_dir}"}
+        platform_dir = platforms_root / platform
+        shared_dir = platforms_root / "_shared"
 
+        # Start with shared prompts as base layer
         prompts: dict[str, str] = {}
-        for f in sorted(prompts_dir.glob("*.txt")):
-            try:
-                prompts[f.stem] = f.read_text(encoding="utf-8")
-            except OSError:
-                prompts[f.stem] = f"(error reading {f.name})"
+        shared_prompts_dir = shared_dir / "prompts"
+        if shared_prompts_dir.exists():
+            for f in sorted(shared_prompts_dir.glob("*.txt")):
+                try:
+                    prompts[f.stem] = f.read_text(encoding="utf-8")
+                except OSError:
+                    prompts[f.stem] = f"(error reading {f.name})"
 
-        # Also include best_practices.yaml if present
-        bp_file = prompts_dir.parent / "best_practices.yaml"
+        # Override with platform-specific prompts
+        platform_prompts_dir = platform_dir / "prompts"
+        if platform_prompts_dir.exists():
+            for f in sorted(platform_prompts_dir.glob("*.txt")):
+                try:
+                    prompts[f.stem] = f.read_text(encoding="utf-8")
+                except OSError:
+                    prompts[f.stem] = f"(error reading {f.name})"
+
+        if not prompts:
+            return {"error": f"No prompts found for platform '{platform}'"}
+
+        # Include best_practices.yaml (platform-specific, then shared fallback)
+        bp_file = platform_dir / "best_practices.yaml"
+        if not bp_file.exists():
+            bp_file = shared_dir / "best_practices.yaml"
         if bp_file.exists():
             try:
                 prompts["best_practices"] = bp_file.read_text(encoding="utf-8")
@@ -726,18 +746,21 @@ class ScannerService:
             "prompts": prompts,
         }
 
-    # Reference doc -> agent group mapping
+    # Reference doc -> agent group mapping (consolidated 12-doc structure)
     _AGENT_REFERENCE_DOCS: dict[str, list[str]] = {
-        "Overview": ["00_PROJECT_OVERVIEW"],
-        "Architecture": ["01_COMPONENT_INVENTORY", "02_ARCHITECTURE", "03_EXECUTION_LOGIC"],
-        "Data": ["04_DATA_FLOWS", "16_SCHEMA_DICTIONARY", "17_DATA_QUALITY"],
-        "Business": ["09_CUSTOM_CODE", "10_BUSINESS_LOGIC"],
-        "Operations": ["07_ERROR_HANDLING", "08_STATE_SIDE_EFFECTS", "11_KNOWN_ISSUES"],
-        "Config": ["05_ENVIRONMENT_CONFIG", "20_SECURITY_ACCESS", "21_PERFORMANCE"],
-        "External": ["06_EXTERNAL_SYSTEMS", "19_SCHEDULING_SLA"],
-        "Patterns": ["18_NAMING_CONVENTIONS", "22_CROSS_REGION", "23_REUSABILITY"],
-        "UserDocs": ["12_CHANGE_LOG", "13_RUNBOOK", "14_GLOSSARY_FAQ", "15_ONBOARDING"],
-        "Preventive": ["25_PREVENTIVE_ANALYSIS"],
+        "Core": [
+            "00_EXECUTIVE_SUMMARY", "01_PROJECT_OVERVIEW",
+            "02_ARCHITECTURE_INVENTORY", "03_DATA_FLOWS_LINEAGE",
+        ],
+        "Business+Ops": [
+            "04_BUSINESS_LOGIC", "05_OPERATIONS_RISK",
+            "06_ENVIRONMENT_EXTERNAL",
+        ],
+        "Patterns+User": [
+            "07_SECURITY_PERFORMANCE", "08_PATTERNS_STANDARDS",
+            "09_RUNBOOK", "10_ONBOARDING_FAQ",
+            "11_MIGRATION_ASSESSMENT",
+        ],
     }
 
     def get_reference_docs(self, agent_group: str) -> dict:

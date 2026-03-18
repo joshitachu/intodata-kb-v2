@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState, type DragEvent } from "react";
 import { Upload, Loader2, CheckCircle, AlertCircle } from "lucide-react";
 import { useUploadDocument } from "@/hooks/useDocuments";
+import { useDocsProjects } from "@/hooks/useDocsProjects";
 import { cn } from "@/lib/utils";
 
 const ALLOWED_TYPES = [
@@ -16,18 +17,21 @@ const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".xlsx"];
 
 export function DocumentUpload() {
   const [dragOver, setDragOver] = useState(false);
+  const [selectedProject, setSelectedProject] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const upload = useUploadDocument();
+  const { data: projectsData, isLoading: projectsLoading } = useDocsProjects();
 
   const handleFile = useCallback(
     (file: File) => {
+      if (!selectedProject) return;
       const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
       if (!ALLOWED_EXTENSIONS.includes(ext)) {
         return;
       }
-      upload.mutate(file);
+      upload.mutate({ file, project_id: selectedProject });
     },
-    [upload],
+    [upload, selectedProject],
   );
 
   function handleDrop(e: DragEvent) {
@@ -46,15 +50,43 @@ export function DocumentUpload() {
     setDragOver(false);
   }
 
+  const canUpload = !!selectedProject && !upload.isPending;
+
   return (
     <div className="space-y-3">
+      <div>
+        <label
+          htmlFor="project-select"
+          className="block text-sm font-medium mb-1"
+        >
+          Project
+        </label>
+        <select
+          id="project-select"
+          value={selectedProject}
+          onChange={(e) => setSelectedProject(e.target.value)}
+          disabled={projectsLoading}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        >
+          <option value="">
+            {projectsLoading ? "Loading projects..." : "Select a project"}
+          </option>
+          {projectsData?.projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.display_name} ({p.platform})
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => canUpload && fileInputRef.current?.click()}
         className={cn(
-          "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
+          "border-2 border-dashed rounded-lg p-8 text-center transition-colors",
+          canUpload ? "cursor-pointer" : "cursor-not-allowed opacity-60",
           dragOver ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/50",
         )}
       >
@@ -78,7 +110,11 @@ export function DocumentUpload() {
         ) : (
           <div className="flex flex-col items-center gap-2">
             <Upload className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium">Drop a file here or click to browse</p>
+            <p className="text-sm font-medium">
+              {selectedProject
+                ? "Drop a file here or click to browse"
+                : "Select a project first"}
+            </p>
             <p className="text-xs text-muted-foreground">
               PDF, DOCX, PPTX, XLSX (max 50 MB)
             </p>

@@ -1,0 +1,10 @@
+{
+  "connection": {
+    "id": 202,
+    "name": "hubspot",
+    "provider": "hubspot",
+    "application": "hubspot",
+    "authorization_type": "api_key",
+    "base_url": "https://api.hubapi.com"
+  }
+}

@@ -55,8 +55,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-    mem_limit: 512m
-    cpus: 0.5
+    mem_limit: 2g
+    cpus: 1.0
     restart: unless-stopped
 
   backend:

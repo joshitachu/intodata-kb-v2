@@ -192,6 +192,15 @@ class PdfGenerateResponse(BaseModel):
     errors: list[str] = []
 
 
+# --- Assessment ---
+
+class AssessmentGenerateResponse(BaseModel):
+    project_id: str
+    status: str  # "completed" | "failed" | "no_docs"
+    html_path: str | None = None
+    error: str | None = None
+
+
 # --- Deep Dive ---
 
 class DeepDiveRequest(BaseModel):

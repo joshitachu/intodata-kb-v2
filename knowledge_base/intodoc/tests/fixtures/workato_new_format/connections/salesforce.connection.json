@@ -1,0 +1,10 @@
+{
+  "connection": {
+    "id": 201,
+    "name": "salesforce",
+    "provider": "salesforce",
+    "application": "salesforce",
+    "authorization_type": "oauth2",
+    "base_url": "https://login.salesforce.com"
+  }
+}

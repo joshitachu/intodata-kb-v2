@@ -1,0 +1,9 @@
+{
+  "id": 102,
+  "name": "netsuite_prod",
+  "provider": "netsuite",
+  "application": "netsuite",
+  "authorization_type": "token_based",
+  "host": "netsuite.example.com",
+  "port": 443
+}

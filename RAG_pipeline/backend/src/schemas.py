@@ -72,6 +72,7 @@ class DocumentResponse(BaseModel):
     source: str | None = None
     author: str | None = None
     department: str | None = None
+    project_id: str | None = None
     chunk_count: int
     created_at: datetime.datetime
 

@@ -21,8 +21,19 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 QUALITY_BANK = "rag-quality"
+CORRECTIONS_BANK = "rag-corrections"
 MAX_USER_MEMORIES = 5
 MAX_QUALITY_INSIGHTS = 3
+MAX_CORRECTIONS = 5
+
+# Signals that a user message is correcting a previous assistant answer.
+# Only checked when there is a prior assistant message in the conversation.
+CORRECTION_SIGNALS = [
+    "no,", "no that's", "that's wrong", "that's incorrect", "actually,",
+    "it should be", "it's actually", "not correct", "wrong,", "incorrect,",
+    "that's not right", "the correct answer", "correction:", "update:",
+    "it's not", "they changed", "it was updated", "no longer",
+]
 
 _client: Hindsight | None = None
 
@@ -83,6 +94,25 @@ async def ensure_quality_bank() -> None:
         logger.debug("ensure_quality_bank: bank may already exist")
 
 
+async def ensure_corrections_bank() -> None:
+    """Create the shared corrections bank (idempotent)."""
+    if not settings.hindsight_enabled:
+        return
+    try:
+        client = _get_client()
+        await client.acreate_bank(
+            bank_id=CORRECTIONS_BANK,
+            name="RAG Corrections",
+            mission=(
+                "Store factual corrections that users provide about document content. "
+                "These corrections should be recalled with high priority when relevant "
+                "queries are made, as they represent verified updates to source material."
+            ),
+        )
+    except Exception:
+        logger.debug("ensure_corrections_bank: bank may already exist")
+
+
 # ---------------------------------------------------------------------------
 # Recall
 # ---------------------------------------------------------------------------
@@ -132,6 +162,30 @@ async def recall_quality_insights(query: str) -> list[str]:
         return insights
     except Exception as e:
         logger.warning("Hindsight recall (quality) failed [%s]: %s", type(e).__name__, e, exc_info=True)
+        return []
+
+
+async def recall_corrections(query: str) -> list[str]:
+    """Recall relevant corrections from the shared corrections bank.
+
+    Returns up to MAX_CORRECTIONS fact strings, empty list on failure or if disabled.
+    """
+    if not settings.hindsight_enabled:
+        logger.info("Hindsight recall (corrections): disabled")
+        return []
+    try:
+        client = _get_client()
+        response = await client.arecall(
+            bank_id=CORRECTIONS_BANK,
+            query=query,
+            max_tokens=settings.hindsight_recall_max_tokens,
+            budget=settings.hindsight_recall_budget,
+        )
+        corrections = [r.text for r in response.results[:MAX_CORRECTIONS]]
+        logger.info("Hindsight recall (corrections): %d corrections returned", len(corrections))
+        return corrections
+    except Exception as e:
+        logger.warning("Hindsight recall (corrections) failed [%s]: %s", type(e).__name__, e, exc_info=True)
         return []
 
 
@@ -231,3 +285,52 @@ async def retain_interaction(
         _retain_quality_bank(user_id, query, sources_used, intent, search_result_count, latency_ms, ts, doc_id),
         return_exceptions=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Correction detection & storage
+# ---------------------------------------------------------------------------
+
+def is_likely_correction(user_message: str, has_prior_assistant_msg: bool) -> bool:
+    """Quick heuristic check if the user is correcting the chatbot.
+
+    Only triggers when there is a prior assistant message in the conversation.
+    """
+    if not has_prior_assistant_msg:
+        return False
+    lower = user_message.lower().strip()
+    return any(lower.startswith(s) or s in lower for s in CORRECTION_SIGNALS)
+
+
+async def retain_correction(
+    query: str,
+    original_answer: str,
+    correction_text: str,
+    user_id: str,
+    conversation_id: int | str | None = None,
+) -> None:
+    """Store a user correction in the shared corrections bank.
+
+    Fire-and-forget: callers should use asyncio.create_task().
+    """
+    if not settings.hindsight_enabled:
+        return
+    try:
+        client = _get_client()
+        content = (
+            f"CORRECTION: {correction_text}\n"
+            f"Original claim: {original_answer[:300]}\n"
+            f"Source: user correction in conversation (user {user_id})."
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        doc_id = f"correction-conv-{conversation_id}" if conversation_id else None
+        await client.aretain(
+            bank_id=CORRECTIONS_BANK,
+            content=content,
+            context="rag-correction",
+            timestamp=ts,
+            document_id=doc_id,
+        )
+        logger.info("Hindsight retain (correction): stored correction from user %s", user_id)
+    except Exception as e:
+        logger.warning("Hindsight retain (correction) failed [%s]: %s", type(e).__name__, e, exc_info=True)

@@ -1,0 +1,8 @@
+{
+  "assets": [
+    {"type": "recipe", "path": "recipes/sync_customers.recipe.json"},
+    {"type": "connection", "path": "connections/salesforce_prod.connection.json"},
+    {"type": "connection", "path": "connections/netsuite_prod.connection.json"},
+    {"type": "lookup_table", "path": "customers_mapping.lookup_table.json"}
+  ]
+}

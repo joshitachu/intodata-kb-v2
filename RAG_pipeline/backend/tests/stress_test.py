@@ -34,7 +34,7 @@ class Config:
     base_url: str = "http://localhost:8000"
     admin_user: str = "admin"
     admin_pass: str = "admin"
-    auth_iterations: int = 20
+    auth_iterations: int = 2
     query_iterations: int = 10
     stream_iterations: int = 5
     concurrent_users: int = 5
@@ -200,6 +200,14 @@ async def test_auth_flow(client: httpx.AsyncClient, cfg: Config) -> SectionRepor
             report.results.append(TestResult(f"Login #{i+1}", ok, ms,
                                              error=None if ok else f"status={r.status_code}"))
 
+            if ok:
+                # Extract tokens from Set-Cookie (domain/secure mismatch fix)
+                for ch in r.headers.get_list("set-cookie"):
+                    if ch.startswith("access_token="):
+                        client.cookies.set("access_token", ch.split(";")[0].split("=", 1)[1])
+                    elif ch.startswith("refresh_token="):
+                        client.cookies.set("refresh_token", ch.split(";")[0].split("=", 1)[1])
+
             if not ok:
                 continue
 
@@ -259,12 +267,31 @@ async def test_auth_flow(client: httpx.AsyncClient, cfg: Config) -> SectionRepor
 
 
 async def _login(client: httpx.AsyncClient, cfg: Config) -> bool:
-    """Login and store cookies on the client."""
+    """Login and store cookies on the client. Skips if already authenticated."""
+    # Check if already authenticated to avoid wasting rate-limited login attempts
+    try:
+        me = await client.get("/api/v1/auth/me")
+        if me.status_code == 200:
+            return True
+    except Exception:
+        pass
     r = await client.post("/api/v1/auth/login", json={
         "username": cfg.admin_user,
         "password": cfg.admin_pass,
     })
-    return r.status_code == 200
+    if r.status_code == 200:
+        # Manually extract tokens from Set-Cookie headers since httpx won't
+        # store cookies with Domain/Secure mismatches (e.g. production cookies
+        # on localhost).
+        for cookie_header in r.headers.get_list("set-cookie"):
+            if cookie_header.startswith("access_token="):
+                token = cookie_header.split(";")[0].split("=", 1)[1]
+                client.cookies.set("access_token", token)
+            elif cookie_header.startswith("refresh_token="):
+                token = cookie_header.split(";")[0].split("=", 1)[1]
+                client.cookies.set("refresh_token", token)
+        return True
+    return False
 
 
 async def test_ingest(client: httpx.AsyncClient, cfg: Config) -> SectionReport:
@@ -282,6 +309,7 @@ async def test_ingest(client: httpx.AsyncClient, cfg: Config) -> SectionReport:
         r = await client.post(
             "/api/v1/ingest",
             files={"file": ("stress_test.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            data={"project_id": "stress-test"},
             timeout=60.0,
         )
         ms = (time.perf_counter() - start) * 1000
@@ -306,6 +334,7 @@ async def test_ingest(client: httpx.AsyncClient, cfg: Config) -> SectionReport:
         r = await client.post(
             "/api/v1/ingest",
             files={"file": ("stress_test.pdf", io.BytesIO(pdf_bytes), "application/pdf")},
+            data={"project_id": "stress-test"},
             timeout=60.0,
         )
         ms = (time.perf_counter() - start) * 1000
@@ -627,15 +656,15 @@ async def test_concurrent_load(client: httpx.AsyncClient, cfg: Config) -> Sectio
     errors = 0
     all_latencies: list[float] = []
 
+    # Share auth cookies from the pre-authenticated client to avoid rate limiting
+    shared_cookies = dict(client.cookies)
+
     async def _worker(worker_id: int) -> list[TestResult]:
         results = []
         worker_client = httpx.AsyncClient(base_url=cfg.base_url, timeout=cfg.timeout)
+        for k, v in shared_cookies.items():
+            worker_client.cookies.set(k, v)
         try:
-            # Each worker logs in
-            await worker_client.post("/api/v1/auth/login", json={
-                "username": cfg.admin_user,
-                "password": cfg.admin_pass,
-            })
 
             for q in range(cfg.concurrent_queries_per_user):
                 start = time.perf_counter()
@@ -805,29 +834,34 @@ async def run(cfg: Config) -> float:
     print("[2/8] Testing auth flow...")
     sections.append(await test_auth_flow(client, cfg))
 
+    # Use a pre-authenticated client for sections C-G to avoid rate-limit
+    # carryover from the auth flow (which intentionally hammers login).
+    api_client = httpx.AsyncClient(base_url=cfg.base_url, timeout=cfg.timeout)
+    await _login(api_client, cfg)
+
     # C. Ingest
     print("[3/8] Testing document ingestion...")
-    sections.append(await test_ingest(client, cfg))
+    sections.append(await test_ingest(api_client, cfg))
 
     # D. Query
     print("[4/8] Testing RAG query...")
-    sections.append(await test_query(client, cfg))
+    sections.append(await test_query(api_client, cfg))
 
     # E. Streaming
     print("[5/8] Testing streaming...")
-    sections.append(await test_streaming(client, cfg))
+    sections.append(await test_streaming(api_client, cfg))
 
     # F. Conversations
     print("[6/8] Testing conversations...")
-    sections.append(await test_conversations(client, cfg))
+    sections.append(await test_conversations(api_client, cfg))
 
     # G. Admin
     print("[7/8] Testing admin operations...")
-    sections.append(await test_admin(client, cfg))
+    sections.append(await test_admin(api_client, cfg))
 
     # H. Concurrent Load
     print("[8/8] Testing concurrent load...")
-    sections.append(await test_concurrent_load(client, cfg))
+    sections.append(await test_concurrent_load(api_client, cfg))
 
     # I. Rate Limiting (run last to avoid interfering with other tests)
     print("[+] Testing rate limiting...")
@@ -843,7 +877,7 @@ def main() -> None:
     parser.add_argument("--url", default="http://localhost:8000", help="Base URL of the RAG backend")
     parser.add_argument("--user", default="admin", help="Admin username")
     parser.add_argument("--password", default="admin", help="Admin password")
-    parser.add_argument("--iterations", type=int, default=20, help="Auth flow iterations")
+    parser.add_argument("--iterations", type=int, default=2, help="Auth flow iterations (keep low to avoid rate limiting)")
     parser.add_argument("--query-iterations", type=int, default=10, help="Query iterations")
     parser.add_argument("--stream-iterations", type=int, default=5, help="Streaming iterations")
     parser.add_argument("--concurrent-users", type=int, default=5, help="Concurrent users for load test")

@@ -1,0 +1,8 @@
+{
+  "id": 101,
+  "name": "salesforce_prod",
+  "provider": "salesforce",
+  "application": "salesforce",
+  "authorization_type": "oauth2",
+  "base_url": "https://login.salesforce.com"
+}

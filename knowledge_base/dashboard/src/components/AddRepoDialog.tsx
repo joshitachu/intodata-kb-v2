@@ -43,20 +43,28 @@ export default function AddRepoDialog({ open, onClose }: Props) {
   const busy = addRepo.isPending || uploadZip.isPending;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-        <h2 className="text-lg font-semibold mb-4">Add Repository</h2>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50">
+      <div className="bg-[#111118] border border-white/[0.07] rounded shadow-2xl w-full max-w-md p-6 animate-fade-in">
+        <h2 className="text-lg font-semibold text-slate-100 mb-4">Add Repository</h2>
 
         {/* Tabs */}
         <div className="flex gap-2 mb-4">
           <button
-            className={`px-3 py-1 text-sm rounded ${tab === "path" ? "bg-blue-600 text-white" : "bg-gray-200"}`}
+            className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
+              tab === "path"
+                ? "bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/40"
+                : "border border-white/[0.07] text-slate-400 hover:text-slate-200"
+            }`}
             onClick={() => setTab("path")}
           >
             URL / Path
           </button>
           <button
-            className={`px-3 py-1 text-sm rounded ${tab === "zip" ? "bg-blue-600 text-white" : "bg-gray-200"}`}
+            className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
+              tab === "zip"
+                ? "bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/40"
+                : "border border-white/[0.07] text-slate-400 hover:text-slate-200"
+            }`}
             onClick={() => setTab("zip")}
           >
             Upload ZIP
@@ -66,10 +74,10 @@ export default function AddRepoDialog({ open, onClose }: Props) {
         {/* Common fields */}
         <div className="space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Project ID</label>
+            <label className="block text-sm font-medium text-slate-400 mb-1">Project ID</label>
             <input
               type="text"
-              className="w-full border rounded px-3 py-1.5 text-sm"
+              className="input-dark"
               placeholder="e.g. vaxxinova"
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
@@ -77,36 +85,38 @@ export default function AddRepoDialog({ open, onClose }: Props) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Platform</label>
+            <label className="block text-sm font-medium text-slate-400 mb-1">Platform</label>
             <select
-              className="w-full border rounded px-3 py-1.5 text-sm"
+              className="input-dark"
               value={platform}
               onChange={(e) => setPlatform(e.target.value)}
             >
               <option value="talend">Talend</option>
+              <option value="workato">Workato</option>
+              <option value="generic">Generic</option>
             </select>
           </div>
 
           {tab === "path" ? (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-slate-400 mb-1">
                 Git URL or Local Path
               </label>
               <input
                 type="text"
-                className="w-full border rounded px-3 py-1.5 text-sm"
-                placeholder="https://github.com/... or C:/path/to/repo"
+                className="input-dark"
+                placeholder="https://github.com/... or /path/to/repo"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
               />
             </div>
           ) : (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ZIP File</label>
+              <label className="block text-sm font-medium text-slate-400 mb-1">ZIP File</label>
               <input
                 type="file"
                 accept=".zip"
-                className="w-full text-sm"
+                className="w-full text-sm text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-[#16161F] file:text-slate-300 hover:file:bg-[#1e1e2a]"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
             </div>
@@ -115,7 +125,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
 
         {/* Error */}
         {(addRepo.isError || uploadZip.isError) && (
-          <p className="text-red-600 text-sm mt-2">
+          <p className="text-red-400 text-sm mt-3 font-mono">
             {addRepo.error?.message || uploadZip.error?.message}
           </p>
         )}
@@ -123,13 +133,13 @@ export default function AddRepoDialog({ open, onClose }: Props) {
         {/* Actions */}
         <div className="flex justify-end gap-2 mt-6">
           <button
-            className="px-4 py-1.5 text-sm border rounded hover:bg-gray-50"
+            className="px-4 py-2 text-sm font-medium text-slate-400 border border-white/[0.1] rounded hover:text-slate-200 hover:border-white/[0.2] transition-all"
             onClick={() => { onClose(); reset(); }}
           >
             Cancel
           </button>
           <button
-            className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+            className="px-4 py-2 text-sm font-medium bg-[#00D4FF] text-[#0A0A0F] rounded hover:bg-[#00D4FF]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             disabled={busy || !projectId || (tab === "path" ? !url : !file)}
             onClick={tab === "path" ? handleSubmitPath : handleSubmitZip}
           >

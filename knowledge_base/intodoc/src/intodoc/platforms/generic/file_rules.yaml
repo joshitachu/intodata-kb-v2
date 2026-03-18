@@ -1,0 +1,134 @@
+# Generic file classification rules
+# Extension-based classification for any codebase
+
+rules:
+  # Code files -> ROUTINE
+  - pattern: "**/*.py"
+    type: routine
+    description: "Python source code"
+  - pattern: "**/*.java"
+    type: routine
+    description: "Java source code"
+  - pattern: "**/*.js"
+    type: routine
+    description: "JavaScript source code"
+  - pattern: "**/*.ts"
+    type: routine
+    description: "TypeScript source code"
+  - pattern: "**/*.go"
+    type: routine
+    description: "Go source code"
+  - pattern: "**/*.rb"
+    type: routine
+    description: "Ruby source code"
+  - pattern: "**/*.scala"
+    type: routine
+    description: "Scala source code"
+  - pattern: "**/*.rs"
+    type: routine
+    description: "Rust source code"
+  - pattern: "**/*.sh"
+    type: routine
+    description: "Shell script"
+  - pattern: "**/*.groovy"
+    type: routine
+    description: "Groovy source code"
+
+  # SQL files -> SQL_PATTERN
+  - pattern: "**/*.sql"
+    type: sql_pattern
+    description: "SQL script or query"
+  - pattern: "**/*.ddl"
+    type: sql_pattern
+    description: "Data definition language"
+
+  # Config files -> CONFIG
+  - pattern: "**/*.json"
+    type: config
+    description: "JSON configuration file"
+  - pattern: "**/*.yaml"
+    type: config
+    description: "YAML configuration file"
+  - pattern: "**/*.yml"
+    type: config
+    description: "YAML configuration file"
+  - pattern: "**/*.xml"
+    type: config
+    description: "XML configuration file"
+  - pattern: "**/*.toml"
+    type: config
+    description: "TOML configuration file"
+
+  # Data / Schema files -> SCHEMA
+  - pattern: "**/*.csv"
+    type: schema
+    description: "CSV data file"
+  - pattern: "**/*.xsd"
+    type: schema
+    description: "XML schema definition"
+  - pattern: "**/*.proto"
+    type: schema
+    description: "Protocol Buffers schema"
+  - pattern: "**/*.avro"
+    type: schema
+    description: "Avro schema/data"
+
+  # Environment / Properties -> CONTEXT
+  - pattern: "**/*.env"
+    type: context
+    description: "Environment variable file"
+  - pattern: "**/*.properties"
+    type: context
+    description: "Java properties file"
+  - pattern: "**/*.cfg"
+    type: context
+    description: "Configuration file"
+  - pattern: "**/*.ini"
+    type: context
+    description: "INI configuration file"
+
+  # Documentation -> DOCUMENTATION
+  - pattern: "**/*.md"
+    type: documentation
+    description: "Markdown documentation"
+  - pattern: "**/*.rst"
+    type: documentation
+    description: "reStructuredText documentation"
+
+# File extensions to always skip (binary, compiled, media)
+skip_extensions:
+  - ".pyc"
+  - ".class"
+  - ".jar"
+  - ".war"
+  - ".exe"
+  - ".dll"
+  - ".so"
+  - ".png"
+  - ".jpg"
+  - ".jpeg"
+  - ".gif"
+  - ".bmp"
+  - ".ico"
+  - ".svg"
+  - ".woff"
+  - ".woff2"
+  - ".ttf"
+  - ".zip"
+  - ".tar"
+  - ".gz"
+  - ".7z"
+  - ".pdf"
+
+# Directories to always skip
+skip_directories:
+  - ".git"
+  - "__pycache__"
+  - "node_modules"
+  - ".venv"
+  - "venv"
+  - "dist"
+  - "build"
+  - ".idea"
+  - ".vscode"
+  - "target"

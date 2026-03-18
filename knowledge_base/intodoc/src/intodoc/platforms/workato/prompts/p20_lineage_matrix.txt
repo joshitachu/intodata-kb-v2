@@ -1,0 +1,199 @@
+You are analyzing a Workato integration project. Your task is to produce a **Column-Level Lineage Matrix** -- trace every field from its source trigger output through datapill transformations to its final destination, documenting exactly what happens to the data at each step.
+
+## Workato Context
+In Workato, column-level lineage is encoded in datapill references and formula expressions:
+
+### Trigger Output -> Action Input Flow
+1. **Trigger output** (step 0) defines the initial field schema -- what data enters the recipe from the source system (Salesforce record fields, webhook payload, database query columns, event topic payload, API request body).
+2. **Datapill references** in action inputs map trigger/step outputs to action inputs. Each input field on an action step contains either a static value, a datapill reference, or a formula expression.
+3. **TMapEntry data from the parser** (when available) provides structured field-level mapping:
+   - `table_name` = step alias (the action step receiving the data)
+   - `column_name` = the destination field name
+   - `expression` = the datapill formula that computes the value
+4. **Target actions** (create_record, update_record, upsert_record, run_sql, etc.) define where the data lands in the destination system.
+
+### Datapill Reference Syntax
+- **Old format**: `#{_('data.step_alias.field_path')}` -- references a field from a previous step's output
+- **New format**: `{{steps.step_alias.field_path}}` or `{{trigger.field_name}}` -- handlebars-style references
+- **Nested fields**: `#{_('data.salesforce_1.billing_address.city')}` -- dot notation for nested objects
+- **Array indexing**: `#{_('data.foreach_1.current_item.field')}` -- inside foreach loops, references current item
+
+### Transformation Types
+- **Direct datapill map**: `#{_('data.trigger.customer_name')}` -- field passes through unchanged
+- **Formula method chain**: `#{_('data.trigger.customer_name')}.strip.upcase` -- transformations applied
+- **Ternary conditional**: `#{_('data.trigger.status')}.present? ? #{_('data.trigger.status')} : 'UNKNOWN'`
+- **Constant**: `'US'` or `42` -- hardcoded value, no source field
+- **String interpolation**: `"Order #{_('data.trigger.order_id')} - #{_('data.trigger.customer_name')}"` -- combining multiple datapills
+- **Lookup enrichment**: Value sourced from a lookup_table_entry action output -- adds columns from reference data
+- **Cross-recipe**: Values passed via call_recipe / recipe function parameters or event topic payloads
+
+### Default Type Conversions
+Workato auto-converts between compatible types (string <-> number, string <-> date) based on the target field's expected type. These implicit conversions can cause subtle data changes (precision loss, format changes) that are invisible in the recipe editor.
+
+## What to Extract
+
+For every field that flows through this chunk's recipes:
+
+1. **Source**: `source_system.source_object.source_field` -- where the data originates (trigger output, API response, search results)
+2. **Transformations**: Each step that modifies the data:
+   - `transformation_type`: "direct_map", "formula_chain", "ternary", "constant", "interpolation", "lookup_enrichment", "cross_recipe"
+   - `expression`: The actual datapill formula or expression
+   - `human_explanation`: Plain English description of the transformation
+3. **Target**: `target_system.target_object.target_field` -- where the data ends up (action input on a create/update/upsert)
+4. **Confidence**: "certain" (explicit datapill mapping), "likely" (naming match or inferred from context), "inferred" (best guess based on step structure)
+
+Also identify **unmapped fields**: fields present in trigger/search output schemas that are never referenced by any downstream action input. These may indicate:
+- Intentionally excluded fields (privacy, irrelevance)
+- Missing mappings (bugs)
+- Fields used only for conditions/filtering (not passed to target)
+
+And **cross-recipe lineage**: fields that flow across recipe boundaries via call_recipe parameters, recipe function inputs/outputs, or event topic payloads.
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "entries": [
+    {
+      "source_system": "Salesforce",
+      "source_object": "Account",
+      "source_field": "Name",
+      "transformations": [
+        {
+          "transformation_type": "formula_chain",
+          "expression": "#{_('data.trigger.Name')}.strip.upcase",
+          "human_explanation": "Trims whitespace and converts account name to uppercase for standardization"
+        }
+      ],
+      "target_system": "NetSuite",
+      "target_object": "Customer",
+      "target_field": "companyname",
+      "recipe_name": "SF to NS - Sync Customers",
+      "confidence": "certain"
+    },
+    {
+      "source_system": "Salesforce",
+      "source_object": "Account",
+      "source_field": "BillingCountry",
+      "transformations": [
+        {
+          "transformation_type": "lookup_enrichment",
+          "expression": "lookup('country_code_mapping', 'country_name': #{_('data.trigger.BillingCountry')})['iso_code']",
+          "human_explanation": "Looks up ISO country code from country_code_mapping lookup table using Salesforce country name"
+        }
+      ],
+      "target_system": "NetSuite",
+      "target_object": "Customer",
+      "target_field": "country_code",
+      "recipe_name": "SF to NS - Sync Customers",
+      "confidence": "certain"
+    },
+    {
+      "source_system": "",
+      "source_object": "",
+      "source_field": "",
+      "transformations": [
+        {
+          "transformation_type": "constant",
+          "expression": "'SALESFORCE'",
+          "human_explanation": "Hardcoded source system identifier injected during sync"
+        }
+      ],
+      "target_system": "NetSuite",
+      "target_object": "Customer",
+      "target_field": "custbody_source_system",
+      "recipe_name": "SF to NS - Sync Customers",
+      "confidence": "certain"
+    },
+    {
+      "source_system": "Salesforce",
+      "source_object": "Account",
+      "source_field": "Phone",
+      "transformations": [
+        {
+          "transformation_type": "ternary",
+          "expression": "#{_('data.trigger.Phone')}.present? ? #{_('data.trigger.Phone')}.gsub(/[^0-9]/, '') : nil",
+          "human_explanation": "If phone is present, strip all non-numeric characters; otherwise pass nil (no phone)"
+        }
+      ],
+      "target_system": "NetSuite",
+      "target_object": "Customer",
+      "target_field": "phone",
+      "recipe_name": "SF to NS - Sync Customers",
+      "confidence": "certain"
+    },
+    {
+      "source_system": "Salesforce",
+      "source_object": "Account",
+      "source_field": "Id",
+      "transformations": [
+        {
+          "transformation_type": "cross_recipe",
+          "expression": "call_recipe('validate_customer', customer_id: #{_('data.trigger.Id')})",
+          "human_explanation": "Salesforce Account ID passed to validate_customer recipe function as input parameter"
+        }
+      ],
+      "target_system": "validate_customer (recipe function)",
+      "target_object": "input",
+      "target_field": "customer_id",
+      "recipe_name": "SF to NS - Sync Customers",
+      "confidence": "certain"
+    }
+  ],
+  "cross_recipe_lineage": [
+    {
+      "source_recipe": "SF to NS - Sync Customers",
+      "target_recipe": "validate_customer",
+      "mechanism": "call_recipe",
+      "fields_passed": [
+        {"field": "customer_id", "source_expression": "#{_('data.trigger.Id')}"},
+        {"field": "customer_email", "source_expression": "#{_('data.trigger.Email')}"}
+      ],
+      "fields_returned": [
+        {"field": "is_valid", "used_by": "if_1 condition (skip if invalid)"},
+        {"field": "validation_message", "used_by": "stop_1 error message"}
+      ]
+    },
+    {
+      "source_recipe": "Order Capture",
+      "target_recipe": "Invoice Generator",
+      "mechanism": "event_topic (new_order_synced)",
+      "fields_passed": [
+        {"field": "order_id", "source_expression": "#{_('data.netsuite_1.internalid')}"},
+        {"field": "customer_id", "source_expression": "#{_('data.trigger.AccountId')}"},
+        {"field": "order_total", "source_expression": "#{_('data.netsuite_1.total')}"}
+      ]
+    }
+  ],
+  "unmapped_fields": [
+    {
+      "source_system": "Salesforce",
+      "source_object": "Account",
+      "field": "LastActivityDate",
+      "reason": "Field exists in trigger output but never referenced in any action input. Likely excluded as not relevant to NetSuite customer sync."
+    },
+    {
+      "source_system": "Salesforce",
+      "source_object": "Account",
+      "field": "Description",
+      "reason": "Used only in if_2 condition (skip if description contains 'TEST') but not mapped to any target field."
+    }
+  ],
+  "summary": {
+    "total_lineage_entries": 38,
+    "direct_maps": 15,
+    "formula_chains": 8,
+    "ternary_conditionals": 5,
+    "constants": 4,
+    "interpolations": 2,
+    "lookup_enrichments": 3,
+    "cross_recipe": 1,
+    "unmapped_count": 6,
+    "confidence_breakdown": {"certain": 30, "likely": 5, "inferred": 3},
+    "source_systems": ["Salesforce", "Webhook"],
+    "target_systems": ["NetSuite", "Workato DB", "Slack"]
+  }
+}
+```
+
+Be thorough. Trace EVERY datapill reference you can find in the scan data. If a field appears in a TMapEntry expression, it has lineage. If a datapill is referenced in an action input, trace it back to its source trigger or step output. Cross-recipe lineage (via call_recipe params, recipe function inputs, event topic payloads) is especially valuable -- it connects the data flow across recipe boundaries.

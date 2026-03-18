@@ -1,0 +1,71 @@
+{
+  "id": 12346,
+  "name": "HTTP Sync with Error Handling",
+  "description": "Calls external API with monitor/catch error handling",
+  "trigger_application": "clock",
+  "action_applications": ["http", "email"],
+  "applications": ["clock", "http", "email"],
+  "running": true,
+  "version_no": 2,
+  "code": {
+    "number": 0,
+    "provider": "clock",
+    "name": "scheduled_event",
+    "as": "clock_trigger",
+    "keyword": "trigger",
+    "input": {
+      "interval": "1",
+      "unit": "hours"
+    },
+    "uuid": "err-0001",
+    "block": [
+      {
+        "number": 1,
+        "keyword": "monitor",
+        "block": [
+          {
+            "number": 2,
+            "provider": "http",
+            "name": "send_request",
+            "keyword": "action",
+            "as": "http_call",
+            "input": {
+              "url": "https://api.example.com/data",
+              "method": "GET"
+            },
+            "uuid": "err-0002",
+            "block": []
+          }
+        ]
+      },
+      {
+        "number": 3,
+        "keyword": "catch",
+        "block": [
+          {
+            "number": 4,
+            "provider": "email",
+            "name": "send_mail",
+            "keyword": "action",
+            "as": "error_email",
+            "input": {
+              "to": "admin@example.com",
+              "subject": "API Sync Failed",
+              "body": "Error occurred during sync"
+            },
+            "uuid": "err-0004",
+            "block": []
+          },
+          {
+            "number": 5,
+            "keyword": "stop",
+            "input": {
+              "status": "failed",
+              "message": "Critical error encountered"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

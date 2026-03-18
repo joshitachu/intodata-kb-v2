@@ -1,0 +1,198 @@
+You are analyzing a Workato integration project. Your task is to produce an **Execution Logic Analysis** -- a complete mapping of control flow, execution order, trigger conditions, and orchestration chains for every recipe in this chunk.
+
+## Workato Context
+In Workato, execution flow is governed by a recursive block tree structure within each recipe:
+
+- **Trigger (step 0)**: The first block in every recipe. Defines what event starts the recipe. Types include: `new_record` (poll for new rows), `updated_record` (poll for changes), `scheduled_event` (cron-like timer), `webhook` (push-based HTTP callback), `api_trigger` (recipe exposed as REST endpoint), `new_event` (event topic subscriber), `new_file` (file/storage watcher). The trigger determines whether the recipe is polling-based (runs on intervals) or event-driven (runs on-demand).
+
+- **Actions**: Processing steps that follow the trigger. Each action has a `keyword: "action"`, a `provider` (the app connector, e.g., salesforce, netsuite), and a `name` (the operation, e.g., create_record, search_records, run_sql). Actions execute sequentially within their block scope.
+
+- **The `number` field**: Every block node has a `number` field that defines the step's position in the recipe. Step 0 is always the trigger. Steps are numbered sequentially as the block tree is flattened in depth-first order. The number field determines the execution order within a given block scope.
+
+- **The `keyword` field**: Controls execution behavior:
+  - `trigger` -- recipe entry point (step 0)
+  - `action` -- perform an operation
+  - `if` / `elsif` / `else` -- conditional branching (evaluate a boolean expression)
+  - `foreach` -- iterate over a list of items (child steps execute once per item)
+  - `repeat` -- repeat child steps N times or until a condition is met
+  - `monitor` -- try block (wrap steps for error handling)
+  - `catch` -- catch block (handle errors from paired monitor block)
+  - `stop` -- halt recipe execution (with success or error status)
+
+- **Block tree structure**: Each node can contain a `block` array of child nodes, creating a recursive tree. Control flow keywords (if, foreach, monitor) create nested scopes. Child steps execute within the scope of their parent keyword. For example, steps inside a `foreach` block execute once per list item; steps inside an `if` block execute only when the condition is true.
+
+- **The `as` field**: Defines the step alias used in datapill references. This is the unique identifier for accessing a step's output downstream (e.g., `data.salesforce_1.account_name`).
+
+- **Callable recipe chains (call_recipe)**: A recipe can invoke another recipe synchronously via `call_recipe` action (analogous to Talend's tRunJob). The caller pauses until the callee completes. Input parameters are passed and return values are received. This creates orchestration chains: an orchestrator recipe calling multiple worker sub-recipes in sequence.
+
+- **Event-driven chains**: Recipes connected via event topics create asynchronous execution chains. A publisher recipe's `publish_event` action triggers subscriber recipes that have `new_event` triggers on the same topic. Subscribers execute independently and asynchronously.
+
+## What to Extract
+For each recipe in this chunk:
+
+1. **Trigger analysis**: What triggers this recipe? Trigger type, provider, polling interval (if applicable), event topic (if subscriber), API method/URL (if API trigger). Is this polling-based or event-driven?
+
+2. **Block tree structure**: Map the complete block tree showing all nesting levels. For each node, document: keyword, provider, action name, step number, nesting depth, and the `as` alias.
+
+3. **Conditional branches**: For every `if/elsif/else` block, document:
+   - The condition expression (from the `input.conditions` array)
+   - The operand type (AND/OR)
+   - What steps execute in each branch
+   - Whether all branches are covered (is there an else?)
+
+4. **Loop structures**: For every `foreach` and `repeat` block:
+   - What list/collection is being iterated (source datapill)
+   - What steps execute per iteration
+   - Whether there are batch controls or pagination
+   - Risk of unbounded iteration (large lists without limits)
+
+5. **Monitor/Catch blocks**: For every `monitor` (try) and `catch` pair:
+   - Which steps are protected by the monitor
+   - What recovery logic is in the catch block
+   - Whether the catch block includes notification, logging, retry, or stop
+
+6. **call_recipe orchestration**: For each `call_recipe` action:
+   - Which callable recipe is being invoked (recipe_id resolution)
+   - What input parameters are passed
+   - Whether return values are used downstream
+   - Position in the execution sequence
+
+7. **Execution order**: Produce a numbered, sequential execution order for the recipe, accounting for:
+   - Trigger (always first)
+   - Sequential actions in order of step number
+   - Nested blocks (indent to show scope)
+   - Conditional branches (show which path)
+   - Loop iterations (mark as repeated)
+
+8. **Stop points**: Identify all `stop` actions:
+   - What triggers them (condition, catch block, validation failure)
+   - Whether they stop with success or error
+   - What error message is provided
+
+9. **Dead paths**: Steps or blocks that are present but unreachable (e.g., steps after an unconditional stop, empty else branches, branches with impossible conditions).
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "jobs": [
+    {
+      "job_name": "Salesforce to NetSuite - Sync Customers",
+      "location": "Sales/Sync/sf_to_ns_customers.recipe.json",
+      "trigger": {
+        "type": "WorkatoTrigger_salesforce_new_record",
+        "provider": "salesforce",
+        "action": "new_record",
+        "object": "Account",
+        "polling_interval": "5 minutes",
+        "description": "Polls for new Salesforce Account records every 5 minutes"
+      },
+      "block_tree_summary": [
+        {
+          "depth": 0,
+          "number": 0,
+          "keyword": "trigger",
+          "as": "salesforce_1",
+          "description": "Poll for new Salesforce Accounts"
+        },
+        {
+          "depth": 1,
+          "number": 1,
+          "keyword": "action",
+          "as": "netsuite_1",
+          "description": "Search for existing customer in NetSuite by email"
+        },
+        {
+          "depth": 1,
+          "number": 2,
+          "keyword": "if",
+          "condition": "netsuite_1.records.size > 0",
+          "description": "Check if customer already exists in NetSuite"
+        },
+        {
+          "depth": 2,
+          "number": 3,
+          "keyword": "action",
+          "as": "netsuite_2",
+          "description": "Update existing NetSuite customer"
+        },
+        {
+          "depth": 1,
+          "number": 4,
+          "keyword": "else",
+          "description": "Customer does not exist"
+        },
+        {
+          "depth": 2,
+          "number": 5,
+          "keyword": "action",
+          "as": "netsuite_3",
+          "description": "Create new NetSuite customer"
+        }
+      ],
+      "conditional_branches": [
+        {
+          "if_condition": "netsuite_1.records.size > 0",
+          "if_steps": ["netsuite_2: Update existing customer"],
+          "elsif_conditions": [],
+          "else_steps": ["netsuite_3: Create new customer"],
+          "all_branches_covered": true
+        }
+      ],
+      "loop_structures": [],
+      "monitor_catch_blocks": [
+        {
+          "monitor_steps": ["netsuite_2: Update customer", "netsuite_3: Create customer"],
+          "catch_actions": ["slack_1: Send error notification to #integration-alerts"],
+          "has_retry": false,
+          "has_notification": true,
+          "has_stop": false
+        }
+      ],
+      "call_recipe_chains": [
+        {
+          "component": "workato_1",
+          "child_recipe": "validate_customer_data",
+          "inputs_passed": ["account_name", "email", "phone"],
+          "return_values_used": true,
+          "position_in_sequence": 2
+        }
+      ],
+      "execution_order": [
+        "0. Trigger: Poll Salesforce for new Accounts",
+        "1. Action: Search NetSuite for existing customer by email",
+        "2. IF: Customer exists in NetSuite?",
+        "  3. (true) Action: Update existing NetSuite customer record",
+        "  4. ELSE: Customer does not exist",
+        "  5. (false) Action: Create new NetSuite customer record",
+        "6. Action: Log sync result to Workato DB"
+      ],
+      "stop_points": [
+        {
+          "step_number": 7,
+          "triggered_by": "Catch block after NetSuite API failure",
+          "stop_type": "error",
+          "error_message": "Failed to sync customer to NetSuite: {error_message}"
+        }
+      ],
+      "dead_paths": [],
+      "flowchart_mermaid": "graph TD\n  trigger[Trigger: New SF Account] --> search[Search NetSuite]\n  search --> check{Customer exists?}\n  check -->|Yes| update[Update NetSuite]\n  check -->|No| create[Create NetSuite]\n  update --> log[Log Result]\n  create --> log"
+    }
+  ],
+  "orchestration_diagram_mermaid": "graph TD\n  orchestrator[Daily Sync Orchestrator] -->|call_recipe| worker1[SF to NS Customers]\n  orchestrator -->|call_recipe| worker2[SF to NS Orders]\n  publisher[Order Capture] -->|event topic: new_order| sub1[Warehouse Sync]\n  publisher -->|event topic: new_order| sub2[CRM Update]",
+  "execution_risks": [
+    {
+      "job": "Salesforce to NetSuite - Sync Customers",
+      "risk": "No monitor/catch block around NetSuite create action -- API failures will terminate recipe without notification",
+      "severity": "high"
+    },
+    {
+      "job": "Bulk Order Processor",
+      "risk": "Foreach loop over search results without pagination -- large result sets may cause recipe timeout",
+      "severity": "high"
+    }
+  ]
+}
+```
+
+Be thorough. Trace every block node in the recursive tree. Do not assume execution order -- derive it from the actual `number` fields and block nesting. Flag any recipes with ambiguous control flow, missing else branches, or unprotected critical actions.

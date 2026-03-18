@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-function getLoginUrl(): string {
+export function getLoginUrl(): string {
   // Configurable via Vite env var; auto-detects frontend on port 3000 otherwise
   if (import.meta.env.VITE_LOGIN_URL) {
     return import.meta.env.VITE_LOGIN_URL;

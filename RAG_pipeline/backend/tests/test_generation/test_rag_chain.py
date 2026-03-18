@@ -26,6 +26,7 @@ def disable_new_features():
         mock_settings.query_expansion_enabled = False
         mock_settings.reranker_enabled = False
         mock_settings.hybrid_search_enabled = False
+        mock_settings.system_knowledge_injection = False
         yield mock_settings
 
 
@@ -102,7 +103,14 @@ async def test_rag_query_greeting_goes_through_search(mock_qdrant, mock_db):
     """Greetings now go through search (returns 0 results) then to no-results LLM fallback."""
     request = QueryRequest(query="hello")
 
+    search_analysis = QueryAnalysis(
+        action=Action.SEARCH,
+        query_type=QueryType.QA,
+        cleaned_query="hello",
+    )
+
     with (
+        patch("src.generation.rag_chain.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
         patch("src.generation.rag_chain.search_similar", new_callable=AsyncMock) as mock_search,
         patch("src.generation.rag_chain.generate_answer", new_callable=AsyncMock) as mock_gen,
     ):

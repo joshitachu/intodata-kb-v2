@@ -2,19 +2,43 @@ interface Props {
   status: string;
 }
 
-const colors: Record<string, string> = {
-  ready: "bg-green-100 text-green-800",
-  registered: "bg-blue-100 text-blue-800",
-  scanning: "bg-yellow-100 text-yellow-800",
-  generating: "bg-purple-100 text-purple-800",
-  error: "bg-red-100 text-red-800",
+const chipColors: Record<string, string> = {
+  ready: "border-[#00D4FF]/40 text-[#00D4FF]",
+  registered: "border-slate-500/40 text-slate-400",
+  scanning: "border-yellow-500/40 text-yellow-400",
+  generating: "border-purple-400/40 text-purple-400",
+  error: "border-red-400/40 text-red-400",
+};
+
+const labels: Record<string, string> = {
+  ready: "READY",
+  registered: "REGISTERED",
+  scanning: "SCANNING",
+  generating: "GENERATING",
+  error: "ERROR",
 };
 
 export default function StatusBadge({ status }: Props) {
-  const cls = colors[status] ?? "bg-gray-100 text-gray-800";
+  const colors = chipColors[status] ?? "border-slate-500/40 text-slate-500";
+  const label = labels[status] ?? status.toUpperCase();
+  const showPulse = status === "ready";
+  const showPing = status === "scanning" || status === "generating";
+
   return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
-      {status}
+    <span className={`status-chip ${colors}`}>
+      {showPulse && (
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="animate-pulse-dot absolute inline-flex h-full w-full rounded-full bg-current" />
+          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-current" />
+        </span>
+      )}
+      {showPing && (
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75" />
+          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-current" />
+        </span>
+      )}
+      {label}
     </span>
   );
 }

@@ -1,0 +1,8 @@
+{
+  "lookup_table": {
+    "id": 301,
+    "name": "country_codes",
+    "columns": ["country_name", "country_iso", "region"],
+    "row_count": 195
+  }
+}

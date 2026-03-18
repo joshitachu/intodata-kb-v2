@@ -26,6 +26,7 @@ def _mock_document(id: int = 1):
     doc.source = None
     doc.author = "Alice"
     doc.department = "Engineering"
+    doc.project_id = "test-project"
     doc.chunk_count = 5
     doc.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return doc

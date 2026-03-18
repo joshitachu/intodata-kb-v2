@@ -1,5 +1,89 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-18 (Scope Document Dedup by Project ID)
+
+### [Fix]: Prefix stored filename with project_id to scope deduplication
+
+- **Files changed**:
+  - `backend/src/ingestion/pipeline.py`: Added `_scoped_filename()` helper; called it as first statement in both `ingest_document()` and `ingest_text()`
+  - `backend/tests/test_ingestion/test_pipeline.py`: Added `TestScopedFilename` class with 3 tests; updated import
+- **Problem**: `_replace_existing_document()` deduplicates by filename only. Uploading `00_EXECUTIVE_SUMMARY.md` for Project B deletes Project A's copy.
+- **Root cause**: Filename was stored without project context, so two projects with identically-named docs collided.
+- **Change**: Added `_scoped_filename(filename, project_id)` that returns `"{project_id}/{filename}"` when project_id is truthy, otherwise returns filename unchanged. Called at the top of `ingest_document()` and `ingest_text()` so all downstream code (replace, DB record, Qdrant payload) uses the scoped name.
+- **Why this approach**: Minimal change — one helper + two call sites. No DB migration, no schema change, no frontend change. `Path("proj/file.md").suffix` still returns `.md` so extension detection is unaffected.
+- **Verification**: All 7 tests in `tests/test_ingestion/test_pipeline.py` pass.
+
+## Session: 2026-03-16 (Auto-Detect Corrections in RAG Conversations)
+
+### [Feature]: Auto-detect user corrections and store in shared Hindsight bank
+
+- **Files changed**:
+  - `backend/src/memory/hindsight_client.py`: Added `CORRECTIONS_BANK`, `CORRECTION_SIGNALS` heuristic list, `ensure_corrections_bank()`, `recall_corrections()`, `retain_correction()`, `is_likely_correction()` functions
+  - `backend/src/generation/prompt_builder.py`: Added `CORRECTION_EXTRACTION_PROMPT` template and `build_correction_extraction_messages()` function
+  - `backend/src/generation/conversational_rag.py`: Updated imports, added `corrections` parameter to `_build_memory_context()` with "## Known corrections" section, wired `ensure_corrections_bank()` + `recall_corrections()` into `_prepare_rag_context()` (parallel via `asyncio.gather`), added `_detect_and_store_correction()` helper, wired fire-and-forget correction detection into both `run_conversational_rag()` and `run_conversational_rag_stream()`
+  - `backend/src/generation/rag_chain.py`: Updated imports, wired `ensure_corrections_bank()` + parallel `recall_corrections()` into `run_rag_query()`
+  - `backend/src/api/routes/query.py`: Updated imports, wired `ensure_corrections_bank()` + parallel `recall_corrections()` into streaming query endpoint
+- **Problem**: Hindsight stored every Q&A flat — no distinction between normal answers and user corrections. Corrections were lost and not recalled for future queries.
+- **Root cause**: No correction detection logic existed.
+- **Change**: Added a 3-stage correction pipeline: (1) heuristic detection via keyword signals (no LLM cost for non-corrections), (2) LLM extraction of structured correction text (only when heuristic triggers), (3) storage in shared `rag-corrections` Hindsight bank. Corrections are recalled alongside user memories and quality insights, injected as "## Known corrections" in the LLM context. All correction work is fire-and-forget (asyncio.create_task) — zero latency impact on responses.
+- **Why this approach**: Heuristic-first avoids LLM calls on every message. Shared bank means corrections benefit ALL users. Async fire-and-forget means no latency impact. Recall parallelized with existing memory recalls via asyncio.gather.
+- **Verification**: All 5 files pass Python AST syntax check. No circular imports introduced.
+
+## Session: 2026-03-12 (Metadata-Aware RAG — "Ask Anything" Mode)
+
+### [Feature]: Metadata-aware RAG with intent routing and system knowledge injection
+
+- **Files changed**:
+  - `backend/src/retrieval/metadata_retriever.py` (NEW): SQL queries for structured data (projects, docs, stats). Functions: `get_project_list()`, `get_project_detail()`, `get_document_stats()`, `get_document_list()`, `get_system_overview()`, `get_system_knowledge_summary()`, `fetch_metadata()` dispatcher. All RBAC-filtered via `project_ids`.
+  - `backend/src/generation/intent_classifier.py`: Added `METADATA` action to `Action` enum, `MetadataIntent` enum (6 intents: PROJECT_LIST, PROJECT_DETAIL, DOCUMENT_STATS, DOCUMENT_LIST, SYSTEM_OVERVIEW, HYBRID), regex-based metadata detection patterns, project name extraction. Conservative: unmatched queries default to SEARCH.
+  - `backend/src/generation/prompt_builder.py`: Added `METADATA_SYSTEM_PROMPT`, `build_metadata_messages()` function, `system_knowledge` parameter to `build_messages()` and `build_no_results_messages()`.
+  - `backend/src/generation/rag_chain.py`: Added metadata branch in `run_rag_query()` after intent analysis. System knowledge injection for all query paths. `_fetch_metadata()` helper delegates to `metadata_retriever.fetch_metadata()`.
+  - `backend/src/api/routes/query.py`: Added metadata branch in `query_stream()` SSE endpoint. System knowledge injection.
+  - `backend/src/generation/conversational_rag.py`: Added `db` parameter to `_prepare_rag_context()`, metadata branch before RESPOND check, system knowledge injection in all `build_no_results_messages()` calls.
+  - `backend/src/config.py`: Added `metadata_queries_enabled: bool = True` and `system_knowledge_injection: bool = True` settings.
+- **Problem**: RAG only searched Qdrant vectors. "What projects do we have?" or "how many documents?" returned irrelevant or no results.
+- **Root cause**: No metadata query path — all queries went through vector similarity search which is wrong for structured data questions.
+- **Change**: Added intent routing layer that detects metadata questions via regex patterns and routes them to PostgreSQL. System knowledge (~100 tokens) injected into ALL queries so LLM is always project-aware.
+- **Why this approach**: Real-time SQL (1-5ms) vs pre-indexing metadata into Qdrant (staleness, wrong tool for COUNT queries). Conservative regex routing — unrecognized queries default to existing SEARCH path, no regressions.
+- **Verification**: 19 existing intent classifier tests pass. All files parse cleanly. No circular imports (moved `fetch_metadata` to `metadata_retriever.py` to break rag_chain <-> conversational_rag cycle).
+
+### [Refactor]: Replace regex intent classifier with LLM-based classifier
+
+- **Files changed**:
+  - `backend/src/generation/intent_classifier.py`: Replaced all regex patterns with LLM-based `analyze_query_async()`. Uses Kimi/Ollama provider chain with structured JSON output. `CLASSIFIER_SYSTEM_PROMPT` explains 7 action categories. Sync `analyze_query()` kept for backward compat (returns SEARCH for everything). On LLM failure, defaults to SEARCH (safe).
+  - `backend/src/generation/rag_chain.py`: Changed `analyze_query()` -> `await analyze_query_async()`
+  - `backend/src/api/routes/query.py`: Changed `analyze_query()` -> `await analyze_query_async()`
+  - `backend/src/generation/conversational_rag.py`: Changed `analyze_query()` -> `await analyze_query_async()`
+- **Problem**: Regex patterns were hardcoded English phrases — missed Dutch, paraphrases, queries without "project" keyword.
+- **Root cause**: Regex can't understand semantic intent.
+- **Change**: LLM classifies intent via JSON response. Uses existing provider chain (Kimi first, Ollama fallback). `max_tokens=64` for speed. Ollama uses `ollama_router_model` (gemma3:4b) with `format="json"`.
+- **Why this approach**: LLM understands any phrasing/language. ~0.5-2s latency is acceptable since it happens in parallel with other startup work. Safe fallback to SEARCH on failure.
+- **Verification**: All 19 existing intent classifier tests pass (sync path unchanged). All files parse cleanly.
+
+## Session: 2026-03-12 (RBAC: Project-Scoped Document Access)
+
+### [Feature]: Project-scoped RBAC for all document ingestion and access paths
+
+- **Files changed**:
+  - `backend/src/ingestion/pipeline.py` (lines 85, 172, 200): Added `project_id` param to `ingest_document()`, store on Document record; removed `"public"` from MCP ingestion tagging
+  - `backend/src/api/routes/ingest.py` (lines 1-77): Added `project_id` Form field, validate project access, use `[project_id]` for allowed_groups
+  - `backend/src/retrieval/search.py` (lines 44-81): Removed `"public"` force-append from `_build_search_filter`; block results with `["__none__"]` when no groups/projects
+  - `backend/src/api/routes/query.py` (lines 80-131): Fixed debug endpoint to use `_build_search_filter` with `project_ids` instead of manual filter construction
+  - `backend/src/api/routes/documents.py` (lines 1-57): Added RBAC filtering — non-admins only see docs from assigned projects via `project_id` column
+  - `backend/src/db/models/document.py` (line 19): Added `project_id: str | None` column with index
+  - `backend/src/schemas.py` (line 73): Added `project_id` to `DocumentResponse`
+  - `backend/alembic/versions/010_add_project_id_to_documents.py`: New migration adding `project_id` column + index
+  - `frontend/hooks/useDocuments.ts` (lines 23-38): Changed `uploadDocument` to accept `{file, project_id}` object
+  - `frontend/components/DocumentUpload.tsx`: Added project selector dropdown (from `useDocsProjects`), require project before upload
+  - `frontend/app/api/ingest/route.ts`: Forward `project_id` in FormData to backend
+  - `frontend/types/index.ts` (line 50): Added `project_id` to `DocumentResponseSchema`
+  - `scripts/migrate_qdrant_remove_public.py`: One-time migration script to remove "public" from existing Qdrant vectors
+- **Problem**: RBAC was broken across all ingestion paths — MCP docs tagged `["public", project_id]` (visible to everyone), file uploads tagged with role names (no project association), search filter force-appended `"public"`, documents page had no RBAC filtering, debug endpoint skipped project_ids
+- **Root cause**: Original design used `"public"` as a catch-all group for visibility, which bypassed project-level access control entirely
+- **Change**: Every document now belongs to a project. `allowed_groups` in Qdrant contains only `[project_id]`. Users see docs only from their assigned projects. Admins/superadmins bypass all filters.
+- **Why this approach**: Project-scoped access is the correct RBAC model — users should only see docs from projects they're assigned to, not everything tagged "public"
+- **Verification**: All 15 search tests pass, all 3 pipeline tests pass (1 pre-existing failure due to missing `docx` module), Python imports verified clean
+
 ## Session: 2026-03-11 (Security Hardening + Stress Test)
 
 ### [Security]: Lock Docker ports to localhost

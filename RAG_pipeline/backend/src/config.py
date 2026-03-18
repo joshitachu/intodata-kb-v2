@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     prefetch_limit: int = 30
     max_result_documents: int = 3
 
+    # Metadata queries
+    metadata_queries_enabled: bool = True
+    system_knowledge_injection: bool = True
+
     # Hindsight memory
     hindsight_enabled: bool = False
     hindsight_url: str = "http://localhost:8888"

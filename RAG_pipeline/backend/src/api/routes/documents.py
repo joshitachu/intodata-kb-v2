@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.routes.auth import limiter
 from src.db.models import Document
+from src.rbac.permissions import get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
 from src.schemas import DocumentListResponse, DocumentResponse
 
@@ -20,13 +21,22 @@ async def list_documents(
     skip: int = 0,
     limit: int = Query(default=50, ge=1, le=100),
 ) -> DocumentListResponse:
-    """List all documents with pagination."""
-    total_result = await db.execute(select(func.count(Document.id)))
+    """List documents with RBAC filtering. Admins see all, others see only their projects."""
+    project_ids = await get_user_project_ids(user, db)
+
+    # Build base queries with optional project filter
+    count_query = select(func.count(Document.id))
+    list_query = select(Document).order_by(Document.created_at.desc())
+
+    if project_ids is not None:
+        # Non-admin: only documents from assigned projects
+        count_query = count_query.where(Document.project_id.in_(project_ids))
+        list_query = list_query.where(Document.project_id.in_(project_ids))
+
+    total_result = await db.execute(count_query)
     total = total_result.scalar_one()
 
-    result = await db.execute(
-        select(Document).order_by(Document.created_at.desc()).offset(skip).limit(limit)
-    )
+    result = await db.execute(list_query.offset(skip).limit(limit))
     docs = result.scalars().all()
 
     return DocumentListResponse(
@@ -38,6 +48,7 @@ async def list_documents(
                 source=d.source,
                 author=d.author,
                 department=d.department,
+                project_id=d.project_id,
                 chunk_count=d.chunk_count,
                 created_at=d.created_at,
             )

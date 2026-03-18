@@ -46,26 +46,39 @@ def _build_search_filter(
         allowed_values = list(user_groups)
         if project_ids is not None:
             allowed_values.extend(project_ids)
-        # Always include "public" so public docs are visible
-        if "public" not in allowed_values:
-            allowed_values.append("public")
-        conditions.append(
-            FieldCondition(
-                key="allowed_groups",
-                match=MatchAny(any=allowed_values),
+        if allowed_values:
+            conditions.append(
+                FieldCondition(
+                    key="allowed_groups",
+                    match=MatchAny(any=allowed_values),
+                )
             )
-        )
+        else:
+            # No roles and no project assignments → block all results
+            conditions.append(
+                FieldCondition(
+                    key="allowed_groups",
+                    match=MatchAny(any=["__none__"]),
+                )
+            )
     elif project_ids is not None and not user_groups:
         # Non-admin user with no role groups but has project assignments
         allowed_values = list(project_ids)
-        if "public" not in allowed_values:
-            allowed_values.append("public")
-        conditions.append(
-            FieldCondition(
-                key="allowed_groups",
-                match=MatchAny(any=allowed_values),
+        if allowed_values:
+            conditions.append(
+                FieldCondition(
+                    key="allowed_groups",
+                    match=MatchAny(any=allowed_values),
+                )
             )
-        )
+        else:
+            # No project assignments → block all results
+            conditions.append(
+                FieldCondition(
+                    key="allowed_groups",
+                    match=MatchAny(any=["__none__"]),
+                )
+            )
 
     if document_ids:
         conditions.append(

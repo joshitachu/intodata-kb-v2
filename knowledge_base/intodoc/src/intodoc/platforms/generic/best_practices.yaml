@@ -1,0 +1,95 @@
+# Generic integration project best practices
+# Platform-agnostic context for LLM analysis
+
+platform_name: "Generic Integration Project"
+
+concepts:
+  jobs:
+    description: >
+      In a generic integration project, a "job" represents a logical unit
+      of work -- typically a directory or group of related files that together
+      implement one integration flow, ETL pipeline, or data processing task.
+    key_fields: ["name", "group", "components"]
+    risk: "Without platform-specific metadata, job boundaries may be imprecise."
+
+  components:
+    description: >
+      Components are individual files within a job. Each file is treated as
+      a processing step: code files contain logic, config files contain settings,
+      SQL files contain queries, and data files contain schemas or sample data.
+    key_fields: ["unique_name", "component_type", "content"]
+
+  connections:
+    description: >
+      Connections to external systems are detected from configuration files
+      that contain database URLs, hostnames, API endpoints, or connection
+      strings. These are inferred rather than explicitly declared.
+    risk: "Connection detection is heuristic -- some connections may be missed."
+
+  context_variables:
+    description: >
+      Environment variables and configuration properties extracted from
+      .env, .properties, .cfg, and .ini files. These define runtime
+      behavior that varies across environments.
+    key_fields: ["name", "value"]
+
+  data_flows:
+    description: >
+      Data flows must be inferred from code analysis: SQL queries show
+      source tables, output configurations show target systems, and
+      transformation logic shows how data is processed between them.
+
+  orchestration:
+    description: >
+      Job orchestration patterns vary by project. Look for: scheduler
+      configurations, workflow definitions (Airflow DAGs, cron jobs),
+      script chaining, and inter-process communication patterns.
+
+component_types:
+  CodeFile: "Source code file (Python, Java, JavaScript, etc.)"
+  SQLScript: "SQL query or data definition script"
+  ConfigFile: "Configuration file (JSON, YAML, XML, TOML)"
+  DataFile: "Data file or schema definition (CSV, XSD, Proto, Avro)"
+  DocumentFile: "Documentation file (Markdown, RST, TXT)"
+  ContextFile: "Environment/properties configuration"
+  ConnectionFile: "Connection or credential configuration"
+  GenericFile: "Unclassified file"
+
+analysis_focus:
+  - "Identify all integration flows and their data sources/targets"
+  - "Map data transformations from source to target"
+  - "Detect database connections and API endpoints from config"
+  - "Analyze error handling patterns in code"
+  - "Identify environment-specific configuration and risks"
+  - "Map dependencies between code modules"
+  - "Check for hardcoded values vs externalized configuration"
+  - "Assess code quality and maintainability"
+  - "Identify security risks (credential exposure, SQL injection, etc.)"
+  - "Detect scheduling and orchestration patterns"
+
+anti_patterns:
+  - id: "GAP-001"
+    name: "Hardcoded Credentials"
+    description: "Database passwords, API keys, or tokens hardcoded in source files."
+    severity: "critical"
+    fix: "Use environment variables or a secrets manager."
+  - id: "GAP-002"
+    name: "No Error Handling"
+    description: "Code with no try/catch or error handling around I/O operations."
+    severity: "high"
+    fix: "Add exception handling with logging and appropriate recovery."
+  - id: "GAP-003"
+    name: "Missing Configuration Externalization"
+    description: "Environment-specific values (URLs, paths) embedded in code."
+    severity: "medium"
+    fix: "Move to .env files or configuration management system."
+  - id: "GAP-004"
+    name: "No Logging"
+    description: "Integration code without structured logging for debugging."
+    severity: "medium"
+    fix: "Add structured logging with context (job name, timestamp, record count)."
+  - id: "GAP-005"
+    name: "Missing Data Validation"
+    description: "No input validation before processing or loading data."
+    severity: "high"
+    fix: "Add schema validation and data quality checks at ingestion points."

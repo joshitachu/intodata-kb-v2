@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, UploadFile
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.routes.auth import limiter
 from src.config import settings
 from src.ingestion.pipeline import ingest_document, ingest_text
-from src.rbac.permissions import get_user_groups
+from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.schemas import IngestResponse, MarkdownIngestRequest
 
 
@@ -39,6 +39,7 @@ async def ingest(
     db: DBSession,
     qdrant: QdrantClient,
     user: CurrentUser,
+    project_id: str = Form(...),
 ) -> IngestResponse:
     """Upload a document and trigger the ingestion pipeline."""
     if not file.filename:
@@ -55,16 +56,20 @@ async def ingest(
     if len(file_bytes) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 50 MB limit")
 
-    user_groups = get_user_groups(user)
+    # Validate project access
+    user_project_ids = await get_user_project_ids(user, db)
+    if user_project_ids is not None and project_id not in user_project_ids:
+        raise HTTPException(status_code=403, detail="No access to this project")
 
     try:
         doc, job = await ingest_document(
             file_bytes=file_bytes,
             filename=file.filename,
-            allowed_groups=user_groups,
+            allowed_groups=[project_id],
             uploaded_by=user.id,
             db=db,
             qdrant=qdrant,
+            project_id=project_id,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")

@@ -1,0 +1,233 @@
+You are analyzing a Workato integration project. Your task is to produce a **Cross-Folder Analysis** -- compare and contrast recipe patterns, shared resources, and business logic across folder groups to identify standardization opportunities, deviations, and best practices worth adopting project-wide.
+
+## Workato Context
+Workato projects organize recipes into folders (the `group` field in scan data). Folder-based organization typically follows one of these patterns:
+
+- **By department/domain**: `Sales/`, `Finance/`, `HR/`, `Operations/`
+- **By integration**: `Salesforce-NetSuite/`, `Jira-Slack/`, `SAP-BigQuery/`
+- **By function**: `Sync/`, `Notifications/`, `Reporting/`, `API/`
+- **By environment**: `Production/`, `Staging/`, `Development/`
+- **Hybrid**: `Sales/Sync/`, `Sales/Notifications/`, `Finance/Reporting/`
+
+Cross-folder analysis reveals:
+- **Shared connections**: Which connections are used across multiple folders (shared infrastructure)
+- **Callable recipe / recipe function reuse**: Which sub-recipes are called from multiple folders (shared business logic)
+- **Event topic pub/sub spanning folders**: Publishers in one folder, subscribers in another (cross-domain integration)
+- **Duplicated patterns**: Similar recipe structures in different folders that could be consolidated
+- **Inconsistencies**: Different approaches to the same problem (error handling, validation, naming) in different folders
+
+Key Workato cross-folder concepts:
+- **RLCM (Recipe Lifecycle Management)**: Packages that export/import recipes, sub-folders, connections, custom connectors, and recipe functions across workspaces/environments. RLCM packages define the deployment unit -- understanding folder boundaries helps identify package candidates.
+- **Connection sharing**: Connections are workspace-level resources accessible to all folders. Consistent connection naming per environment enables smooth RLCM deployment.
+- **Recipe functions** (post-Dec 2021): Reusable logic units that replace legacy callable recipes. Recipe functions are focused on reusability with simpler design -- they do NOT create API endpoints (use API recipes for that). Understanding whether the project uses recipe functions or legacy callable recipes indicates modernization status.
+
+## What to Extract
+
+1. **Folder inventory**: For each folder group:
+   - Recipe count
+   - Recipe types (triggers: polling, webhook, API, event topic, scheduled)
+   - Connections used (providers)
+   - Callable recipes / recipe functions defined vs consumed
+   - Event topics published / subscribed
+   - Custom adapters used
+   - Active vs inactive recipe count
+
+2. **Shared connections across folders**: For each connection:
+   - Provider name and connection type
+   - Which folders use it
+   - Whether connection naming is consistent (same name across folders/environments)
+   - Whether a connection is used by only one folder (could be folder-scoped)
+
+3. **Cross-folder recipe reuse**: Map callable recipe / recipe function dependencies:
+   - Which recipes are called from multiple folders?
+   - What is the call graph (caller folder -> callee folder)?
+   - Are recipe functions (modern) or legacy callable recipes used?
+   - Are there reuse opportunities (similar logic in multiple folders that could become a shared recipe function)?
+
+4. **Event topic topology**: Map pub/sub relationships across folders:
+   - Publishers: which folder publishes to which topics?
+   - Subscribers: which folders subscribe to which topics?
+   - Cross-domain event flows (e.g., Sales publishes `new_order`, Finance subscribes for invoicing, Warehouse subscribes for fulfillment)
+   - Missing subscribers (topics published but no subscribers)
+   - Orphaned subscriptions (subscribing to non-existent topics)
+
+5. **Business logic comparison across folders**: Compare how different folders handle:
+   - Error handling patterns (monitor/catch coverage, notification channels, retry strategies)
+   - Data validation rules (null checks, type validation, format enforcement)
+   - Data transformation patterns (cleansing, enrichment, mapping)
+   - Naming conventions (recipe names, step aliases, variable names)
+   - Trigger patterns (polling intervals, batch sizes, dedup strategies)
+
+6. **Deviation detection**: Where do folders diverge in approach?
+   - Same external system accessed differently (different connection, different API pattern)
+   - Same business rule implemented differently (different validation logic, different defaults)
+   - Inconsistent error handling (one folder uses Slack, another uses email, a third has none)
+   - Inconsistent naming (one folder follows a convention, another does not)
+
+7. **Standardization score**: Rate cross-folder consistency (1-10):
+   - Connection naming consistency
+   - Error handling pattern consistency
+   - Naming convention adherence
+   - Reuse level (recipe functions, shared recipes)
+   - Overall architectural alignment
+
+8. **Best practices by folder**: Which folder has the best implementation in each area?
+   - Error handling: most robust monitor/catch coverage?
+   - Performance: best use of batch actions, efficient polling?
+   - Reusability: most recipe function / callable recipe usage?
+   - Data quality: most comprehensive validation?
+
+9. **Refactoring opportunities**: Suggest standardization actions:
+   - Duplicated recipes that could become shared recipe functions
+   - Inconsistent error handling that should be standardized
+   - Connection naming that should follow a convention
+   - RLCM package candidates (which folders should be packaged together?)
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "folder_inventory": {
+    "Sales/Sync": {
+      "recipe_count": 12,
+      "trigger_types": {"polling": 5, "webhook": 2, "callable": 3, "event_topic": 2},
+      "connections_used": ["salesforce_prod", "netsuite_prod", "postgresql_dw"],
+      "callable_recipes_defined": ["validate_customer", "enrich_address"],
+      "callable_recipes_consumed": ["log_sync_result (from Shared/Utilities)"],
+      "topics_published": ["new_order_synced"],
+      "topics_subscribed": ["new_salesforce_lead"],
+      "active_recipes": 10,
+      "inactive_recipes": 2
+    },
+    "Finance/Invoicing": {
+      "recipe_count": 8,
+      "trigger_types": {"event_topic": 3, "scheduled": 2, "callable": 2, "api_trigger": 1},
+      "connections_used": ["netsuite_prod", "postgresql_dw", "smtp_notifications"],
+      "callable_recipes_defined": ["calculate_tax", "validate_invoice"],
+      "callable_recipes_consumed": ["log_sync_result (from Shared/Utilities)"],
+      "topics_published": ["invoice_created"],
+      "topics_subscribed": ["new_order_synced"],
+      "active_recipes": 8,
+      "inactive_recipes": 0
+    }
+  },
+  "shared_connections": [
+    {
+      "connection_name": "netsuite_prod",
+      "provider": "netsuite",
+      "used_by_folders": ["Sales/Sync", "Finance/Invoicing", "Operations/Fulfillment"],
+      "naming_consistent": true,
+      "assessment": "Core shared connection -- used by 3 folders, naming is consistent"
+    },
+    {
+      "connection_name": "salesforce_prod",
+      "provider": "salesforce",
+      "used_by_folders": ["Sales/Sync"],
+      "naming_consistent": true,
+      "assessment": "Single-folder connection -- could be folder-scoped for RLCM packaging"
+    }
+  ],
+  "cross_folder_recipe_reuse": [
+    {
+      "recipe_name": "log_sync_result",
+      "defined_in": "Shared/Utilities",
+      "called_from": ["Sales/Sync (3 recipes)", "Finance/Invoicing (2 recipes)", "Operations/Fulfillment (2 recipes)"],
+      "reuse_type": "recipe_function",
+      "assessment": "GOOD -- shared utility used across 3 domains, well-factored"
+    },
+    {
+      "recipe_name": "validate_customer",
+      "defined_in": "Sales/Sync",
+      "called_from": ["Sales/Sync (2 recipes)"],
+      "reuse_type": "callable_recipe (legacy)",
+      "assessment": "Limited reuse -- only used within Sales folder. Consider promoting to Shared/ if Finance also needs customer validation"
+    }
+  ],
+  "event_topic_topology": [
+    {
+      "topic_name": "new_order_synced",
+      "publisher_folder": "Sales/Sync",
+      "subscriber_folders": ["Finance/Invoicing", "Operations/Fulfillment"],
+      "flow_description": "Sales syncs new orders from Salesforce, publishes event. Finance creates invoices, Operations initiates fulfillment.",
+      "dead_letter_handling": false,
+      "assessment": "Cross-domain fan-out pattern -- good decoupling. Missing dead-letter handling for subscriber failures."
+    }
+  ],
+  "business_logic_comparison": {
+    "error_handling": {
+      "Sales/Sync": "GOOD -- monitor/catch on all external writes, Slack notifications",
+      "Finance/Invoicing": "EXCELLENT -- monitor/catch + retry + Workato DB error logging + email alerts",
+      "Operations/Fulfillment": "POOR -- no monitor/catch blocks, errors only visible in job history",
+      "consistency": "LOW -- each folder has a different error handling strategy"
+    },
+    "naming_conventions": {
+      "Sales/Sync": "Follows '{Source} to {Target} - {Action} {Object}' pattern",
+      "Finance/Invoicing": "Follows '{Action} - {Object} ({Trigger})' pattern",
+      "Operations/Fulfillment": "No consistent naming pattern",
+      "consistency": "LOW -- each folder uses a different naming convention"
+    }
+  },
+  "deviations": [
+    {
+      "deviation_id": "DEV-001",
+      "deviation_type": "Error handling inconsistency",
+      "description": "Finance uses layered defense (validate -> retry -> log -> notify), Sales uses basic monitor/catch + Slack, Operations has no error handling at all",
+      "folders_affected": ["Sales/Sync", "Finance/Invoicing", "Operations/Fulfillment"],
+      "assessment": "Adopt Finance pattern across all folders -- it provides the best resilience",
+      "priority": "HIGH"
+    },
+    {
+      "deviation_id": "DEV-002",
+      "deviation_type": "Duplicated business logic",
+      "description": "Customer address validation is implemented separately in Sales/Sync (recipe: validate_customer) and Finance/Invoicing (inline in invoice creation recipe). The logic is similar but not identical.",
+      "folders_affected": ["Sales/Sync", "Finance/Invoicing"],
+      "assessment": "Extract address validation to shared recipe function in Shared/Utilities",
+      "priority": "MEDIUM"
+    }
+  ],
+  "standardization_score": 5.5,
+  "standardization_assessment": "MODERATE -- Good use of event topics for cross-folder communication and some shared recipe functions. However, error handling, naming conventions, and validation logic vary significantly between folders. Operations folder lags behind Sales and Finance in code quality.",
+  "best_practices_by_folder": {
+    "error_handling": {"best_folder": "Finance/Invoicing", "reason": "Layered defense: validate -> monitor/retry -> error log -> email alert"},
+    "performance": {"best_folder": "Operations/Fulfillment", "reason": "Uses batch actions for bulk operations, optimized polling intervals"},
+    "reusability": {"best_folder": "Sales/Sync", "reason": "Most callable recipes defined, best factored into sub-recipes"},
+    "data_quality": {"best_folder": "Finance/Invoicing", "reason": "Comprehensive field validation, type checks, stop actions for invalid data"}
+  },
+  "refactoring_recommendations": [
+    {
+      "recommendation": "Standardize error handling across all folders",
+      "current_state": "Each folder has different error handling -- Finance is best, Operations has none",
+      "proposed_solution": "Create shared error handling recipe function (log error, send notification) and use consistently across all folders",
+      "benefit": "Consistent error visibility, no silent failures in any folder",
+      "effort": "MEDIUM",
+      "affected_folders": ["Sales/Sync", "Operations/Fulfillment"]
+    },
+    {
+      "recommendation": "Extract duplicated validation logic to shared recipe functions",
+      "current_state": "Customer validation in Sales, invoice validation in Finance, address validation duplicated",
+      "proposed_solution": "Create Shared/Validation/ folder with recipe functions for common validations",
+      "benefit": "Single source of truth for validation rules, consistent data quality across folders",
+      "effort": "LOW"
+    },
+    {
+      "recommendation": "Define RLCM packages aligned with folder boundaries",
+      "current_state": "No formal packaging -- all recipes deployed together",
+      "proposed_solution": "Create packages: Sales (Sales/Sync + shared deps), Finance (Finance/Invoicing + shared deps), Shared (Shared/Utilities)",
+      "benefit": "Independent deployment per domain, reduced blast radius for changes",
+      "effort": "MEDIUM"
+    }
+  ],
+  "summary": {
+    "total_folders": 5,
+    "total_recipes_across_folders": 38,
+    "shared_connections_count": 4,
+    "cross_folder_recipe_calls": 7,
+    "event_topic_cross_folder_flows": 2,
+    "deviations_count": 6,
+    "critical_deviations": 1,
+    "standardization_opportunities": 4
+  }
+}
+```
+
+Be thorough. Cross-folder analysis reveals both organizational health (consistent patterns, good reuse) and technical debt (duplicated logic, inconsistent approaches). Every deviation should be examined to determine if it is intentional domain specialization or an inconsistency that should be standardized.

@@ -13,15 +13,19 @@ pip install -e ".[dev]"
 intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-output
 ```
 
-## Current State (Feb 2026)
-- **Scanner**: Fully operational -- parses Talend XML/XMI into structured JSON
-- **22 prompt files** (p01-p22): inventory, execution, data flows, environment, external systems, error handling, state, custom code, business logic, synthesis, schema, data quality, naming, scheduling, security, performance, cross-region, reusability, migration assessment, column lineage, expression catalog, preventive analysis
-- **25 reference docs**: Define output format/depth for the documentation agent
+## Current State (Mar 2026)
+- **Scanner**: Multi-platform -- Talend (XML/XMI), Workato (JSON recipes), Generic (any codebase)
+- **Platform plugins**: 3 implemented (Talend, Workato, Generic) via `PlatformPlugin` ABC
+  - **Talend**: 22 Talend-specific prompts (p01-p22), TalendDistiller, 257 jobs/4528 components (Vaxxinova)
+  - **Workato**: 14 asset types, recursive block walker, datapill extraction, 15 prompt overrides (full parity with Talend)
+  - **Generic**: Universal fallback, extension-based classification, directory-based job grouping
+- **Shared prompts**: 12 platform-agnostic prompts in `_shared/prompts/`, overridable per platform
+- **BaseDistiller**: Common chunking logic (~30K token chunks), extended by TalendDistiller/WorkatoDistiller
+- **12 consolidated reference docs** (00-11): Define output format/depth for the documentation agent
 - **Doc generation**: Now handled by Claude Code agent via MCP server (not CLI analyzer)
 - **Legacy CLI path**: 21-pass LLM analyzer + 32 Jinja2 templates still exist but are not the primary workflow
-- **Talend-only** platform support (257 jobs, 4528 components parsed from Vaxxinova)
 - **PDF + Qdrant export** functional (legacy CLI path)
-- **Distiller** with multi-layer noise filtering (50-65% token reduction)
+- **Two-layer credential filter**: Text regex + post-parse structural redaction (standard/strict/paranoid)
 - **ProjectManifest** provides cross-job context to all passes
 - **Universal IR** normalizes to platform-agnostic representation (99.4% expression parse rate)
 
@@ -29,8 +33,10 @@ intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-outpu
 - **Migration generators** -- auto-generate code for Lobster, Databricks, etc. (Phase 3)
 
 ## Key Architecture
-- **Platform-explicit**: user declares `--platform talend|mulesoft|dbt` -- loads platform-specific parser, prompts, best practices
-- **Platform plugins**: `src/intodoc/platforms/<name>/` -- each is self-contained
+- **Platform-explicit**: user declares `--platform talend|workato|generic` -- loads platform-specific parser, prompts, best practices
+- **Platform plugins**: `src/intodoc/platforms/<name>/` -- each is self-contained (Talend, Workato, Generic)
+- **Inheritance**: `PlatformPlugin -> GenericPlugin -> WorkatoPlugin`, `BaseDistiller -> TalendDistiller/WorkatoDistiller`
+- **Prompt resolution**: Platform-specific prompts override `_shared/prompts/` fallback
 - **Dual doc generation**:
   - **Primary (MCP agent)**: Claude Code reads prompts + fetches chunks via MCP, writes .md docs directly
   - **Legacy (CLI)**: 21-pass LLM analysis via LiteLLM API + 32 Jinja2 templates
@@ -42,7 +48,8 @@ intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-outpu
 - `src/intodoc/models.py` -- ALL shared Pydantic data models (30+)
 - `src/intodoc/ir/` -- Universal Intermediate Representation (models, expression_parser, normalizer, dag, persistence, pseudocode, validator, type_inferrer, llm_enrichment)
 - `src/intodoc/scanner/` -- file walking, git analysis, credential filtering
-- `src/intodoc/platforms/` -- platform plugins (talend/)
+- `src/intodoc/platforms/` -- platform plugins (talend/, workato/, generic/, _shared/)
+- `src/intodoc/platforms/base_distiller.py` -- shared chunking logic for all platforms
 - `src/intodoc/chunker/` -- group jobs into LLM-sized chunks
 - `src/intodoc/analyzer/` -- LLM client, passes (21), cost tracking (legacy CLI path)
 - `src/intodoc/generator/` -- Jinja2 markdown rendering, 32 templates (legacy CLI path)

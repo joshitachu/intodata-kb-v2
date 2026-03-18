@@ -1,0 +1,572 @@
+# Workato-specific best practices and knowledge for LLM context
+# This is injected into prompts so the LLM understands Workato conventions
+
+platform_name: "Workato"
+
+# -- Key Concepts ---------------------------------------------------------------
+
+concepts:
+  recipes:
+    description: >
+      The unit of automation in Workato, analogous to a Talend job. A recipe consists
+      of a trigger (step 0) followed by a tree of action steps. Recipes are organized
+      in folders and can call each other via callable recipes. Each recipe has a
+      config block (name, description, folder, version, active status) and a code
+      block containing a recursive block tree of steps. Recipes can be started/stopped
+      independently and run in the Workato cloud runtime.
+    risk: "Recipes without descriptions or in flat folder structures become unmaintainable at scale."
+
+  connections:
+    description: >
+      App connections encapsulate authentication credentials for external systems
+      (Salesforce, NetSuite, databases, REST APIs, etc.). Workato strips actual
+      credential values from exported packages -- only the connection name, provider,
+      and authorization type are visible in exports. Connections are referenced by
+      name in recipe steps. Multiple recipes can share the same connection.
+    risk: "Connection names that differ between environments (DEV/PROD) break recipe portability."
+
+  triggers:
+    description: >
+      The first step of every recipe (number: 0). Defines what event starts the recipe.
+      Types include: new_record (polling for new rows), updated_record (polling for
+      changes), scheduled_event (cron-like timer), webhook (push-based HTTP callback),
+      api_trigger (recipe exposed as REST endpoint), new_event (event topic subscriber),
+      and new_file (file system/cloud storage watcher). The trigger determines the
+      recipe's execution model -- polling triggers run on intervals, webhooks and
+      API triggers run on-demand.
+    risk: "Polling triggers with short intervals on large tables cause API quota exhaustion."
+
+  actions:
+    description: >
+      Processing steps that follow the trigger. Each action has a provider (the app
+      connector, e.g. salesforce, netsuite, postgresql) and a name (the operation,
+      e.g. create_record, update_record, search_records, run_sql). Actions reference
+      a connection by name and contain input mappings (datapills or static values)
+      and output schema definitions. Actions are numbered sequentially within the
+      recipe's block tree.
+    risk: "Actions without error handling propagate failures silently up the block tree."
+
+  datapills:
+    description: >
+      Workato's field mapping mechanism. Datapills reference output fields from
+      previous steps using the syntax: #{_('data.step_alias.field_path')}. In
+      exported recipe JSON, datapill references appear as formula expressions that
+      chain step outputs together. Datapills can include transformations (e.g.,
+      .to_s, .to_i, .present?, .strip, .upcase) using Ruby-like method chaining.
+      Complex formulas combine multiple datapills with string interpolation, conditionals,
+      and arithmetic.
+    risk: "Deeply nested datapill references across many steps create brittle chains -- one step change breaks downstream mappings."
+
+  block_tree:
+    description: >
+      Recipes use a recursive tree structure for control flow. The top-level 'code'
+      key contains a block with a 'keyword' (e.g., trigger, action, if, foreach,
+      repeat, try, catch) and optional child blocks in 'dynamicPickListSelection',
+      'input', and nested 'block' arrays. Keywords determine execution behavior:
+      'if' branches on conditions, 'foreach' iterates over lists, 'try/catch'
+      handles errors, 'stop' halts execution. Each block node has: keyword, provider,
+      name, number (step index), input (field mappings), and optional nested blocks.
+    risk: "Deeply nested block trees (>5 levels) are hard to debug and indicate over-complex recipe design."
+
+  lookup_tables:
+    description: >
+      Static reference data tables managed within Workato. Used for mapping codes,
+      storing configuration values, or maintaining small reference datasets. Lookup
+      tables support CRUD operations and can be accessed from any recipe. They are
+      ideal for data that changes infrequently and is shared across multiple recipes
+      (e.g., country code mappings, status code translations, routing rules).
+    risk: "Lookup tables with >10K rows degrade performance. Use a database for large reference data."
+
+  workato_db:
+    description: >
+      Built-in database tables provided by Workato for persistent state storage.
+      Supports standard SQL operations (SELECT, INSERT, UPDATE, DELETE) without
+      requiring an external database connection. Useful for tracking recipe state,
+      storing intermediate results, deduplication keys, and audit logs. Tables have
+      a fixed schema defined in the Workato UI.
+    risk: "Workato DB has row limits per plan. Unbounded inserts without cleanup will hit plan limits."
+
+  event_topics:
+    description: >
+      Pub/sub messaging channels for asynchronous communication between recipes.
+      A publisher recipe sends events to a named topic; one or more subscriber recipes
+      trigger on new events from that topic. Event topics decouple recipes, enabling
+      fan-out patterns (one event triggers multiple downstream recipes). Events carry
+      a payload schema defined by the publisher.
+    risk: "Subscriber recipes that fail do not block the publisher -- failed events may be lost without retry/DLQ configuration."
+
+  custom_adapters:
+    description: >
+      Custom connector SDK code written in Ruby that extends Workato's built-in
+      connector library. Custom adapters define connection settings, actions,
+      triggers, object definitions, and test methods. They appear as first-class
+      connectors in the recipe editor. The SDK uses a declarative Ruby DSL with
+      methods like execute(), input_fields(), output_fields(), and sample_output().
+    risk: "Custom adapters with inline credentials or hardcoded URLs break across environments."
+
+  api_recipes:
+    description: >
+      Recipes exposed as REST API endpoints via Workato's API Platform. An API
+      recipe uses the api_trigger keyword and defines request/response schemas.
+      API recipes can be grouped into API collections with shared authentication
+      (API keys, JWT, OAuth2). They enable external systems to invoke Workato
+      automation synchronously and receive structured responses.
+    risk: "API recipes without rate limiting or authentication expose internal automation to abuse."
+
+  lcap_apps:
+    description: >
+      Low-code application pages built with Workato's LCAP (Low-Code Application
+      Platform). LCAP apps provide web-based UIs that interact with recipes via
+      API triggers or direct recipe calls. Pages define layouts, components (tables,
+      forms, buttons), and data bindings. LCAP apps are typically used for internal
+      tools, approval workflows, and dashboards.
+    risk: "LCAP apps tightly coupled to specific recipes are hard to maintain when recipes change."
+
+  common_schemas:
+    description: >
+      Shared data models (object definitions) that can be reused across multiple
+      recipes and custom adapters. Common schemas define field names, types, and
+      structures for frequently used data objects (e.g., Customer, Order, Invoice).
+      They promote consistency and reduce duplication when multiple recipes interact
+      with the same data structures.
+    risk: "Schema changes in common schemas can break all recipes that reference them."
+
+# -- Component Types (Step Keywords) -------------------------------------------
+
+component_types:
+  WorkatoTrigger_new_record: "Poll for new records in an app (e.g., new Salesforce lead)"
+  WorkatoTrigger_updated_record: "Poll for updated records in an app (e.g., modified NetSuite order)"
+  WorkatoTrigger_scheduled_event: "Timer-based trigger (cron schedule -- hourly, daily, weekly)"
+  WorkatoTrigger_webhook: "HTTP push-based trigger -- external system sends event to Workato URL"
+  WorkatoTrigger_api_trigger: "Recipe exposed as REST API endpoint via API Platform"
+  WorkatoTrigger_new_event: "Subscribe to an event topic (pub/sub pattern)"
+  WorkatoTrigger_new_file: "Trigger on new file in cloud storage (S3, SFTP, Google Drive)"
+  WorkatoAction_create_record: "Create a new record in a target app"
+  WorkatoAction_update_record: "Update an existing record in a target app"
+  WorkatoAction_upsert_record: "Create or update a record based on match criteria"
+  WorkatoAction_search_records: "Search/query records from an app with filter criteria"
+  WorkatoAction_get_record: "Retrieve a single record by ID"
+  WorkatoAction_delete_record: "Delete a record from a target app"
+  WorkatoAction_run_sql: "Execute a SQL statement against a database connection"
+  WorkatoAction_send_request: "Send a custom HTTP request (GET, POST, PUT, DELETE)"
+  WorkatoAction_call_recipe: "Invoke a callable recipe and optionally receive return data"
+  WorkatoAction_send_email: "Send an email notification"
+  WorkatoAction_send_message: "Send a message to a messaging platform (Slack, Teams)"
+  WorkatoAction_upload_file: "Upload a file to cloud storage or an app"
+  WorkatoAction_download_file: "Download a file from cloud storage or an app"
+  WorkatoAction_lookup_table_entry: "Look up a value in a Workato lookup table"
+  WorkatoAction_add_lookup_entry: "Add or update an entry in a Workato lookup table"
+  WorkatoAction_workato_db_query: "Query the built-in Workato database"
+  WorkatoAction_workato_db_insert: "Insert a row into the built-in Workato database"
+  WorkatoAction_publish_event: "Publish an event to an event topic"
+  WorkatoAction_transform: "Apply data transformations (formulas, mappings) without an app call"
+  WorkatoCondition_if: "Conditional branch -- execute child steps only if condition is true"
+  WorkatoCondition_elsif: "Else-if branch -- alternative condition in an if/elsif/else chain"
+  WorkatoCondition_else: "Else branch -- execute when no preceding if/elsif conditions matched"
+  WorkatoLoop_foreach: "Iterate over a list of items, executing child steps for each item"
+  WorkatoLoop_repeat: "Repeat child steps a fixed number of times or until a condition is met"
+  WorkatoMonitor: "Try block -- wrap steps for error handling (paired with catch)"
+  WorkatoCatch: "Catch block -- handle errors from the paired monitor/try block"
+  WorkatoStop: "Halt recipe execution immediately (with optional error message or success status)"
+
+# -- Anti-Patterns ---------------------------------------------------------------
+
+anti_patterns:
+  - id: "WAP-001"
+    name: "No Error Handling (Missing try/catch)"
+    description: >
+      Recipes without try/catch (monitor/catch) blocks around critical steps will
+      fail silently or stop entirely on transient errors. Unlike Talend's SUBJOB_ERROR,
+      Workato has no automatic error propagation -- unhandled errors simply terminate
+      the recipe run with a failed status in the job history. Without explicit error
+      handling, there is no notification, no retry, and no recovery logic.
+    fix: "Wrap all critical action steps in monitor/catch blocks. In the catch block, log the error, send a notification (email/Slack), and decide whether to retry or stop."
+    severity: "critical"
+
+  - id: "WAP-002"
+    name: "Hardcoded Values Instead of Properties or Lookup Tables"
+    description: >
+      Static values (URLs, IDs, thresholds, email addresses) embedded directly in
+      recipe step inputs make recipes impossible to promote across environments
+      (DEV to PROD) without manual editing. This also applies to hardcoded connection
+      names that differ between environments. Workato provides properties (account-level
+      variables), lookup tables, and environment-specific connection aliases for this purpose.
+    fix: "Replace hardcoded values with Workato account properties, lookup table entries, or recipe-level variables. Use connection aliases or naming conventions that match across environments."
+    severity: "high"
+
+  - id: "WAP-003"
+    name: "Polling Trigger Without Deduplication"
+    description: >
+      Polling triggers (new_record, updated_record) that poll on short intervals
+      without proper deduplication can process the same record multiple times.
+      This is especially dangerous with create/update actions in the target system,
+      leading to duplicate records or repeated side effects. Workato's built-in
+      deduplication uses the 'since' parameter, but custom queries may bypass this.
+    fix: "Always use Workato's built-in 'since' parameter for polling triggers. For custom queries, implement explicit deduplication using a Workato DB table or lookup table to track processed record IDs."
+    severity: "high"
+
+  - id: "WAP-004"
+    name: "Unbounded Foreach Without Batch Controls"
+    description: >
+      A foreach loop over a large list (e.g., all records from a search_records
+      action) without pagination or batch size limits can cause recipe timeouts,
+      excessive API calls, and memory issues. Workato has per-recipe execution time
+      limits and per-action rate limits that unbounded loops can violate.
+    fix: "Implement pagination in the search step (limit/offset). Process records in batches of 100-200. For very large datasets, use batch actions (bulk create/update) instead of row-by-row processing."
+    severity: "high"
+
+  - id: "WAP-005"
+    name: "Callable Recipe Without Input Validation"
+    description: >
+      Callable recipes invoked by other recipes or API triggers that do not validate
+      their input parameters can fail with cryptic errors deep in the recipe logic.
+      Missing required fields, wrong data types, or unexpected null values cascade
+      through datapill references and cause failures far from the root cause.
+    fix: "Add conditional checks (if blocks) at the start of callable recipes to validate required inputs. Use stop with an error message for invalid inputs."
+    severity: "medium"
+
+  - id: "WAP-006"
+    name: "Overly Deep Block Nesting"
+    description: >
+      Recipes with block tree nesting deeper than 5 levels (e.g., if inside foreach
+      inside if inside try inside foreach) are extremely difficult to debug, test,
+      and maintain. Deep nesting also makes datapill references fragile because
+      step numbers shift when blocks are restructured.
+    fix: "Refactor deeply nested logic into callable sub-recipes. Each callable recipe should handle one logical operation. This improves testability, reusability, and readability."
+    severity: "medium"
+
+  - id: "WAP-007"
+    name: "Event Topic Without Dead Letter Handling"
+    description: >
+      Event topics where subscriber recipes can fail without any mechanism to
+      capture and retry failed events lead to silent data loss. Unlike message
+      queues with built-in DLQ (dead letter queues), Workato event topics do not
+      automatically retry failed deliveries. Failed subscriber runs appear only
+      in job history and may go unnoticed.
+    fix: "Add try/catch in subscriber recipes. On catch, publish the failed event to a separate error topic or log it to Workato DB for manual retry. Implement monitoring on subscriber recipe failure rates."
+    severity: "high"
+
+  - id: "WAP-008"
+    name: "API Recipe Without Rate Limiting or Authentication"
+    description: >
+      API recipes exposed publicly without rate limiting, authentication, or input
+      sanitization can be abused by external callers. Unrestricted API endpoints
+      consume Workato tasks rapidly and may trigger unintended automation at high
+      volume. Without input validation, malformed requests can cause recipe failures.
+    fix: "Always configure API collection authentication (API key, JWT, or OAuth2). Set rate limits appropriate to the use case. Validate and sanitize all input parameters in the recipe."
+    severity: "critical"
+
+  - id: "WAP-009"
+    name: "Single Monolithic Recipe"
+    description: >
+      A single recipe that handles the entire integration flow (extract, transform,
+      load, error handling, notifications) grows unwieldy beyond 20-30 steps.
+      Monolithic recipes are hard to test in isolation, cannot be reused, and have
+      a single point of failure. A change to one part risks breaking unrelated steps.
+    fix: "Decompose into multiple recipes: a main orchestrator recipe that calls specialized sub-recipes via call_recipe. Each sub-recipe handles one concern (data extraction, transformation, loading, notification)."
+    severity: "medium"
+
+  - id: "WAP-010"
+    name: "No Logging or Audit Trail"
+    description: >
+      Recipes that process data without logging key events (records processed,
+      errors encountered, decisions made) provide no operational visibility.
+      When issues arise, there is no audit trail to determine what happened,
+      which records were affected, or when the problem started. Workato's built-in
+      job history retains limited detail and has retention limits.
+    fix: "Add explicit logging steps: write to Workato DB or an external audit table at key decision points. Log record counts, error details, and processing timestamps. Use Slack/email notifications for critical events."
+    severity: "medium"
+
+# -- Connection Types (Flow Control Keywords) -----------------------------------
+
+connection_types:
+  FLOW:
+    description: "Sequential data flow from one step to the next within the block tree"
+    detection: "Default connection between consecutive steps in the same block"
+    behavior: "Output of step N becomes available as datapills to step N+1 and all subsequent steps"
+
+  IF:
+    description: "Conditional branch -- evaluates a boolean expression to decide execution path"
+    detection: "Block with keyword 'if' containing a condition in the input"
+    behavior: "Child steps execute only when the condition evaluates to true"
+
+  ELSIF:
+    description: "Alternative conditional branch in an if/elsif/else chain"
+    detection: "Block with keyword 'elsif' following an 'if' block"
+    behavior: "Evaluated only when the preceding 'if' (and any prior 'elsif') conditions are false"
+
+  ELSE:
+    description: "Default branch when no if/elsif conditions matched"
+    detection: "Block with keyword 'else' as the final branch in an if chain"
+    behavior: "Executes when all preceding conditions in the if/elsif chain are false"
+
+  ON_ERROR:
+    description: "Error handling path using monitor (try) and catch blocks"
+    detection: "Block with keyword 'catch' paired with a preceding 'monitor' block"
+    behavior: "Catch block executes when any step inside the monitor block throws an error. Error details available as datapills."
+
+  FOREACH:
+    description: "Loop iteration over a list of items"
+    detection: "Block with keyword 'foreach' with a list datapill as input"
+    behavior: "Child steps execute once per item in the list. Current item available as datapill within the loop body."
+
+  STOP:
+    description: "Halt recipe execution immediately"
+    detection: "Block with keyword 'stop' with optional error message input"
+    behavior: "Terminates the recipe run. Can be configured as success (stop with success) or error (stop with error message)."
+
+  CALL_RECIPE:
+    description: "Invoke a callable sub-recipe synchronously"
+    detection: "Action with provider 'workato' and name 'call_recipe' or 'callable_recipe'"
+    behavior: "Passes input parameters to the callable recipe, waits for completion, and receives return values as datapills."
+
+# -- Error Handling Patterns ------------------------------------------------------
+
+error_handling_patterns:
+  monitor_catch:
+    when_to_use: "Wrap any step or group of steps that may fail transiently or need graceful degradation"
+    behavior: >
+      The monitor block (try) contains steps that might fail. If any step inside
+      the monitor block throws an error, execution jumps to the paired catch block.
+      The catch block receives error datapills (error message, error type, failed
+      step number) and can implement recovery logic, notifications, or logging.
+    best_practice: >
+      Always include at least a notification (email or Slack message) in the catch
+      block. For transient errors (API timeouts, rate limits), implement retry logic
+      using a repeat block inside the catch. For permanent errors, log the failure
+      details and stop the recipe with an error status.
+    examples:
+      - "API call to external system that may be temporarily unavailable"
+      - "Database operations that may hit deadlocks or constraint violations"
+      - "File operations on cloud storage that may encounter permission issues"
+
+  retry_config:
+    when_to_use: "Handle transient failures that succeed on retry (network timeouts, rate limits, temporary locks)"
+    behavior: >
+      Workato supports automatic retry at the action level (configurable per step)
+      and manual retry via repeat blocks in catch handlers. Action-level retry
+      attempts the same step up to N times with exponential backoff. Manual retry
+      in catch blocks gives full control over retry logic, delay, and fallback.
+    best_practice: >
+      Use action-level retry (2-3 attempts) for simple transient errors. Use
+      manual retry in catch blocks when you need custom backoff, conditional retry
+      (only retry on specific error types), or a fallback path after exhausting retries.
+    max_retries: 3
+    backoff: "exponential (1s, 2s, 4s default)"
+
+  error_datapills:
+    when_to_use: "Inside catch blocks to access details about the error that occurred"
+    behavior: >
+      When a monitor/catch block catches an error, Workato makes error details
+      available as datapills: error_message (human-readable description),
+      error_type (category of error), error_step (which step failed),
+      error_input (the input that caused the failure). These datapills are only
+      available within the catch block scope.
+    best_practice: >
+      Always log the full error context (message, type, step, and input) to an
+      audit table or notification. Include the recipe name and run ID for
+      correlation. Never suppress error details -- they are essential for debugging.
+
+  stop_on_critical:
+    when_to_use: "Fatal conditions where continuing the recipe would cause data corruption or cascading failures"
+    behavior: >
+      The stop action halts recipe execution immediately. It can be configured
+      to mark the run as successful (stop with success) or failed (stop with error).
+      When stopping with error, an error message can be provided that appears in
+      the job history and can trigger error notifications.
+    best_practice: >
+      Use stop with error for: missing required data, authentication failures,
+      schema mismatches, data integrity violations. Use stop with success for:
+      intentional early termination (e.g., no new records to process, feature flag
+      disabled). Always include a descriptive error message.
+    examples:
+      - "Required connection is unavailable after retry attempts"
+      - "Input data fails validation -- missing required fields"
+      - "Target system schema has changed -- field mapping will produce corrupt data"
+      - "Deduplication check shows record was already processed"
+
+# -- Recipe Design Patterns -------------------------------------------------------
+
+recipe_patterns:
+  orchestrator_worker:
+    description: >
+      A main orchestrator recipe triggers on a schedule or event and calls multiple
+      worker sub-recipes via call_recipe. The orchestrator handles sequencing,
+      error aggregation, and final status reporting. Workers are callable recipes
+      that perform specific tasks (extract, transform, load).
+    when_to_use: "Complex integrations with multiple phases or parallel workstreams"
+    benefits:
+      - "Each worker can be tested independently"
+      - "Workers can be reused across multiple orchestrators"
+      - "Failures in one worker do not block others (with proper error handling)"
+
+  pub_sub_fanout:
+    description: >
+      A publisher recipe detects events (new records, file arrivals, API calls)
+      and publishes them to an event topic. Multiple subscriber recipes each
+      handle a different downstream concern (sync to CRM, update warehouse,
+      send notification). Subscribers are decoupled from the publisher.
+    when_to_use: "One event needs to trigger multiple independent downstream processes"
+    benefits:
+      - "Adding new subscribers does not modify the publisher"
+      - "Subscribers can fail independently without affecting each other"
+      - "Natural scaling point -- each subscriber processes at its own pace"
+
+  batch_processing:
+    description: >
+      Process large datasets in controlled batches using search with pagination
+      (limit/offset), foreach loops with batch actions (bulk create/update), and
+      state tracking in Workato DB to enable resume-on-failure. The recipe
+      processes one page of records at a time and tracks the last processed offset.
+    when_to_use: "Data migration, bulk sync, or any operation on >1000 records"
+    benefits:
+      - "Avoids recipe timeout limits"
+      - "Enables resume from last checkpoint on failure"
+      - "Controlled API consumption within rate limits"
+
+  api_gateway:
+    description: >
+      API recipes grouped in an API collection that serve as a gateway for
+      external systems to invoke Workato automation. The collection enforces
+      authentication, rate limiting, and request validation. Individual API
+      recipes handle specific operations and return structured responses.
+    when_to_use: "External systems need to trigger Workato automation synchronously"
+    benefits:
+      - "Centralized authentication and rate limiting"
+      - "Versioned API contracts with defined request/response schemas"
+      - "External systems get synchronous responses (success/failure + data)"
+
+# -- Performance Best Practices ---------------------------------------------------
+
+performance:
+  batch_sizes:
+    search_records: "Limit to 100-200 records per search page for API-based connectors"
+    bulk_operations: "Use bulk/batch actions (bulk create, bulk update) for >50 records"
+    database: "Use batch SQL operations. Avoid row-by-row INSERT in loops -- use bulk INSERT."
+    file_processing: "Stream large files rather than loading entirely into memory"
+
+  api_rate_management:
+    rule: "Respect target system API rate limits to avoid throttling and temporary bans"
+    strategies:
+      - "Use Workato's built-in rate limiting on triggers (minimum poll interval)"
+      - "Add wait/delay steps between API calls in tight loops"
+      - "Use batch/bulk API endpoints instead of single-record operations"
+      - "Monitor API usage in the target system and adjust recipe frequency"
+    risk: "Exceeding rate limits causes 429 errors, temporary lockouts, and data processing delays"
+
+  task_consumption:
+    rule: "Each recipe step that executes consumes one Workato task. Optimize step count."
+    strategies:
+      - "Combine multiple field mappings into a single action step"
+      - "Use batch actions instead of foreach loops with single-record actions"
+      - "Avoid unnecessary conditional checks that always evaluate the same way"
+      - "Use search with filters to fetch only needed records (reduce foreach iterations)"
+    risk: "Inefficient recipes exhaust the account task quota, blocking all automation"
+
+  polling_intervals:
+    short: "5 minutes -- use for time-sensitive integrations (e.g., order processing)"
+    standard: "10-15 minutes -- default for most data sync scenarios"
+    long: "30-60 minutes -- use for batch reporting, non-urgent data warehousing"
+    real_time: "Use webhooks or event topics instead of polling for true real-time needs"
+    risk: "5-minute polling on high-volume tables generates excessive API calls and tasks"
+
+  large_dataset_tips:
+    - "Use bulk/batch actions (bulk create, bulk upsert) instead of per-record actions in loops"
+    - "Implement pagination with limit/offset for search actions returning >100 records"
+    - "Track processing state in Workato DB to enable resume-on-failure for long-running jobs"
+    - "Use scheduled triggers with date-range filters to process incremental data windows"
+    - "Prefer database bulk operations (INSERT ... SELECT, MERGE) over Workato-mediated row-by-row"
+    - "For file-based integrations, use streaming CSV/JSON parsing rather than loading full files"
+    - "Split large foreach loops into callable recipes to isolate failures per batch"
+
+# -- Datapill Reference & Formula Patterns ----------------------------------------
+
+datapill_patterns:
+  basic_reference:
+    syntax: "#{_('data.step_alias.field_path')}"
+    description: "Reference a field from a previous step's output"
+    example: "#{_('data.salesforce_1.account_name')} -- references the account_name field from step salesforce_1"
+
+  nested_field:
+    syntax: "#{_('data.step_alias.parent.child.field')}"
+    description: "Reference a nested field using dot notation"
+    example: "#{_('data.netsuite_1.billing_address.city')} -- references nested address field"
+
+  formula_methods:
+    string:
+      - ".to_s -- convert to string"
+      - ".strip -- remove leading/trailing whitespace"
+      - ".upcase / .downcase -- case conversion"
+      - ".present? -- check if non-null and non-empty"
+      - ".blank? -- check if null or empty"
+      - ".gsub(pattern, replacement) -- regex substitution"
+      - ".split(delimiter) -- split string into array"
+      - ".truncate(length) -- truncate to max length"
+    numeric:
+      - ".to_i -- convert to integer"
+      - ".to_f -- convert to float"
+      - ".round(decimals) -- round to decimal places"
+      - ".abs -- absolute value"
+    date:
+      - ".to_date -- parse string to date"
+      - ".strftime(format) -- format date as string"
+      - ".beginning_of_day / .end_of_day -- day boundaries"
+      - ".ago(duration) -- subtract duration from date"
+      - ".since(duration) -- add duration to date"
+    conditional:
+      - ".presence || default_value -- use default if blank"
+      - "condition ? true_value : false_value -- ternary conditional"
+
+  risk: "Complex formula chains (>3 methods) are hard to debug. Extract to variables or callable recipe logic."
+
+# -- Naming Convention Patterns ----------------------------------------------------
+
+naming_conventions:
+  recipe_naming:
+    pattern: "{Source} to {Target} - {Action} {Object}"
+    examples:
+      - "Salesforce to NetSuite - Sync Customers"
+      - "Webhook to Slack - Notify on New Order"
+      - "Scheduled - Daily Sales Report to BigQuery"
+      - "API - Create Customer Endpoint"
+    best_practice: "Include source, target, and purpose in the recipe name for discoverability."
+
+  folder_organization:
+    recommended_structure:
+      - "/{Department}/{Integration Name}/Main -- orchestrator recipes"
+      - "/{Department}/{Integration Name}/Workers -- callable sub-recipes"
+      - "/{Department}/{Integration Name}/Error Handling -- error notification recipes"
+      - "/{Department}/{Integration Name}/Utilities -- shared helper recipes"
+    risk: "Flat folder structures with 100+ recipes become unnavigable."
+
+  connection_naming:
+    pattern: "{App} - {Environment} ({Purpose})"
+    examples:
+      - "Salesforce - Production (CRM)"
+      - "PostgreSQL - Staging (Data Warehouse)"
+      - "REST API - Vendor Portal (Orders)"
+    best_practice: "Include environment in connection name to prevent accidental production use during development."
+
+# -- Analysis Focus ---------------------------------------------------------------
+
+analysis_focus:
+  - "Recipe trigger types and polling intervals -- identify polling vs event-driven patterns"
+  - "Error handling coverage -- which recipes have try/catch vs unhandled failures"
+  - "Callable recipe chains -- map orchestrator-to-worker call graphs"
+  - "Event topic publisher/subscriber relationships -- identify pub/sub topologies"
+  - "Datapill complexity -- flag deeply nested or multi-method formula chains"
+  - "Connection usage -- which connections are shared across recipes, which are single-use"
+  - "Block tree depth -- flag recipes with nesting >5 levels for refactoring"
+  - "Foreach loops without pagination -- identify potential timeout/performance issues"
+  - "API recipes without authentication -- security exposure assessment"
+  - "Hardcoded values in recipe inputs -- environment portability risks"
+  - "Lookup table vs Workato DB usage -- data persistence patterns"
+  - "Custom adapter code -- Ruby SDK code quality and credential handling"
+  - "Recipe active/inactive status -- identify dormant automation"
+  - "Task consumption patterns -- recipes with high step counts per execution"
+  - "Cross-recipe data flows -- trace data from source triggers to final target actions"
+  - "Retry and error recovery patterns -- resilience assessment"
+  - "LCAP app to recipe bindings -- UI-to-automation coupling analysis"
+  - "Naming convention compliance -- recipe, folder, and connection naming consistency"
+  - "Batch vs single-record processing -- identify optimization opportunities"
+  - "Scheduling patterns -- trigger timing, overlap detection, dependency ordering"

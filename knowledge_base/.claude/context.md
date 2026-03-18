@@ -1,17 +1,23 @@
 # Current State
 
-**Status**: Round 2 optimizations COMPLETE. Doc gen target ~29-33 min (was 51.5 min). Needs deploy + test.
-**Last session**: 2026-03-11
-**Last completed**: Round 2 optimizations: Phase 2.5 analysis condensation (per-agent briefings ~100-150KB instead of 688KB), pre-bundled analysis prompts + reference docs (eliminates MCP dependency), large group splitting (>40 jobs auto-split), rebalanced Phase 3 agents (Core 4/Data+Ops 8/Config+User 13 docs).
+**Status**: Workato + Generic platform plugins COMPLETE. Workato analysis prompts at FULL PARITY with Talend (22 dimensions).
+**Last session**: 2026-03-18
+**Last completed**: 7 missing Workato analysis prompts (p07, p12, p16, p17, p18, p20, p21). Total: 15 Workato-specific + 7 shared fallbacks = 22 analysis dimensions.
 
 ## What's Done
 
 ### Scanner CLI (intodoc/)
-- Multi-platform architecture (Talend implemented, MuleSoft/dbt designed)
-- 22 analysis prompt files (p01-p22) covering all dimensions
-- 25 reference docs defining output format/depth
+- Multi-platform architecture: Talend, Workato, Generic implemented
+- Platform-agnostic shared prompts (12 in `_shared/prompts/`) + platform overrides
+- BaseDistiller with platform-specific subclasses (TalendDistiller, WorkatoDistiller)
+- 22 Talend-specific prompt files (p01-p22) + 15 Workato overrides (full parity)
+- 12 consolidated reference docs (00-11) defining output format/depth
 - Universal IR with 99.4% expression parse rate (Phase 2)
-- Credential filter (strips secrets before LLM exposure)
+- Two-layer credential filter: Layer 1 (raw text regex) + Layer 2 (post-parse structural)
+  - Standard: passwords, IPs, FQDNs, URLs, emails, credential files, certificates
+  - Strict: + file paths, database/schema names, infrastructure var values
+  - Paranoid: redact ALL context variable values
+  - Custom rules via `.intodoc-redact.yaml`, audit report in `redaction_report.json`
 - Chunker: groups jobs by region, ~30K tokens/chunk
 
 ### MCP Server (mcp-server/)
@@ -49,6 +55,11 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Recent Changes
 
+- **Workato full prompt parity** (2026-03-18): Created 7 missing Workato-specific analysis prompts (p07_state, p12_data_quality, p16_performance, p17_cross_folder, p18_reusability, p20_lineage_matrix, p21_expression_catalog). Workato now has 22 analysis dimensions matching Talend (15 overrides + 7 shared fallbacks). Zero Talend terminology in any Workato prompt. All prompts use real-world Workato best practices (task consumption, recipe functions, layered error defense, datapill formulas).
+- **Workato + Generic plugins** (2026-03-17): Added WorkatoPlugin (14 asset types, recursive block walker, datapill extraction, manifest building), GenericPlugin (universal fallback), BaseDistiller (extracted from TalendDistiller), 12 shared prompts, 8 Workato prompt overrides. Registry + scanner_service updated. 93 new tests, 200 total pass.
+- **Assessment page** (2026-03-13): New `AssessmentService` generates self-contained HTML assessment from doc 00 (exec summary) + doc 11 (migration). Jinja2 template with sidebar TOC, responsive CSS, print-friendly. Auto-regenerates after doc generation. Endpoints: `POST /generate-assessment`, `GET /assessment`. Fixed missing `logger` import in projects.py.
+- **Doc quality consolidation** (2026-03-12): Consolidated 25 reference docs to 12. Removed Phase 2.5 condensation (agents read full analysis). Rebalanced Phase 3: 3 agents with 4/3/5 doc split (Core/Business+Ops/Patterns+User). Added depth targets (200-800+ lines) and narrative rules. Updated scanner_service.py agent group mappings. Updated mcp-workflow.md.
+- **Auto-assign creator on ZIP upload** (2026-03-12): Added `request: Request` param and auto-assign INSERT to `upload_zip` endpoint, matching `add_repo` pattern. Non-admin users now see ZIP-uploaded projects immediately.
 - **Phase 1 consolidation** (2026-03-11): Security: fixed git clone command injection (URL validation + `--` separator). UX: Fixed useAuth to surface network errors. Added favicon. Deployment: MCP server Dockerfile now runs as non-root (appuser). Testing: Added Vitest setup + 4 API client tests.
 - **Round 2 doc gen optimizations** (2026-03-11): Phase 2.5 condensation, pre-bundled analysis prompts + reference docs, large group splitting, rebalanced Phase 3 (Core/Data+Ops/Config+User). Target: ~29-33 min.
 - **Doc gen speed optimization + token fix** (2026-03-11): Fixed token extraction (wrong field names). Added `_preprocess_scan_data()` pre-processing step. Phase 2 reads markdown instead of raw JSON. Phase 3 uses 3 inline-data agents instead of 5 file-reading agents. Added file-reading guidance.
@@ -64,16 +75,18 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 ## Next Steps
 
 - [ ] Restart MCP server: `sudo systemctl restart mcp-server`
-- [ ] Test doc generation → verify Round 2 optimizations work
-- [ ] Check DB tokens: `docker exec postgres psql -U admin -d intodata_kb -c "SELECT id, input_tokens, output_tokens, cost_usd FROM generate_runs ORDER BY id DESC LIMIT 5"`
-- [ ] Monitor generation time — target ~29-33 min (down from 51.5 min)
-- [ ] Verify Phase 2.5 briefing files are created correctly
+- [ ] Test doc generation → verify consolidated 12-doc output with depth targets
+- [ ] Verify 12 reference docs exist and old 25 are removed
+- [ ] Monitor generation time and doc quality (depth targets met?)
 - [ ] Verify large group splitting works (USA group → 2 parts)
 - [ ] Record baseline benchmark run on VPS (`python -m benchmark run --tag baseline-v1`)
 - [ ] Deploy Phase 1 code to VPS (`docker compose up -d --build backend`)
-- [ ] Phase 2: Workato scanner (needs sample data from user)
+- [x] Workato scanner plugin (complete, needs real project data for E2E validation)
+- [x] Generic scanner plugin (complete)
 - [ ] MuleSoft scanner plugin
 - [ ] dbt scanner plugin
+- [ ] E2E test: `intodoc scan <dir> --platform workato` with real Workato export
+- [ ] E2E test: `intodoc scan <dir> --platform generic` with real project
 - [ ] E2E testing of doc generation pipeline
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.

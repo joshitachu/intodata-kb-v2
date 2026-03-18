@@ -1,0 +1,8 @@
+{
+  "database": {
+    "host": "db.example.com",
+    "port": 5432,
+    "name": "production_db",
+    "driver": "postgresql"
+  }
+}

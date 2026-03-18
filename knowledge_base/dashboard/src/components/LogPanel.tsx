@@ -7,7 +7,6 @@ interface Props {
   logs: LogEvent[];
   onClear: () => void;
   projectId: string | null;
-  /** When set, auto-switch to this historical log file */
   selectedLogFile: string | null;
   onLogFileCleared: () => void;
 }
@@ -34,14 +33,12 @@ export default function LogPanel({
   const { data: logFilesData } = useLogFiles(projectId);
   const logFiles = logFilesData?.files ?? [];
 
-  // Auto-scroll for live logs
   useEffect(() => {
     if (mode === "live") {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [logs.length, mode]);
 
-  // Handle external "View Log" trigger
   useEffect(() => {
     if (selectedLogFile && projectId) {
       setMode("historical");
@@ -75,12 +72,12 @@ export default function LogPanel({
   }
 
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-700">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-700">
+    <div className="bg-[#0D0D14] rounded border border-white/[0.07]">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.05]">
         <div className="flex items-center gap-3">
-          <h3 className="text-sm font-medium text-gray-300">Logs</h3>
+          <h3 className="text-xs font-mono uppercase tracking-widest text-slate-500">Logs</h3>
           <select
-            className="bg-gray-800 text-gray-300 text-xs border border-gray-600 rounded px-2 py-1"
+            className="bg-[#16161F] text-slate-300 text-xs font-mono border border-white/[0.07] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#00D4FF]/50"
             value={mode === "live" ? "live" : activeFile}
             onChange={(e) => handleModeChange(e.target.value)}
           >
@@ -94,7 +91,7 @@ export default function LogPanel({
         </div>
         {mode === "live" && (
           <button
-            className="text-xs text-gray-400 hover:text-white"
+            className="text-xs text-slate-500 hover:text-slate-300 transition-colors font-mono"
             onClick={onClear}
           >
             Clear
@@ -105,21 +102,21 @@ export default function LogPanel({
         {mode === "live" ? (
           <>
             {logs.length === 0 && (
-              <p className="text-gray-500 italic">
+              <p className="text-slate-600">
                 No logs yet. Trigger an action to see output here.
               </p>
             )}
             {logs.map((log, i) => (
-              <div key={i} className={levelColors[log.level] ?? "text-gray-300"}>
+              <div key={i} className={levelColors[log.level] ?? "text-slate-400"}>
                 {log.message}
               </div>
             ))}
             <div ref={bottomRef} />
           </>
         ) : loading ? (
-          <p className="text-gray-500">Loading log file...</p>
+          <p className="text-slate-600">Loading log file...</p>
         ) : (
-          <pre className="text-gray-300 whitespace-pre-wrap">
+          <pre className="text-slate-400 whitespace-pre-wrap">
             {historicalContent || "No content."}
           </pre>
         )}

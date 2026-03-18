@@ -10,7 +10,7 @@ import click
 from rich.console import Console
 
 from intodoc import __version__
-from intodoc.config import IntodocConfig
+from intodoc.config import IntodocConfig, RedactionLevel
 from intodoc.platforms.registry import get_platform, list_platforms
 
 console = Console()
@@ -33,41 +33,92 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.argument("repo_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--platform", "-p", required=True, type=click.Choice(list_platforms()), help="Integration platform")
 @click.option("--output-dir", "-o", type=click.Path(path_type=Path), default="./intodoc-output", help="Output directory")
+@click.option(
+    "--redaction-level", "-r",
+    type=click.Choice([e.value for e in RedactionLevel], case_sensitive=False),
+    default=RedactionLevel.STANDARD.value,
+    help="Redaction aggressiveness: standard, strict, paranoid",
+)
+@click.option("--redaction-config", type=click.Path(exists=True, path_type=Path), default=None, help="Path to .intodoc-redact.yaml")
+@click.option("--no-redaction-audit", is_flag=True, default=False, help="Disable redaction_report.json output")
 @click.pass_context
-def scan(ctx: click.Context, repo_path: Path, platform: str, output_dir: Path) -> None:
+def scan(
+    ctx: click.Context,
+    repo_path: Path,
+    platform: str,
+    output_dir: Path,
+    redaction_level: str,
+    redaction_config: Path | None,
+    no_redaction_audit: bool,
+) -> None:
     """Scan a repository and produce structured scan results."""
+    # Auto-discover .intodoc-redact.yaml in repo root if not explicitly set
+    if redaction_config is None:
+        candidate = repo_path / ".intodoc-redact.yaml"
+        if candidate.exists():
+            redaction_config = candidate
+
     config = IntodocConfig(
         repo_path=repo_path,
         platform=platform,
         output_dir=output_dir,
         verbose=ctx.obj["verbose"],
+        redaction_level=RedactionLevel(redaction_level),
+        redaction_config=redaction_config,
+        redaction_audit=not no_redaction_audit,
     )
-    scan_result = _do_scan(config)
+    scan_result, cred_filter = _do_scan(config)
+
+    # Layer 2: post-parse structural filtering
+    from intodoc.scanner.post_filter import filter_scan_result
+
+    filter_scan_result(scan_result, cred_filter)
+
     _save_scan_result(scan_result, config.output_dir)
     console.print(f"[green]Scan saved to {config.output_dir / 'scan_result.json'}[/green]")
+
+    # Write audit report
+    if config.redaction_audit:
+        _save_redaction_report(cred_filter, config.output_dir)
+        console.print(f"  Redaction report: {config.output_dir / 'redaction_report.json'}")
 
 
 # ── Pipeline Steps ───────────────────────────────────────────────────
 
 
 def _do_scan(config: IntodocConfig):
-    """Execute the scan step."""
+    """Execute the scan step. Returns (ScanResult, CredentialFilter)."""
     from intodoc.scanner.credential_filter import CredentialFilter
 
     t0 = time.monotonic()
     console.print(f"[bold]Scanning[/bold] {config.repo_path} as [cyan]{config.platform}[/cyan]...")
+    console.print(f"  Redaction level: [yellow]{config.redaction_level.value}[/yellow]")
     plugin = get_platform(config.platform)
-    cred_filter = CredentialFilter()
+    cred_filter = CredentialFilter(
+        level=config.redaction_level,
+        config_path=config.redaction_config,
+    )
     result = plugin.parse_project(config.repo_path, cred_filter)
 
     elapsed = time.monotonic() - t0
     console.print(f"[green]Scan complete in {elapsed:.1f}s.[/green] {len(result.jobs)} jobs, {len(result.files)} files found.")
     console.print(f"  Metadata connections: {len(result.metadata_connections)}")
     console.print(f"  Context groups: {len(result.context_groups)}")
-    return result
+    return result, cred_filter
 
 
 # ── Persistence ──────────────────────────────────────────────────────
+
+
+def _save_redaction_report(cred_filter, output_dir: Path) -> None:
+    """Write the redaction audit report."""
+    from intodoc.scanner.credential_filter import CredentialFilter
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report = cred_filter.get_audit_report()
+    path = output_dir / "redaction_report.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    console.print(f"  Total redactions: [yellow]{report['total_redactions']}[/yellow]")
 
 
 def _save_scan_result(scan_result, output_dir: Path) -> None:

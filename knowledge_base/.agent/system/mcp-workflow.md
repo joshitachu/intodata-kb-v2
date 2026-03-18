@@ -131,45 +131,57 @@ PREVENTIVE_RISKS:
     {chain description} | blast_radius: {CRITICAL/HIGH/MEDIUM}
 ```
 
-## Phase 3: Write Documents (Parallel Sub-Agents by Theme)
+## Phase 3: Write Documents (3 Parallel Sub-Agents)
 
-After receiving ALL group summaries, spawn doc-writing sub-agents in parallel.
+After ALL Phase 2 sub-agents complete, spawn 3 doc-assembly sub-agents in parallel.
+Each Phase 3 agent reads the FULL `_analysis/{group}.md` files directly (no condensation step).
+Each doc agent also reads its REFERENCE DOC BUNDLE from `_preprocess/` for format templates.
+Each doc agent receives the manifest inline and writes final `.md` files to `output/{project_id}/docs_staging/`.
 
-Each doc agent receives:
-- The relevant group summaries (the full text blocks from Phase 2)
-- The manifest JSON
+### Doc Agent Groups (4/3/5 split)
 
-Each doc agent must:
-1. Call `get_reference_docs(agent_group)` to load format templates in ONE call (replaces individual Read calls).
-2. Write final .md files directly to `output/{project_id}/docs_staging/`.
+| Agent | Docs (12 total) | Reference Bundle | Analysis Input |
+|-------|------------------|------------------|----------------|
+| Core | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE | _ref_core.md | ALL _analysis/{group}.md files |
+| Business+Ops | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL | _ref_business_ops.md | ALL _analysis/{group}.md files |
+| Patterns+User | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT | _ref_patterns_user.md | ALL _analysis/{group}.md files |
 
-### Doc Agent Groups
+*08_PATTERNS_STANDARDS cross-region section only if 2+ groups exist.
 
-| Agent | Writes | Receives from Phase 2 |
-|-------|--------|-----------------------|
-| Overview | 00_PROJECT_OVERVIEW.md | All summaries + manifest |
-| Architecture | 02_ARCHITECTURE.md, 03_EXECUTION_LOGIC.md, 01_COMPONENT_INVENTORY.md | COMPONENTS, EXECUTION_FLOW sections |
-| Data | 04_DATA_FLOWS.md, 16_SCHEMA_DICTIONARY.md, 17_DATA_QUALITY.md | DATA_FLOWS sections |
-| Business | 10_BUSINESS_LOGIC.md, 09_CUSTOM_CODE.md | BUSINESS_RULES, CUSTOM_CODE sections |
-| Operations | 07_ERROR_HANDLING.md, 08_STATE_SIDE_EFFECTS.md, 11_KNOWN_ISSUES.md | ERROR_HANDLING, RISK_FLAGS sections |
-| Config | 05_ENVIRONMENT_CONFIG.md, 20_SECURITY_ACCESS.md, 21_PERFORMANCE.md | ENVIRONMENT sections |
-| External | 06_EXTERNAL_SYSTEMS.md, 19_SCHEDULING_SLA.md | EXTERNAL_SYSTEMS, SCHEDULING sections |
-| Patterns | 18_NAMING_CONVENTIONS.md, 23_REUSABILITY.md, 22_CROSS_REGION.md* | NAMING_PATTERNS, CROSS_GROUP_REFS |
-| User Docs | 14_GLOSSARY_FAQ.md, 15_ONBOARDING.md, 13_RUNBOOK.md, 12_CHANGE_LOG.md | All summaries |
-| Preventive | 25_PREVENTIVE_ANALYSIS.md | PREVENTIVE_RISKS, RISK_FLAGS, ERROR_HANDLING sections from all summaries + manifest |
+AUTO-FALLBACK: If total analysis size exceeds 400KB, each Phase 3 agent should
+read only the analysis sections relevant to its docs (use grep/head/tail).
 
-*Only generate 22_CROSS_REGION.md if the project has 2 or more meaningful groups.
+### Depth Targets (Minimum Line Counts)
+
+| Doc | Min Lines | Notes |
+|-----|-----------|-------|
+| 00_EXECUTIVE_SUMMARY | 200+ | Customer-facing, NO code/expressions, polished prose |
+| 01_PROJECT_OVERVIEW | 300+ | Technical overview with full stats and regional breakdown |
+| 02_ARCHITECTURE_INVENTORY | 600+ | Components + topology + execution logic combined |
+| 03_DATA_FLOWS_LINEAGE | 600+ | Column-level lineage for all major flows + schema dictionary |
+| 04_BUSINESS_LOGIC | 800+ | Every BR-tagged rule with full expression + custom code |
+| 05_OPERATIONS_RISK | 800+ | Per-job error handling + all risk items + preventive analysis |
+| 06_ENVIRONMENT_EXTERNAL | 400+ | Config + connections + scheduling combined |
+| 07_SECURITY_PERFORMANCE | 300+ | Security assessment + performance analysis |
+| 08_PATTERNS_STANDARDS | 400+ | Naming + reusability + cross-region patterns |
+| 09_RUNBOOK | 400+ | Operational procedures |
+| 10_ONBOARDING_FAQ | 500+ | 20+ FAQ items + onboarding guide + glossary |
+| 11_MIGRATION_ASSESSMENT | 400+ | Consolidated migration assessment |
+
+### Narrative Rules
+
+- Never summarize when you can enumerate
+- Every claim needs a job name + component reference
+- Show ACTUAL code/expressions/SQL, then explain
+- "Error handling is weak" is NOT acceptable
+- "7 of 12 DEU jobs have no tLogCatcher" IS acceptable
+- Include concrete counts, percentages, and job names
 
 ### Adaptive Document Catalog
 
-Not all docs are relevant to every project. Apply these rules:
-
-- **Always generate**: 00, 01, 02, 03, 04, 06, 07, 10, 13, 14, 15, 25
-- **Multiple groups only**: 22_CROSS_REGION.md (skip for single-group projects)
-- **Only if found in scan**: 09_CUSTOM_CODE.md (custom Java code), 19_SCHEDULING_SLA.md
-  (scheduling evidence), 20_SECURITY_ACCESS.md (security issues), 21_PERFORMANCE.md
-  (performance indicators)
-- Skip any doc that would have no meaningful content for this project
+- **Always generate**: 00-06, 09-11
+- **Generate if found**: 07 (security/performance issues), 08 cross-region section (2+ groups)
+- Skip any doc with genuinely no content (rare with consolidated structure)
 
 ### Quality Standards
 
@@ -181,6 +193,8 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
 - Include job names and component references for traceability
 - Risk items get severity ratings: CRITICAL / HIGH / MEDIUM / LOW
 - Include "Impact" statements where relevant
+- Schema docs must include column-level detail (names, types, nullable)
+- Data flow docs must include tMap expressions with explanations
 
 ## Phase 4: Publish
 
@@ -211,9 +225,18 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
 ```
 output/{project_id}/
   docs/
-    00_PROJECT_OVERVIEW.md
-    01_COMPONENT_INVENTORY.md
-    ... (only docs that are relevant to this project)
+    00_EXECUTIVE_SUMMARY.md
+    01_PROJECT_OVERVIEW.md
+    02_ARCHITECTURE_INVENTORY.md
+    03_DATA_FLOWS_LINEAGE.md
+    04_BUSINESS_LOGIC.md
+    05_OPERATIONS_RISK.md
+    06_ENVIRONMENT_EXTERNAL.md
+    07_SECURITY_PERFORMANCE.md      (if applicable)
+    08_PATTERNS_STANDARDS.md        (if applicable)
+    09_RUNBOOK.md
+    10_ONBOARDING_FAQ.md
+    11_MIGRATION_ASSESSMENT.md
     index.json
   logs/
     run_{project_id}_{timestamp}.log
@@ -232,7 +255,7 @@ No `_scratch/` directory. No intermediate JSON files. Only final docs.
 | `get_chunks(project_id)` | Get chunk definitions (~30K tokens each) |
 | `fetch_chunk(project_id, chunk_id)` | Get full job data for one chunk |
 | `get_analysis_prompts(platform?)` | Get ALL analysis prompts bundled (replaces 16+ Reads) |
-| `get_reference_docs(agent_group)` | Get reference docs for a doc agent group (replaces individual Reads) |
+| `get_reference_docs(agent_group)` | Get reference docs for a doc agent group: Core, Business+Ops, Patterns+User |
 | `insert_to_rag(project_id, docs?)` | Push docs to RAG pipeline (not used during generation -- server handles RAG push automatically) |
 | `list_projects()` | List all registered projects |
 | `recall_process_memory(query)` | Recall cross-project lessons before doc generation |

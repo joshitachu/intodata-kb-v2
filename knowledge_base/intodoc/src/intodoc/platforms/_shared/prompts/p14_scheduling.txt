@@ -1,0 +1,209 @@
+You are analyzing an integration project built on a data integration platform. Your task is to produce a **Scheduling & SLA Analysis** -- infer the scheduling patterns, orchestration chains, job dependencies, execution frequency, critical paths, and SLA requirements based on job structure, orchestration chains, configuration variables, and naming patterns.
+
+## Integration Platform Context
+Integration job definition files typically do not contain built-in scheduling metadata -- scheduling is usually managed externally (cron, Task Scheduler, enterprise schedulers like Control-M, Airflow, Autosys, etc.). However, you can infer scheduling and SLA requirements from:
+- **Orchestration chains**: Parent jobs that call child jobs in sequence reveal the execution order and dependencies. The depth of the chain (how many levels of nesting) indicates complexity and potential execution time.
+- **Job naming patterns**: Layer codes (RAW, CLEAN, PUBLISH) suggest a sequential pipeline. Region codes suggest parallel execution across regions.
+- **Configuration variables**: Parameters like `StartDate`, `EndDate`, `BatchID`, `RunDate` suggest that jobs are scheduled with date-based parameters (nightly, monthly, etc.).
+- **Pre-job/post-job blocks**: Components that execute before/after the main job (e.g., sending an email notification, updating a control table) indicate orchestration and monitoring requirements.
+- **Global/master jobs**: Jobs named "Global", "Master", or "Orchestrator" typically coordinate multiple regional or domain-specific jobs.
+- **Conditional execution**: Conditional job execution based on configuration variables or runtime checks (e.g., `config.RunMode == "FULL"`) indicates different execution modes (full refresh vs incremental, production vs test).
+- **File arrival triggers**: Jobs that wait for files to arrive suggest event-driven or batch-driven scheduling.
+- **Database control tables**: Jobs that read/write to control tables (execution logs, batch status, last run timestamps) indicate tracking and dependency management.
+
+## What to Extract
+
+1. **Job scheduling inference**: For each job:
+   - Estimated execution frequency (nightly, hourly, weekly, monthly, on-demand, event-driven)
+   - Evidence for the frequency estimate (configuration variable names, job name patterns, data volume hints)
+   - Is it a standalone job or part of a chain?
+   - Is it triggered by a parent job or scheduled independently?
+
+2. **Job dependency chains**: For each orchestration relationship:
+   - Parent job name
+   - Child job name(s) called (in order)
+   - Chain depth (how many levels of nesting)
+   - Execution mode (sequential, parallel, conditional)
+   - Estimated total execution time for the chain
+
+3. **Critical path analysis**: Identify the longest job chains and the jobs that are bottlenecks:
+   - Which job chain has the most steps?
+   - Which jobs take the longest to run (inferred from data volume, complexity, heavy transformations)?
+   - Which jobs are on the critical path for SLA delivery (e.g., must complete by 6 AM for morning reports)?
+
+4. **Bottleneck identification**: Identify jobs that are likely performance bottlenecks:
+   - Jobs with large data volumes (millions of rows)
+   - Jobs with heavy transformations (complex mapping logic, multiple lookup joins, aggregations, sorts)
+   - Jobs with external system dependencies (slow APIs, remote databases)
+   - Jobs that run serially when they could run in parallel
+
+5. **SLA recommendations**: For each job or job chain, recommend:
+   - Expected execution time (inferred from complexity and data volume)
+   - Recommended SLA window (e.g., "must complete within 2 hours")
+   - Monitoring points (where to check for failures or delays)
+   - Escalation triggers (when to alert if SLA is at risk)
+
+6. **Orchestration patterns**: Identify common patterns:
+   - RAW -> CLEAN -> PUBLISH pipeline
+   - Regional fan-out: Global job calls regional jobs in parallel
+   - Domain-specific pipelines: separate chains for Sales, Finance, HR, etc.
+   - Error recovery patterns: retry logic, fallback jobs, manual intervention triggers
+
+7. **Dependency diagram**: Generate a Mermaid diagram showing the full job dependency graph (parent -> child relationships).
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "job_schedules": [
+    {
+      "job_name": "GLOBAL_RAW_Orchestrator_0.1",
+      "estimated_frequency": "Nightly at 1:00 AM",
+      "frequency_evidence": "Job name contains 'Orchestrator', calls multiple regional RAW jobs, configuration variable 'RunDate' suggests daily execution",
+      "execution_type": "Scheduled (external scheduler)",
+      "is_parent": true,
+      "child_jobs": ["REGION_A_RAW_0.1", "REGION_B_RAW_0.1", "REGION_C_RAW_0.1"],
+      "chain_depth": 2,
+      "estimated_duration_minutes": 45,
+      "sla_window": "Must complete by 3:00 AM (2-hour window)",
+      "dependencies": ["Source systems must be available", "Network connectivity to all regions"],
+      "monitoring_points": ["Check each regional job completion", "Verify row counts match expected volumes"]
+    },
+    {
+      "job_name": "REGION_A_RAW_0.1",
+      "estimated_frequency": "Triggered by parent job (GLOBAL_RAW_Orchestrator_0.1)",
+      "frequency_evidence": "Called by parent via orchestration component",
+      "execution_type": "Orchestrated (called by parent)",
+      "is_parent": false,
+      "parent_jobs": ["GLOBAL_RAW_Orchestrator_0.1"],
+      "child_jobs": [],
+      "chain_depth": 1,
+      "estimated_duration_minutes": 12,
+      "sla_window": "Must complete within 15 minutes",
+      "data_volume": "500K rows",
+      "heavy_operations": ["Transform with 3 lookup joins", "Sort on 500K rows"],
+      "bottleneck_risk": "MEDIUM -- sort may be slow if data volume increases"
+    },
+    {
+      "job_name": "REGION_A_CLEAN_0.1",
+      "estimated_frequency": "Nightly at 3:00 AM (after RAW layer completes)",
+      "frequency_evidence": "Reads from tables written by REGION_A_RAW_0.1, no direct orchestration trigger visible -- likely scheduled independently but depends on RAW completion",
+      "execution_type": "Scheduled (external scheduler) with implicit dependency",
+      "is_parent": false,
+      "parent_jobs": [],
+      "child_jobs": [],
+      "estimated_duration_minutes": 20,
+      "sla_window": "Must complete by 4:00 AM",
+      "dependency_notes": "Implicitly depends on REGION_A_RAW_0.1 -- reads tables that RAW writes"
+    }
+  ],
+  "dependency_chains": [
+    {
+      "chain_id": "CHAIN-001",
+      "chain_name": "Global RAW Layer Orchestration",
+      "root_job": "GLOBAL_RAW_Orchestrator_0.1",
+      "jobs_in_chain": [
+        "GLOBAL_RAW_Orchestrator_0.1",
+        "REGION_A_RAW_0.1",
+        "REGION_B_RAW_0.1",
+        "REGION_C_RAW_0.1"
+      ],
+      "chain_depth": 2,
+      "execution_mode": "Parallel (regional jobs run concurrently)",
+      "estimated_total_duration_minutes": 45,
+      "critical_path": "GLOBAL_RAW_Orchestrator_0.1 -> REGION_C_RAW_0.1 (slowest regional job)",
+      "sla_impact": "If REGION_C_RAW_0.1 is delayed, entire CLEAN layer start time is delayed"
+    },
+    {
+      "chain_id": "CHAIN-002",
+      "chain_name": "Region A Full Pipeline",
+      "root_job": "REGION_A_RAW_0.1",
+      "jobs_in_chain": ["REGION_A_RAW_0.1", "REGION_A_CLEAN_0.1", "REGION_A_PUBLISH_0.1"],
+      "chain_depth": 3,
+      "execution_mode": "Sequential (each layer waits for previous layer)",
+      "estimated_total_duration_minutes": 50,
+      "critical_path": "REGION_A_RAW_0.1 -> REGION_A_CLEAN_0.1 -> REGION_A_PUBLISH_0.1",
+      "sla_impact": "PUBLISH layer must complete by 5:00 AM for morning dashboards"
+    }
+  ],
+  "critical_path": {
+    "longest_chain": "CHAIN-002 (Region A Full Pipeline) -- 50 minutes end-to-end",
+    "bottleneck_job": "REGION_A_CLEAN_0.1 -- 20 minutes, heavy transformation and aggregation operations",
+    "sla_risk": "MEDIUM -- if CLEAN layer is delayed by 10+ minutes, PUBLISH misses 5:00 AM SLA"
+  },
+  "bottleneck_jobs": [
+    {
+      "job_name": "REGION_C_RAW_0.1",
+      "bottleneck_reason": "Largest data volume (2M rows) + complex transformation with 5 lookup joins + sort operation",
+      "estimated_duration_minutes": 30,
+      "optimization_opportunities": [
+        "Replace in-memory sort with database-side ORDER BY (push sort to source query)",
+        "Optimize lookup join memory strategy for large reference tables",
+        "Increase batch size on database output to reduce write overhead",
+        "Consider partitioning data by time period to reduce per-run volume"
+      ],
+      "impact_if_delayed": "Delays entire CLEAN layer start time -- affects all downstream reports"
+    },
+    {
+      "job_name": "REGION_B_CLEAN_0.1",
+      "bottleneck_reason": "CPU-intensive aggregation with GROUP BY on 10 columns + multiple SUM/AVG calculations",
+      "estimated_duration_minutes": 18,
+      "optimization_opportunities": [
+        "Push aggregation to source database (use SQL GROUP BY instead of in-memory aggregation)",
+        "Pre-aggregate data in RAW layer to reduce CLEAN layer processing"
+      ]
+    }
+  ],
+  "parallel_execution_opportunities": [
+    {
+      "opportunity": "Regional RAW jobs can run in parallel",
+      "current_state": "Already implemented -- orchestrator calls regional jobs concurrently",
+      "time_saved": "Saves ~40 minutes vs serial execution"
+    },
+    {
+      "opportunity": "CLEAN layer jobs could run in parallel across regions",
+      "current_state": "Currently scheduled sequentially with gaps between regions",
+      "recommendation": "Schedule all regional CLEAN jobs to start simultaneously after RAW completes",
+      "time_saved": "Could save ~60 minutes"
+    }
+  ],
+  "dependency_diagram_mermaid": "graph TD\n  A[GLOBAL_RAW_Orchestrator] -->|parallel| B[REGION_A_RAW]\n  A -->|parallel| C[REGION_B_RAW]\n  A -->|parallel| D[REGION_C_RAW]\n  B --> E[REGION_A_CLEAN]\n  C --> F[REGION_B_CLEAN]\n  D --> G[REGION_C_CLEAN]\n  E --> H[REGION_A_PUBLISH]\n  F --> I[REGION_B_PUBLISH]\n  G --> J[REGION_C_PUBLISH]",
+  "sla_recommendations": [
+    {
+      "sla_id": "SLA-001",
+      "description": "RAW layer must complete by 3:00 AM",
+      "jobs_covered": ["GLOBAL_RAW_Orchestrator", "all regional RAW jobs"],
+      "sla_window_minutes": 120,
+      "monitoring": "Check orchestrator completion status at 2:45 AM -- if not complete, alert",
+      "escalation": "If RAW layer is not complete by 3:15 AM, escalate to on-call engineer"
+    },
+    {
+      "sla_id": "SLA-002",
+      "description": "PUBLISH layer must complete by 5:00 AM for morning dashboards",
+      "jobs_covered": ["all regional PUBLISH jobs"],
+      "sla_window_minutes": 240,
+      "monitoring": "Check PUBLISH job completion at 4:45 AM",
+      "escalation": "If any PUBLISH job is not complete by 5:00 AM, notify BI team (dashboards will be stale)"
+    }
+  ],
+  "summary": {
+    "total_jobs_analyzed": 120,
+    "orchestrator_jobs": 5,
+    "leaf_jobs": 90,
+    "longest_chain_depth": 4,
+    "total_estimated_execution_time_minutes": 180,
+    "parallel_execution_time_minutes": 60,
+    "time_saved_by_parallelization": 120,
+    "bottleneck_jobs_count": 3,
+    "sla_risk_level": "MEDIUM -- achievable with current architecture, but little buffer for delays"
+  }
+}
+```
+
+## Instructions
+
+- **Be thorough.** Scheduling and dependencies are critical for operational success. Infer as much as you can from job names, orchestration chains, and configuration variables.
+- If you cannot determine scheduling with certainty, state your assumptions and confidence level.
+- Critical path analysis is essential -- identify the single longest chain of dependent jobs and the bottleneck within it.
+- Parallel execution opportunities are high-value findings -- they can dramatically reduce total pipeline execution time.
+- SLA recommendations should be practical and include specific monitoring and escalation guidance.

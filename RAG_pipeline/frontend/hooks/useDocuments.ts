@@ -20,9 +20,16 @@ async function deleteDocument(id: number): Promise<void> {
   }
 }
 
-async function uploadDocument(file: File): Promise<IngestResponse> {
+async function uploadDocument({
+  file,
+  project_id,
+}: {
+  file: File;
+  project_id: string;
+}): Promise<IngestResponse> {
   const formData = new FormData();
   formData.append("file", file);
+  formData.append("project_id", project_id);
 
   const res = await fetch("/api/ingest", {
     method: "POST",

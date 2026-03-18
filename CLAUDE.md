@@ -29,7 +29,7 @@ intodata-kb/
 ├── .env.production.template           -- Production env vars
 ├── knowledge_base/                    -- intodoc code intelligence platform
 │   ├── CLAUDE.md                      -- Sub-project docs (read for KB tasks)
-│   ├── intodoc/                       -- Scanner CLI (Talend, MuleSoft, dbt)
+│   ├── intodoc/                       -- Scanner CLI (Talend, Workato, Generic)
 │   ├── mcp-server/                    -- MCP + REST API (port 8001)
 │   ├── dashboard/                     -- React control panel (port 5173/8001)
 │   ├── intodoc-output/                -- Scan cache (read-only JSON)
@@ -47,7 +47,7 @@ intodata-kb/
 
 Two independent sub-systems sharing infrastructure:
 
-**1. intodoc (knowledge_base/)**: Source Code -> Scanner CLI -> JSON Cache -> MCP Server -> Claude Code generates docs
+**1. intodoc (knowledge_base/)**: Source Code -> Scanner CLI (Talend/Workato/Generic) -> JSON Cache -> MCP Server -> Claude Code generates docs
 **2. RAG Pipeline (RAG_pipeline/)**: Documents -> Ingest -> Chunk -> Embed (Ollama) -> Qdrant -> Query -> LLM -> Answer
 
 ## Services (docker-compose.yml)

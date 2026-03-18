@@ -5,9 +5,9 @@ interface Props {
 }
 
 const statusColors: Record<string, string> = {
-  running: "bg-blue-100 text-blue-700",
-  completed: "bg-green-100 text-green-700",
-  failed: "bg-red-100 text-red-700",
+  running: "border-[#00D4FF]/40 text-[#00D4FF]",
+  completed: "border-emerald-500/40 text-emerald-400",
+  failed: "border-red-400/40 text-red-400",
 };
 
 function formatDuration(start: string, end: string | null): string {
@@ -38,12 +38,12 @@ export default function ScanHistory({ projectId }: Props) {
   const runs = data?.runs ?? [];
 
   return (
-    <div className="bg-white rounded-lg shadow border">
-      <div className="px-4 py-3 border-b bg-gray-50">
-        <h3 className="text-sm font-semibold text-gray-700">
+    <div className="card-dark">
+      <div className="px-4 py-3 border-b border-white/[0.05] bg-[#16161F] rounded-t">
+        <h3 className="text-sm font-mono text-slate-400">
           Scan History
           {runs.length > 0 && (
-            <span className="ml-2 text-xs font-normal text-gray-400">
+            <span className="ml-2 text-xs text-slate-600">
               ({runs.length} run{runs.length !== 1 ? "s" : ""})
             </span>
           )}
@@ -51,43 +51,43 @@ export default function ScanHistory({ projectId }: Props) {
       </div>
 
       {isLoading ? (
-        <div className="p-4 text-sm text-gray-400">Loading...</div>
+        <div className="p-6 text-sm text-slate-500">Loading...</div>
       ) : runs.length === 0 ? (
-        <div className="p-4 text-sm text-gray-400 italic">
+        <div className="p-6 text-sm text-slate-500 font-mono">
           No scan runs yet for this project.
         </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b bg-gray-50 text-left text-xs text-gray-500 uppercase">
-                <th className="px-4 py-2">Date</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Duration</th>
-                <th className="px-4 py-2">Jobs Found</th>
-                <th className="px-4 py-2">Triggered By</th>
+              <tr className="border-b border-white/[0.04] text-left font-mono text-xs text-slate-600 uppercase tracking-wider">
+                <th className="px-4 py-2.5 font-medium">Date</th>
+                <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-4 py-2.5 font-medium">Duration</th>
+                <th className="px-4 py-2.5 font-medium">Components Found</th>
+                <th className="px-4 py-2.5 font-medium">Triggered By</th>
               </tr>
             </thead>
             <tbody>
               {runs.map((run) => (
-                <tr key={run.id} className="border-b hover:bg-gray-50">
-                  <td className="px-4 py-2 whitespace-nowrap">
+                <tr key={run.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02]">
+                  <td className="px-4 py-2.5 whitespace-nowrap text-slate-400">
                     {formatDate(run.started_at)}
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-4 py-2.5">
                     <span
-                      className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
-                        statusColors[run.status] ?? "bg-gray-100 text-gray-600"
+                      className={`status-chip ${
+                        statusColors[run.status] ?? "border-slate-500/40 text-slate-500"
                       }`}
                     >
-                      {run.status}
+                      {run.status.toUpperCase()}
                     </span>
                   </td>
-                  <td className="px-4 py-2 whitespace-nowrap">
+                  <td className="px-4 py-2.5 whitespace-nowrap text-slate-400 font-mono">
                     {formatDuration(run.started_at, run.completed_at)}
                   </td>
-                  <td className="px-4 py-2">{run.job_count}</td>
-                  <td className="px-4 py-2 text-gray-500">{run.triggered_by}</td>
+                  <td className="px-4 py-2.5 text-slate-400 font-mono">{run.job_count}</td>
+                  <td className="px-4 py-2.5 text-slate-500">{run.triggered_by}</td>
                 </tr>
               ))}
             </tbody>

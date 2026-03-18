@@ -285,6 +285,7 @@ class TestConversationalRagIntentRouting:
             mock_settings.query_expansion_enabled = False
             mock_settings.reranker_enabled = False
             mock_settings.hybrid_search_enabled = False
+            mock_settings.system_knowledge_injection = False
             yield mock_settings
 
     @pytest.fixture
@@ -320,7 +321,12 @@ class TestConversationalRagIntentRouting:
 
     async def test_greeting_goes_through_search(self, mock_conversation, mock_qdrant, mock_db):
         """Greetings now go through search (returns 0 results) then to no-results LLM fallback."""
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="hello",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
@@ -374,6 +380,7 @@ class TestContextFirstFlow:
             mock_settings.query_expansion_enabled = False
             mock_settings.reranker_enabled = False
             mock_settings.hybrid_search_enabled = False
+            mock_settings.system_knowledge_injection = False
             yield mock_settings
 
     @pytest.fixture
@@ -427,7 +434,12 @@ class TestContextFirstFlow:
         self, mock_conversation_with_sources, mock_qdrant, mock_db
     ):
         """When previous sources exist and LLM answers well, search is NOT called."""
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="How many vacation days do I get?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
@@ -484,7 +496,12 @@ class TestContextFirstFlow:
         search_sources = [
             Source(document_id=1, filename="hr.pdf", chunk_index=0, score=0.9, text="HR content"),
         ]
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What is the HR policy?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):

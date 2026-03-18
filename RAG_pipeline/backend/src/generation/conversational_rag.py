@@ -12,17 +12,22 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, QueryUsage
-from src.generation.intent_classifier import Action, QueryType, analyze_query
+from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
-from src.generation.prompt_builder import build_no_results_messages
+from src.generation.prompt_builder import build_correction_extraction_messages, build_metadata_messages, build_no_results_messages
+from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
 from src.config import settings
 from src.memory.hindsight_client import (
+    ensure_corrections_bank,
     ensure_quality_bank,
     ensure_user_bank,
+    is_likely_correction,
+    recall_corrections,
     recall_quality_insights,
     recall_user_memory,
+    retain_correction,
     retain_interaction,
 )
 from src.retrieval.search import (
@@ -69,7 +74,11 @@ CONTEXT_FIRST_SYSTEM_PROMPT = (
 )
 
 
-def _build_memory_context(user_memories: list[str], quality_insights: list[str]) -> str | None:
+def _build_memory_context(
+    user_memories: list[str],
+    quality_insights: list[str],
+    corrections: list[str] | None = None,
+) -> str | None:
     """Format recalled memories as a system message section.
 
     Returns None if no memories are available.
@@ -79,6 +88,11 @@ def _build_memory_context(user_memories: list[str], quality_insights: list[str])
         parts.append("## What I remember about you")
         for mem in user_memories:
             parts.append(f"- {mem}")
+    if corrections:
+        parts.append("## Known corrections")
+        parts.append("These corrections come from users and override document content:")
+        for corr in corrections:
+            parts.append(f"- {corr}")
     if quality_insights:
         parts.append("## Quality insights")
         for insight in quality_insights:
@@ -272,6 +286,7 @@ async def _prepare_rag_context(
     user_id: str | None = None,
     precompute: bool = True,
     project_ids: list[str] | None = None,
+    db: AsyncSession | None = None,
 ) -> RAGContext:
     """Run intent routing, search, and context building.
 
@@ -285,24 +300,82 @@ async def _prepare_rag_context(
     # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
     user_memories: list[str] = []
     quality_insights: list[str] = []
+    corrections: list[str] = []
     if user_id:
         await ensure_user_bank(user_id)
         await ensure_quality_bank()
-        user_memories = await recall_user_memory(user_id, query)
-        quality_insights = await recall_quality_insights(query)
-    memory_context = _build_memory_context(user_memories, quality_insights)
+        await ensure_corrections_bank()
+        user_memories, quality_insights, corrections = await asyncio.gather(
+            recall_user_memory(user_id, query),
+            recall_quality_insights(query),
+            recall_corrections(query),
+        )
+    memory_context = _build_memory_context(user_memories, quality_insights, corrections)
     if memory_context:
-        logger.info("Injecting %d user memories + %d quality insights",
-                     len(user_memories), len(quality_insights))
+        logger.info("Injecting %d user memories + %d quality insights + %d corrections",
+                     len(user_memories), len(quality_insights), len(corrections))
 
     # 1. Route query via heuristics (no LLM call)
-    analysis = analyze_query(query)
+    analysis = await analyze_query_async(query)
     document_sources: list[DocumentSource] = []
+
+    # Fetch system knowledge for injection
+    system_knowledge: str | None = None
+    if db and settings.system_knowledge_injection:
+        try:
+            system_knowledge = await get_system_knowledge_summary(db, project_ids)
+        except Exception as e:
+            logger.warning("Conversational: Failed to fetch system knowledge: %s", e)
+
+    if analysis.action == Action.METADATA and db:
+        # Metadata query — answer from PostgreSQL
+        logger.info("Conversational metadata query: intent=%s, project=%s",
+                     analysis.metadata_intent, analysis.extracted_project)
+        metadata = await fetch_metadata(
+            db, analysis.metadata_intent, project_ids, analysis.extracted_project,
+            user_id=int(user_id) if user_id else None,
+        )
+
+        # For HYBRID: also run vector search
+        hybrid_sources: list[Source] = []
+        if analysis.metadata_intent == MetadataIntent.HYBRID:
+            hybrid_sources = await search_similar(
+                client=qdrant,
+                query=analysis.cleaned_query,
+                user_groups=user_groups,
+                top_k=top_k,
+                threshold=threshold,
+                project_ids=project_ids,
+            )
+
+        if hybrid_sources:
+            document_sources = merge_sources_by_document(hybrid_sources)
+            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+            messages = build_metadata_messages(
+                query, metadata.text,
+                sources=hybrid_sources, reference_numbers=ref_map,
+                memory_context=memory_context,
+            )
+        else:
+            messages = build_metadata_messages(
+                query, metadata.text, memory_context=memory_context,
+            )
+
+        if precompute:
+            answer = await generate_answer(messages)
+        else:
+            answer = None
+
+        return RAGContext(
+            llm_messages=messages,
+            document_sources=document_sources,
+            precomputed_answer=answer,
+        )
 
     if analysis.action == Action.RESPOND:
         # Chitchat — skip search, respond via unified no-results prompt
         history = truncate_history(existing_messages) if has_history else None
-        messages = build_no_results_messages(query, history=history, memory_context=memory_context)
+        messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge)
         if precompute:
             answer = await generate_answer(messages)
         else:
@@ -328,7 +401,7 @@ async def _prepare_rag_context(
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
             history = truncate_history(existing_messages) if has_history else None
-            messages = build_no_results_messages(query, history=history, memory_context=memory_context)
+            messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge)
             if precompute:
                 answer = await generate_answer(messages)
             else:
@@ -439,7 +512,7 @@ async def _prepare_rag_context(
         else:
             # No results — let LLM respond helpfully
             history = truncate_history(existing_messages) if has_history else None
-            llm_messages = build_no_results_messages(query, history=history, memory_context=memory_context)
+            llm_messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge)
             if precompute:
                 answer = await generate_answer(llm_messages)
             else:
@@ -449,6 +522,44 @@ async def _prepare_rag_context(
                 document_sources=[],
                 precomputed_answer=answer,
             )
+
+
+async def _detect_and_store_correction(
+    query: str,
+    answer: str,
+    existing_messages: list[ConversationMessage],
+    user_id: str,
+    conversation_id: int | str | None,
+) -> None:
+    """Check if the user is correcting the assistant and store the correction.
+
+    Runs a heuristic check first (cheap). If triggered, calls the LLM to extract
+    a structured correction, then stores it in the shared corrections bank.
+    This is fire-and-forget — failures are logged but never block the response.
+    """
+    # Find the most recent assistant message
+    prev_assistant_msg: str | None = None
+    for msg in reversed(existing_messages):
+        if msg.role == "assistant":
+            prev_assistant_msg = msg.content
+            break
+
+    if not is_likely_correction(query, prev_assistant_msg is not None):
+        return
+
+    logger.info("Correction heuristic triggered for user %s — extracting correction", user_id)
+    try:
+        messages = build_correction_extraction_messages(query, prev_assistant_msg or "")
+        correction_text = await generate_answer(messages)
+        await retain_correction(
+            query=query,
+            original_answer=prev_assistant_msg or "",
+            correction_text=correction_text.strip(),
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+    except Exception as e:
+        logger.warning("Correction extraction/storage failed [%s]: %s", type(e).__name__, e)
 
 
 async def run_conversational_rag(
@@ -476,7 +587,7 @@ async def run_conversational_rag(
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id, project_ids=project_ids,
+        user_id=user_id, project_ids=project_ids, db=db,
     )
 
     if ctx.precomputed_answer is not None:
@@ -552,6 +663,14 @@ async def run_conversational_rag(
             latency_ms=latency_ms,
             intent="qa",
         ))
+        # Detect and store corrections (fire-and-forget)
+        asyncio.create_task(_detect_and_store_correction(
+            query=query,
+            answer=answer,
+            existing_messages=existing_messages,
+            user_id=user_id,
+            conversation_id=conversation.id,
+        ))
 
     logger.info(
         f"Conversational RAG completed in {latency_ms}ms, "
@@ -608,7 +727,7 @@ async def run_conversational_rag_stream(
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id, precompute=False, project_ids=project_ids,
+        user_id=user_id, precompute=False, project_ids=project_ids, db=db,
     )
 
     import json
@@ -691,6 +810,14 @@ async def run_conversational_rag_stream(
             search_result_count=len(ctx.document_sources),
             latency_ms=latency_ms,
             intent="qa",
+        ))
+        # Detect and store corrections (fire-and-forget)
+        asyncio.create_task(_detect_and_store_correction(
+            query=query,
+            answer=accumulated,
+            existing_messages=prior_messages,
+            user_id=user_id,
+            conversation_id=conversation.id,
         ))
 
     logger.info(

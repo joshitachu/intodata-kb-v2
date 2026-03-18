@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import AddRepoDialog from "./components/AddRepoDialog";
 import DocPreview from "./components/DocPreview";
+import KpiBar from "./components/KpiBar";
 import LogPanel from "./components/LogPanel";
 import ProjectList from "./components/ProjectList";
 import ProjectSettings from "./components/ProjectSettings";
@@ -9,7 +10,8 @@ import RunHistory from "./components/RunHistory";
 import ScanHistory from "./components/ScanHistory";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
-import { useAuth } from "./hooks/useAuth";
+import { useAuth, getLoginUrl } from "./hooks/useAuth";
+import type { AuthUser } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
 export default function App() {
@@ -17,27 +19,22 @@ export default function App() {
 
   if (auth.loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-gray-500">Verifying authentication...</p>
+      <div className="min-h-screen bg-[#0A0A0F] flex items-center justify-center">
+        <p className="text-slate-500 text-sm font-mono">Verifying...</p>
       </div>
     );
   }
 
   if (!auth.authenticated) {
-    return null; // Redirecting to login
+    return null;
   }
 
-  const canManageProjects =
-    auth.user?.is_superadmin ||
-    auth.user?.permissions?.includes("manage_projects") ||
-    false;
-
-  return <AppContent canManageProjects={canManageProjects} />;
+  return <AppContent isAuthenticated={auth.authenticated} user={auth.user} />;
 }
 
 type DetailTab = "generate" | "scans" | "docs" | "settings";
 
-function AppContent({ canManageProjects }: { canManageProjects: boolean }) {
+function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user: AuthUser | null }) {
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [activeProject, setActiveProject] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(true);
@@ -48,8 +45,13 @@ function AppContent({ canManageProjects }: { canManageProjects: boolean }) {
   const queryClient = useQueryClient();
 
   const activeProjectObj = projectsData?.projects.find((p) => p.id === activeProject) ?? null;
+  const projects = projectsData?.projects ?? [];
 
-  // When generation completes, switch to the historical log file and refresh queries
+  async function handleLogout() {
+    await fetch("/auth/logout", { method: "POST", credentials: "include" });
+    window.location.href = getLoginUrl();
+  }
+
   useEffect(() => {
     if (!done || !activeProject) return;
     if (logFile) {
@@ -77,27 +79,51 @@ function AppContent({ canManageProjects }: { canManageProjects: boolean }) {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-[#0A0A0F]">
       {/* Header */}
-      <header className="bg-white border-b px-6 py-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gray-800">intodoc Control Panel</h1>
-        {canManageProjects && (
-          <button
-            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
-            onClick={() => setShowAddRepo(true)}
-          >
-            Add Repo
-          </button>
-        )}
+      <header className="sticky top-0 z-30 bg-[#0A0A0F]/80 backdrop-blur-md border-b border-white/[0.06]">
+        <div className="max-w-7xl mx-auto px-6 py-3.5 flex items-center justify-between">
+          <h1 className="text-lg font-semibold tracking-tight text-slate-100">
+            intodoc
+          </h1>
+          <div className="flex items-center gap-3">
+            {user && (
+              <span className="text-sm text-slate-500">
+                {user.username}
+                {user.is_superadmin && (
+                  <span className="ml-1.5 px-1.5 py-0.5 text-xs border border-amber-500/40 text-amber-400 rounded-sm font-medium">
+                    admin
+                  </span>
+                )}
+              </span>
+            )}
+            {isAuthenticated && (
+              <button
+                className="btn-ghost-cyan"
+                onClick={() => setShowAddRepo(true)}
+              >
+                Add Repo
+              </button>
+            )}
+            <button
+              className="px-3 py-1.5 text-sm text-slate-500 hover:text-slate-300 border border-white/[0.1] rounded hover:border-white/[0.2] transition-all"
+              onClick={handleLogout}
+            >
+              Logout
+            </button>
+          </div>
+        </div>
       </header>
 
-      {/* Project table */}
-      <main className="flex-1 p-6 space-y-4">
-        <div className="bg-white rounded-lg shadow border">
+      {/* Main content */}
+      <main className="flex-1 py-6">
+        <div className="max-w-7xl mx-auto px-6 space-y-6">
+          <KpiBar projects={projects} />
+
           <ProjectList
             onAction={(id) => setActiveProject(id)}
             activeProject={activeProject}
-            canManageProjects={canManageProjects}
+            canManageProjects={isAuthenticated}
             onSelect={(id) => {
               setActiveProject(id);
               setSelectedLogFile(null);
@@ -105,54 +131,46 @@ function AppContent({ canManageProjects }: { canManageProjects: boolean }) {
               setDetailTab("generate");
             }}
           />
-        </div>
 
-        {/* Detail panels (tabbed) */}
-        {activeProject && (
-          <div>
-            <div className="flex items-center gap-1 mb-3 border-b">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                    detailTab === tab.key
-                      ? "border-blue-600 text-blue-600"
-                      : "border-transparent text-gray-500 hover:text-gray-700"
-                  }`}
-                  onClick={() => setDetailTab(tab.key)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-              <span className="ml-auto text-xs text-gray-400 pb-2">{activeProject}</span>
+          {/* Detail panels (tabbed) */}
+          {activeProject && (
+            <div>
+              <div className="flex items-center gap-1 mb-3 border-b border-white/[0.06]">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    className={`tab-btn ${
+                      detailTab === tab.key ? "tab-btn-active" : "tab-btn-inactive"
+                    }`}
+                    onClick={() => setDetailTab(tab.key)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+                <span className="ml-auto text-xs text-slate-600 pb-2 font-mono">{activeProject}</span>
+              </div>
+
+              {detailTab === "generate" && (
+                <RunHistory projectId={activeProject} onViewLog={handleViewLog} />
+              )}
+              {detailTab === "scans" && <ScanHistory projectId={activeProject} />}
+              {detailTab === "docs" && <DocPreview projectId={activeProject} />}
+              {detailTab === "settings" && <ProjectSettings project={activeProjectObj} />}
             </div>
-
-            {detailTab === "generate" && (
-              <RunHistory projectId={activeProject} onViewLog={handleViewLog} />
-            )}
-            {detailTab === "scans" && (
-              <ScanHistory projectId={activeProject} />
-            )}
-            {detailTab === "docs" && (
-              <DocPreview projectId={activeProject} />
-            )}
-            {detailTab === "settings" && (
-              <ProjectSettings project={activeProjectObj} />
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </main>
 
       {/* Log panel */}
-      <div className="px-6 pb-6">
+      <div className="max-w-7xl mx-auto w-full px-6 pb-6">
         <div className="flex items-center justify-between mb-2">
           <button
-            className="text-sm text-gray-500 hover:text-gray-700"
+            className="text-xs font-mono uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors"
             onClick={() => setLogOpen(!logOpen)}
           >
-            {logOpen ? "Hide Logs" : "Show Logs"}
+            [ {logOpen ? "hide logs" : "show logs"} ]
             {activeProject && (
-              <span className="ml-2 text-xs text-gray-400">({activeProject})</span>
+              <span className="ml-2 text-slate-600">({activeProject})</span>
             )}
           </button>
         </div>

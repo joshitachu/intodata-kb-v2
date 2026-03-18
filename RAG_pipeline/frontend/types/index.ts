@@ -47,6 +47,7 @@ export const DocumentResponseSchema = z.object({
   source: z.string().nullable(),
   author: z.string().nullable(),
   department: z.string().nullable(),
+  project_id: z.string().nullable(),
   chunk_count: z.number(),
   created_at: z.string(),
 });

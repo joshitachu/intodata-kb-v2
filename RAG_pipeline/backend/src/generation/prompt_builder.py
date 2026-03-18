@@ -30,6 +30,15 @@ SYSTEM_PROMPT = (
     "company documentation."
 )
 
+METADATA_SYSTEM_PROMPT = (
+    "You are a helpful knowledge-base assistant for a company. "
+    "You have access to structured system data (projects, documents, statistics) "
+    "and optionally retrieved document content.\n\n"
+    "Answer using the provided system data. If document content is also provided, "
+    "incorporate it. Use markdown: tables for listings, bullet lists, bold for emphasis.\n"
+    "Do NOT make up information beyond what is provided."
+)
+
 NO_RESULTS_PROMPT = (
     "You are a friendly, conversational knowledge-base assistant for a company. "
     "No relevant documents were found for the user's message.\n\n"
@@ -45,15 +54,50 @@ NO_RESULTS_PROMPT = (
 )
 
 
+CORRECTION_EXTRACTION_PROMPT = (
+    "The user corrected the assistant's previous answer. "
+    "Extract a concise correction statement.\n\n"
+    "Previous assistant answer:\n{previous_answer}\n\n"
+    "User's correction:\n{user_message}\n\n"
+    "Respond with ONLY a single concise sentence describing the correct information. "
+    "Format: '<topic> is/has/does <correct info>, not <wrong info>'. "
+    "Do not include any other text."
+)
+
+
+def build_correction_extraction_messages(
+    user_message: str,
+    previous_answer: str,
+) -> list[dict[str, str]]:
+    """Build messages for extracting a structured correction from user input."""
+    return [
+        {
+            "role": "system",
+            "content": "You extract factual corrections from conversations. "
+            "Respond with only the correction statement, nothing else.",
+        },
+        {
+            "role": "user",
+            "content": CORRECTION_EXTRACTION_PROMPT.format(
+                previous_answer=previous_answer[:500],
+                user_message=user_message,
+            ),
+        },
+    ]
+
+
 def build_messages(
     query: str,
     sources: list[Source],
     reference_numbers: dict[int, int] | None = None,
     memory_context: str | None = None,
+    system_knowledge: str | None = None,
 ) -> list[dict[str, str]]:
-    """Build the chat messages list: system prompt + memory context + context + user query."""
+    """Build the chat messages list: system prompt + knowledge + memory context + context + user query."""
     context = _build_context(sources, reference_numbers=reference_numbers)
     messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if system_knowledge:
+        messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
     if memory_context:
         messages.append({"role": "system", "content": memory_context})
     messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"})
@@ -119,9 +163,13 @@ def build_no_results_messages(
     query: str,
     history: list[dict[str, str]] | None = None,
     memory_context: str | None = None,
+    system_knowledge: str | None = None,
 ) -> list[dict[str, str]]:
     """Build LLM messages for when search returns no results."""
     messages: list[dict[str, str]] = [{"role": "system", "content": NO_RESULTS_PROMPT}]
+
+    if system_knowledge:
+        messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
 
     if memory_context:
         messages.append({"role": "system", "content": memory_context})
@@ -130,4 +178,34 @@ def build_no_results_messages(
         messages.extend(history)
 
     messages.append({"role": "user", "content": query})
+    return messages
+
+
+def build_metadata_messages(
+    query: str,
+    metadata_context: str,
+    sources: list[Source] | None = None,
+    reference_numbers: dict[int, int] | None = None,
+    memory_context: str | None = None,
+) -> list[dict[str, str]]:
+    """Build LLM messages for metadata queries (projects, documents, stats).
+
+    Always includes metadata_context. Optionally includes vector search sources
+    for hybrid queries that need both structured data and document content.
+    """
+    messages: list[dict[str, str]] = [{"role": "system", "content": METADATA_SYSTEM_PROMPT}]
+
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
+
+    # Build user content with metadata + optional document context
+    parts = [f"System data:\n{metadata_context}"]
+
+    if sources:
+        doc_context = _build_context(sources, reference_numbers=reference_numbers)
+        parts.append(f"\nRetrieved document content:\n{doc_context}")
+
+    parts.append(f"\nQuestion: {query}")
+    messages.append({"role": "user", "content": "\n".join(parts)})
+
     return messages

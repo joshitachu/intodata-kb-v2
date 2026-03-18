@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import re
 import shutil
 import zipfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
@@ -18,6 +21,7 @@ from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.schemas import (
     AddRepoRequest,
+    AssessmentGenerateResponse,
     DeepDiveProject,
     DeepDiveProjectsResponse,
     DeepDiveRequest,
@@ -71,7 +75,7 @@ def _project_to_response(p) -> ProjectResponse:
 
 
 @router.post("/add-repo", response_model=ProjectResponse)
-async def add_repo(req: AddRepoRequest):
+async def add_repo(req: AddRepoRequest, request: Request):
     """Register a project (URL, local path, or 'zip')."""
     url = req.url
     path = Path(url)
@@ -115,12 +119,28 @@ async def add_repo(req: AddRepoRequest):
             platform=req.platform,
             source_type=source_type,
         )
+
+        # Auto-assign creator to the new project so they can see it
+        auth_payload = getattr(request.state, "auth_payload", None)
+        if auth_payload:
+            user_id = int(auth_payload.get("sub", 0))
+            if user_id:
+                await db.execute(
+                    text(
+                        "INSERT INTO project_assignments (user_id, project_id, assigned_at, created_at, updated_at) "
+                        "VALUES (:uid, :pid, NOW(), NOW(), NOW()) "
+                        "ON CONFLICT (user_id, project_id) DO NOTHING"
+                    ),
+                    {"uid": user_id, "pid": req.project_id},
+                )
+
         await db.commit()
         return _project_to_response(project)
 
 
 @router.post("/upload-zip", response_model=ProjectResponse)
 async def upload_zip(
+    request: Request,
     file: UploadFile = File(...),
     project_id: str = Form(...),
     platform: str = Form("talend"),
@@ -157,6 +177,21 @@ async def upload_zip(
             platform=platform,
             source_type="zip",
         )
+
+        # Auto-assign creator so they can see the project immediately
+        auth_payload = getattr(request.state, "auth_payload", None)
+        if auth_payload:
+            user_id = int(auth_payload.get("sub", 0))
+            if user_id:
+                await db.execute(
+                    text(
+                        "INSERT INTO project_assignments (user_id, project_id, assigned_at, created_at, updated_at) "
+                        "VALUES (:uid, :pid, NOW(), NOW(), NOW()) "
+                        "ON CONFLICT (user_id, project_id) DO NOTHING"
+                    ),
+                    {"uid": user_id, "pid": project_id},
+                )
+
         await db.commit()
         return _project_to_response(project)
 
@@ -306,6 +341,19 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
                 )
             except Exception as e:
                 logger.warning("Failed to post doc_generation usage: %s", e)
+
+            # Generate assessment HTML from the new docs
+            try:
+                from mcp_server.services.assessment_service import AssessmentService
+
+                svc = AssessmentService()
+                await svc.generate(project_id)
+            except Exception as e:
+                await log_mgr.emit(
+                    project_id,
+                    f"Assessment generation failed: {e}",
+                    level="warning",
+                )
         else:
             # Generation "succeeded" but produced no docs — clean staging
             if staging_dir.exists():
@@ -766,6 +814,51 @@ async def generate_pdfs(project_id: str):
         converted=result["converted"],
         failed=result["failed"],
         errors=result["errors"],
+    )
+
+
+# --- Assessment ---
+
+
+@router.post(
+    "/projects/{project_id}/generate-assessment",
+    response_model=AssessmentGenerateResponse,
+)
+async def generate_assessment(project_id: str):
+    """Generate a self-contained HTML assessment page from project docs."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    from mcp_server.services.assessment_service import AssessmentService
+
+    svc = AssessmentService()
+    result = await svc.generate(project_id)
+
+    return AssessmentGenerateResponse(**result)
+
+
+@router.get("/projects/{project_id}/assessment")
+async def get_assessment(project_id: str):
+    """Serve the generated assessment HTML page."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    html_path = config.project_root / "output" / project_id / "assessment" / "index.html"
+    if not html_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Assessment not generated yet. Call POST /generate-assessment first.",
+        )
+
+    return FileResponse(
+        path=str(html_path),
+        media_type="text/html",
     )
 
 

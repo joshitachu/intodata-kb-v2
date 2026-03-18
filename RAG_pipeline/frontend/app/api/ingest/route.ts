@@ -14,14 +14,20 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file");
+    const projectId = formData.get("project_id");
 
     if (!file || !(file instanceof Blob)) {
       return NextResponse.json({ error: "File is required" }, { status: 400 });
     }
 
+    if (!projectId || typeof projectId !== "string") {
+      return NextResponse.json({ error: "Project is required" }, { status: 400 });
+    }
+
     // Forward the FormData to FastAPI
     const upstreamForm = new FormData();
     upstreamForm.append("file", file);
+    upstreamForm.append("project_id", projectId);
 
     const data = await fastapiUpload("/api/v1/ingest", upstreamForm);
 

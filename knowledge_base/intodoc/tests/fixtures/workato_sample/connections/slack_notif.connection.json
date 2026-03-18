@@ -1,0 +1,7 @@
+{
+  "id": 103,
+  "name": "slack_notif",
+  "provider": "slack",
+  "application": "slack",
+  "authorization_type": "oauth2"
+}

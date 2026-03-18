@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
+
+
+class RedactionLevel(str, Enum):
+    """How aggressively to redact sensitive data before LLM exposure."""
+
+    STANDARD = "standard"  # Passwords + IPs + FQDNs + URLs + emails + usernames
+    STRICT = "strict"      # Standard + file paths + database/schema names + cloud IDs
+    PARANOID = "paranoid"  # Redact ALL context variable values
 
 
 class IntodocConfig(BaseSettings):
@@ -43,3 +52,8 @@ class IntodocConfig(BaseSettings):
     verbose: bool = Field(default=False, description="Enable verbose logging")
     skip_git: bool = Field(default=False, description="Skip git history analysis")
     passes: list[int] = Field(default_factory=lambda: list(range(1, 22)), description="Which passes to run (1-21)")
+
+    # Redaction
+    redaction_level: RedactionLevel = Field(default=RedactionLevel.STANDARD, description="Redaction aggressiveness: standard, strict, paranoid")
+    redaction_config: Path | None = Field(default=None, description="Path to .intodoc-redact.yaml with custom redaction rules")
+    redaction_audit: bool = Field(default=True, description="Write redaction_report.json to output dir")

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.ingestion.pipeline import _replace_existing_document, ingest_document
+from src.ingestion.pipeline import _replace_existing_document, _scoped_filename, ingest_document
 
 
 @pytest.fixture
@@ -92,6 +92,17 @@ async def test_ingest_document_failure(mock_db, mock_qdrant):
             db=mock_db,
             qdrant=mock_qdrant,
         )
+
+
+class TestScopedFilename:
+    def test_with_project_id(self) -> None:
+        assert _scoped_filename("file.md", "proj") == "proj/file.md"
+
+    def test_none_project_id(self) -> None:
+        assert _scoped_filename("file.md", None) == "file.md"
+
+    def test_empty_project_id(self) -> None:
+        assert _scoped_filename("file.md", "") == "file.md"
 
 
 class TestReplaceExistingDocument:

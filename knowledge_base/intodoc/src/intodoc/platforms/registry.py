@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 # Map of platform name → module path + class name
 _PLATFORM_MAP: dict[str, tuple[str, str]] = {
     "talend": ("intodoc.platforms.talend", "TalendPlugin"),
+    "generic": ("intodoc.platforms.generic", "GenericPlugin"),
+    "workato": ("intodoc.platforms.workato", "WorkatoPlugin"),
 }
 
 

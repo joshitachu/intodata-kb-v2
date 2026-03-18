@@ -1,0 +1,151 @@
+You are analyzing an integration project built on a data integration platform. Your task is to produce a **Data Flow Analysis** -- a complete mapping of every data input, transformation, and output for each job in this chunk, with human-readable explanations of all transformation logic.
+
+## Integration Platform Context
+In integration platforms, data flows through components via typed connections:
+- **Source components** (database readers, file readers, API clients, cloud storage readers, etc.) read data from external systems. They may contain SQL queries, file paths, or API endpoints. The schema defines the columns and data types being read.
+- **Transformation components**: The primary mechanism for data manipulation. These include:
+  - **Mapping/transformation steps**: Accept one or more incoming data flows (main input plus lookup tables), produce one or more outgoing data flows, and contain column-level expressions that transform, filter, combine, or derive values.
+  - **Filter expressions**: Row-level conditions that determine which rows pass through to an output.
+  - **Join/lookup conditions**: For lookup inputs, the join key expressions and join model (inner join, left outer join, first match, all matches).
+  - **Reject handling**: Rows that fail a join or filter can be routed to a reject output.
+- **Custom code components**: Inline code (Java, Python, SQL, etc.) that transforms data row-by-row or in bulk.
+- **Aggregation components**: Group and aggregate data (SUM, COUNT, AVG, etc.).
+- **Filter components**: Filter rows based on conditions.
+- **Sort components**: Sort data by specified columns.
+- **Structural transformation components**: Union, denormalize, normalize, pivot, unpivot operations.
+- **Sink components** (database writers, file writers, cloud storage writers, etc.) write data to external systems. They specify write mode: INSERT, UPDATE, UPSERT, DELETE, BULK INSERT, TRUNCATE AND INSERT.
+- **Schema propagation**: Each connection carries a schema (column name, type, length, nullable). Schemas can be defined inline or referenced from shared repository metadata.
+
+## What to Extract
+For each job in this chunk:
+
+1. **DataInputs**: For every source component, identify:
+   - Source system name and type (MSSQL, PostgreSQL, BigQuery, file, API, etc.)
+   - Database/schema/table or view name, or file path, or API endpoint
+   - The SQL query if present (include the full query text)
+   - Schema: list all columns with their data types
+   - Any filtering in the query (WHERE clauses)
+   - Connection/configuration variable references used for the connection
+
+2. **Transformations**: For every transformation component:
+   - List every output column and its expression
+   - **CRITICAL**: For each expression, provide a HUMAN-READABLE explanation of what it does. Do not just repeat the expression -- translate it to plain English. Examples:
+     - `TRIM(input.CustomerName)` -> "Removes leading and trailing whitespace from the customer name"
+     - `input.Amount != null ? input.Amount : 0` -> "Uses the amount value if present, otherwise defaults to zero"
+     - `FORMAT_DATE("yyyy-MM-dd", input.CreatedDate)` -> "Formats the creation date as YYYY-MM-DD string"
+     - `input.Status == "A" ? "Active" : "Inactive"` -> "Converts status code 'A' to 'Active', all other codes to 'Inactive'"
+   - Identify lookup joins: which tables are joined, on what keys, join type, and what happens to non-matching rows
+   - Identify filter expressions and what rows they exclude
+   - Identify any data type conversions happening
+
+3. **DataOutputs**: For every sink component, identify:
+   - Target system name and type
+   - Database/schema/table name, or file path
+   - Write mode (INSERT, UPDATE, UPSERT, DELETE, BULK, TRUNCATE AND INSERT)
+   - Which columns are written and their mapping from upstream
+   - Any key columns for updates or upserts
+
+4. **Data lineage**: For key columns, trace the path from source to target through all transformations.
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "jobs": [
+    {
+      "job_name": "REGION_DOMAIN_RAW_0.1",
+      "location": "region/domain/job_name.item",
+      "data_inputs": [
+        {
+          "component": "DatabaseInput_1",
+          "source_system": "REGION_DOMAIN_DB",
+          "source_type": "MSSQL",
+          "database": "SalesDB",
+          "table_or_view": "dbo.VW_SalesOrders",
+          "query": "SELECT OrderID, CustomerID, Amount, Status FROM dbo.VW_SalesOrders WHERE Status = 'A'",
+          "schema": [
+            {"column": "OrderID", "type": "Integer", "nullable": false},
+            {"column": "CustomerID", "type": "String", "length": 50, "nullable": true},
+            {"column": "Amount", "type": "BigDecimal", "nullable": true},
+            {"column": "Status", "type": "String", "length": 1, "nullable": false}
+          ],
+          "filters_in_query": "Only active orders (Status = 'A')",
+          "connection_variables": ["context.DB_Host", "context.DB_Name"]
+        }
+      ],
+      "transformations": [
+        {
+          "component": "Transform_1",
+          "component_type": "Mapper",
+          "input_tables": ["row1 (from DatabaseInput_1)", "row2 (lookup from DatabaseInput_2)"],
+          "lookup_joins": [
+            {
+              "lookup_table": "row2",
+              "join_keys": "row1.CustomerID == row2.CustID",
+              "join_type": "LEFT_OUTER",
+              "match_model": "FIRST_MATCH",
+              "reject_handling": "Unmatched rows routed to reject output for logging"
+            }
+          ],
+          "output_columns": [
+            {
+              "output_table": "out1",
+              "column": "order_id",
+              "expression": "row1.OrderID",
+              "explanation": "Passes through the order ID unchanged from the source"
+            },
+            {
+              "output_table": "out1",
+              "column": "customer_name",
+              "expression": "TRIM(row2.CustomerName)",
+              "explanation": "Takes the customer name from the lookup table and removes leading/trailing whitespace"
+            },
+            {
+              "output_table": "out1",
+              "column": "amount_clean",
+              "expression": "row1.Amount != null ? row1.Amount : 0",
+              "explanation": "Uses the order amount if available, defaults to zero for null amounts"
+            }
+          ],
+          "filter_expressions": [
+            {
+              "output_table": "out1",
+              "expression": "row1.Amount > 0",
+              "explanation": "Excludes orders with zero or negative amounts"
+            }
+          ]
+        }
+      ],
+      "data_outputs": [
+        {
+          "component": "DatabaseOutput_1",
+          "target_system": "TargetWarehouse",
+          "target_type": "BigQuery",
+          "dataset": "raw_region_domain",
+          "table": "sales_orders",
+          "write_mode": "TRUNCATE_AND_INSERT",
+          "key_columns": [],
+          "columns_written": ["order_id", "customer_name", "amount_clean"]
+        }
+      ],
+      "data_lineage_summary": "Source DB VW_SalesOrders -> Transform (join with Customers, clean amounts, trim names) -> Target raw_region_domain.sales_orders"
+    }
+  ],
+  "cross_job_data_flows": [
+    {
+      "source_job": "REGION_DOMAIN_RAW_0.1",
+      "target_job": "REGION_DOMAIN_CLEAN_0.1",
+      "shared_table": "raw_region_domain.sales_orders",
+      "description": "RAW job writes to target table that CLEAN job reads from"
+    }
+  ]
+}
+```
+
+## Instructions
+
+- **Be thorough.** Every transformation expression must have a human-readable explanation. Do not skip lookup joins or filter expressions.
+- If a SQL query is long, include it in full -- do not truncate.
+- For cross-job data flows, identify cases where one job writes to a table that another job reads from. These implicit dependencies are critical for understanding the overall data pipeline.
+- Pay special attention to data type conversions that might cause data loss (e.g., decimal to integer, string to date with format assumptions).
+- Document reject handling for every join -- unconnected reject flows mean silently dropped rows.

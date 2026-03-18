@@ -22,6 +22,13 @@ from src.retrieval.vector_store import delete_document_points, ensure_collection
 logger = logging.getLogger(__name__)
 
 
+def _scoped_filename(filename: str, project_id: str | None) -> str:
+    """Prefix filename with project_id so dedup is project-scoped."""
+    if project_id:
+        return f"{project_id}/{filename}"
+    return filename
+
+
 async def _replace_existing_document(
     filename: str,
     db: AsyncSession,
@@ -60,6 +67,7 @@ async def ingest_document(
     uploaded_by: int | None,
     db: AsyncSession,
     qdrant: AsyncQdrantClient,
+    project_id: str | None = None,
 ) -> tuple[Document, IngestionJob]:
     """Full ingestion pipeline: parse → metadata → chunk → embed → store.
 
@@ -68,6 +76,7 @@ async def ingest_document(
 
     Returns the created Document and IngestionJob records.
     """
+    filename = _scoped_filename(filename, project_id)
     ext = Path(filename).suffix.lower().lstrip(".")
 
     # 0. Replace existing document if same filename exists
@@ -81,6 +90,7 @@ async def ingest_document(
         author=meta.get("author"),
         department=meta.get("department"),
         uploaded_by=uploaded_by,
+        project_id=project_id,
     )
     db.add(doc)
     await db.flush()  # get doc.id
@@ -157,6 +167,8 @@ async def ingest_text(
     Used by the MCP server's /ingest/md endpoint to push generated docs into RAG.
     Idempotent: replaces existing document with same filename.
     """
+    filename = _scoped_filename(filename, project_id)
+
     # 0. Replace existing document if same filename exists
     await _replace_existing_document(filename, db, qdrant)
 
@@ -167,6 +179,7 @@ async def ingest_text(
         source=source or None,
         author=metadata.get("author"),
         department=metadata.get("department"),
+        project_id=project_id or None,
     )
     db.add(doc)
     await db.flush()
@@ -196,8 +209,8 @@ async def ingest_text(
 
         # 5. Store in Qdrant
         await ensure_collection(qdrant)
-        # Use project_id-based groups so all MCP-ingested docs are accessible
-        allowed_groups = ["public", project_id] if project_id else ["public"]
+        # Tag with project_id only — no "public" catch-all
+        allowed_groups = [project_id] if project_id else []
         await upsert_chunks(
             client=qdrant,
             embeddings=embeddings,

@@ -1,0 +1,10 @@
+{
+  "assets": [
+    {"type": "recipe", "path": "recipes/sync_leads.recipe.json"},
+    {"type": "connection", "path": "connections/salesforce.connection.json"},
+    {"type": "connection", "path": "connections/hubspot.connection.json"},
+    {"type": "connection", "path": "connections/slack.connection.json"},
+    {"type": "lookup_table", "path": "lookup_tables/country_codes.lookup_table.json"},
+    {"type": "recipe_function", "path": "recipe_functions/format_date.recipe_function.json"}
+  ]
+}

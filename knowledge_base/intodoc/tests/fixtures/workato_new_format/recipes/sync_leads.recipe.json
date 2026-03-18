@@ -1,0 +1,142 @@
+{
+  "recipe": {
+    "id": 50001,
+    "name": "Sync Leads to HubSpot",
+    "description": "Syncs new Salesforce leads to HubSpot with country lookup",
+    "version_no": 5,
+    "running": true,
+    "trigger_application": "salesforce",
+    "action_applications": ["hubspot", "slack"],
+    "trigger": {
+      "provider": "salesforce",
+      "name": "new_lead",
+      "title": "New Salesforce Lead",
+      "connection_id": 201,
+      "input": {
+        "sobject": "Lead",
+        "since": "2025-01-01T00:00:00Z"
+      }
+    },
+    "steps": [
+      {
+        "type": "action",
+        "provider": "hubspot",
+        "name": "create_contact",
+        "label": "Create HubSpot Contact",
+        "connection_id": 202,
+        "input": {
+          "email": "{{trigger.Email}}",
+          "firstname": "{{trigger.FirstName}}",
+          "lastname": "{{trigger.LastName}}",
+          "company": "{{trigger.Company}}"
+        }
+      },
+      {
+        "type": "if",
+        "condition": {
+          "field": "{{trigger.Country}}",
+          "operator": "is_present"
+        },
+        "steps_on_true": [
+          {
+            "type": "action",
+            "provider": "workato",
+            "name": "lookup_table_lookup",
+            "label": "Lookup Country Code",
+            "input": {
+              "table_name": "country_codes",
+              "lookup_column": "country_name",
+              "lookup_value": "{{trigger.Country}}"
+            }
+          },
+          {
+            "type": "action",
+            "provider": "hubspot",
+            "name": "update_contact",
+            "label": "Update Country Code",
+            "connection_id": 202,
+            "input": {
+              "contact_id": "{{steps.create_contact.id}}",
+              "country_code": "{{steps.lookup_country_code.country_iso}}"
+            }
+          }
+        ],
+        "steps_on_false": [
+          {
+            "type": "action",
+            "provider": "slack",
+            "name": "post_message",
+            "label": "Notify Missing Country",
+            "connection_id": 203,
+            "input": {
+              "channel": "#data-quality",
+              "message": "Lead without country: {{trigger.FirstName}} {{trigger.LastName}}"
+            }
+          }
+        ]
+      },
+      {
+        "type": "foreach",
+        "list": "{{trigger.Tags}}",
+        "steps": [
+          {
+            "type": "action",
+            "provider": "hubspot",
+            "name": "add_tag",
+            "label": "Add Tag to Contact",
+            "connection_id": 202,
+            "input": {
+              "contact_id": "{{steps.create_contact.id}}",
+              "tag": "{{foreach.item}}"
+            }
+          }
+        ]
+      },
+      {
+        "type": "action",
+        "provider": "workato",
+        "name": "call_recipe",
+        "label": "Call Enrichment Recipe",
+        "input": {
+          "recipe_id": "50002"
+        }
+      },
+      {
+        "type": "monitor",
+        "steps": [
+          {
+            "type": "action",
+            "provider": "hubspot",
+            "name": "get_contact",
+            "label": "Verify Contact Created",
+            "connection_id": 202,
+            "input": {
+              "contact_id": "{{steps.create_contact.id}}"
+            }
+          }
+        ]
+      },
+      {
+        "type": "catch",
+        "steps": [
+          {
+            "type": "action",
+            "provider": "slack",
+            "name": "post_message",
+            "label": "Notify Error",
+            "connection_id": 203,
+            "input": {
+              "channel": "#errors",
+              "message": "Error syncing lead: {{error.message}}"
+            }
+          },
+          {
+            "type": "stop",
+            "status": "failed",
+            "message": "Lead sync failed"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -206,8 +206,7 @@ async def list_tools() -> list[Tool]:
             name="get_reference_docs",
             description=(
                 "Returns reference doc content for a specific doc agent group. "
-                "Groups: Overview, Architecture, Data, Business, Operations, "
-                "Config, External, Patterns, UserDocs, Preventive. "
+                "Groups: Core, Business+Ops, Patterns+User. "
                 "Eliminates the need for sub-agents to make individual Read calls."
             ),
             inputSchema={
@@ -216,9 +215,8 @@ async def list_tools() -> list[Tool]:
                     "agent_group": {
                         "type": "string",
                         "description": (
-                            "Doc agent group name: Overview, Architecture, Data, "
-                            "Business, Operations, Config, External, Patterns, "
-                            "UserDocs, Preventive"
+                            "Doc agent group name: Core, Business+Ops, "
+                            "Patterns+User"
                         ),
                     },
                 },

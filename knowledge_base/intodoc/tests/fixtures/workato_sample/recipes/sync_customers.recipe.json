@@ -1,0 +1,102 @@
+{
+  "id": 12345,
+  "name": "Sync Customers to NetSuite",
+  "description": "Daily sync of new Salesforce customers to NetSuite",
+  "trigger_application": "salesforce",
+  "action_applications": ["netsuite", "slack"],
+  "applications": ["salesforce", "netsuite", "slack"],
+  "running": true,
+  "folder_id": 100,
+  "version_no": 3,
+  "tags": ["production", "customer-sync"],
+  "config": [
+    {"keyword": "application", "name": "salesforce", "provider": "salesforce"}
+  ],
+  "code": {
+    "number": 0,
+    "provider": "salesforce",
+    "name": "new_record",
+    "as": "salesforce_trigger",
+    "title": "New Salesforce Account",
+    "description": "Triggers when a new Account is created",
+    "keyword": "trigger",
+    "input": {
+      "sobject": "Account",
+      "since": "2024-01-01T00:00:00Z"
+    },
+    "extended_input_schema": [
+      {"type": "string", "name": "sobject"}
+    ],
+    "extended_output_schema": [
+      {"type": "string", "name": "Id"},
+      {"type": "string", "name": "Name"},
+      {"type": "string", "name": "Email"},
+      {"type": "string", "name": "Phone"}
+    ],
+    "uuid": "c4b0778d-0001",
+    "block": [
+      {
+        "number": 1,
+        "provider": "netsuite",
+        "name": "create_record",
+        "keyword": "action",
+        "as": "netsuite_create",
+        "title": "Create NetSuite Customer",
+        "input": {
+          "entity_type": "customer",
+          "company_name": "#{_('data.salesforce.Account.Name')}",
+          "email": "#{_('data.salesforce.Account.Email')}"
+        },
+        "uuid": "c4b0778d-0002",
+        "block": []
+      },
+      {
+        "number": 2,
+        "keyword": "if",
+        "input": {
+          "type": "compound",
+          "operand": "and",
+          "conditions": [
+            {"operand": "present", "lhs": "#{_('data.salesforce.Account.Phone')}"}
+          ]
+        },
+        "block": [
+          {
+            "number": 3,
+            "provider": "slack",
+            "name": "post_message",
+            "keyword": "action",
+            "as": "slack_notify",
+            "title": "Notify Slack",
+            "input": {
+              "channel": "#new-customers",
+              "message": "New customer: #{_('data.salesforce.Account.Name')}"
+            },
+            "uuid": "c4b0778d-0003",
+            "block": []
+          }
+        ]
+      },
+      {
+        "number": 4,
+        "keyword": "else",
+        "block": [
+          {
+            "number": 5,
+            "provider": "slack",
+            "name": "post_message",
+            "keyword": "action",
+            "as": "slack_no_phone",
+            "title": "Notify Missing Phone",
+            "input": {
+              "channel": "#data-quality",
+              "message": "Customer without phone: #{_('data.salesforce.Account.Name')}"
+            },
+            "uuid": "c4b0778d-0005",
+            "block": []
+          }
+        ]
+      }
+    ]
+  }
+}

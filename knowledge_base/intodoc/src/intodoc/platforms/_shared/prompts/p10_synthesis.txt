@@ -1,0 +1,213 @@
+You are analyzing an integration project built on a data integration platform. Your task is to produce a **Synthesis Report** -- this is the final analysis pass. You are receiving the consolidated results from ALL prior analysis passes. Your job is to synthesize these results into a comprehensive, actionable documentation package including an executive summary, FAQ, glossary, onboarding guide, and risk dashboard.
+
+## Integration Platform Context
+This is a data integration project that moves and transforms data between source systems and target systems. Prior passes have analyzed:
+- **Pass 1 (Inventory)**: All jobs, components, connections, dependencies, and the dependency graph
+- **Pass 2 (Execution)**: Control flow, execution order, trigger conditions, orchestration chains, mermaid flowcharts
+- **Pass 3 (Data Flows)**: Data inputs, transformations with human-readable explanations, data outputs, lineage
+- **Pass 4 (Environment)**: Configuration variables across environments, risky differences, hardcoded values, credential handling
+- **Pass 5 (External Systems)**: All external systems (databases, file systems, APIs, cloud services), connection details, topology
+- **Pass 6 (Error Handling)**: Error handling ratings per job, silent failure risks, missing error handlers, reject flow gaps
+- **Pass 7 (State)**: Temporary files, staging tables, global variables, cleanup gaps, re-run safety, side effects
+- **Pass 8 (Custom Code)**: Custom code analysis, hidden business rules in code, security findings
+- **Pass 9 (Business Logic)**: Business domains, extracted business rules, business parameters, impact analysis, rule conflicts
+
+You have access to ALL of these results. Your task is to cross-reference them and produce a unified synthesis.
+
+## What to Produce
+
+### 1. Executive Summary
+Write a 1-2 paragraph executive summary suitable for a CTO or VP of Engineering. Cover:
+- What this integration project does at a high level
+- How many jobs, external systems, and data flows exist
+- The overall health/quality assessment (good, needs improvement, at risk)
+- Top 3-5 risks that need immediate attention
+- Key recommendation for the team
+
+### 2. Architecture Overview
+Produce a concise description of the overall system architecture:
+- How many layers exist (RAW, CLEAN, PUBLISH, etc.) and what each does
+- The master orchestration pattern (how jobs are chained)
+- Which external systems are sources vs. targets
+- A master Mermaid architecture diagram showing the end-to-end flow
+
+### 3. Risk Dashboard
+Consolidate ALL risks from all passes into a single prioritized dashboard. For each risk:
+- Unique risk ID
+- Category (error_handling, security, environment, data_quality, performance, maintainability, reliability)
+- Severity: CRITICAL, HIGH, MEDIUM, LOW
+- Description in plain English
+- Affected jobs/components
+- Recommended remediation
+- Estimated effort to fix (hours/days/weeks)
+
+Sort by severity (CRITICAL first), then by number of affected jobs.
+
+### 4. FAQ (20+ items)
+Generate at least 20 frequently asked questions that a new team member, auditor, or stakeholder might ask, with detailed answers based on the analysis. Cover these categories:
+- **General**: "What does this project do?", "How many jobs are there?", "What systems does it connect to?"
+- **Operations**: "How do I run these jobs?", "What happens if a job fails?", "Can I safely re-run a job?", "What is the execution order?"
+- **Data**: "Where does the data come from?", "What transformations are applied?", "How is data quality ensured?", "What business rules are applied?"
+- **Security**: "How are credentials managed?", "Is there any data masking?", "What are the security risks?"
+- **Maintenance**: "How do I add a new data source?", "What happens when a source schema changes?", "Where is business logic defined?"
+- **Troubleshooting**: "How do I debug a failed job?", "Where are error logs?", "What are common failure modes?"
+
+### 5. Glossary
+Compile a glossary of all domain-specific terms, abbreviations, and codes found across all passes:
+- Job name prefixes and their meanings (region codes, domain codes, layer codes)
+- Status codes and their business meanings
+- System abbreviations
+- Platform-specific technical terms that non-specialists need to understand
+- Business terms found in column names, table names, and documentation
+
+### 6. Onboarding Guide for New Developers
+Write a structured onboarding guide that a new developer joining the team can follow:
+- Prerequisites (platform version, runtime environment, access to systems)
+- How the project is organized (folder structure, naming conventions)
+- How to set up local development (which environment profile to use, how to avoid hitting production)
+- How to understand a specific job (which files to read, what to look for)
+- How to make changes safely (testing strategy, deployment process)
+- Common pitfalls to avoid (based on the risks identified)
+- Key contacts or escalation paths (if identifiable from the project)
+
+### 7. Cross-Cutting Concerns
+Identify patterns and issues that span multiple passes:
+- Jobs that appear in multiple risk categories (compound risk)
+- Business rules that are implemented inconsistently across jobs
+- External systems that are single points of failure
+- Data flows where a failure in one job cascades to many downstream jobs
+- Patterns that should be standardized (e.g., all jobs should have centralized error logging, all connections should use shared metadata)
+
+### 8. Recommendations Roadmap
+Prioritize all recommendations into a phased roadmap:
+- **Immediate (this sprint)**: Critical security and data-loss risks
+- **Short-term (this quarter)**: Error handling improvements, environment isolation fixes
+- **Medium-term (next quarter)**: Refactoring duplicated logic, standardizing patterns
+- **Long-term (backlog)**: Architecture improvements, monitoring enhancements
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "executive_summary": "This integration project... [1-2 paragraphs]",
+  "architecture_overview": {
+    "description": "The project follows a layered ETL architecture...",
+    "layers": [
+      {"name": "RAW", "purpose": "Ingest source data with minimal transformation"},
+      {"name": "CLEAN", "purpose": "Apply business rules, standardization, and quality checks"},
+      {"name": "PUBLISH", "purpose": "Produce analytics-ready tables"}
+    ],
+    "master_diagram_mermaid": "graph LR\n  subgraph Sources\n    ...\n  end\n  subgraph ETL Processing\n    ...\n  end\n  subgraph Targets\n    ...\n  end\n  ..."
+  },
+  "risk_dashboard": [
+    {
+      "risk_id": "RISK-001",
+      "category": "security",
+      "severity": "CRITICAL",
+      "title": "Default configuration profile points to production database",
+      "description": "Running jobs without explicitly selecting TEST profile will execute against production systems. A developer testing locally could modify production data.",
+      "affected_jobs": ["REGION_DOMAIN_RAW_0.1", "REGION_DOMAIN_CLEAN_0.1"],
+      "source_pass": "Pass 4 (Environment)",
+      "remediation": "Change Default profile values to point to TEST or localhost. Add startup validation that rejects Default profile in jobs with write operations.",
+      "estimated_effort": "2 hours"
+    }
+  ],
+  "faq": [
+    {
+      "id": "FAQ-001",
+      "category": "General",
+      "question": "What does this integration project do?",
+      "answer": "This project replicates and transforms data from... [detailed answer based on all passes]"
+    },
+    {
+      "id": "FAQ-002",
+      "category": "Operations",
+      "question": "What is the correct execution order for the jobs?",
+      "answer": "The jobs should be executed in the following order: ... [based on Pass 2 orchestration analysis]"
+    }
+  ],
+  "glossary": [
+    {
+      "term": "RAW",
+      "definition": "Raw data layer -- data ingested from source systems with minimal transformation, preserving the original format",
+      "context": "Job naming convention / data architecture"
+    },
+    {
+      "term": "CLEAN",
+      "definition": "Clean data layer -- data that has been standardized, validated, and enriched with business rules applied",
+      "context": "Job naming convention / data architecture"
+    }
+  ],
+  "onboarding_guide": {
+    "prerequisites": [
+      "Integration platform installed (version X.x or later)",
+      "Runtime environment configured (JDK, Python, etc.)",
+      "Access to TEST database instances (request from infrastructure team)",
+      "Target system credentials with TEST access"
+    ],
+    "project_organization": "The project is organized by region/business unit...",
+    "local_setup": [
+      "1. Import the project into the development environment",
+      "2. IMPORTANT: Always select the TEST configuration profile -- NEVER use Default as it may point to production",
+      "3. Verify connections by running a connectivity check...",
+      "4. ..."
+    ],
+    "understanding_a_job": "To understand what a specific job does, start by...",
+    "making_changes_safely": "Before modifying any job: ...",
+    "common_pitfalls": [
+      "Never run with Default configuration -- it may target production",
+      "Always check if child error propagation is enabled on orchestration components",
+      "Always connect transformation reject flows to a logging component"
+    ]
+  },
+  "cross_cutting_concerns": [
+    {
+      "concern": "No centralized error logging",
+      "description": "None of the analyzed jobs use centralized error capture. Errors are handled inconsistently -- some jobs abort on error, others silently continue.",
+      "affected_passes": ["Pass 2 (Execution)", "Pass 6 (Error Handling)"],
+      "affected_jobs": ["all"],
+      "recommendation": "Implement a standard error handling pattern with centralized error capture writing to a central error log table"
+    }
+  ],
+  "recommendations_roadmap": {
+    "immediate": [
+      {
+        "id": "REC-001",
+        "title": "Fix Default configuration to point to TEST",
+        "effort": "2 hours",
+        "risk_addressed": "RISK-001"
+      }
+    ],
+    "short_term": [
+      {
+        "id": "REC-002",
+        "title": "Add failure handlers to all critical step groups",
+        "effort": "1-2 days",
+        "risk_addressed": "RISK-003, RISK-007"
+      }
+    ],
+    "medium_term": [],
+    "long_term": []
+  },
+  "metadata": {
+    "total_jobs_analyzed": 15,
+    "total_external_systems": 8,
+    "total_business_rules": 24,
+    "total_risks": 18,
+    "critical_risks": 3,
+    "high_risks": 5,
+    "total_faq_items": 22,
+    "total_glossary_terms": 35
+  }
+}
+```
+
+## Instructions
+
+- **Be thorough and authoritative.** This is the final deliverable -- it must be comprehensive, accurate, and actionable.
+- Cross-reference findings from ALL prior passes. Do not introduce new findings -- synthesize what has already been discovered.
+- Every claim should be traceable to a specific prior pass result.
+- The FAQ should be genuinely useful -- answer questions with specific details from the analysis, not generic platitudes.
+- The glossary should help non-specialists understand domain-specific and platform-specific terminology.
+- The onboarding guide should be practical and actionable -- a new developer should be able to follow it step by step.
+- The risk dashboard should be sorted by severity and include estimated remediation effort for prioritization.

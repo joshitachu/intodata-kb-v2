@@ -7,20 +7,22 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from qdrant_client.models import Filter, FieldCondition, MatchAny, NamedVector
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.routes.auth import limiter
 from src.config import settings
 from src.generation.conversational_rag import _build_memory_context
-from src.generation.intent_classifier import Action, QueryType, analyze_query
+from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
 from src.db.models import QueryUsage
 from src.generation.llm_client import generate_answer_stream, get_last_usage
-from src.generation.prompt_builder import build_messages, build_no_results_messages
+from src.generation.prompt_builder import build_messages, build_metadata_messages, build_no_results_messages
+from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
 from src.generation.rag_chain import run_rag_query
 from src.memory.hindsight_client import (
+    ensure_corrections_bank,
     ensure_quality_bank,
     ensure_user_bank,
+    recall_corrections,
     recall_quality_insights,
     recall_user_memory,
     retain_interaction,
@@ -81,24 +83,20 @@ async def query(
 async def query_debug(
     body: DebugSearchRequest,
     user: CurrentUser,
+    db: DBSession,
     qdrant: QdrantClient,
 ) -> DebugSearchResponse:
     """Return raw Qdrant scores without threshold filtering for diagnostics."""
     user_groups = get_user_groups(user)
+    project_ids = await get_user_project_ids(user, db)
 
     embed_start = time.perf_counter()
     query_embedding = await embed_text(body.query)
     embedding_ms = int((time.perf_counter() - embed_start) * 1000)
 
-    rbac_filter_applied = bool(user_groups) and "admin" not in user_groups
-    search_filter = Filter(
-        must=[
-            FieldCondition(
-                key="allowed_groups",
-                match=MatchAny(any=user_groups),
-            )
-        ]
-    ) if rbac_filter_applied else None
+    from src.retrieval.search import _build_search_filter
+    search_filter = _build_search_filter(user_groups, project_ids=project_ids)
+    rbac_filter_applied = search_filter is not None
 
     results = await qdrant.query_points(
         collection_name=COLLECTION_NAME,
@@ -154,18 +152,63 @@ async def query_stream(
     # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
     await ensure_user_bank(uid)
     await ensure_quality_bank()
-    user_memories = await recall_user_memory(uid, body.query)
-    quality_insights = await recall_quality_insights(body.query)
-    memory_context = _build_memory_context(user_memories, quality_insights)
+    await ensure_corrections_bank()
+    user_memories, quality_insights, corrections = await asyncio.gather(
+        recall_user_memory(uid, body.query),
+        recall_quality_insights(body.query),
+        recall_corrections(body.query),
+    )
+    memory_context = _build_memory_context(user_memories, quality_insights, corrections)
     if memory_context:
-        logger.info("Stream: Injecting %d user memories + %d quality insights",
-                     len(user_memories), len(quality_insights))
+        logger.info("Stream: Injecting %d user memories + %d quality insights + %d corrections",
+                     len(user_memories), len(quality_insights), len(corrections))
 
     # 1. Route query
-    analysis = analyze_query(body.query)
+    analysis = await analyze_query_async(body.query)
 
-    if analysis.action == Action.RESPOND:
-        messages = build_no_results_messages(body.query, memory_context=memory_context)
+    # Fetch system knowledge for injection
+    system_knowledge: str | None = None
+    if settings.system_knowledge_injection:
+        try:
+            system_knowledge = await get_system_knowledge_summary(db, project_ids)
+        except Exception as e:
+            logger.warning("Stream: Failed to fetch system knowledge: %s", e)
+
+    if analysis.action == Action.METADATA:
+        # Metadata query — answer from PostgreSQL
+        logger.info("Stream: Metadata query: intent=%s, project=%s",
+                     analysis.metadata_intent, analysis.extracted_project)
+        metadata = await fetch_metadata(
+            db, analysis.metadata_intent, project_ids, analysis.extracted_project,
+        )
+
+        # For HYBRID: also run vector search
+        hybrid_sources = []
+        if analysis.metadata_intent == MetadataIntent.HYBRID:
+            hybrid_sources = await search_similar(
+                qdrant, analysis.cleaned_query, user_groups,
+                top_k=body.top_k, threshold=body.threshold,
+                project_ids=project_ids,
+            )
+
+        if hybrid_sources:
+            document_sources = merge_sources_by_document(hybrid_sources)
+            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+            messages = build_metadata_messages(
+                body.query, metadata.text,
+                sources=hybrid_sources, reference_numbers=ref_map,
+                memory_context=memory_context,
+            )
+            sources_data = [s.model_dump() for s in document_sources]
+        else:
+            document_sources = []
+            messages = build_metadata_messages(
+                body.query, metadata.text, memory_context=memory_context,
+            )
+            sources_data = []
+
+    elif analysis.action == Action.RESPOND:
+        messages = build_no_results_messages(body.query, memory_context=memory_context, system_knowledge=system_knowledge)
         sources_data = []
         document_sources = []
     elif analysis.query_type == QueryType.SUMMARY:
@@ -207,10 +250,10 @@ async def query_stream(
         if sources:
             document_sources = merge_sources_by_document(sources)
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_messages(body.query, sources, reference_numbers=ref_map, memory_context=memory_context)
+            messages = build_messages(body.query, sources, reference_numbers=ref_map, memory_context=memory_context, system_knowledge=system_knowledge)
             sources_data = [s.model_dump() for s in document_sources]
         else:
-            messages = build_no_results_messages(body.query, memory_context=memory_context)
+            messages = build_no_results_messages(body.query, memory_context=memory_context, system_knowledge=system_knowledge)
             sources_data = []
             document_sources = []
 

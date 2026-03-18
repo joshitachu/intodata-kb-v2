@@ -189,7 +189,7 @@ class ClaudeService:
         return parts, job_count
 
     async def _preprocess_scan_data(
-        self, project_id: str, staging_dir: Path,
+        self, project_id: str, staging_dir: Path, platform: str = "talend",
     ) -> list[str]:
         """Pre-process raw job JSONs into structured markdown summaries.
 
@@ -265,47 +265,39 @@ class ClaudeService:
                 )
 
         # --- Bundle analysis prompts for Phase 2 sub-agents ---
-        prompts_dir = (
-            config.project_root / "intodoc" / "src" / "intodoc"
-            / "platforms" / "talend" / "prompts"
-        )
-        if prompts_dir.exists():
+        prompts_data = scanner.get_analysis_prompts(platform)
+        if "prompts" in prompts_data:
             prompt_parts = [
                 "# Analysis Prompts\n\n"
                 "Use these structured prompts to guide your analysis "
                 "of each group's scan data.\n\n"
             ]
-            for pfile in sorted(prompts_dir.glob("*.txt")):
-                prompt_parts.append(f"---\n## {pfile.stem}\n\n")
-                prompt_parts.append(pfile.read_text(encoding="utf-8"))
+            for name, content in sorted(prompts_data["prompts"].items()):
+                prompt_parts.append(f"---\n## {name}\n\n")
+                prompt_parts.append(content)
                 prompt_parts.append("\n\n")
             prompt_bundle = "".join(prompt_parts)
             (preprocess_dir / "_analysis_prompts.md").write_text(
                 prompt_bundle, encoding="utf-8",
             )
-            logger.info("Bundled analysis prompts: %d bytes", len(prompt_bundle))
+            logger.info("Bundled analysis prompts (%s): %d bytes", platform, len(prompt_bundle))
 
         # --- Bundle reference docs per Phase 3 agent ---
         ref_dir = config.project_root / "intodoc" / "reference-docs"
         if ref_dir.exists():
             agent_ref_map = {
                 "_ref_core": [
-                    "00_PROJECT_OVERVIEW", "01_COMPONENT_INVENTORY",
-                    "02_ARCHITECTURE", "03_EXECUTION_LOGIC",
+                    "00_EXECUTIVE_SUMMARY", "01_PROJECT_OVERVIEW",
+                    "02_ARCHITECTURE_INVENTORY", "03_DATA_FLOWS_LINEAGE",
                 ],
-                "_ref_data_ops": [
-                    "04_DATA_FLOWS", "07_ERROR_HANDLING",
-                    "08_STATE_SIDE_EFFECTS", "09_CUSTOM_CODE",
-                    "10_BUSINESS_LOGIC", "11_KNOWN_ISSUES",
-                    "16_SCHEMA_DICTIONARY", "17_DATA_QUALITY",
+                "_ref_business_ops": [
+                    "04_BUSINESS_LOGIC", "05_OPERATIONS_RISK",
+                    "06_ENVIRONMENT_EXTERNAL",
                 ],
-                "_ref_config_user": [
-                    "05_ENVIRONMENT_CONFIG", "06_EXTERNAL_SYSTEMS",
-                    "12_CHANGE_LOG", "13_RUNBOOK", "14_GLOSSARY_FAQ",
-                    "15_ONBOARDING", "18_NAMING_CONVENTIONS",
-                    "19_SCHEDULING_SLA", "20_SECURITY_ACCESS",
-                    "21_PERFORMANCE", "22_CROSS_REGION",
-                    "23_REUSABILITY", "25_PREVENTIVE_ANALYSIS",
+                "_ref_patterns_user": [
+                    "07_SECURITY_PERFORMANCE", "08_PATTERNS_STANDARDS",
+                    "09_RUNBOOK", "10_ONBOARDING_FAQ",
+                    "11_MIGRATION_ASSESSMENT",
                 ],
             }
             for bundle_name, doc_names in agent_ref_map.items():
@@ -348,11 +340,20 @@ class ClaudeService:
             d.mkdir(parents=True, exist_ok=True)
             d.chmod(0o777)
 
+        # Look up the project's platform from the DB
+        from mcp_server.db.session import async_session_factory
+        from mcp_server.services.project_registry import ProjectRegistry
+
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            project = await registry.get_project(project_id)
+            platform = project.platform if project else "talend"
+
         # Pre-process scan data into structured markdown (saves ~15 min of agent parsing)
         await self.log_manager.emit(
             project_id, "Pre-processing scan data...", level="info",
         )
-        preprocess_groups = await self._preprocess_scan_data(project_id, staging_dir)
+        preprocess_groups = await self._preprocess_scan_data(project_id, staging_dir, platform)
         await self.log_manager.emit(
             project_id,
             f"Pre-processed {len(preprocess_groups)} groups: {', '.join(preprocess_groups)}",
@@ -390,8 +391,8 @@ PHASE 1 -- SETUP:
    - Analysis prompts are pre-bundled in output/{project_id}/docs_staging/_preprocess/_analysis_prompts.md.
    - Reference doc templates are pre-bundled per Phase 3 agent:
      - output/{project_id}/docs_staging/_preprocess/_ref_core.md (for Core agent)
-     - output/{project_id}/docs_staging/_preprocess/_ref_data_ops.md (for Data+Ops agent)
-     - output/{project_id}/docs_staging/_preprocess/_ref_config_user.md (for Config+User agent)
+     - output/{project_id}/docs_staging/_preprocess/_ref_business_ops.md (for Business+Ops agent)
+     - output/{project_id}/docs_staging/_preprocess/_ref_patterns_user.md (for Patterns+User agent)
 
 PHASE 2 -- GROUP ANALYSIS (parallel sub-agents):
    Spawn one sub-agent per group (all in parallel). Each sub-agent:
@@ -493,77 +494,64 @@ PHASE 2 -- GROUP ANALYSIS (parallel sub-agents):
    - Write the analysis file using the Write tool to output/{project_id}/docs_staging/_analysis/{{group}}.md.
    - Be EXHAUSTIVE. Include every expression, every rule, every column. Depth over brevity.
 
-PHASE 2.5 -- ANALYSIS CONDENSATION (orchestrator task, NOT a sub-agent):
-   After ALL Phase 2 sub-agents complete, the orchestrator creates per-agent briefing files.
-   This is critical for performance -- each Phase 3 agent reads ~100-150KB instead of 600KB+.
-
-   For each analysis file in output/{project_id}/docs_staging/_analysis/:
-   - Read it using: Bash cat output/{project_id}/docs_staging/_analysis/{{group}}.md
-
-   Then create THREE briefing files by extracting ONLY the relevant sections from ALL group analyses:
-
-   1. output/{project_id}/docs_staging/_analysis/_briefing_core.md
-      Extract from each group: ## HEADER, ## COMPONENTS, ## EXECUTION_FLOW, ## DATA_FLOWS
-      (Core agent writes: 00_PROJECT_OVERVIEW, 01_COMPONENT_INVENTORY, 02_ARCHITECTURE, 03_EXECUTION_LOGIC)
-
-   2. output/{project_id}/docs_staging/_analysis/_briefing_data_ops.md
-      Extract from each group: ## HEADER, ## DATA_FLOWS, ## SCHEMA_DICTIONARY, ## SOURCE_SQL,
-      ## ERROR_HANDLING, ## CUSTOM_CODE, ## BUSINESS_RULES, ## RISK_FLAGS
-      (Data+Ops agent writes: 04_DATA_FLOWS, 07_ERROR_HANDLING, 08_STATE_SIDE_EFFECTS,
-       09_CUSTOM_CODE, 10_BUSINESS_LOGIC, 11_KNOWN_ISSUES, 16_SCHEMA_DICTIONARY, 17_DATA_QUALITY)
-
-   3. output/{project_id}/docs_staging/_analysis/_briefing_config_user.md
-      Extract from each group: ## HEADER, ## ENVIRONMENT_CONFIG, ## EXTERNAL_SYSTEMS,
-      ## SCHEDULING, ## NAMING_PATTERNS, ## CROSS_GROUP_REFS, ## RISK_FLAGS, ## BUSINESS_RULES
-      (Config+User agent writes: 05_ENVIRONMENT_CONFIG, 06_EXTERNAL_SYSTEMS, 12_CHANGE_LOG,
-       13_RUNBOOK, 14_GLOSSARY_FAQ, 15_ONBOARDING, 18_NAMING_CONVENTIONS, 19_SCHEDULING_SLA,
-       20_SECURITY_ACCESS, 21_PERFORMANCE, 22_CROSS_REGION, 23_REUSABILITY, 25_PREVENTIVE_ANALYSIS)
-
-   How to extract sections efficiently:
-   Use a Bash python3 one-liner for each analysis file to extract sections. Example approach:
-   ```
-   python3 -c "
-   import re, sys
-   text = open(sys.argv[1]).read()
-   sections = re.split(r'(?=^## )', text, flags=re.MULTILINE)
-   wanted = {{'HEADER','COMPONENTS','EXECUTION_FLOW','DATA_FLOWS'}}
-   for s in sections:
-       m = re.match(r'## (\w+)', s)
-       if m and m.group(1) in wanted:
-           print(s)
-   " output/{project_id}/docs_staging/_analysis/GROUP.md
-   ```
-   Prefix each extracted block with "### GROUP_NAME" so Phase 3 agents know the source group.
-   Write each briefing file using the Write tool.
-
 PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
-   After Phase 2.5 completes, spawn 3 doc-assembly sub-agents in parallel.
-   Each doc agent:
-   1. Reads its BRIEFING file from _analysis/ (created in Phase 2.5) for relevant analysis data.
-   2. Reads its REFERENCE DOC BUNDLE from _preprocess/ for format templates.
-   3. Receives the manifest inline.
-   4. Writes final .md files to output/{project_id}/docs_staging/.
+   After ALL Phase 2 sub-agents complete, spawn 3 doc-assembly sub-agents in parallel.
+   Each Phase 3 agent reads the FULL _analysis/{{group}}.md files directly (no condensation step).
+   Each doc agent also reads its REFERENCE DOC BUNDLE from _preprocess/ for format templates.
+   Each doc agent receives the manifest inline.
+   Each doc agent writes final .md files to output/{project_id}/docs_staging/.
+
+   AUTO-FALLBACK: If total analysis size exceeds 400KB (check with: Bash du -sh output/{project_id}/docs_staging/_analysis/),
+   each Phase 3 agent should read only the analysis sections relevant to its docs (use grep/head/tail).
+   For most projects (~10 groups, ~300KB analysis), agents read ALL analysis files in full.
 
    The 3 doc-assembly agents:
-   | Agent       | Briefing                    | Reference bundle      | Writes                                                                              |
-   |-------------|-----------------------------|-----------------------|--------------------------------------------------------------------------------------|
-   | Core        | _briefing_core.md           | _ref_core.md          | 00_PROJECT_OVERVIEW, 01_COMPONENT_INVENTORY, 02_ARCHITECTURE, 03_EXECUTION_LOGIC     |
-   | Data+Ops    | _briefing_data_ops.md       | _ref_data_ops.md      | 04_DATA_FLOWS, 07_ERROR_HANDLING, 08_STATE_SIDE_EFFECTS, 09_CUSTOM_CODE, 10_BUSINESS_LOGIC, 11_KNOWN_ISSUES, 16_SCHEMA_DICTIONARY, 17_DATA_QUALITY |
-   | Config+User | _briefing_config_user.md    | _ref_config_user.md   | 05_ENVIRONMENT_CONFIG, 06_EXTERNAL_SYSTEMS, 12_CHANGE_LOG, 13_RUNBOOK, 14_GLOSSARY_FAQ, 15_ONBOARDING, 18_NAMING_CONVENTIONS, 19_SCHEDULING_SLA, 20_SECURITY_ACCESS, 21_PERFORMANCE, 22_CROSS_REGION*, 23_REUSABILITY, 25_PREVENTIVE_ANALYSIS |
-   *22_CROSS_REGION only if 2+ groups exist.
+   | Agent          | Analysis Input                          | Reference bundle          | Writes                                                                    |
+   |----------------|-----------------------------------------|---------------------------|---------------------------------------------------------------------------|
+   | Core           | ALL _analysis/{{group}}.md files        | _ref_core.md              | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE |
+   | Business+Ops   | ALL _analysis/{{group}}.md files        | _ref_business_ops.md      | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL            |
+   | Patterns+User  | ALL _analysis/{{group}}.md files        | _ref_patterns_user.md     | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT |
+   *08_PATTERNS_STANDARDS cross-region section only if 2+ groups exist.
 
    Each sub-agent prompt MUST include:
-   - "Read output/{project_id}/docs_staging/_analysis/_briefing_{{agent}}.md for your analysis data."
+   - "Read ALL files in output/{project_id}/docs_staging/_analysis/ for your analysis data."
    - "Read output/{project_id}/docs_staging/_preprocess/_ref_{{agent}}.md for format reference templates."
    - Do NOT call get_reference_docs() -- the pre-bundled files have all templates.
-   - Do NOT read the full _analysis/{{group}}.md files -- your briefing has the relevant sections.
+   - Do NOT call get_analysis_prompts() -- already consumed in Phase 2.
+
+   DEPTH TARGETS (minimum line counts per doc):
+   - 00_EXECUTIVE_SUMMARY: 200+ lines, customer-facing, NO code/expressions, polished prose
+   - 01_PROJECT_OVERVIEW: 300+ lines, technical overview with full stats and regional breakdown
+   - 02_ARCHITECTURE_INVENTORY: 600+ lines, components + topology + execution logic combined
+   - 03_DATA_FLOWS_LINEAGE: 600+ lines, column-level lineage for all major flows + schema dictionary
+   - 04_BUSINESS_LOGIC: 800+ lines, every BR-tagged rule with full expression + custom code analysis
+   - 05_OPERATIONS_RISK: 800+ lines, per-job error handling + all risk items + preventive analysis
+   - 06_ENVIRONMENT_EXTERNAL: 400+ lines, config + connections + scheduling combined
+   - 07_SECURITY_PERFORMANCE: 300+ lines, security assessment + performance analysis
+   - 08_PATTERNS_STANDARDS: 400+ lines, naming + reusability + cross-region patterns
+   - 09_RUNBOOK: 400+ lines, operational procedures
+   - 10_ONBOARDING_FAQ: 500+ lines, 20+ FAQ items + onboarding guide + glossary
+   - 11_MIGRATION_ASSESSMENT: 400+ lines, consolidated migration assessment
+
+   NARRATIVE RULES:
+   - Never summarize when you can enumerate
+   - Every claim needs a job name + component reference
+   - Show ACTUAL code/expressions/SQL, then explain
+   - "Error handling is weak" is NOT acceptable
+   - "7 of 12 DEU jobs have no tLogCatcher" IS acceptable
+   - Include concrete counts, percentages, and job names
 
    Each doc agent MUST:
    - Cross-reference data from multiple groups to build comprehensive docs.
    - Match the depth and structure shown in reference doc templates from the bundle.
    - Include specific expressions, column names, job names -- not just summaries.
+   - Meet or exceed the depth target line count for each doc.
 
-   Skip any doc with no meaningful content. Always generate: 00-04, 06, 07, 10, 13-15, 25.
+   ADAPTIVE CATALOG:
+   - Always generate: 00-06, 09-11
+   - Generate 07 if security/performance issues found
+   - Generate 08 cross-region section only if 2+ groups exist
+   - Skip any doc with genuinely no content (but this should be rare with the consolidated structure)
 
    Quality standards:
    - Every doc MUST have a table of contents

@@ -1,0 +1,10 @@
+{
+  "connection": {
+    "id": 203,
+    "name": "slack",
+    "provider": "slack",
+    "application": "slack",
+    "authorization_type": "oauth2",
+    "base_url": "https://slack.com/api"
+  }
+}

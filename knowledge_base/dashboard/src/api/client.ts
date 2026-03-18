@@ -134,4 +134,10 @@ export const api = {
     request<import("../types").ProjectUsage>(
       `/mcp/projects/${projectId}/usage`
     ),
+
+  generateAssessment: (projectId: string) =>
+    request<{ project_id: string; status: string; html_path: string | null; error: string | null }>(
+      `/mcp/projects/${projectId}/generate-assessment`,
+      { method: "POST" }
+    ),
 };

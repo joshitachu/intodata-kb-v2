@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Phase 1 CONSOLIDATION COMPLETE. All 5 priorities (25 items) implemented (2026-03-11).
-**Last session**: 2026-03-11
-**Last completed**: Phase 1 consolidation — P1: 7 security fixes (test route removed, git injection fixed, pagination limits, N+1 count fixes, rate limiting, error sanitization, password policy), P2: 6 UX improvements (modals, error pages, confirm dialogs, favicons), P3: 4 performance items (DB indexes, client cleanup, Docker health checks + resource limits), P4: 22 new tests (9 backend API + 9 frontend + 4 dashboard), P5: 3 deployment hardening (non-root Docker, secret validation, template fix). 243 backend tests, 9 frontend tests, 4 dashboard tests all passing. Frontend build clean.
+**Status**: Auto-detect corrections feature implemented (2026-03-16). Needs deployment + testing.
+**Last session**: 2026-03-16
+**Last completed**: Auto-detect corrections in RAG conversations — heuristic detection of user corrections, LLM extraction, shared Hindsight `rag-corrections` bank, corrections recalled and injected into all query paths.
 
 ## What's Done
 
@@ -47,6 +47,7 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Recent Changes
 
+- **Auto-detect corrections** (2026-03-16): When a user corrects the chatbot ("no that's wrong, it's actually X"), the system detects it via keyword heuristics, extracts a structured correction via LLM, and stores it in a shared `rag-corrections` Hindsight bank. Corrections are recalled for ALL users on relevant queries and injected as "## Known corrections" in the LLM context. Zero latency impact (fire-and-forget). Files: `hindsight_client.py`, `prompt_builder.py`, `conversational_rag.py`, `rag_chain.py`, `query.py`.
 - **Deploy Security + RBAC to VPS** (2026-03-09): Deployed all Phase 6.1/6.2 changes to running VPS. Reverted docker-compose ports to public (no Caddy yet). Added MCP_INGEST_API_KEY to .env and docker-compose.yml. Fixed migration 006 setval bug (`GREATEST(..., 1)` to avoid 0 on empty sequences). Migration 006 applied successfully — permissions, role_permissions, project_assignments, audit_logs tables created and seeded. All services healthy.
 - **Fix MCP server DuplicateTableError** (2026-03-02): MCP server `create_all` now checks existing tables first before creating — fixes crash on restart when `projects` table already exists.
 - **Fix Docker startup crash** (2026-03-02): Backend Dockerfile now runs `alembic upgrade head` before `uvicorn` startup. Fixes `relation "users" does not exist` crash when PostgreSQL has no tables.
@@ -85,13 +86,13 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Next Steps
 
-- Phase 1 consolidation is COMPLETE. Ready for Phase 2.
-- [ ] Deploy consolidation to VPS: `docker compose up -d --build` + run migration 009
-- [ ] Run verification: `docker compose exec backend whoami` (should show appuser)
-- [ ] Verify health endpoint returns generic errors (no connection strings)
-- [ ] Test git clone URL validation (try injection payloads)
+- [x] RBAC: Project-scoped document access (2026-03-12)
+- [x] Metadata-aware RAG: "Ask Anything" mode (2026-03-12)
+- [ ] Deploy: `docker compose up -d --build backend frontend` + `alembic upgrade head`
+- [ ] Run Qdrant migration: `python scripts/migrate_qdrant_remove_public.py --apply`
+- [ ] Verify: metadata queries return project/doc data from PostgreSQL
+- [ ] Verify: non-admin user sees only their project docs, admin sees all
 - [ ] Phase 2: Workato scanner plugin
-- [ ] Frontend: Update Zod schemas for new default top_k=5, threshold=0.3
 - [ ] Frontend: document selector for chat-with-doc
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.

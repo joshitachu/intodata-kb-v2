@@ -16,6 +16,7 @@ class Document(Base):
     author: Mapped[str | None] = mapped_column(String(255))
     department: Mapped[str | None] = mapped_column(String(255))
     chunk_count: Mapped[int] = mapped_column(default=0)
+    project_id: Mapped[str | None] = mapped_column(String(255), index=True)
 
     # Foreign keys
     uploaded_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

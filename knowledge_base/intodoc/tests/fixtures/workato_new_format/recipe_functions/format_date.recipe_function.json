@@ -1,0 +1,51 @@
+{
+  "recipe_function": {
+    "id": 60001,
+    "name": "Format Date Helper",
+    "description": "Reusable date formatting function",
+    "steps": [
+      {
+        "type": "action",
+        "provider": "workato",
+        "name": "transform",
+        "label": "Parse Input Date",
+        "input": {
+          "date_string": "{{input.date_value}}",
+          "format": "yyyy-MM-dd"
+        }
+      },
+      {
+        "type": "if",
+        "condition": {
+          "field": "{{input.output_format}}",
+          "operator": "equals",
+          "value": "iso8601"
+        },
+        "steps_on_true": [
+          {
+            "type": "action",
+            "provider": "workato",
+            "name": "transform",
+            "label": "Format as ISO",
+            "input": {
+              "date": "{{steps.parse_input_date.date}}",
+              "format": "yyyy-MM-dd'T'HH:mm:ss'Z'"
+            }
+          }
+        ],
+        "steps_on_false": [
+          {
+            "type": "action",
+            "provider": "workato",
+            "name": "transform",
+            "label": "Format as Custom",
+            "input": {
+              "date": "{{steps.parse_input_date.date}}",
+              "format": "{{input.output_format}}"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,197 @@
+You are analyzing a Workato integration project. Your task is to produce a **Naming Conventions Analysis** -- decode and document the naming patterns used for recipes, folders, connections, event topics, properties, lookup tables, and custom adapters.
+
+## Workato Context
+Naming conventions in Workato integration projects serve as embedded documentation. Consistent naming makes the project self-documenting and reveals organizational structure, integration purpose, and environment targeting:
+
+- **Recipe naming**: Recipes are typically named to describe their purpose. Common patterns include:
+  - `{Source} to {Target} - {Action} {Object}` (e.g., "Salesforce to NetSuite - Sync Customers")
+  - `{Trigger Type} - {Purpose}` (e.g., "Scheduled - Daily Sales Report to BigQuery")
+  - `API - {Endpoint Name}` (e.g., "API - Create Customer Endpoint")
+  - `Webhook - {Purpose}` (e.g., "Webhook - Process Incoming Order")
+  - Some projects use prefixes, codes, or numbering systems
+
+- **Folder organization**: Recipes are organized in folders that map to the project's `group` field in the scan data. Folder structures reveal organizational patterns:
+  - By department: `/Sales/`, `/Finance/`, `/Operations/`
+  - By integration: `/Salesforce Sync/`, `/NetSuite Integration/`
+  - By function: `/Main/`, `/Workers/`, `/Error Handling/`, `/Utilities/`
+  - Flat: All recipes in root folder (anti-pattern at scale)
+
+- **Connection naming**: Connections identify external system access points. Common patterns:
+  - `{App} - {Environment}` (e.g., "Salesforce - Production")
+  - `{App} - {Environment} ({Purpose})` (e.g., "PostgreSQL - Staging (Data Warehouse)")
+  - `{App}_{environment}` (e.g., "salesforce_prod")
+  - Provider-only names (e.g., "salesforce") -- risky because they hide environment context
+
+- **Event topic naming**: Topics connect publishers and subscribers. Patterns include:
+  - `{domain}.{event_type}` (e.g., "orders.new_order", "customers.updated")
+  - `{action}_{object}` (e.g., "new_order", "customer_updated")
+  - Descriptive names (e.g., "New Order for Fulfillment")
+
+- **Property naming**: Account-level and project-level properties parameterize recipes. Patterns include:
+  - `{scope}_{parameter}` (e.g., "prod_api_url", "staging_api_key")
+  - `{system}_{parameter}` (e.g., "erp_base_url", "crm_api_version")
+  - `{snake_case}` vs `{camelCase}` vs `{UPPER_CASE}` conventions
+
+- **Lookup table naming**: Reference data tables. Patterns include:
+  - `{purpose}_mapping` (e.g., "country_code_mapping", "status_translation")
+  - `{domain}_{object}` (e.g., "sales_regions", "product_categories")
+
+- **Custom adapter naming**: Custom connectors. Typically named after the target system:
+  - `{system_name}_connector` or `{system_name}_adapter`
+  - `custom_{system}` or `{vendor}_{product}`
+
+## What to Extract
+
+1. **Detected naming patterns**: For each category (recipes, folders, connections, topics, properties, lookup tables, adapters), identify:
+   - The naming pattern template
+   - Pattern elements (prefix, suffix, separators, codes)
+   - Examples of names that follow the pattern
+   - Pattern adherence rate (what % of names follow the pattern?)
+
+2. **Folder structure analysis**:
+   - List all folder paths (groups) found in the scan data
+   - What organizational scheme do they follow (by department, by integration, by function)?
+   - Is the folder structure flat or hierarchical?
+   - Are there orphaned recipes in root with no folder?
+   - Do folder names use consistent formatting (Title Case, snake_case, etc.)?
+
+3. **Connection naming analysis**:
+   - Do connection names include the environment (prod, staging, dev)?
+   - Do connection names include the purpose or system being connected to?
+   - Are connection names consistent across recipes that use the same connection?
+   - Are there connection names that could cause environment confusion (e.g., "salesforce" without environment qualifier)?
+
+4. **Recipe naming analysis**:
+   - Do recipe names describe the integration flow (source, target, action)?
+   - Are there naming prefixes or codes (e.g., numbering, department codes)?
+   - Are callable/worker recipes distinguishable from main/orchestrator recipes?
+   - Are API recipes and webhook recipes clearly identified in names?
+
+5. **Naming violations**: Identify names that deviate from the expected patterns:
+   - Generic or uninformative names (e.g., "Recipe 1", "Test", "Copy of...")
+   - Inconsistent separators (mix of underscores, hyphens, spaces, dots)
+   - Missing elements (connection without environment, recipe without purpose)
+   - Conflicting conventions (some snake_case, some camelCase, some Title Case)
+   - Names with version indicators suggesting duplicates ("v2", "new", "old", "backup")
+
+6. **Property scope analysis**:
+   - Which properties are account-scoped (shared across all projects) vs project-scoped?
+   - Do property names indicate their scope or environment?
+   - Are there properties that should be environment-specific but are not?
+   - Is the naming convention for properties consistent?
+
+7. **Topic naming analysis**:
+   - Do topic names clearly indicate the event type and domain?
+   - Are topic names discoverable by potential subscribers?
+   - Is there a consistent naming scheme across all topics?
+
+8. **Consistency score and recommendations**: Measure overall naming consistency and provide actionable improvements.
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "naming_patterns": {
+    "recipes": {
+      "pattern": "{Source} to {Target} - {Action} {Object}",
+      "pattern_elements": ["Source system/trigger type", "Target system", "Action verb", "Object noun"],
+      "separator": " to ... - ...",
+      "examples_conforming": ["Salesforce to NetSuite - Sync Customers", "API - Create Customer Endpoint"],
+      "examples_non_conforming": ["Recipe 1", "test sync", "Copy of Salesforce sync"],
+      "adherence_rate": 0.75,
+      "total_recipes_analyzed": 45
+    },
+    "folders": {
+      "pattern": "{Department}/{Integration Name} or {Function}",
+      "structure_type": "hierarchical by department and integration",
+      "examples": ["Sales/Salesforce Sync", "Finance/Invoice Processing", "Utilities"],
+      "depth_levels": 2,
+      "orphaned_in_root": 3,
+      "adherence_rate": 0.85
+    },
+    "connections": {
+      "pattern": "{App} - {Environment} ({Purpose})",
+      "examples_conforming": ["Salesforce - Production (CRM)", "PostgreSQL - Staging (DWH)"],
+      "examples_non_conforming": ["salesforce", "my_db", "test connection"],
+      "includes_environment": true,
+      "adherence_rate": 0.60,
+      "recommendation": "Add environment qualifier to all connections to prevent accidental production use"
+    },
+    "event_topics": {
+      "pattern": "{domain}.{event_type}",
+      "examples_conforming": ["orders.new_order", "customers.updated"],
+      "examples_non_conforming": ["new stuff", "topic1"],
+      "adherence_rate": 0.80
+    },
+    "properties": {
+      "pattern": "{scope}_{parameter_name} (snake_case)",
+      "scope_distribution": {"account_properties": 5, "project_properties": 12},
+      "examples_conforming": ["prod_api_url", "erp_base_endpoint"],
+      "examples_non_conforming": ["ApiKey", "URL", "x"],
+      "adherence_rate": 0.70
+    },
+    "lookup_tables": {
+      "pattern": "{purpose}_mapping or {domain}_{object}",
+      "examples_conforming": ["country_code_mapping", "status_translation"],
+      "adherence_rate": 0.90
+    },
+    "custom_adapters": {
+      "pattern": "{system_name} or custom_{system}",
+      "examples_conforming": ["custom_erp_connector", "vendor_api_adapter"],
+      "adherence_rate": 0.85
+    }
+  },
+  "folder_structure": {
+    "all_folders": [
+      {"path": "Sales/Salesforce Sync", "recipe_count": 8},
+      {"path": "Sales/NetSuite Sync", "recipe_count": 5},
+      {"path": "Finance/Invoice Processing", "recipe_count": 6},
+      {"path": "Utilities", "recipe_count": 4},
+      {"path": "root", "recipe_count": 3, "note": "Recipes not in any folder"}
+    ],
+    "organization_scheme": "By department, then by integration/function",
+    "max_depth": 2,
+    "assessment": "Well-organized with clear departmental separation. 3 recipes in root should be moved to appropriate folders."
+  },
+  "naming_violations": [
+    {
+      "name": "Recipe 1",
+      "category": "recipe",
+      "violation": "Generic numeric name -- provides no information about purpose, source, or target",
+      "recommendation": "Rename to describe the integration flow (e.g., 'Salesforce to NetSuite - Sync Accounts')"
+    },
+    {
+      "name": "salesforce",
+      "category": "connection",
+      "violation": "No environment qualifier -- impossible to distinguish production from staging/dev",
+      "recommendation": "Rename to 'Salesforce - Production (CRM)' or similar with environment context"
+    },
+    {
+      "name": "Copy of Customer Sync v2",
+      "category": "recipe",
+      "violation": "Copy prefix and version suffix suggest an ad-hoc duplicate that should be cleaned up",
+      "recommendation": "Delete if obsolete, or rename to follow standard pattern and remove the original"
+    }
+  ],
+  "abbreviation_glossary": [
+    {"abbreviation": "SF", "meaning": "Salesforce", "usage": "Recipe name prefix"},
+    {"abbreviation": "NS", "meaning": "NetSuite", "usage": "Recipe name prefix"},
+    {"abbreviation": "DWH", "meaning": "Data Warehouse", "usage": "Connection name purpose qualifier"},
+    {"abbreviation": "CRM", "meaning": "Customer Relationship Management", "usage": "Connection name purpose qualifier"},
+    {"abbreviation": "API", "meaning": "Application Programming Interface", "usage": "Recipe name prefix for API recipes"}
+  ],
+  "consistency_score": 7.5,
+  "consistency_assessment": "ADEQUATE -- Recipe naming is mostly consistent with the '{Source} to {Target} - {Action}' pattern. Folder structure is well-organized by department. Connection naming is the weakest area -- 40% of connections lack environment qualifiers, creating a risk of accidental production access during development. Property naming is inconsistent (mix of snake_case and camelCase).",
+  "recommendations": [
+    "Add environment qualifier to all connection names (e.g., 'Salesforce - Production' not just 'Salesforce')",
+    "Standardize property naming to snake_case with scope prefix (e.g., 'prod_api_url' not 'ApiKey')",
+    "Move 3 root-level recipes into appropriate department folders",
+    "Remove or rename 'Copy of...' recipes that indicate unmanaged duplicates",
+    "Establish a topic naming convention using dot-separated domain.event format",
+    "Prefix callable/worker recipes with '[Worker]' or move to a 'Workers' subfolder for discoverability",
+    "Document the naming convention in a central project wiki so all developers follow the same patterns"
+  ]
+}
+```
+
+Be thorough. Every recipe name, every folder path, every connection name, every deviation is part of the picture. Naming conventions are critical for maintainability at scale -- document them well. Pay special attention to connection naming since environment confusion is the #1 operational risk in Workato projects.

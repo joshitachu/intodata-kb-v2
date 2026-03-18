@@ -20,16 +20,23 @@
 		reverse_proxy localhost:8000
 	}
 
-	# Dashboard + MCP API
-	handle /dashboard* {
-		reverse_proxy localhost:8002
+	# Dashboard: redirect /dashboard → /dashboard/
+	@dashboard_no_slash path /dashboard
+	redir @dashboard_no_slash /dashboard/ permanent
+
+	# Dashboard SPA (strip /dashboard prefix, proxy to nginx container)
+	handle_path /dashboard/* {
+		reverse_proxy localhost:8001
 	}
 
+	# Auth proxy for dashboard (rewrite /auth/* → /api/v1/auth/*)
+	handle_path /auth/* {
+		rewrite * /api/v1/auth{path}
+		reverse_proxy localhost:8000
+	}
+
+	# MCP API
 	handle /mcp/* {
-		reverse_proxy localhost:8002
-	}
-
-	handle /assets/* {
 		reverse_proxy localhost:8002
 	}
 

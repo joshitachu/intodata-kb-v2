@@ -1,0 +1,78 @@
+# Workato file classification rules
+# Maps Workato asset type suffixes to FileTypes
+
+rules:
+  # Recipes (core workflow definitions)
+  - pattern: "**/*.recipe.json"
+    type: job
+    description: "Workato recipe workflow definition"
+
+  # Connections (app authentication config)
+  - pattern: "**/*.connection.json"
+    type: connection
+    description: "Workato app connection configuration"
+
+  # Lookup tables (static reference data)
+  - pattern: "**/*.lookup_table.json"
+    type: schema
+    description: "Workato lookup table (reference data)"
+
+  # Workato DB tables
+  - pattern: "**/*.workato_db_table.json"
+    type: schema
+    description: "Workato DB table definition"
+
+  # Properties (account/project-scoped)
+  - pattern: "**/*.account_property.json"
+    type: context
+    description: "Account-wide property"
+  - pattern: "**/*.project_property.json"
+    type: context
+    description: "Project-scoped property"
+
+  # Schemas (shared data models)
+  - pattern: "**/*.workato_schema.json"
+    type: schema
+    description: "Shared Workato schema definition"
+
+  # Templates
+  - pattern: "**/*.workato_template.json"
+    type: config
+    description: "Workato message template"
+
+  # Custom adapters (SDK connector code)
+  - pattern: "**/*.custom_adapter.json"
+    type: routine
+    description: "Custom connector SDK code (Ruby)"
+
+  # Event topics (pub/sub)
+  - pattern: "**/*.topic.json"
+    type: connection
+    description: "Event topic (pub/sub channel)"
+
+  # API assets
+  - pattern: "**/*.api_group.json"
+    type: config
+    description: "API collection group"
+  - pattern: "**/*.api_endpoint.json"
+    type: job
+    description: "API endpoint definition"
+
+  # LCAP (low-code apps)
+  - pattern: "**/*.lcap_app.json"
+    type: job
+    description: "Low-code app definition"
+  - pattern: "**/*.lcap_page.json"
+    type: config
+    description: "Low-code app page"
+
+  # Manifest
+  - pattern: "manifest.json"
+    type: config
+    description: "Workato package manifest (asset index)"
+
+# No file extensions to skip -- Workato exports are all JSON
+skip_extensions: []
+
+# No directories to skip -- Workato exports use folder structure
+skip_directories: []

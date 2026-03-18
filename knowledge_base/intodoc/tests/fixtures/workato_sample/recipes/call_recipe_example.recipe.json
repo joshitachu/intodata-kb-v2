@@ -1,0 +1,54 @@
+{
+  "id": 12347,
+  "name": "Orchestrator Recipe",
+  "description": "Calls sub-recipes via call_recipe",
+  "trigger_application": "clock",
+  "action_applications": ["workato"],
+  "applications": ["clock", "workato"],
+  "running": true,
+  "version_no": 1,
+  "code": {
+    "number": 0,
+    "provider": "clock",
+    "name": "scheduled_event",
+    "as": "scheduler",
+    "keyword": "trigger",
+    "input": {"interval": "1", "unit": "days"},
+    "uuid": "call-0001",
+    "block": [
+      {
+        "number": 1,
+        "provider": "workato",
+        "name": "call_recipe",
+        "keyword": "action",
+        "as": "call_sync",
+        "input": {
+          "recipe_id": "12345"
+        },
+        "uuid": "call-0002",
+        "block": []
+      },
+      {
+        "number": 2,
+        "keyword": "foreach",
+        "input": {
+          "list": "#{_('data.scheduler.regions')}"
+        },
+        "block": [
+          {
+            "number": 3,
+            "provider": "workato",
+            "name": "call_recipe",
+            "keyword": "action",
+            "as": "call_region_sync",
+            "input": {
+              "recipe_id": "12346"
+            },
+            "uuid": "call-0003",
+            "block": []
+          }
+        ]
+      }
+    ]
+  }
+}
