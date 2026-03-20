@@ -1,0 +1,196 @@
+You are analyzing a Workato integration project. Your task is to produce a **Business Logic Detection** -- an inference of the business domains, extraction of business rules from all sources (datapill formulas, action input mappings, SQL queries, conditional expressions, recipe naming patterns), and an impact analysis of what would break if these rules changed.
+
+## Workato Context
+Business logic in Workato is distributed across multiple layers, making it hard to find and document:
+- **Datapill formulas**: Field-level transformations that often encode business rules. Datapill references with Ruby method chaining (`.to_s`, `.strip`, `.present?`, `.gsub()`, `.upcase`, `.downcase`, `.round()`) implement data transformation rules. For example, `#{_('data.salesforce_1.status')}.present? ? #{_('data.salesforce_1.status')} : 'UNKNOWN'` encodes a default-value business rule.
+- **Conditional branch expressions**: If/elsif/else blocks that determine which data paths execute. For example, `#{_('data.trigger_1.order_type')} == 'Subscription'` routes subscription orders to a different processing path -- this encodes a business routing rule.
+- **SQL queries in run_sql actions**: WHERE conditions, CASE expressions, and JOIN logic in `run_sql` actions often encode business filters. For example, `WHERE status IN ('active','pending') AND created_at > '2020-01-01'` encodes which records are considered current by the business.
+- **Custom adapter Ruby SDK code**: Ruby `execute()` methods in custom adapters may contain complex business logic -- validation rules, calculation formulas, categorization logic, data masking.
+- **Formula expressions in action inputs**: Complex expressions combining multiple datapills with string interpolation, arithmetic, and conditionals implement business calculations and data enrichment rules.
+- **Recipe orchestration order**: The sequence in which callable recipes are invoked (extract -> validate -> transform -> load) often reflects a business process.
+- **Recipe naming conventions**: Recipe and folder names often encode business domain information. For example, `Order_Sync_Recipe` indicates the sales/orders domain; `Salesforce_Search` indicates CRM data retrieval; folder paths like `Finance/AP/` indicate accounting payables.
+- **Account and recipe properties**: Property names like `fiscal_year_start`, `cutoff_date`, `max_batch_size` indicate business parameters. Account properties are environment-wide; recipe properties are scoped to a single recipe.
+- **Lookup table entries**: Lookup tables used for code mappings (status codes, country codes, category translations) encode business reference data and domain rules.
+- **Schema field names**: Field names in trigger output schemas and action input schemas often use business terminology that reveals domain concepts.
+- **Search and lookup actions**: `search_records`, `get_record`, and `lookup_table_entry` actions implement business relationships (e.g., looking up customer by email, finding order by ID, resolving a status code from a lookup table).
+- **Foreach loops with aggregation**: Foreach loops that accumulate values (totals, counts, concatenated lists) combined with `run_sql` GROUP BY queries implement business metrics.
+- **Event topic payloads**: The schema of event topic messages defines business data contracts between publisher and subscriber recipes.
+- **Callable recipe input/output parameters**: The parameters of callable recipes define business interface contracts -- what data is required, what is returned, and what the expected types are.
+- **API collection endpoints**: API recipes grouped in collections define business service interfaces -- the request/response schemas encode what external systems can do and what data they receive.
+- **Property lists**: Bulk configuration in array format (`[{name, value}]`) that defines environment-dependent business parameters across multiple recipes.
+
+## What to Extract
+
+1. **Business domain inference**: Based on recipe names, folder paths, app connections, table/object names, and data patterns, infer:
+   - What business domains are covered (sales, finance, HR, manufacturing, logistics, etc.)?
+   - What entities are being processed (orders, customers, products, invoices, employees, etc.)?
+   - What business processes are being automated (real-time order sync, daily customer replication, event-driven notifications, etc.)?
+   - What geographic or organizational units are involved (regions, business units, departments)?
+
+2. **Business rules from datapill formulas and action inputs**: For every datapill formula or action input mapping that encodes a business rule:
+   - The raw expression
+   - Plain-English business rule description
+   - The business domain it belongs to
+   - Confidence level (CERTAIN, LIKELY, INFERRED) -- is this clearly a business rule or a technical transformation?
+   - Data affected
+
+3. **Business rules from SQL queries**: For every `run_sql` action with business-meaningful WHERE, JOIN, or CASE logic:
+   - The relevant SQL fragment
+   - What business filter or rule it implements
+   - What data is included/excluded and why
+
+4. **Business rules from custom code**: For every piece of custom adapter Ruby code or formula expression containing business logic:
+   - The code snippet
+   - The business rule in plain English
+   - Whether this rule is also documented elsewhere or only exists in code
+
+5. **Business rules from recipe structure**: Infer rules from the overall recipe architecture:
+   - Recipe orchestration patterns (orchestrator calling workers via `call_recipe`) and what business process they mirror
+   - Conditional recipe execution (if blocks controlling `call_recipe`) and what business conditions control it
+   - Event topic pub/sub flows and what business events drive them
+   - API collection endpoints and what business capabilities they expose
+
+6. **Business parameter catalog**: List every value that appears to be a business parameter:
+   - Hardcoded dates (fiscal year boundaries, migration cutoffs, go-live dates)
+   - Hardcoded status codes and their meanings
+   - Hardcoded thresholds (minimum order amounts, maximum retry counts, batch sizes that reflect business SLAs)
+   - Lookup table entries used as category mappings or reference data
+   - Account/recipe property values used as environment-dependent business configuration
+   - Default values in `.presence || default` patterns when data is missing
+
+7. **Impact analysis**: For each identified business rule, assess:
+   - What recipes implement this rule?
+   - What downstream data would change if the rule changed?
+   - What external systems consume the affected data?
+   - Estimated blast radius: how many recipes, tables, or processes would be affected?
+   - Is the rule implemented in one place or duplicated across multiple recipes?
+
+8. **Business rule conflicts**: Identify cases where:
+   - The same business concept is handled differently in different recipes
+   - Status code mappings are inconsistent across recipes
+   - Date format assumptions differ between recipes
+   - Filter conditions on the same entity differ between recipes or folders
+   - Lookup table entries conflict with hardcoded values in recipe logic
+
+## Output Format
+Return a JSON object with this exact structure:
+```json
+{
+  "business_domains": [
+    {
+      "domain": "Sales",
+      "entities": ["Orders", "Customers", "Products", "Invoices"],
+      "jobs_in_domain": ["Order_Sync_Recipe", "Customer_Upsert_Recipe", "Invoice_Export_Recipe"],
+      "description": "Syncs sales order data from Salesforce to NetSuite for fulfillment. Covers the order lifecycle from creation through invoicing.",
+      "geographic_scope": "Global -- multi-subsidiary",
+      "estimated_process": "Real-time sync triggered by new Salesforce opportunities, with daily batch reconciliation"
+    }
+  ],
+  "business_rules": [
+    {
+      "rule_id": "BR-001",
+      "rule_description": "Only orders with status 'Active' or 'Pending' are synced to the target system. Cancelled and draft orders are excluded at the search action level.",
+      "rule_type": "data_filter",
+      "source_type": "action_input",
+      "source_location": "Order_Sync_Recipe / salesforce_1 (search_records)",
+      "source_expression": "Status IN ('Active', 'Pending')",
+      "domain": "Sales",
+      "confidence": "CERTAIN",
+      "data_affected": "All downstream order data in the target system",
+      "impact_if_changed": {
+        "blast_radius": "HIGH -- affects all order reports and downstream fulfillment processes",
+        "downstream_jobs": ["Invoice_Export_Recipe", "Warehouse_Notify_Recipe"],
+        "downstream_systems": ["NetSuite", "Warehouse Management System"],
+        "duplicated_in": []
+      }
+    },
+    {
+      "rule_id": "BR-002",
+      "rule_description": "Customer email addresses are normalized to lowercase and trimmed of whitespace before upsert to ensure consistent deduplication.",
+      "rule_type": "data_transformation",
+      "source_type": "datapill_formula",
+      "source_location": "Customer_Upsert_Recipe / netsuite_1 (upsert_record)",
+      "source_expression": "#{_('data.salesforce_1.Email')}.downcase.strip",
+      "domain": "Sales",
+      "confidence": "CERTAIN",
+      "data_affected": "email field on all customer records in target system",
+      "impact_if_changed": {
+        "blast_radius": "MEDIUM -- affects customer matching and deduplication across integrations",
+        "downstream_jobs": ["Billing_Sync_Recipe"],
+        "downstream_systems": ["NetSuite CRM"],
+        "duplicated_in": ["Partner_Sync_Recipe / netsuite_2 -- same normalization applied"]
+      }
+    }
+  ],
+  "business_parameters": [
+    {
+      "parameter": "Status code 'Active'",
+      "meaning": "Active -- record is current and should be processed",
+      "used_in": ["Order_Sync_Recipe search filter", "Customer_Upsert_Recipe if-block condition"],
+      "hardcoded": true,
+      "recommendation": "Move to a Workato lookup table or account property for flexibility"
+    },
+    {
+      "parameter": "Date cutoff: 2020-01-01",
+      "meaning": "Only process records created after January 1, 2020 (likely a migration go-live date)",
+      "used_in": ["Order_Sync_Recipe run_sql WHERE clause"],
+      "hardcoded": true,
+      "recommendation": "Move to an account property so it can be updated without modifying the recipe"
+    }
+  ],
+  "business_rule_conflicts": [
+    {
+      "conflict_id": "CONFLICT-001",
+      "description": "Order_Sync_Recipe filters orders by status IN ('Active','Pending') but Returns_Recipe filters by status = 'Active' only -- Pending orders are included for forward sync but excluded for returns processing",
+      "affected_rules": ["BR-001"],
+      "jobs_involved": ["Order_Sync_Recipe", "Returns_Recipe"],
+      "severity": "medium",
+      "recommendation": "Confirm with business whether this is intentional (pending orders cannot have returns) or a gap"
+    }
+  ],
+  "data_layer_pattern": {
+    "layers_identified": ["Extract", "Transform", "Load"],
+    "raw_description": "Trigger and search actions extract data from source systems with minimal transformation",
+    "clean_description": "Datapill formulas, if-blocks, and callable sub-recipes apply business rules, validation, and enrichment",
+    "publish_description": "Create/upsert/run_sql actions write transformed data to target systems or publish events to downstream subscribers"
+  },
+  "glossary": [
+    {
+      "term": "Callable recipe",
+      "inferred_meaning": "A reusable sub-recipe invoked by other recipes via call_recipe -- functions as a shared business operation",
+      "confidence": "CERTAIN",
+      "used_in": ["Recipe names", "call_recipe action inputs"]
+    }
+  ],
+  "summary": {
+    "total_business_rules": 24,
+    "rules_by_type": {
+      "data_filter": 8,
+      "data_transformation": 10,
+      "data_validation": 3,
+      "calculation": 2,
+      "categorization": 1
+    },
+    "rules_by_confidence": {
+      "CERTAIN": 15,
+      "LIKELY": 6,
+      "INFERRED": 3
+    },
+    "business_parameters_hardcoded": 12,
+    "rule_conflicts_found": 2,
+    "domains_identified": 3
+  }
+}
+```
+
+## Instructions
+
+- **Be thorough.** Business rules are the most critical documentation output. Every datapill formula, every action input mapping, every if-block condition, every `run_sql` WHERE clause should be examined for business meaning.
+- If you are uncertain whether something is a business rule or a technical transformation, include it with confidence level INFERRED and let the reader decide.
+- Business rule conflicts are high-value findings -- inconsistencies between recipes or folders often indicate bugs or undocumented business requirements.
+- Hardcoded business parameters (dates, status codes, thresholds) are maintenance risks. Always recommend moving them to account properties or lookup tables.
+- Impact analysis should trace the full downstream blast radius of each rule -- from the recipe where it is implemented to the final consumers of the data, including event topic subscribers and callable recipe callers.
+- Pay special attention to datapill formulas with Ruby method chaining -- these often encode subtle business rules (e.g., `.presence || 'default'` encodes a fallback rule, `.to_f > threshold ? 'A' : 'B'` encodes a classification rule).
+- Lookup tables are a primary source of business reference data -- document their contents as business rules when they encode status mappings, category translations, or routing logic.
+- API collection endpoints define business service contracts -- document the request/response schemas as interface-level business rules.
+- Nested recipe steps loaded from sibling `steps.json` files contain the same business logic as inline steps -- do not skip them.

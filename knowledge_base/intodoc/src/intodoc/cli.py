@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -176,6 +177,7 @@ def _save_scan_result(scan_result, output_dir: Path) -> None:
         group = job.group or "Global"
         job_group_dir = jobs_dir / group
         job_group_dir.mkdir(parents=True, exist_ok=True)
-        (job_group_dir / f"{job.name}.json").write_text(
+        safe_name = re.sub(r'[/\\:*?"<>|]+', "_", job.name).strip("_") or "unnamed"
+        (job_group_dir / f"{safe_name}.json").write_text(
             job.model_dump_json(indent=2), encoding="utf-8"
         )

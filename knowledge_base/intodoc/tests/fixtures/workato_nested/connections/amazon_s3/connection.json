@@ -1,0 +1,7 @@
+{
+  "id": 303,
+  "name": "s3_bucket",
+  "application": "amazon_s3",
+  "authentication_type": "iam_role",
+  "base_url": "https://s3.amazonaws.com"
+}

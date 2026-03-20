@@ -1,5 +1,29 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-18 (LLM-based Conversation vs Document Summary Detection)
+
+### [Feature]: Add CONVERSATION_SUMMARY intent to LLM classifier
+
+- **Files changed**:
+  - `backend/src/generation/intent_classifier.py`: Added `summary` and `conversation_summary` actions to `CLASSIFIER_SYSTEM_PROMPT`. Added `CONVERSATION_SUMMARY` to `Action` enum. Updated `_llm_classify()` to accept `conversation_context` param (appended as `[Context: ...]` note to user message). Updated `analyze_query_async()` to handle `conversation_summary` -> `Action.CONVERSATION_SUMMARY` and `summary` -> `Action.SEARCH`/`QueryType.SUMMARY` from LLM response. Regex fallback kept for when LLM is unavailable.
+  - `backend/src/generation/prompt_builder.py`: Added `CONVERSATION_SUMMARY_PROMPT` and `build_conversation_summary_messages()` function for building LLM messages from chat history.
+  - `backend/src/generation/conversational_rag.py`: Updated import to include `build_conversation_summary_messages`. Pass `conversation_context` (message count) to `analyze_query_async()`. Added `Action.CONVERSATION_SUMMARY` handler that builds summary from chat history (doubled token/message limits). Updated SUMMARY fallback: when `resolve_document_id` fails and conversation history exists, falls back to conversation summary instead of generic "no results".
+- **Problem**: "Summarize all your answers" in a conversation would (1) crash due to missing `using="dense"` in Qdrant `query_points`, and (2) even without crash, always tried to find a document to summarize instead of summarizing the conversation.
+- **Root cause**: No conversation summary intent existed. The `conversation_context` parameter in `analyze_query_async` was never used. The LLM classifier had no way to distinguish "summarize our chat" from "summarize document X".
+- **Change**: Extended the LLM classifier with two new actions (`summary` for documents, `conversation_summary` for chat). The LLM now receives conversation context ("user is in an active conversation with N messages") and can naturally distinguish the two intents. Added a dedicated prompt and handler for conversation summaries.
+- **Why this approach**: LLM-based routing handles typos, rephrasing, and multilingual queries naturally. No extra LLM calls — the classification already happens on every query. Conversation context is the key signal for the LLM to distinguish intents.
+- **Verification**: All 5 modified files pass Python AST syntax check.
+
+### [Fix]: Add `using="dense"` to `query_points` calls (Qdrant 400 error)
+
+- **Files changed**:
+  - `backend/src/generation/map_reduce.py` (line 83): Added `using="dense"` to `query_points` in `resolve_document_id()`
+  - `backend/src/api/routes/query.py` (line 102): Added `using="dense"` to `query_points` in `query_debug()`
+- **Problem**: Qdrant returns 400 error when `query_points` is called without specifying which named vector to use, since the collection has named vectors (dense + sparse).
+- **Root cause**: These two call sites were added before/after the named vectors migration and never updated.
+- **Change**: Added `using="dense"` parameter to both `query_points` calls.
+- **Verification**: AST syntax check passes.
+
 ## Session: 2026-03-18 (Scope Document Dedup by Project ID)
 
 ### [Fix]: Prefix stored filename with project_id to scope deduplication

@@ -1,0 +1,9 @@
+{
+  "id": 302,
+  "name": "postgres_prod",
+  "provider": "postgresql",
+  "host": "db.example.com",
+  "port": "5432",
+  "database": "orders_db",
+  "authorization_type": "basic"
+}

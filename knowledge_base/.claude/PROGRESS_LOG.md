@@ -3,6 +3,125 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-03-20
+
+### [Fix]: Workato Scanner Format C Support -- 6 Field Mismatch Bugs
+
+- **Files changed**:
+  - `intodoc/src/intodoc/platforms/workato/parser.py` (6 bug fixes across classification, parsing, and step walking)
+  - `intodoc/tests/test_platforms/test_workato.py` (20+ new tests for Format C)
+  - `intodoc/tests/fixtures/workato_nested/recipes/nightly_sync/recipe.json` (new fixture)
+  - `intodoc/tests/fixtures/workato_nested/recipes/nightly_sync/steps.json` (new fixture)
+  - `intodoc/tests/fixtures/workato_nested/connections/amazon_s3/connection.json` (new fixture)
+- **Problem**: Workato scanner produced critically incomplete output for real-world manifest/package exports (Format C). 4 of 5 recipes had only trigger placeholders, 1 recipe completely missing, 0 of 6 connections detected, no action steps or field mappings extracted.
+- **Root cause**: Parser only handled Format A (code blocks) and Format B (inline trigger+steps). Format C uses different field names (`application` vs `provider`, `action` vs `name`, `authentication_type` vs `authorization_type`, `conditional` vs `if`, `repeat_for_each` vs `foreach`) and wraps steps.json in a dict.
+- **Changes**:
+  1. Fix 1 (line 626): Unwrap `steps.json` dict `{recipe_id, steps}` in addition to raw list
+  2. Fix 2 (lines 861-862): Trigger field fallback `provider||application`, `name||type`; generic `_extract_trigger_params()` iterates all keys
+  3. Fix 3 (line 186): Recipe classification accepts `trigger_application`/`action_applications`/`connections_used` as markers
+  4. Fix 4 (lines 1087-1088, 920-921): Action step field fallback `provider||application`, `name||action`; generic `_extract_new_step_params()` iterates all keys
+  5. Fix 5 (lines 188-193, 430, 443): Connection classification accepts `application` + `authentication_type`/`verified`/`connection_id`; `_parse_connection()` uses fallback chains
+  6. Fix 6 (lines 942, 972): Step type aliases `conditional`->`if`, `repeat_for_each`->`foreach`; new handlers for `formula`, `lookup`, `trigger`-as-step
+- **Why this approach**: Generic extraction (iterate all keys, `or` fallback chains) handles all known formats AND unknown future variations without hardcoded field lists
+- **Verification**: 139 tests pass (20+ new tests covering Format C classification, wrapped steps, new step types, connection field variants)
+
+### [Feature]: Gate Validation + Retries Between Doc Gen Phases
+
+- **Files changed**: `mcp-server/src/mcp_server/services/claude_service.py` (2 prompt insertions)
+- **Problem**: If a Phase 2 sub-agent produces empty/thin analysis or a Phase 3 agent fails to write a doc, downstream phases proceed anyway, resulting in thin or missing documentation.
+- **Root cause**: No validation checkpoints between phases in the orchestration prompt.
+- **Change**: Added two gate validation phases to the doc generation prompt:
+  - **Phase 2.5** (between Phase 2 and Phase 3): After all Phase 2 sub-agents return, runs `ls -la` on `_analysis/`, checks each group's analysis file exists and is >1KB. Re-spawns failed groups once. Proceeds with warnings if retry fails.
+  - **Phase 3.5** (between Phase 3 and Phase 4): After all Phase 3 doc agents return, validates 9 required docs exist and are >500 bytes (00-05, 09-11). Re-spawns only the responsible agent (Core, Business+Ops, or Patterns+User) once. Logs warnings for still-missing docs.
+- **Why this approach**: Prompt-only change — no Python logic modifications. Validation runs inside the Claude Code subprocess as part of orchestration. Lightweight (`ls -la` checks) with bounded retries (max 1 per group/agent) to avoid runaway costs.
+- **Verification**: `python3 -m py_compile` passes. Full E2E test pending next doc generation run.
+
+### [Feature]: Phase 2 Filesystem Boundary + Scaled Analysis Target
+
+- **Files changed**: `mcp-server/src/mcp_server/services/claude_service.py` (3 edits)
+- **Problem**: (1) Phase 2 sub-agents sometimes waste 5+ minutes reading raw files from `intodoc-output/` or `data/repos/` despite all data being pre-bundled in `_preprocess/`. (2) Fixed `(target: 15-40KB)` analysis target is excessive for small projects (e.g. 4-job project with ~5KB preprocessed data).
+- **Root cause**: (1) No explicit prohibition on filesystem access outside staging dir. (2) Analysis target was a static range regardless of input size.
+- **Change**: (1) Added explicit PROHIBITED block to Phase 2 sub-agent instructions: no Glob/Read/Bash outside `{staging_abs}/`, no access to `intodoc-output/`, `data/repos/`, or any other directory. (2) After preprocessing, compute `total_preprocess_bytes` (sum of non-underscore-prefixed .md files in `_preprocess/`), derive `analysis_target_kb = max(5, min(40, total_preprocess_bytes // 2048))`, inject into prompt replacing fixed `15-40KB`.
+- **Why this approach**: (1) Sub-agents respect explicit instructions better than implicit expectations. The boundary is clear: everything is in `_preprocess/`, don't look elsewhere. (2) Dividing by 2048 means analysis is ~50% of input size, clamped to 5-40KB range. Small projects get proportional targets; large projects still hit 40KB max.
+- **Verification**: `python3 -m py_compile` passes. Visual inspection confirms both changes in correct locations.
+
+### [Feature]: Consolidated Analysis Guide + Dynamic Depth Scaling
+
+- **Files changed**:
+  - `intodoc/src/intodoc/platforms/talend/prompts/ANALYSIS_GUIDE.md` -- NEW (276 lines, 12KB). Consolidated analysis guide replacing 22 separate .txt prompt files for Phase 2 sub-agents.
+  - `intodoc/src/intodoc/platforms/talend/prompts/PHASE_3_GUIDE.md` -- NEW (86 lines). Cross-group synthesis guide for Phase 3 agents (exec summary, cross-region comparison, migration assessment).
+  - `intodoc/src/intodoc/platforms/_shared/prompts/ANALYSIS_GUIDE.md` -- NEW (125 lines). Platform-agnostic fallback guide.
+  - `intodoc/src/intodoc/platforms/_shared/prompts/PHASE_3_GUIDE.md` -- NEW (53 lines). Shared Phase 3 fallback.
+  - `mcp-server/src/mcp_server/services/scanner_service.py` -- Modified `get_analysis_prompts()` to prefer ANALYSIS_GUIDE.md; added `get_phase3_guide()` method.
+  - `mcp-server/src/mcp_server/services/claude_service.py` -- Modified `_preprocess_scan_data()` to write `_analysis_guide.md` + `_phase3_guide.md`. Rewrote `generate_docs()` prompt: removed 70 lines of inline section definitions (now in guide), replaced hard-coded depth targets with dynamic scaling, added Phase 3 guide reference, deduplicated DO NOT blocks.
+- **Problem**: 22 separate prompts bundled into ~222KB caused conflicting instructions (22 "Your task is" statements), wasted ~60% on JSON format specs sub-agents never use, and repeated Talend concepts 5-10x. Hard-coded line minimums (200-800+) don't scale with project size.
+- **Root cause**: Prompts designed for old CLI model (separate LLM calls returning JSON) were being bundled verbatim for new MCP model (single markdown output).
+- **Change**: (1) Created single ANALYSIS_GUIDE.md per platform (~12KB) preserving all extraction checklists, scoring systems, risk catalogs, and platform knowledge while dropping JSON specs, redundant context, and conflicting framing. (2) Created PHASE_3_GUIDE.md for cross-group synthesis (moved from p10/p17/p19 which were misplaced in Phase 2). (3) scanner_service checks for guide first, falls back to individual .txt files. (4) Prompt now uses dynamic depth: "This project has N jobs across M groups. Scale depth to match content." (5) Inline section definitions removed (guide has them).
+- **Why this approach**: 94% token reduction (222KB -> 12KB) for Phase 2 input. Coherent single-document instructions eliminate conflicting "your task is" blocks. Dynamic depth naturally adapts to project size. Original 22 .txt files kept in place for backward compat (legacy CLI, Workato/Generic inheritance).
+- **Verification**: Python syntax check passes on both modified files. Guide file sizes confirmed (12KB Talend guide vs 222KB original prompts). Prompt reduced from ~207 to ~127 lines.
+
+## Session: 2026-03-19
+
+### [Fix]: Size-aware bundle splitting for oversized prompt and ref doc files
+
+- **Files changed**: `mcp-server/src/mcp_server/services/claude_service.py` (lines 267-350: bundle splitting logic; lines 437-564: orchestrator prompt references)
+- **Problem**: After adding Workato p09+p22 prompt overrides, `_analysis_prompts.md` grew to 284.9KB, exceeding Claude's 256KB Read tool file size limit. Phase 2 sub-agents hit `"File content (284.9KB) exceeds maximum allowed size (256KB)"`. Ref doc bundles (`_ref_core.md` at 107KB, `_ref_patterns_user.md` at 169KB) exceeded the 25K token limit (~80KB).
+- **Root cause**: Bundle code concatenated ALL prompts (or ALL ref docs per agent) into a single file with no size check. Orchestrator prompt hardcoded single filenames.
+- **Change**: (1) Prompt bundle: split at 200KB threshold (`MAX_PROMPT_BUNDLE_BYTES = 200_000`). Writes `_analysis_prompts_1.md`, `_analysis_prompts_2.md` when total exceeds limit, or single `_analysis_prompts.md` when it fits. (2) Ref doc bundles: split at 80KB threshold (`MAX_REF_BUNDLE_BYTES = 80_000`, ~20K tokens). Same suffix pattern. (3) Updated all orchestrator prompt references from hardcoded filenames to glob patterns (`_analysis_prompts*.md`, `_ref_core*.md`, etc.) with instructions to "read ALL matching files".
+- **Why this approach**: Threshold-based splitting is simple, deterministic, and forward-compatible as more prompts are added. 200KB is well under the 256KB file limit. 80KB is ~20K tokens, safely under the 25K token limit. Glob patterns let sub-agents discover split files without knowing the count.
+- **Verification**: Python syntax check passes. All 6 prompt references updated to glob patterns (grep confirms no remaining hardcoded single-file references).
+
+### [Feature]: Workato-specific p09 and p22 prompt overrides
+
+- **Files changed**:
+  - `intodoc/src/intodoc/platforms/workato/prompts/p09_business_logic.txt` -- NEW. Workato-specific business logic detection prompt replacing shared/Talend fallback.
+  - `intodoc/src/intodoc/platforms/workato/prompts/p22_preventive.txt` -- NEW. Workato-specific preventive analysis prompt replacing shared/Talend fallback.
+- **Problem**: Shared p09 and p22 prompts contained Talend-specific terminology (tMap expressions, Java routines, tJavaRow, tMap lookup join, tAggregateRow, tBigQuerySQLRow, tLogCatcher, tSendMail, DIE_ON_CHILD_ERROR) that misled the LLM during Workato project analysis.
+- **Root cause**: These two prompts were never overridden for Workato during the prompt parity work on 2026-03-18.
+- **Change**: Created Workato-specific overrides that: (1) Replace all Talend terms with Workato equivalents (datapill formulas, action input mappings, monitor/catch blocks, call_recipe, lookup_table_entry, etc.). (2) Keep identical JSON output schemas (p09: 7 keys, p22: 7 keys). (3) Add Workato-specific extraction targets (API collection endpoints, property lists, nested recipe steps from sibling steps.json, event topic payloads, callable recipe interfaces). (4) Reference WAP-003 through WAP-010 anti-patterns from best_practices.yaml in p22.
+- **Why this approach**: Platform-specific prompts produce dramatically better doc quality than generic prompts with wrong terminology. The shared fallback is fine for genuinely platform-agnostic prompts (p04, p10, p11, p14, p15) but not for business logic or preventive analysis which reference platform components directly.
+- **Verification**: (1) Both files discovered by prompt loading (17 Workato overrides total). (2) Zero Talend terms in either file (grep returns no matches). (3) JSON schema keys match shared versions exactly. (4) 126 Workato tests pass (no regressions).
+
+### [Fix]: Doc generation prompt delivery + MCP tool path resolution
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/services/scanner_service.py` (line ~701) -- Changed `platforms_root` from `config.project_root / "intodoc" / "src" / ...` to `Path(intodoc.platforms.__file__).parent`. Uses installed package path instead of filesystem traversal from project_root.
+  - `mcp-server/src/mcp_server/services/claude_service.py` (line ~286) -- Changed `ref_dir` from `config.project_root / "intodoc" / "reference-docs"` to source-tree-relative path via `Path(__file__).resolve().parent * 5 / "intodoc" / "reference-docs"`.
+  - `mcp-server/src/mcp_server/services/claude_service.py` (lines ~382-385) -- Removed Phase 1 MCP calls (`get_scan_status`, `get_chunks`, `fetch_json`) from prompt. Replaced with "All data is pre-processed" instruction.
+  - `mcp-server/src/mcp_server/services/claude_service.py` (lines ~579-588) -- Extended PROHIBITED ACTIONS to ban all MCP/fetch tool calls.
+  - `mcp-server/src/mcp_server/services/claude_service.py` (line ~646) -- Changed subprocess cwd from `config.project_root` to source tree path where `.mcp.json` lives.
+  - `mcp-server/src/mcp_server/services/claude_service.py` (line ~284) -- Added warning log when analysis prompts fail to bundle.
+- **Problem**: Doc generation ran without Workato-specific analysis prompts (15 prompts + best_practices.yaml), reference doc templates (12 files), or MCP tools. Generated docs lacked platform-specific depth.
+- **Root cause**: `.env` sets `MCP_PROJECT_ROOT=/opt/intodata-kb/knowledge_base` which only contains runtime data (`data/`, `intodoc-output/`, `output/`), not source code. All paths resolved from `config.project_root` pointed to non-existent locations. The subprocess cwd also lacked `.mcp.json`.
+- **Change**: (1) Prompt lookup uses Python package path (`intodoc.platforms.__file__`), works regardless of project_root. (2) Reference docs use source-tree-relative path from `__file__`. (3) Removed redundant Phase 1 MCP calls from prompt since all data is pre-bundled. (4) Fixed subprocess cwd to source tree. (5) Added warning log for failed prompt bundling.
+- **Why this approach**: Package path is the most reliable way to find installed platform files. Source-tree-relative paths avoid config dependency. Removing MCP calls from prompt prevents errors since subprocess has no MCP tools.
+- **Verification**: `MCP_PROJECT_ROOT=/opt/... python -c "ScannerService().get_analysis_prompts('workato')"` returns `Count: 23 Error: none`. Reference docs path resolves to correct location with 12 files. MCP server restarted successfully.
+
+### [Feature]: Content-based asset discovery for Workato scanner
+
+- **Files changed**:
+  - `intodoc/src/intodoc/platforms/workato/parser.py` -- Added `_classify_json_content()` static method (~100 lines), `_build_asset_registry()` method (~25 lines), `_asset_registry` field. Replaced all 12 `rglob()` calls with `self._asset_registry.get()` lookups in `_build_connection_index`, `_build_recipe_id_index`, `_parse_properties`, `_parse_all_recipes`, `_parse_recipe_functions`, `_parse_api_assets`, `_parse_lcap_assets`, `_parse_custom_adapters`, `_parse_schemas`, `_parse_lookup_tables`. Added steps.json sibling merging in `_parse_recipe()`. Added name fallback for generic filenames. Added `property_list` type handling. Added `api_collection` type handling. Updated `_find_workato_root()` with content-based fallback. Unified lookup_table parsing (merged `*.lookup_table.json` and `*.workato_db_table.json` rglob paths into single registry type). Added `from collections import defaultdict` import.
+  - `intodoc/src/intodoc/platforms/workato/__init__.py` -- Added `_DIR_NAME_MAP` dict for parent-directory-based fallback classification. Updated `classify_file()` to check parent/grandparent directory names for nested export formats.
+  - `intodoc/tests/test_platforms/test_workato.py` -- Added 4 new test classes (51 new tests): `TestClassifyJsonContent` (25 unit tests for content classifier), `TestAssetRegistry` (6 tests on flat + nested fixtures), `TestNestedFormatIntegration` (15 integration tests), `TestDirectoryClassification` (5 tests for dir-based fallback).
+  - `intodoc/tests/fixtures/workato_nested/` -- NEW fixture directory (9 files): `manifest.json`, 2 recipe dirs each with `recipe.json` + `steps.json`, 2 connection dirs each with `connection.json`, `lookup_tables/country_codes.json`, `properties/settings.json` (property list format).
+- **Problem**: Workato scanner used hardcoded filename patterns (`rglob("*.recipe.json")`, `rglob("*.connection.json")`, etc.) for asset discovery. This only worked for one specific export format. Real Workato exports use a different folder structure (e.g. `recipes/sync_orders/recipe.json` + `recipes/sync_orders/steps.json`) and naming convention, resulting in 0 recipes/connections discovered.
+- **Root cause**: The discovery layer was based on 10+ separate `rglob()` calls with suffix patterns like `*.recipe.json`. Files in nested folder format have generic names like `recipe.json` or `connection.json` that don't match these patterns.
+- **Change**: Replaced the filename-suffix-based discovery with content-based classification:
+  1. `_classify_json_content()` reads parsed JSON and determines asset type from key signatures (15+ types: recipe, connection, lookup_table, custom_adapter, api_endpoint, api_collection, lcap_app, recipe_function, topic, schema, property, property_list, steps, manifest, package). Handles wrapped formats (`{"recipe": {...}}`) by detecting wrapper keys and mapping to types.
+  2. `_build_asset_registry()` iterates the file list already produced by `walk_repo()` (no extra filesystem walk), reads each JSON file once, classifies by content, and builds a `dict[str, list[Path]]` registry.
+  3. Phase 1b in `parse()` calls `_build_asset_registry()` right after `walk_repo()`.
+  4. All 12 `rglob()` calls replaced with `self._asset_registry.get('type', [])` lookups.
+  5. Added steps.json sibling merging in `_parse_recipe()` -- if a `steps.json` exists next to a recipe file, its content is merged into the recipe data.
+  6. Added name fallback -- when filename is generic (e.g. `recipe.json`), use parent directory name.
+  7. Added `property_list` handling for files containing an array of `{name, value}` dicts.
+  8. Added `api_collection` handling for files containing multiple endpoints.
+  9. Updated `classify_file()` with parent/grandparent directory name fallback for `walk_repo()` stats.
+  10. Updated `_find_workato_root()` with content-based recipe detection as final fallback.
+- **Why this approach**: Content-based classification is format-agnostic -- it works regardless of file naming or directory structure. The single-pass registry is actually faster than the previous 10+ separate `rglob()` calls. The `walk_repo()` output is reused (no extra filesystem walk). Parsing logic stays identical -- only the discovery layer changes.
+- **Verification**: 126/126 tests pass (75 existing unchanged + 51 new). Zero regressions. Tested on 3 fixtures: `workato_sample` (flat format), `workato_new_format` (wrapped format), `workato_nested` (nested folder format).
+
+---
+
 ## Session: 2026-03-18
 
 ### [Feature]: Create 7 missing Workato-specific analysis prompts (p07, p12, p16, p17, p18, p20, p21)

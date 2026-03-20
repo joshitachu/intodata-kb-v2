@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -89,6 +90,179 @@ class WorkatoParser:
         self._topic_index: dict[str, MetadataConnection] = {}
         self._schema_index: dict[str, dict] = {}
         self._recipe_id_index: dict[str, str] = {}
+        self._asset_registry: dict[str, list[Path]] = {}
+
+    # ── Content-Based Asset Classification ─────────────────────────
+
+    @staticmethod
+    def _classify_json_content(data: object, filename: str = "") -> str | None:
+        """Classify a parsed JSON object by its content structure.
+
+        Returns an asset type string or None if unrecognizable.
+        Handles both bare and wrapper-key formats (e.g. {"recipe": {...}}).
+        """
+        # Handle arrays
+        if isinstance(data, list):
+            if not data:
+                return None
+            # Array of {name, value} dicts -> property_list
+            if all(
+                isinstance(item, dict) and "name" in item and "value" in item
+                for item in data[:5]  # sample first 5
+            ):
+                return "property_list"
+            # Array of step-like objects with type+provider -> steps
+            if all(
+                isinstance(item, dict) and "type" in item
+                for item in data[:5]
+            ):
+                return "steps"
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        # Check for wrapper keys and recurse into inner dict
+        _WRAPPER_KEYS = (
+            "recipe", "connection", "lookup_table", "custom_adapter",
+            "api_endpoint", "api_collection", "lcap_app", "recipe_function",
+            "account_property", "project_property", "topic",
+            "workato_schema", "workato_db_table",
+        )
+        for wk in _WRAPPER_KEYS:
+            inner = data.get(wk)
+            if isinstance(inner, dict) and len(data) <= 3:
+                # Wrapped format -- classify inner, but if the wrapper key
+                # itself is a known type, prefer that.
+                _KEY_TO_TYPE = {
+                    "recipe": "recipe",
+                    "connection": "connection",
+                    "lookup_table": "lookup_table",
+                    "custom_adapter": "custom_adapter",
+                    "api_endpoint": "api_endpoint",
+                    "api_collection": "api_collection",
+                    "lcap_app": "lcap_app",
+                    "recipe_function": "recipe_function",
+                    "account_property": "property",
+                    "project_property": "property",
+                    "topic": "topic",
+                    "workato_schema": "schema",
+                    "workato_db_table": "lookup_table",
+                }
+                if wk in _KEY_TO_TYPE:
+                    return _KEY_TO_TYPE[wk]
+
+        keys = set(data.keys())
+
+        # Manifest: has export_id or sha256, or filename is manifest.json
+        if "export_id" in keys or ("sha256" in keys and "export_manifest_id" not in keys):
+            return "manifest"
+        if filename.lower() == "manifest.json":
+            return "manifest"
+
+        # Package: has changelog or (version + recipes list)
+        if "changelog" in keys:
+            return "package"
+        if "version" in keys and "recipes" in keys and isinstance(data.get("recipes"), list):
+            return "package"
+
+        # Recipe: has code dict with keyword/block, or has trigger dict, or
+        # has steps list + running/version_no
+        code = data.get("code")
+        if isinstance(code, dict) and ("keyword" in code or "block" in code):
+            return "recipe"
+        if isinstance(code, str):
+            try:
+                code_parsed = json.loads(code)
+                if isinstance(code_parsed, dict) and ("keyword" in code_parsed or "block" in code_parsed):
+                    return "recipe"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if isinstance(data.get("trigger"), dict):
+            return "recipe"
+        if isinstance(data.get("steps"), list) and (
+            "running" in keys or "version_no" in keys or "trigger_application" in keys
+        ):
+            return "recipe"
+
+        # Recipe without trigger/code/steps: metadata-only recipe.json (steps in sibling file)
+        if "trigger_application" in keys or "action_applications" in keys or "connections_used" in keys:
+            return "recipe"
+
+        # Connection: has provider/application + auth marker
+        has_conn_identity = "provider" in keys or (
+            "application" in keys and "code" not in keys and "steps" not in keys and "trigger" not in keys
+        )
+        has_conn_marker = (
+            "authorization_type" in keys or "authentication_type" in keys
+            or "base_url" in keys or "connection_id" in keys or "verified" in keys
+        )
+        if has_conn_identity and has_conn_marker:
+            return "connection"
+
+        # Custom adapter: has source_code, or has both actions + triggers
+        if "source_code" in keys:
+            return "custom_adapter"
+        if "actions" in keys and "triggers" in keys:
+            return "custom_adapter"
+
+        # Lookup table: has columns (array)
+        if "columns" in keys and isinstance(data.get("columns"), list):
+            return "lookup_table"
+
+        # API collection: has endpoints array
+        if "endpoints" in keys and isinstance(data.get("endpoints"), list):
+            return "api_collection"
+
+        # API endpoint: has method + (url or path)
+        if "method" in keys and ("url" in keys or "path" in keys):
+            return "api_endpoint"
+
+        # LCAP app: has pages array
+        if "pages" in keys and isinstance(data.get("pages"), list):
+            return "lcap_app"
+
+        # Recipe function: has steps list wrapped differently (no recipe indicators)
+        if isinstance(data.get("steps"), list) and "name" in keys and "trigger" not in keys:
+            return "recipe_function"
+
+        # Topic: has schema key and no recipe indicators
+        if "schema" in keys and "code" not in keys and "steps" not in keys:
+            return "topic"
+
+        # Schema: has fields/schema with field definitions
+        if "fields" in keys and isinstance(data.get("fields"), (list, dict)):
+            return "schema"
+
+        # Property: simple name + value pair
+        if "name" in keys and "value" in keys and len(keys) <= 4:
+            return "property"
+
+        return None
+
+    def _build_asset_registry(self, walked_files: list) -> dict[str, list[Path]]:
+        """Classify walked JSON files by content. Single pass, no extra rglob.
+
+        Args:
+            walked_files: List of ScannedFile objects from walk_repo().
+
+        Returns:
+            Dict mapping asset type strings to lists of Path objects.
+        """
+        registry: dict[str, list[Path]] = defaultdict(list)
+        for sf in walked_files:
+            path = sf.path if isinstance(sf.path, Path) else Path(str(sf.path))
+            if path.suffix.lower() != ".json":
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                data = json.loads(text)
+                asset_type = self._classify_json_content(data, path.name)
+                if asset_type:
+                    registry[asset_type].append(path)
+            except (json.JSONDecodeError, OSError):
+                continue
+        return dict(registry)
 
     @staticmethod
     def _unwrap(data: dict, key: str) -> dict:
@@ -109,25 +283,28 @@ class WorkatoParser:
         all_files = walk_repo(repo_root, plugin)
         files = [f for f in all_files if f.file_type != FileType.UNKNOWN]
 
+        # Phase 1b: Content-based asset classification (single pass, no extra rglob)
+        self._asset_registry = self._build_asset_registry(all_files)
+
         # Phase 2: Parse manifest
         manifest_data = self._parse_manifest(workato_root)
 
-        # Phase 3: Build connection index
+        # Phase 3: Build connection index (from registry)
         self._build_connection_index(workato_root)
 
-        # Phase 4: Build recipe ID index
+        # Phase 4: Build recipe ID index (from registry)
         self._build_recipe_id_index(workato_root)
 
-        # Phase 5: Parse properties as context groups
+        # Phase 5: Parse properties as context groups (from registry)
         context_groups = self._parse_properties(workato_root)
 
-        # Phase 6: Parse all recipes + API endpoints + LCAP apps
+        # Phase 6: Parse all recipes + API endpoints + LCAP apps (from registry)
         jobs = self._parse_all_recipes(workato_root)
         jobs.extend(self._parse_recipe_functions(workato_root))
         jobs.extend(self._parse_api_assets(workato_root))
         jobs.extend(self._parse_lcap_assets(workato_root))
 
-        # Phase 7: Parse custom adapters as routines + schemas
+        # Phase 7: Parse custom adapters as routines + schemas (from registry)
         routines = self._parse_custom_adapters(workato_root)
         self._parse_schemas(workato_root)
 
@@ -145,8 +322,8 @@ class WorkatoParser:
             "total_files": len(all_files),
             "classified_files": len(files),
             "jobs": len(jobs),
-            "recipes": sum(1 for j in jobs if "recipe" in j.path.lower()),
-            "api_endpoints": sum(1 for j in jobs if "api_endpoint" in j.path.lower()),
+            "recipes": len(self._asset_registry.get("recipe", [])),
+            "api_endpoints": len(self._asset_registry.get("api_endpoint", [])) + len(self._asset_registry.get("api_collection", [])),
             "connections": len(all_connections),
             "context_groups": len(context_groups),
             "routines": len(routines),
@@ -176,7 +353,7 @@ class WorkatoParser:
 
     @staticmethod
     def _find_workato_root(repo_root: Path) -> Path:
-        """Find the Workato export root (look for manifest.json or *.recipe.json)."""
+        """Find the Workato export root (look for manifest.json, *.recipe.json, or content-based)."""
         # Check if manifest.json exists at root
         if (repo_root / "manifest.json").exists():
             return repo_root
@@ -194,6 +371,19 @@ class WorkatoParser:
             if len(parents) == 1:
                 return parents.pop()
             return repo_root
+
+        # Content-based fallback: find directories with JSON files that look like recipes
+        for json_path in repo_root.rglob("*.json"):
+            try:
+                text = json_path.read_text(encoding="utf-8", errors="replace")
+                data = json.loads(text)
+                asset_type = WorkatoParser._classify_json_content(data, json_path.name)
+                if asset_type == "recipe":
+                    # Found a recipe -- return the common ancestor
+                    # Walk up to find the export root (parent of recipes dir, or repo_root)
+                    return repo_root
+            except (json.JSONDecodeError, OSError):
+                continue
 
         # Fallback to repo_root
         return repo_root
@@ -214,8 +404,8 @@ class WorkatoParser:
     # ── Phase 3: Build connection index ─────────────────────────────
 
     def _build_connection_index(self, root: Path) -> None:
-        """Parse all *.connection.json and *.topic.json files."""
-        for conn_path in sorted(root.rglob("*.connection.json")):
+        """Parse all connection and topic files (from asset registry)."""
+        for conn_path in sorted(self._asset_registry.get("connection", [])):
             try:
                 conn = self._parse_connection(conn_path)
                 self._connection_index[conn.name] = conn
@@ -231,7 +421,7 @@ class WorkatoParser:
             except (json.JSONDecodeError, OSError, KeyError):
                 continue
 
-        for topic_path in sorted(root.rglob("*.topic.json")):
+        for topic_path in sorted(self._asset_registry.get("topic", [])):
             try:
                 topic = self._parse_topic(topic_path)
                 self._topic_index[topic.name] = topic
@@ -245,7 +435,7 @@ class WorkatoParser:
         data = self._unwrap(data, "connection")
 
         name = data.get("name", conn_path.stem.replace(".connection", ""))
-        provider = data.get("provider", "unknown")
+        provider = data.get("provider") or data.get("application", "unknown")
 
         return MetadataConnection(
             xmi_id=str(data.get("id", name)),
@@ -258,7 +448,7 @@ class WorkatoParser:
             additional_params={
                 "provider": provider,
                 "application": data.get("application", provider),
-                "authorization_type": str(data.get("authorization_type", "")),
+                "authorization_type": str(data.get("authorization_type") or data.get("authentication_type", "")),
                 "base_url": str(data.get("base_url", "")),
             },
         )
@@ -283,14 +473,20 @@ class WorkatoParser:
     # ── Phase 4: Build recipe ID index ──────────────────────────────
 
     def _build_recipe_id_index(self, root: Path) -> None:
-        """Map recipe IDs to names for call_recipe resolution."""
-        for recipe_path in sorted(root.rglob("*.recipe.json")):
+        """Map recipe IDs to names for call_recipe resolution (from registry)."""
+        for recipe_path in sorted(self._asset_registry.get("recipe", [])):
             try:
                 text = self._read_filtered(recipe_path)
                 data = json.loads(text)
                 data = self._unwrap(data, "recipe")
                 recipe_id = str(data.get("id", ""))
-                recipe_name = data.get("name", recipe_path.stem.replace(".recipe", ""))
+                recipe_name = data.get("name", "")
+                # Name fallback: if stem is just "recipe", use parent dir name
+                if not recipe_name:
+                    if recipe_path.stem == "recipe" or recipe_path.stem == "recipe.json":
+                        recipe_name = recipe_path.parent.name
+                    else:
+                        recipe_name = recipe_path.stem.replace(".recipe", "")
                 if recipe_id:
                     self._recipe_id_index[recipe_id] = recipe_name
             except (json.JSONDecodeError, OSError):
@@ -299,61 +495,64 @@ class WorkatoParser:
     # ── Phase 5: Parse properties ───────────────────────────────────
 
     def _parse_properties(self, root: Path) -> list[ContextGroup]:
-        """Parse *.account_property.json and *.project_property.json."""
+        """Parse property files (from registry). Handles both individual files and property lists."""
         context_groups: list[ContextGroup] = []
 
-        # Account properties
-        account_vars: list[ContextVariable] = []
-        for prop_path in sorted(root.rglob("*.account_property.json")):
+        # Individual property files (account + project properties)
+        all_vars: list[ContextVariable] = []
+        for prop_path in sorted(self._asset_registry.get("property", [])):
             try:
                 text = self._read_filtered(prop_path)
                 data = json.loads(text)
-                data = self._unwrap(data, "account_property")
+                # Unwrap both account_property and project_property wrappers
+                for wrapper_key in ("account_property", "project_property"):
+                    data = self._unwrap(data, wrapper_key)
                 name = data.get("name", prop_path.stem)
-                account_vars.append(ContextVariable(
+                all_vars.append(ContextVariable(
                     name=name,
                     type="String",
-                    values={"_default": str(data.get("value", "[account_property]"))},
+                    values={"_default": str(data.get("value", "[property]"))},
                 ))
             except (json.JSONDecodeError, OSError):
                 continue
 
-        if account_vars:
+        if all_vars:
             context_groups.append(ContextGroup(
                 name="account_properties",
-                variables=account_vars,
+                variables=all_vars,
             ))
 
-        # Project properties
-        project_vars: list[ContextVariable] = []
-        for prop_path in sorted(root.rglob("*.project_property.json")):
+        # Property list files (single file containing array of {name, value} dicts)
+        for pl_path in sorted(self._asset_registry.get("property_list", [])):
             try:
-                text = self._read_filtered(prop_path)
+                text = self._read_filtered(pl_path)
                 data = json.loads(text)
-                data = self._unwrap(data, "project_property")
-                name = data.get("name", prop_path.stem)
-                project_vars.append(ContextVariable(
-                    name=name,
-                    type="String",
-                    values={"_default": str(data.get("value", "[project_property]"))},
-                ))
+                if isinstance(data, list):
+                    pl_vars: list[ContextVariable] = []
+                    for item in data:
+                        if isinstance(item, dict) and "name" in item:
+                            pl_vars.append(ContextVariable(
+                                name=item["name"],
+                                type="String",
+                                values={"_default": str(item.get("value", ""))},
+                            ))
+                    if pl_vars:
+                        group_name = pl_path.stem.replace(".json", "").replace(".", "_")
+                        context_groups.append(ContextGroup(
+                            name=group_name,
+                            variables=pl_vars,
+                        ))
             except (json.JSONDecodeError, OSError):
                 continue
-
-        if project_vars:
-            context_groups.append(ContextGroup(
-                name="project_properties",
-                variables=project_vars,
-            ))
 
         return context_groups
 
     # ── Phase 6: Parse recipes ──────────────────────────────────────
 
     def _parse_all_recipes(self, root: Path) -> list[ParsedJob]:
-        """Parse all *.recipe.json files into ParsedJob objects."""
+        """Parse all recipe files into ParsedJob objects (from registry)."""
         jobs: list[ParsedJob] = []
-        for recipe_path in sorted(root.rglob("*.recipe.json")):
+        for recipe_path in sorted(self._asset_registry.get("recipe", [])):
             try:
                 job = self._parse_recipe(recipe_path, root)
                 if job:
@@ -364,9 +563,9 @@ class WorkatoParser:
         return jobs
 
     def _parse_recipe_functions(self, root: Path) -> list[ParsedJob]:
-        """Parse all *.recipe_function.json files into ParsedJob objects."""
+        """Parse all recipe function files into ParsedJob objects (from registry)."""
         jobs: list[ParsedJob] = []
-        for func_path in sorted(root.rglob("*.recipe_function.json")):
+        for func_path in sorted(self._asset_registry.get("recipe_function", [])):
             try:
                 text = self._read_filtered(func_path)
                 data = json.loads(text)
@@ -416,8 +615,28 @@ class WorkatoParser:
         data = json.loads(text)
         data = self._unwrap(data, "recipe")
 
-        name = data.get("name", recipe_path.stem.replace(".recipe", ""))
+        # Name with fallback: if filename is generic (e.g. "recipe.json"), use parent dir name
+        name = data.get("name", "")
+        if not name:
+            stem = recipe_path.stem
+            if stem in ("recipe", "recipe.json"):
+                name = recipe_path.parent.name
+            else:
+                name = stem.replace(".recipe", "")
         group = self._extract_group(recipe_path, root)
+
+        # Check for sibling steps.json (nested export format)
+        steps_file = recipe_path.parent / "steps.json"
+        if steps_file.exists():
+            try:
+                steps_text = self._read_filtered(steps_file)
+                steps_data_sibling = json.loads(steps_text)
+                if isinstance(steps_data_sibling, list):
+                    data.setdefault("steps", steps_data_sibling)
+                elif isinstance(steps_data_sibling, dict) and isinstance(steps_data_sibling.get("steps"), list):
+                    data.setdefault("steps", steps_data_sibling["steps"])
+            except (json.JSONDecodeError, OSError):
+                pass
 
         # Parse the code block tree
         code_raw = data.get("code", "{}")
@@ -649,8 +868,8 @@ class WorkatoParser:
         tmap_entries: list[TMapEntry],
     ) -> str:
         """Extract trigger as the first Component from new-format recipe.trigger."""
-        provider = trigger.get("provider", "unknown")
-        name = trigger.get("name", "unknown")
+        provider = trigger.get("provider") or trigger.get("application", "unknown")
+        name = trigger.get("name") or trigger.get("type", "unknown")
         comp_type = f"WorkatoTrigger_{provider}_{name}"
         unique_name = f"{provider}_trigger_{name}"
 
@@ -708,8 +927,8 @@ class WorkatoParser:
                         self._extract_datapill_refs(input_data, comp.unique_name)
                     )
                 # Detect call_recipe
-                provider = step.get("provider", "")
-                action_name = step.get("name", "")
+                provider = step.get("provider") or step.get("application", "")
+                action_name = step.get("name") or step.get("action", "")
                 if action_name == "call_recipe":
                     recipe_id = str(input_data.get("recipe_id", "")) if isinstance(input_data, dict) else ""
                     recipe_name = self._recipe_id_index.get(
@@ -730,7 +949,7 @@ class WorkatoParser:
                         ))
                 last_name = comp.unique_name
 
-            elif step_type == "if":
+            elif step_type in ("if", "conditional"):
                 comp = Component(
                     unique_name=f"condition_if_{depth}_{id(step) % 10000}",
                     component_type="WorkatoCondition_if",
@@ -760,7 +979,7 @@ class WorkatoParser:
                     )
                 last_name = comp.unique_name
 
-            elif step_type in ("foreach", "repeat"):
+            elif step_type in ("foreach", "repeat", "repeat_for_each"):
                 comp = Component(
                     unique_name=f"loop_{step_type}_{depth}_{id(step) % 10000}",
                     component_type=f"WorkatoLoop_{step_type}",
@@ -871,12 +1090,68 @@ class WorkatoParser:
                     ))
                 last_name = comp.unique_name
 
+            elif step_type == "formula":
+                params = self._extract_new_step_params(step)
+                label = step.get("label", "")
+                unique = f"formula_{depth}_{id(step) % 10000}"
+                if label:
+                    unique = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
+                comp = Component(unique_name=unique, component_type="WorkatoFormula", params=params)
+                components.append(comp)
+                if last_name:
+                    connections.append(Connection(
+                        name=f"flow_{last_name}_to_{comp.unique_name}",
+                        source=last_name, target=comp.unique_name,
+                        connector_name="FLOW", line_style=0,
+                    ))
+                last_name = comp.unique_name
+
+            elif step_type == "lookup":
+                provider = step.get("provider") or step.get("application", "unknown")
+                action_name = step.get("name") or step.get("action", "lookup")
+                comp = self._make_step_component(step, depth)
+                comp.component_type = f"WorkatoLookup_{provider}_{action_name}"
+                components.append(comp)
+                if last_name:
+                    connections.append(Connection(
+                        name=f"flow_{last_name}_to_{comp.unique_name}",
+                        source=last_name, target=comp.unique_name,
+                        connector_name="FLOW", line_style=0,
+                    ))
+                input_data = step.get("input", {})
+                if isinstance(input_data, dict):
+                    tmap_entries.extend(self._extract_datapill_refs(input_data, comp.unique_name))
+                last_name = comp.unique_name
+
+            elif step_type == "trigger":
+                # Trigger appearing as a step (e.g., in steps.json)
+                app = step.get("provider") or step.get("application", "unknown")
+                trigger_name = step.get("name") or step.get("type", "unknown")
+                label = step.get("label", "")
+                params = self._extract_new_step_params(step)
+                unique = f"{app}_trigger_step"
+                if label:
+                    unique = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
+                comp = Component(
+                    unique_name=unique,
+                    component_type=f"WorkatoTrigger_{app}_{trigger_name}",
+                    params=params,
+                )
+                components.append(comp)
+                if last_name:
+                    connections.append(Connection(
+                        name=f"flow_{last_name}_to_{comp.unique_name}",
+                        source=last_name, target=comp.unique_name,
+                        connector_name="FLOW", line_style=0,
+                    ))
+                last_name = comp.unique_name
+
         return last_name
 
     def _make_step_component(self, step: dict, depth: int) -> Component:
         """Create a Component from a new-format action step."""
-        provider = step.get("provider", "unknown")
-        action_name = step.get("name", "unknown")
+        provider = step.get("provider") or step.get("application", "unknown")
+        action_name = step.get("name") or step.get("action", "unknown")
         label = step.get("label", "")
         comp_type = f"WorkatoAction_{provider}_{action_name}"
 
@@ -899,13 +1174,22 @@ class WorkatoParser:
 
     @staticmethod
     def _extract_new_step_params(step: dict) -> list[ComponentParam]:
-        """Extract params from new-format action step."""
+        """Extract params from new-format action step (generic -- all keys)."""
+        _SKIP_KEYS = {"input", "output", "output_schema", "steps", "steps_on_true",
+                      "steps_on_false", "steps_on_error", "type", "step_id"}
         params: list[ComponentParam] = []
-        for key in ("provider", "name", "label"):
-            val = step.get(key)
-            if val and isinstance(val, str):
-                params.append(ComponentParam(name=key, value=val, field_type="TEXT"))
-
+        for key, val in step.items():
+            if key in _SKIP_KEYS or val is None:
+                continue
+            if isinstance(val, (dict, list)):
+                val_str = json.dumps(val)
+                field_type = "INPUT"
+            else:
+                val_str = str(val)
+                field_type = "TEXT"
+            if val_str.strip():
+                params.append(ComponentParam(name=key, value=val_str, field_type=field_type))
+        # Also extract input fields
         input_data = step.get("input", {})
         if isinstance(input_data, dict):
             for field_name, field_val in input_data.items():
@@ -920,13 +1204,21 @@ class WorkatoParser:
 
     @staticmethod
     def _extract_trigger_params(trigger: dict) -> list[ComponentParam]:
-        """Extract params from new-format trigger object."""
+        """Extract params from new-format trigger object (generic -- all keys)."""
+        _SKIP_KEYS = {"input", "output_schema", "output"}
         params: list[ComponentParam] = []
-        for key in ("provider", "name", "title"):
-            val = trigger.get(key)
-            if val and isinstance(val, str):
-                params.append(ComponentParam(name=key, value=val, field_type="TEXT"))
-
+        for key, val in trigger.items():
+            if key in _SKIP_KEYS or val is None:
+                continue
+            if isinstance(val, (dict, list)):
+                val_str = json.dumps(val)
+                field_type = "INPUT"
+            else:
+                val_str = str(val)
+                field_type = "TEXT"
+            if val_str.strip():
+                params.append(ComponentParam(name=key, value=val_str, field_type=field_type))
+        # Also extract input fields (datapill-level detail)
         input_data = trigger.get("input", {})
         if isinstance(input_data, dict):
             for field_name, field_val in input_data.items():
@@ -1098,17 +1390,20 @@ class WorkatoParser:
     # ── Phase 6 continued: API and LCAP assets ──────────────────────
 
     def _parse_api_assets(self, root: Path) -> list[ParsedJob]:
-        """Parse *.api_endpoint.json files as API jobs."""
+        """Parse API endpoint and collection files as API jobs (from registry)."""
         jobs: list[ParsedJob] = []
-        for api_path in sorted(root.rglob("*.api_endpoint.json")):
+
+        # Individual API endpoints
+        for api_path in sorted(self._asset_registry.get("api_endpoint", [])):
             try:
                 text = self._read_filtered(api_path)
                 data = json.loads(text)
+                data = self._unwrap(data, "api_endpoint")
                 name = data.get("name", api_path.stem.replace(".api_endpoint", ""))
                 group = self._extract_group(api_path, root)
 
                 params: list[ComponentParam] = []
-                for key in ("method", "url", "content_type", "request_schema", "response_schema"):
+                for key in ("method", "url", "path", "content_type", "request_schema", "response_schema"):
                     val = data.get(key)
                     if val:
                         val_str = json.dumps(val) if isinstance(val, (dict, list)) else str(val)
@@ -1131,12 +1426,51 @@ class WorkatoParser:
                 ))
             except (json.JSONDecodeError, OSError):
                 continue
+
+        # API collections (one file with multiple endpoints)
+        for coll_path in sorted(self._asset_registry.get("api_collection", [])):
+            try:
+                text = self._read_filtered(coll_path)
+                coll_data = json.loads(text)
+                coll_data = self._unwrap(coll_data, "api_collection")
+                coll_name = coll_data.get("name", coll_path.stem)
+                group = self._extract_group(coll_path, root)
+
+                for ep in coll_data.get("endpoints", []):
+                    if not isinstance(ep, dict):
+                        continue
+                    ep_name_raw = ep.get("name", ep.get("path", "unknown"))
+                    # Sanitize: replace path separators and other filesystem-unsafe chars
+                    ep_name = re.sub(r"[/\\:*?\"<>|]+", "_", ep_name_raw).strip("_")
+                    params_ep: list[ComponentParam] = []
+                    for key in ("method", "url", "path", "content_type"):
+                        val = ep.get(key)
+                        if val:
+                            params_ep.append(ComponentParam(
+                                name=key, value=str(val), field_type="TEXT",
+                            ))
+
+                    comp = Component(
+                        unique_name=f"api_{coll_name}_{ep_name}",
+                        component_type="WorkatoAPIEndpoint",
+                        params=params_ep,
+                    )
+                    jobs.append(ParsedJob(
+                        name=f"api_{coll_name}_{ep_name}",
+                        path=str(coll_path.relative_to(root)) if root in coll_path.parents else coll_path.name,
+                        purpose=ep.get("description", ""),
+                        components=[comp],
+                        group=group,
+                    ))
+            except (json.JSONDecodeError, OSError):
+                continue
+
         return jobs
 
     def _parse_lcap_assets(self, root: Path) -> list[ParsedJob]:
-        """Parse *.lcap_app.json files as LCAP app jobs."""
+        """Parse LCAP app files as LCAP app jobs (from registry)."""
         jobs: list[ParsedJob] = []
-        for lcap_path in sorted(root.rglob("*.lcap_app.json")):
+        for lcap_path in sorted(self._asset_registry.get("lcap_app", [])):
             try:
                 text = self._read_filtered(lcap_path)
                 data = json.loads(text)
@@ -1180,9 +1514,9 @@ class WorkatoParser:
     # ── Phase 7: Custom adapters and schemas ────────────────────────
 
     def _parse_custom_adapters(self, root: Path) -> list[Routine]:
-        """Parse *.custom_adapter.json files as Routines (SDK code)."""
+        """Parse custom adapter files as Routines (from registry)."""
         routines: list[Routine] = []
-        for adapter_path in sorted(root.rglob("*.custom_adapter.json")):
+        for adapter_path in sorted(self._asset_registry.get("custom_adapter", [])):
             try:
                 text = self._read_filtered(adapter_path)
                 data = json.loads(text)
@@ -1203,8 +1537,8 @@ class WorkatoParser:
         return routines
 
     def _parse_schemas(self, root: Path) -> None:
-        """Parse *.workato_schema.json into schema_index."""
-        for schema_path in sorted(root.rglob("*.workato_schema.json")):
+        """Parse schema files into schema_index (from registry)."""
+        for schema_path in sorted(self._asset_registry.get("schema", [])):
             try:
                 text = self._read_filtered(schema_path)
                 data = json.loads(text)
@@ -1214,41 +1548,39 @@ class WorkatoParser:
                 continue
 
     def _parse_lookup_tables(self, root: Path) -> list[MetadataConnection]:
-        """Parse *.lookup_table.json and *.workato_db_table.json."""
+        """Parse lookup table files (from registry)."""
         connections: list[MetadataConnection] = []
 
-        for lt_path in sorted(root.rglob("*.lookup_table.json")):
+        for lt_path in sorted(self._asset_registry.get("lookup_table", [])):
             try:
                 text = self._read_filtered(lt_path)
                 data = json.loads(text)
                 data = self._unwrap(data, "lookup_table")
-                name = data.get("name", lt_path.stem.replace(".lookup_table", ""))
-                connections.append(MetadataConnection(
-                    xmi_id=str(data.get("id", name)),
-                    name=f"lookup_{name}",
-                    connection_type="LookupTable",
-                    additional_params={
-                        "columns": data.get("columns", []),
-                        "row_count": data.get("row_count", 0),
-                    },
-                ))
-            except (json.JSONDecodeError, OSError):
-                continue
-
-        for db_path in sorted(root.rglob("*.workato_db_table.json")):
-            try:
-                text = self._read_filtered(db_path)
-                data = json.loads(text)
                 data = self._unwrap(data, "workato_db_table")
-                name = data.get("name", db_path.stem.replace(".workato_db_table", ""))
-                connections.append(MetadataConnection(
-                    xmi_id=str(data.get("id", name)),
-                    name=f"wdb_{name}",
-                    connection_type="WorkatoDB",
-                    additional_params={
-                        "columns": data.get("columns", []),
-                    },
-                ))
+                name = data.get("name", lt_path.stem.replace(".lookup_table", "").replace(".workato_db_table", ""))
+
+                # Determine if it's a WorkatoDB or LookupTable based on content
+                if "workato_db_table" in lt_path.name.lower() or (
+                    "table_type" in data and data.get("table_type") == "workato_db"
+                ):
+                    connections.append(MetadataConnection(
+                        xmi_id=str(data.get("id", name)),
+                        name=f"wdb_{name}",
+                        connection_type="WorkatoDB",
+                        additional_params={
+                            "columns": data.get("columns", []),
+                        },
+                    ))
+                else:
+                    connections.append(MetadataConnection(
+                        xmi_id=str(data.get("id", name)),
+                        name=f"lookup_{name}",
+                        connection_type="LookupTable",
+                        additional_params={
+                            "columns": data.get("columns", []),
+                            "row_count": data.get("row_count", 0),
+                        },
+                    ))
             except (json.JSONDecodeError, OSError):
                 continue
 

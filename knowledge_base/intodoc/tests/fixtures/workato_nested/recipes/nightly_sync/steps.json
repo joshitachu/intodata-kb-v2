@@ -1,0 +1,63 @@
+{
+  "recipe_id": "90003",
+  "steps": [
+    {
+      "type": "trigger",
+      "application": "workato_scheduler",
+      "label": "Scheduled trigger"
+    },
+    {
+      "type": "action",
+      "application": "postgresql",
+      "action": "execute_query",
+      "label": "Extract warehouse data",
+      "input": {
+        "query": "SELECT * FROM staging.orders WHERE updated_at > {{trigger.last_run}}"
+      }
+    },
+    {
+      "type": "conditional",
+      "condition": {
+        "field": "{{steps.extract_warehouse_data.rows_count}}",
+        "operator": "greater_than",
+        "value": "0"
+      },
+      "steps_on_true": [
+        {
+          "type": "action",
+          "application": "amazon_s3",
+          "action": "upload_object",
+          "label": "Upload to S3",
+          "input": {
+            "bucket": "data-warehouse",
+            "key": "exports/{{trigger.date}}.csv",
+            "content": "{{steps.extract_warehouse_data.rows}}"
+          }
+        }
+      ],
+      "steps_on_false": [
+        {
+          "type": "formula",
+          "label": "Log no data",
+          "formula": "puts 'No new rows found'"
+        }
+      ]
+    },
+    {
+      "type": "repeat_for_each",
+      "list": "{{steps.extract_warehouse_data.rows}}",
+      "steps": [
+        {
+          "type": "lookup",
+          "application": "postgresql",
+          "action": "lookup_row",
+          "label": "Check existing record",
+          "input": {
+            "table": "warehouse.dim_orders",
+            "order_id": "{{steps.repeat_for_each.item.id}}"
+          }
+        }
+      ]
+    }
+  ]
+}

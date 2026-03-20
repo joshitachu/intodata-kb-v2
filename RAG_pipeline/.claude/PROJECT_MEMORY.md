@@ -47,6 +47,8 @@
 | Sentence-boundary chunking | Snap to sentence endings in last 20% | Prevents mid-sentence splits that degrade embedding quality | 2026-02-23 |
 | Deep Dive mode | Claude Code CLI via subprocess, SSE streaming | Spawns `claude -p` with Q&A prompt, reads raw scan data via MCP tools, streams answer back to browser. Separate from RAG pipeline — for detailed code-level questions | 2026-03-01 |
 | LLM for routing/expansion | **Routing removed** (heuristic); expansion disabled by default | Intent classifier eliminated (0 LLM calls). Query expansion `False` by default — re-enable via `.env` if quality > speed | 2026-02-23 |
+| Intent routing (v2) | LLM classifier with `summary` + `conversation_summary` actions | LLM naturally handles typos, rephrasing, multilingual. Conversation context ("N previous messages") is the key signal. Regex kept as fallback only when LLM unavailable | 2026-03-18 |
+| Qdrant named vectors | Always pass `using="dense"` to `query_points` | Collection has named vectors (dense + sparse); omitting `using` causes Qdrant 400 error | 2026-03-18 |
 
 ## Code Patterns
 

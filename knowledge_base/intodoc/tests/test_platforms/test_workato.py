@@ -964,6 +964,397 @@ class TestNewFormatIntegration:
         assert plugin.classify_file(Path("helper.recipe_function.json")) == FileType.JOB
 
 
+# ── Content-Based Classification ─────────────────────────────────────
+
+NESTED_FIXTURES = Path(__file__).parent.parent / "fixtures" / "workato_nested"
+
+
+class TestClassifyJsonContent:
+    """Unit tests for _classify_json_content()."""
+
+    def test_recipe_with_code_block(self):
+        data = {"id": 1, "name": "test", "code": {"keyword": "trigger", "block": []}}
+        assert WorkatoParser._classify_json_content(data) == "recipe"
+
+    def test_recipe_with_trigger(self):
+        data = {"id": 1, "name": "test", "trigger": {"provider": "sf"}, "steps": []}
+        assert WorkatoParser._classify_json_content(data) == "recipe"
+
+    def test_recipe_with_steps_and_running(self):
+        data = {"name": "test", "steps": [{"type": "action"}], "running": True, "version_no": 1}
+        assert WorkatoParser._classify_json_content(data) == "recipe"
+
+    def test_connection(self):
+        data = {"name": "sf", "provider": "salesforce", "authorization_type": "oauth2"}
+        assert WorkatoParser._classify_json_content(data) == "connection"
+
+    def test_connection_with_base_url(self):
+        data = {"name": "http_conn", "provider": "http", "base_url": "https://api.example.com"}
+        assert WorkatoParser._classify_json_content(data) == "connection"
+
+    def test_lookup_table(self):
+        data = {"name": "codes", "columns": [{"name": "code", "type": "string"}], "row_count": 10}
+        assert WorkatoParser._classify_json_content(data) == "lookup_table"
+
+    def test_custom_adapter_source_code(self):
+        data = {"name": "my_adapter", "source_code": "class MyAdapter; end"}
+        assert WorkatoParser._classify_json_content(data) == "custom_adapter"
+
+    def test_custom_adapter_actions_triggers(self):
+        data = {"name": "my_adapter", "actions": {}, "triggers": {}}
+        assert WorkatoParser._classify_json_content(data) == "custom_adapter"
+
+    def test_api_endpoint(self):
+        data = {"method": "GET", "url": "/api/users", "name": "get_users"}
+        assert WorkatoParser._classify_json_content(data) == "api_endpoint"
+
+    def test_api_endpoint_with_path(self):
+        data = {"method": "POST", "path": "/api/orders"}
+        assert WorkatoParser._classify_json_content(data) == "api_endpoint"
+
+    def test_api_collection(self):
+        data = {"name": "users_api", "endpoints": [{"method": "GET", "path": "/users"}]}
+        assert WorkatoParser._classify_json_content(data) == "api_collection"
+
+    def test_lcap_app(self):
+        data = {"name": "my_app", "pages": [{"name": "home"}]}
+        assert WorkatoParser._classify_json_content(data) == "lcap_app"
+
+    def test_recipe_function(self):
+        data = {"name": "format_date", "steps": [{"type": "action"}]}
+        assert WorkatoParser._classify_json_content(data) == "recipe_function"
+
+    def test_topic(self):
+        data = {"name": "events", "schema": {"type": "object"}}
+        assert WorkatoParser._classify_json_content(data) == "topic"
+
+    def test_schema(self):
+        data = {"name": "user_schema", "fields": [{"name": "email", "type": "string"}]}
+        assert WorkatoParser._classify_json_content(data) == "schema"
+
+    def test_property(self):
+        data = {"name": "api_url", "value": "https://api.example.com"}
+        assert WorkatoParser._classify_json_content(data) == "property"
+
+    def test_property_list(self):
+        data = [
+            {"name": "api_url", "value": "https://api.example.com"},
+            {"name": "batch_size", "value": "100"},
+        ]
+        assert WorkatoParser._classify_json_content(data) == "property_list"
+
+    def test_manifest(self):
+        data = {"export_id": "test-001", "assets": []}
+        assert WorkatoParser._classify_json_content(data) == "manifest"
+
+    def test_manifest_by_filename(self):
+        data = {"some_field": "value"}
+        assert WorkatoParser._classify_json_content(data, "manifest.json") == "manifest"
+
+    def test_package(self):
+        data = {"changelog": [{"version": "1.0"}]}
+        assert WorkatoParser._classify_json_content(data) == "package"
+
+    def test_wrapped_recipe(self):
+        data = {"recipe": {"id": 1, "name": "test", "code": {}}}
+        assert WorkatoParser._classify_json_content(data) == "recipe"
+
+    def test_wrapped_connection(self):
+        data = {"connection": {"name": "sf", "provider": "salesforce"}}
+        assert WorkatoParser._classify_json_content(data) == "connection"
+
+    def test_wrapped_lookup_table(self):
+        data = {"lookup_table": {"name": "codes", "columns": []}}
+        assert WorkatoParser._classify_json_content(data) == "lookup_table"
+
+    def test_steps_array(self):
+        data = [
+            {"type": "action", "provider": "sf", "name": "create"},
+            {"type": "action", "provider": "slack", "name": "post"},
+        ]
+        assert WorkatoParser._classify_json_content(data) == "steps"
+
+    def test_empty_dict(self):
+        assert WorkatoParser._classify_json_content({}) is None
+
+    def test_empty_list(self):
+        assert WorkatoParser._classify_json_content([]) is None
+
+    def test_non_dict(self):
+        assert WorkatoParser._classify_json_content("hello") is None
+
+    # ── Format C classification tests ──
+
+    def test_recipe_metadata_only(self):
+        """Recipe with trigger_application but no trigger/code/steps should classify."""
+        data = {"id": 1, "name": "test", "trigger_application": "scheduler",
+                "action_applications": ["postgresql"], "running": True, "version_no": 1}
+        assert WorkatoParser._classify_json_content(data) == "recipe"
+
+    def test_recipe_with_connections_used(self):
+        data = {"id": 1, "name": "test", "connections_used": ["pg", "s3"]}
+        assert WorkatoParser._classify_json_content(data) == "recipe"
+
+    def test_connection_with_application_and_auth_type(self):
+        """Connection using 'application' + 'authentication_type' (Format C)."""
+        data = {"name": "s3", "application": "amazon_s3", "authentication_type": "iam_role"}
+        assert WorkatoParser._classify_json_content(data) == "connection"
+
+    def test_connection_with_application_and_verified(self):
+        data = {"name": "pg", "application": "postgresql", "verified": True}
+        assert WorkatoParser._classify_json_content(data) == "connection"
+
+    def test_connection_with_connection_id(self):
+        data = {"name": "pg", "provider": "postgresql", "connection_id": "123"}
+        assert WorkatoParser._classify_json_content(data) == "connection"
+
+    def test_wrapped_steps_dict(self):
+        """steps.json wrapped in {recipe_id, steps} is not a standalone asset.
+        Classification returns None -- the parser handles it via sibling merge."""
+        data = {"recipe_id": "123", "steps": [{"type": "action"}]}
+        result = WorkatoParser._classify_json_content(data)
+        # recipe_id alone doesn't trigger recipe classification; this is
+        # an auxiliary file consumed by sibling-merge in _parse_recipe()
+        assert result is None or result == "recipe_function"
+
+
+class TestAssetRegistry:
+    """Tests for _build_asset_registry() on both flat and nested fixtures."""
+
+    @pytest.fixture
+    def parser(self):
+        from intodoc.scanner.credential_filter import CredentialFilter
+        return WorkatoParser(CredentialFilter())
+
+    def test_flat_fixture_finds_recipes(self, parser):
+        """Flat fixture (workato_sample) should find recipes via content."""
+        if not FIXTURES_DIR.exists():
+            pytest.skip("workato_sample fixture not found")
+        plugin = WorkatoPlugin()
+        all_files = __import__("intodoc.scanner.walker", fromlist=["walk_repo"]).walk_repo(FIXTURES_DIR, plugin)
+        registry = parser._build_asset_registry(all_files)
+
+        assert "recipe" in registry
+        assert len(registry["recipe"]) == 3
+
+    def test_flat_fixture_finds_connections(self, parser):
+        if not FIXTURES_DIR.exists():
+            pytest.skip("workato_sample fixture not found")
+        plugin = WorkatoPlugin()
+        all_files = __import__("intodoc.scanner.walker", fromlist=["walk_repo"]).walk_repo(FIXTURES_DIR, plugin)
+        registry = parser._build_asset_registry(all_files)
+
+        assert "connection" in registry
+        assert len(registry["connection"]) == 3
+
+    def test_nested_fixture_finds_recipes(self, parser):
+        """Nested fixture should find recipes via content classification."""
+        if not NESTED_FIXTURES.exists():
+            pytest.skip("workato_nested fixture not found")
+        plugin = WorkatoPlugin()
+        all_files = __import__("intodoc.scanner.walker", fromlist=["walk_repo"]).walk_repo(NESTED_FIXTURES, plugin)
+        registry = parser._build_asset_registry(all_files)
+
+        assert "recipe" in registry
+        assert len(registry["recipe"]) == 3
+
+    def test_nested_fixture_finds_connections(self, parser):
+        if not NESTED_FIXTURES.exists():
+            pytest.skip("workato_nested fixture not found")
+        plugin = WorkatoPlugin()
+        all_files = __import__("intodoc.scanner.walker", fromlist=["walk_repo"]).walk_repo(NESTED_FIXTURES, plugin)
+        registry = parser._build_asset_registry(all_files)
+
+        assert "connection" in registry
+        assert len(registry["connection"]) == 3
+
+    def test_nested_fixture_finds_lookup_table(self, parser):
+        if not NESTED_FIXTURES.exists():
+            pytest.skip("workato_nested fixture not found")
+        plugin = WorkatoPlugin()
+        all_files = __import__("intodoc.scanner.walker", fromlist=["walk_repo"]).walk_repo(NESTED_FIXTURES, plugin)
+        registry = parser._build_asset_registry(all_files)
+
+        assert "lookup_table" in registry
+        assert len(registry["lookup_table"]) == 1
+
+    def test_nested_fixture_finds_property_list(self, parser):
+        if not NESTED_FIXTURES.exists():
+            pytest.skip("workato_nested fixture not found")
+        plugin = WorkatoPlugin()
+        all_files = __import__("intodoc.scanner.walker", fromlist=["walk_repo"]).walk_repo(NESTED_FIXTURES, plugin)
+        registry = parser._build_asset_registry(all_files)
+
+        assert "property_list" in registry
+        assert len(registry["property_list"]) == 1
+
+
+# ── Nested Format Integration Test ──────────────────────────────────
+
+
+class TestNestedFormatIntegration:
+    """Full integration test of the nested export format."""
+
+    @pytest.fixture
+    def cred_filter(self):
+        from intodoc.scanner.credential_filter import CredentialFilter
+        return CredentialFilter()
+
+    @pytest.fixture
+    def scan_result(self, cred_filter) -> ScanResult:
+        if not NESTED_FIXTURES.exists():
+            pytest.skip("workato_nested fixture not found")
+        plugin = WorkatoPlugin()
+        return plugin.parse_project(NESTED_FIXTURES, cred_filter)
+
+    def test_parse_returns_scan_result(self, scan_result):
+        assert isinstance(scan_result, ScanResult)
+        assert scan_result.platform == "workato"
+
+    def test_finds_all_recipes(self, scan_result):
+        """Should find all recipes from nested dirs, including metadata-only."""
+        assert len(scan_result.jobs) >= 3
+        job_names = [j.name for j in scan_result.jobs]
+        assert any("Sync Orders" in n for n in job_names)
+        assert any("Process Returns" in n for n in job_names)
+        assert any("Nightly" in n or "nightly" in n for n in job_names)
+
+    def test_recipes_have_steps_from_sibling(self, scan_result):
+        """Steps from sibling steps.json should be merged into recipes."""
+        sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
+        # Should have trigger + 2 action steps from steps.json
+        assert len(sync_job.components) >= 3
+
+    def test_recipe_has_trigger(self, scan_result):
+        sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
+        comp_types = [c.component_type for c in sync_job.components]
+        assert any("Trigger" in t for t in comp_types)
+
+    def test_recipe_has_actions(self, scan_result):
+        sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
+        comp_types = [c.component_type for c in sync_job.components]
+        assert any("Action" in t for t in comp_types)
+
+    def test_recipe_has_datapills(self, scan_result):
+        sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
+        assert len(sync_job.tmap_data) > 0
+
+    def test_conditional_recipe(self, scan_result):
+        """Process Returns recipe should have condition from steps.json."""
+        returns_job = next(j for j in scan_result.jobs if "Process Returns" in j.name)
+        comp_types = [c.component_type for c in returns_job.components]
+        # Condition type uses "if" for both "if" and "conditional" step types
+        assert "WorkatoCondition_if" in comp_types
+
+    def test_nightly_sync_has_wrapped_steps(self, scan_result):
+        """Nightly sync recipe (wrapped steps.json dict) should have components."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None, f"Nightly recipe not found. Jobs: {[j.name for j in scan_result.jobs]}"
+        # Should have components from the wrapped steps.json
+        assert len(nightly.components) >= 2
+
+    def test_nightly_sync_has_format_c_actions(self, scan_result):
+        """Steps using application/action (Format C) should resolve correctly."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None
+        comp_types = [c.component_type for c in nightly.components]
+        # Should have action with postgresql (from application field)
+        assert any("postgresql" in t for t in comp_types)
+
+    def test_nightly_sync_has_conditional(self, scan_result):
+        """conditional step type should be handled like if."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None
+        comp_types = [c.component_type for c in nightly.components]
+        assert any("Condition" in t for t in comp_types)
+
+    def test_nightly_sync_has_repeat_for_each(self, scan_result):
+        """repeat_for_each step type should be handled like foreach."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None
+        comp_types = [c.component_type for c in nightly.components]
+        assert any("Loop" in t for t in comp_types)
+
+    def test_nightly_sync_has_formula(self, scan_result):
+        """formula step type should produce a WorkatoFormula component."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None
+        comp_types = [c.component_type for c in nightly.components]
+        assert "WorkatoFormula" in comp_types
+
+    def test_nightly_sync_has_lookup(self, scan_result):
+        """lookup step type should produce a WorkatoLookup component."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None
+        comp_types = [c.component_type for c in nightly.components]
+        assert any("Lookup" in t for t in comp_types)
+
+    def test_nightly_sync_has_trigger_step(self, scan_result):
+        """trigger appearing as a step should produce a Trigger component."""
+        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
+        assert nightly is not None
+        comp_types = [c.component_type for c in nightly.components]
+        assert any("Trigger" in t for t in comp_types)
+
+    def test_finds_connections(self, scan_result):
+        """Should find all connections from nested dirs, including Format C."""
+        conn_types = {c.connection_type for c in scan_result.metadata_connections}
+        assert "Salesforce" in conn_types
+        assert "PostgreSQL" in conn_types
+        assert "AMAZON_S3" in conn_types or "S3" in conn_types or any("s3" in t.lower() for t in conn_types)
+
+    def test_finds_lookup_table(self, scan_result):
+        lookup_conns = [c for c in scan_result.metadata_connections if c.connection_type == "LookupTable"]
+        assert len(lookup_conns) >= 1
+
+    def test_finds_properties(self, scan_result):
+        """Should find properties from the property list file."""
+        assert len(scan_result.context_groups) >= 1
+        # Should have all 3 properties from settings.json
+        all_vars = []
+        for g in scan_result.context_groups:
+            all_vars.extend(g.variables)
+        assert len(all_vars) >= 3
+
+    def test_manifest_has_connections(self, scan_result):
+        assert len(scan_result.manifest.job_connections_used) > 0
+
+    def test_manifest_has_groups(self, scan_result):
+        assert len(scan_result.manifest.job_groups) > 0
+
+
+# ── Directory-Based Classification ──────────────────────────────────
+
+
+class TestDirectoryClassification:
+    """Test parent-directory fallback for file classification."""
+
+    @pytest.fixture
+    def plugin(self):
+        return WorkatoPlugin()
+
+    def test_recipe_in_recipes_dir(self, plugin):
+        path = Path("recipes/sync_orders/recipe.json")
+        assert plugin.classify_file(path) == FileType.JOB
+
+    def test_connection_in_connections_dir(self, plugin):
+        path = Path("connections/salesforce/connection.json")
+        assert plugin.classify_file(path) == FileType.CONNECTION
+
+    def test_lookup_in_lookup_tables_dir(self, plugin):
+        path = Path("lookup_tables/codes.json")
+        assert plugin.classify_file(path) == FileType.SCHEMA
+
+    def test_property_in_properties_dir(self, plugin):
+        path = Path("properties/settings.json")
+        assert plugin.classify_file(path) == FileType.CONTEXT
+
+    def test_suffixed_files_still_work(self, plugin):
+        """Suffix-based classification should still take priority."""
+        path = Path("some_dir/sync.recipe.json")
+        assert plugin.classify_file(path) == FileType.JOB
+
+
 # ── Best Practices ───────────────────────────────────────────────────
 
 

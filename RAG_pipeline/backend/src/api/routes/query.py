@@ -101,6 +101,7 @@ async def query_debug(
     results = await qdrant.query_points(
         collection_name=COLLECTION_NAME,
         query=query_embedding,
+        using="dense",
         query_filter=search_filter,
         limit=body.top_k,
         with_payload=True,

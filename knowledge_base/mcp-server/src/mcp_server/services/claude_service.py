@@ -264,26 +264,79 @@ class ClaudeService:
                     slice_name, len(content), actual_jobs,
                 )
 
-        # --- Bundle analysis prompts for Phase 2 sub-agents ---
+        # --- Bundle analysis guide for Phase 2 sub-agents ---
         prompts_data = scanner.get_analysis_prompts(platform)
         if "prompts" in prompts_data:
-            prompt_parts = [
-                "# Analysis Prompts\n\n"
-                "Use these structured prompts to guide your analysis "
-                "of each group's scan data.\n\n"
-            ]
-            for name, content in sorted(prompts_data["prompts"].items()):
-                prompt_parts.append(f"---\n## {name}\n\n")
-                prompt_parts.append(content)
-                prompt_parts.append("\n\n")
-            prompt_bundle = "".join(prompt_parts)
-            (preprocess_dir / "_analysis_prompts.md").write_text(
-                prompt_bundle, encoding="utf-8",
+            if prompts_data.get("consolidated"):
+                # New path: single ANALYSIS_GUIDE.md
+                guide_content = list(prompts_data["prompts"].values())[0]
+                (preprocess_dir / "_analysis_guide.md").write_text(
+                    guide_content, encoding="utf-8",
+                )
+                logger.info(
+                    "Bundled analysis guide (%s): %d bytes",
+                    platform, len(guide_content),
+                )
+            else:
+                # Legacy fallback: bundle individual .txt prompt files
+                MAX_PROMPT_BUNDLE_BYTES = 200_000
+                header = (
+                    "# Analysis Prompts\n\n"
+                    "Use these structured prompts to guide your analysis "
+                    "of each group's scan data.\n\n"
+                )
+                entries = []
+                for name, content in sorted(prompts_data["prompts"].items()):
+                    entries.append(f"---\n## {name}\n\n{content}\n\n")
+
+                parts: list[list[str]] = [[]]
+                part_size = 0
+                for text in entries:
+                    text_bytes = len(text.encode("utf-8"))
+                    if part_size + text_bytes > MAX_PROMPT_BUNDLE_BYTES and parts[-1]:
+                        parts.append([])
+                        part_size = 0
+                    parts[-1].append(text)
+                    part_size += text_bytes
+
+                for i, part in enumerate(parts):
+                    suffix = f"_{i + 1}" if len(parts) > 1 else ""
+                    bundle = header + "".join(part)
+                    (preprocess_dir / f"_analysis_prompts{suffix}.md").write_text(
+                        bundle, encoding="utf-8",
+                    )
+                    logger.info(
+                        "Bundled analysis prompts%s (%s): %d bytes",
+                        suffix, platform, len(bundle),
+                    )
+        else:
+            logger.warning(
+                "Analysis prompts NOT bundled for %s: %s",
+                platform, prompts_data.get("error", "unknown"),
             )
-            logger.info("Bundled analysis prompts (%s): %d bytes", platform, len(prompt_bundle))
+
+        # --- Bundle Phase 3 guide for cross-group synthesis ---
+        phase3_data = scanner.get_phase3_guide(platform)
+        if "content" in phase3_data:
+            (preprocess_dir / "_phase3_guide.md").write_text(
+                phase3_data["content"], encoding="utf-8",
+            )
+            logger.info(
+                "Bundled Phase 3 guide (%s): %d bytes",
+                platform, len(phase3_data["content"]),
+            )
+        else:
+            logger.warning(
+                "Phase 3 guide NOT bundled for %s: %s",
+                platform, phase3_data.get("error", "unknown"),
+            )
 
         # --- Bundle reference docs per Phase 3 agent ---
-        ref_dir = config.project_root / "intodoc" / "reference-docs"
+        MAX_REF_BUNDLE_BYTES = 80_000  # ~20K tokens, safely under 25K token limit
+        # Resolve from source tree (not config.project_root which may be /opt/)
+        # __file__ -> services/ -> mcp_server/ -> src/ -> mcp-server/ -> knowledge_base/
+        _source_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+        ref_dir = _source_root / "intodoc" / "reference-docs"
         if ref_dir.exists():
             agent_ref_map = {
                 "_ref_core": [
@@ -301,22 +354,39 @@ class ClaudeService:
                 ],
             }
             for bundle_name, doc_names in agent_ref_map.items():
-                bundle_parts = [
+                header = (
                     f"# Reference Docs Bundle: {bundle_name}\n\n"
                     "These are example reference docs showing the expected "
                     "format, depth, and structure for each document type.\n\n"
-                ]
+                )
+                entries = []
                 for dn in doc_names:
                     ref_file = ref_dir / f"{dn}.md"
                     if ref_file.exists():
-                        bundle_parts.append(f"---\n## {dn}\n\n")
-                        bundle_parts.append(ref_file.read_text(encoding="utf-8"))
-                        bundle_parts.append("\n\n")
-                bundle_content = "".join(bundle_parts)
-                (preprocess_dir / f"{bundle_name}.md").write_text(
-                    bundle_content, encoding="utf-8",
-                )
-                logger.info("Bundled %s: %d bytes", bundle_name, len(bundle_content))
+                        entries.append(f"---\n## {dn}\n\n{ref_file.read_text(encoding='utf-8')}\n\n")
+
+                # Split into parts that stay under the size limit
+                parts: list[list[str]] = [[]]
+                part_size = 0
+                for text in entries:
+                    text_bytes = len(text.encode("utf-8"))
+                    if part_size + text_bytes > MAX_REF_BUNDLE_BYTES and parts[-1]:
+                        parts.append([])
+                        part_size = 0
+                    parts[-1].append(text)
+                    part_size += text_bytes
+
+                for i, part in enumerate(parts):
+                    suffix = f"_{i + 1}" if len(parts) > 1 else ""
+                    bundle_content = header + "".join(part)
+                    (preprocess_dir / f"{bundle_name}{suffix}.md").write_text(
+                        bundle_content, encoding="utf-8",
+                    )
+                    logger.info(
+                        "Bundled %s%s: %d bytes", bundle_name, suffix, len(bundle_content),
+                    )
+        else:
+            logger.warning("Reference docs dir not found: %s", ref_dir)
 
         return processed_groups
 
@@ -340,6 +410,10 @@ class ClaudeService:
             d.mkdir(parents=True, exist_ok=True)
             d.chmod(0o777)
 
+        # Absolute paths for the prompt (subprocess cwd differs from config.project_root)
+        staging_abs = str(staging_dir)
+        logs_abs = str(output_dir / "logs")
+
         # Look up the project's platform from the DB
         from mcp_server.db.session import async_session_factory
         from mcp_server.services.project_registry import ProjectRegistry
@@ -360,6 +434,30 @@ class ClaudeService:
             level="info",
         )
 
+        # Compute project metrics for dynamic depth scaling
+        scanner = ScannerService()
+        scan_output_dir = str(config.intodoc_output_dir / project_id)
+        chunk_defs = scanner.get_chunk_definitions(scan_output_dir)
+        total_jobs = chunk_defs.get("total_jobs", 0)
+        total_groups = len(preprocess_groups)
+
+        # Compute scaled analysis target from preprocessed data size
+        total_preprocess_bytes = sum(
+            f.stat().st_size
+            for f in (staging_dir / "_preprocess").glob("*.md")
+            if not f.name.startswith("_")  # exclude guide/ref bundles
+        )
+        analysis_target_kb = max(5, min(40, total_preprocess_bytes // 2048))
+        logger.info(
+            "Analysis target: %dKB (from %d bytes preprocessed data)",
+            analysis_target_kb, total_preprocess_bytes,
+        )
+
+        # Determine which analysis guide file the sub-agents should read
+        analysis_guide_file = "_analysis_guide.md"
+        if not (staging_dir / "_preprocess" / "_analysis_guide.md").exists():
+            analysis_guide_file = "_analysis_prompts*.md"  # legacy fallback
+
         # Build Hindsight memory steps conditionally
         hindsight_phase1 = ""
         hindsight_phase4 = ""
@@ -379,159 +477,93 @@ class ClaudeService:
         prompt = f"""Generate complete documentation for project '{project_id}'.
 
 PHASE 1 -- SETUP:
-{hindsight_phase1}   - Call get_scan_status('{project_id}') to check cache freshness.
-   - Call get_chunks('{project_id}'). Group chunks by 'group' field.
-   - Call fetch_json('{project_id}', 'manifest') for dependency graph.
-   - Call fetch_json('{project_id}', 'connections') for metadata connections.
-   - Directories output/{project_id}/docs_staging/, output/{project_id}/docs_staging/_analysis/, and logs/ are pre-created.
-   - Pre-processed scan data is available in output/{project_id}/docs_staging/_preprocess/{{group}}.md for each group.
+{hindsight_phase1}   - All data is pre-processed and ready in {staging_abs}/_preprocess/.
+   - Do NOT call get_scan_status, get_chunks, fetch_json, fetch_chunk, or any MCP tools.
+     Everything needed is pre-bundled in the files below.
+   - Directories {staging_abs}/, {staging_abs}/_analysis/, and logs/ are pre-created.
+   - Pre-processed scan data: {staging_abs}/_preprocess/{{group}}.md for each group.
      If a group was too large, it is split into {{group}}_part1.md and {{group}}_part2.md.
      These files contain ALL job components, params, tMap expressions, SQL, connections, context vars,
-     and manifest data in readable markdown format. Sub-agents should read THESE instead of calling fetch_chunk().
-   - Analysis prompts are pre-bundled in output/{project_id}/docs_staging/_preprocess/_analysis_prompts.md.
-   - Reference doc templates are pre-bundled per Phase 3 agent:
-     - output/{project_id}/docs_staging/_preprocess/_ref_core.md (for Core agent)
-     - output/{project_id}/docs_staging/_preprocess/_ref_business_ops.md (for Business+Ops agent)
-     - output/{project_id}/docs_staging/_preprocess/_ref_patterns_user.md (for Patterns+User agent)
+     and manifest data in readable markdown format.
+   - Analysis guide: {staging_abs}/_preprocess/{analysis_guide_file}
+   - Phase 3 synthesis guide: {staging_abs}/_preprocess/_phase3_guide.md
+   - Reference doc templates: {staging_abs}/_preprocess/_ref_*.md files per Phase 3 agent (may be split with _1, _2 suffixes -- read ALL matching files).
 
 PHASE 2 -- GROUP ANALYSIS (parallel sub-agents):
    Spawn one sub-agent per group (all in parallel). Each sub-agent:
-   1. Receives: project_id, group name, chunk_ids, manifest, connections.
-   2. Reads output/{project_id}/docs_staging/_preprocess/_analysis_prompts.md for analysis guidance.
-      Do NOT call get_analysis_prompts() -- this file contains all prompts pre-bundled.
-   3. Reads output/{project_id}/docs_staging/_preprocess/{{group}}.md for ALL scan data.
-      This file contains the FULL pre-processed data -- do NOT call fetch_chunk().
+   1. Reads {staging_abs}/_preprocess/{analysis_guide_file} for analysis guidance.
+   2. Reads {staging_abs}/_preprocess/{{group}}.md for ALL scan data.
       If the group is split ({{group}}_part1.md and {{group}}_part2.md exist), read BOTH parts.
-   4. Analyzes the pre-processed data across ALL dimensions using the prompt guidance.
-   5. Writes a RICH structured analysis file to output/{project_id}/docs_staging/_analysis/{{group}}.md (target: 15-40KB).
-   6. Returns a ~2KB navigation summary to the orchestrator (group name, job count, key findings, section list).
+   3. Analyzes the pre-processed data across ALL dimensions defined in the analysis guide.
+   4. Writes a RICH structured analysis file to {staging_abs}/_analysis/{{group}}.md (target: ~{analysis_target_kb}KB).
+   5. Returns a ~2KB navigation summary to the orchestrator (group name, job count, key findings, section list).
 
    If a group is split into parts (e.g. USA_part1.md and USA_part2.md), spawn one sub-agent per part,
-   then merge their analyses into a single output/{project_id}/docs_staging/_analysis/{{group}}.md.
-   The merge agent reads both part analyses and combines them into one unified analysis file.
+   then merge their analyses into a single {staging_abs}/_analysis/{{group}}.md.
 
-   The analysis file (output/{project_id}/docs_staging/_analysis/{{group}}.md) MUST contain ALL of the following sections:
-
-   ## HEADER
-   GROUP: {{name}} | CHUNKS: {{ids}} | JOB_COUNT: {{n}}
-
-   ## COMPONENTS
-   Full inventory: every job name, type, purpose, input/output connections.
-
-   ## EXECUTION_FLOW
-   Ordered execution sequences with trigger conditions. Include parent-child relationships.
-
-   ## DATA_FLOWS
-   Column-level lineage for key data flows. For EVERY tMap component:
-   - Source table.column -> target table.column mapping
-   - The FULL tMap expression (do NOT truncate)
-   - Human-readable explanation of what the expression does
-   - Filter/reject conditions
-
-   ## BUSINESS_RULES
-   EVERY business rule with structured format:
-   - BR-{{GRP}}-NNN: rule ID
-   - Expression: the actual code/expression implementing the rule
-   - Implementing job: which job contains it
-   - Domain: what business area it covers
-   - Impact: what happens if the rule is violated
-   Include rules from tMap expressions, tJavaRow, tJava, WHERE clauses, filter conditions.
-
-   ## SCHEMA_DICTIONARY
-   EVERY table and view referenced:
-   - Table/view name
-   - Column names, data types, nullable flag
-   - Which jobs READ from it, which jobs WRITE to it
-   - Key constraints if visible
-
-   ## SOURCE_SQL
-   EVERY SQL query in FULL (not truncated). Include:
-   - Which component/job contains it
-   - Whether it's a source query, lookup, or DML
-
-   ## EXTERNAL_SYSTEMS
-   All external connections: databases, APIs, file systems, FTP, etc.
-   Include connection parameters (host patterns, ports, database names).
-
-   ## ERROR_HANDLING
-   Per-job error handling rating (GOOD / PARTIAL / MISSING).
-   Specific gaps: which jobs lack try/catch, which have silent failures.
-   Die-on-error settings per subjob.
-
-   ## CUSTOM_CODE
-   All tJava, tJavaRow, tJavaFlex code blocks in full.
-   Hidden business rules embedded in custom code.
-   Utility routines and their purpose.
-
-   ## ENVIRONMENT_CONFIG
-   Every context variable with PROD vs TEST/DEV differences.
-   Connection strings (sanitized), file paths, feature flags.
-
-   ## SCHEDULING
-   Trigger types, cron expressions, execution windows, dependencies between jobs.
-
-   ## NAMING_PATTERNS
-   Observed naming conventions for jobs, schemas, tables, variables.
-
-   ## CROSS_GROUP_REFS
-   Dependencies on other groups: shared tables, shared context vars, execution ordering.
-
-   ## RISK_FLAGS
-   Preventive risks with structured format:
-   - Severity: CRITICAL / HIGH / MEDIUM / LOW
-   - Affected jobs
-   - Description of the risk
-   - Recommended remediation
+   The analysis file MUST contain ALL sections defined in the analysis guide ({analysis_guide_file}).
+   Read the guide for detailed instructions on what to extract for each section.
+   Be EXHAUSTIVE. Include every expression, every rule, every column. Depth over brevity.
 
    IMPORTANT for sub-agents:
    - Read the _preprocess/{{group}}.md file for your group -- it has ALL the data you need.
-   - Read _preprocess/_analysis_prompts.md for structured analysis guidance.
-   - Do NOT call fetch_chunk() -- the pre-processed files contain the same data in readable format.
-   - Do NOT call fetch_json for manifest/connections -- use what was passed inline.
-   - Do NOT call get_analysis_prompts() or get_reference_docs() -- use the pre-bundled files.
+   - Read {staging_abs}/_preprocess/{analysis_guide_file} for structured analysis guidance.
+   - Do NOT call fetch_chunk(), fetch_json, get_analysis_prompts(), get_reference_docs(), or any MCP tools.
    - Do NOT use TodoWrite, mkdir, ls, wc, or ASCII validation scripts.
    - Do NOT read .agent/ docs, CLAUDE.md, or mcp-workflow.md.
-   - Write the analysis file using the Write tool to output/{project_id}/docs_staging/_analysis/{{group}}.md.
-   - Be EXHAUSTIVE. Include every expression, every rule, every column. Depth over brevity.
+   - PROHIBITED: Do NOT read any files outside {staging_abs}/.
+     Do NOT use Glob, Read, or Bash to access intodoc-output/, data/repos/, or any other directory.
+     ALL scan data is pre-bundled in _preprocess/. Reading raw files is redundant and wastes time.
+   - Write the analysis file using the Write tool to {staging_abs}/_analysis/{{group}}.md.
+
+PHASE 2.5 -- GATE VALIDATION (before Phase 3):
+   After ALL Phase 2 sub-agents return, validate the analysis output:
+   1. Run: Bash ls -la {staging_abs}/_analysis/
+   2. For each preprocessed group, verify its _analysis/{{group}}.md exists and is non-empty.
+   3. If any analysis file is MISSING or under 1KB:
+      - Log which group(s) failed.
+      - Re-spawn a sub-agent for that group ONLY (same instructions as Phase 2). Max 1 retry per group.
+   4. After retries, if any group still has no analysis: proceed with available data but log a WARNING
+      listing the groups without analysis. Phase 3 agents should note incomplete data in their docs.
+   5. Only proceed to Phase 3 once this gate passes.
 
 PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    After ALL Phase 2 sub-agents complete, spawn 3 doc-assembly sub-agents in parallel.
    Each Phase 3 agent reads the FULL _analysis/{{group}}.md files directly (no condensation step).
    Each doc agent also reads its REFERENCE DOC BUNDLE from _preprocess/ for format templates.
-   Each doc agent receives the manifest inline.
-   Each doc agent writes final .md files to output/{project_id}/docs_staging/.
+   Each Phase 3 agent also reads {staging_abs}/_preprocess/_phase3_guide.md for cross-group
+   synthesis guidance (executive summary structure, cross-region comparison dimensions,
+   migration assessment methodology).
+   Each doc agent writes final .md files to {staging_abs}/.
 
-   AUTO-FALLBACK: If total analysis size exceeds 400KB (check with: Bash du -sh output/{project_id}/docs_staging/_analysis/),
+   AUTO-FALLBACK: If total analysis size exceeds 400KB (check with: Bash du -sh {staging_abs}/_analysis/),
    each Phase 3 agent should read only the analysis sections relevant to its docs (use grep/head/tail).
    For most projects (~10 groups, ~300KB analysis), agents read ALL analysis files in full.
 
    The 3 doc-assembly agents:
    | Agent          | Analysis Input                          | Reference bundle          | Writes                                                                    |
    |----------------|-----------------------------------------|---------------------------|---------------------------------------------------------------------------|
-   | Core           | ALL _analysis/{{group}}.md files        | _ref_core.md              | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE |
-   | Business+Ops   | ALL _analysis/{{group}}.md files        | _ref_business_ops.md      | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL            |
-   | Patterns+User  | ALL _analysis/{{group}}.md files        | _ref_patterns_user.md     | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT |
+   | Core           | ALL _analysis/{{group}}.md files        | _ref_core*.md             | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE |
+   | Business+Ops   | ALL _analysis/{{group}}.md files        | _ref_business_ops*.md     | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL            |
+   | Patterns+User  | ALL _analysis/{{group}}.md files        | _ref_patterns_user*.md    | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT |
    *08_PATTERNS_STANDARDS cross-region section only if 2+ groups exist.
 
    Each sub-agent prompt MUST include:
-   - "Read ALL files in output/{project_id}/docs_staging/_analysis/ for your analysis data."
-   - "Read output/{project_id}/docs_staging/_preprocess/_ref_{{agent}}.md for format reference templates."
-   - Do NOT call get_reference_docs() -- the pre-bundled files have all templates.
-   - Do NOT call get_analysis_prompts() -- already consumed in Phase 2.
+   - "Read ALL files in {staging_abs}/_analysis/ for your analysis data."
+   - "Read ALL _ref_{{agent}}*.md files in {staging_abs}/_preprocess/ for format reference templates."
+   - "Read {staging_abs}/_preprocess/_phase3_guide.md for cross-group synthesis guidance."
+   - Do NOT call get_reference_docs() or get_analysis_prompts() -- use the pre-bundled files.
 
-   DEPTH TARGETS (minimum line counts per doc):
-   - 00_EXECUTIVE_SUMMARY: 200+ lines, customer-facing, NO code/expressions, polished prose
-   - 01_PROJECT_OVERVIEW: 300+ lines, technical overview with full stats and regional breakdown
-   - 02_ARCHITECTURE_INVENTORY: 600+ lines, components + topology + execution logic combined
-   - 03_DATA_FLOWS_LINEAGE: 600+ lines, column-level lineage for all major flows + schema dictionary
-   - 04_BUSINESS_LOGIC: 800+ lines, every BR-tagged rule with full expression + custom code analysis
-   - 05_OPERATIONS_RISK: 800+ lines, per-job error handling + all risk items + preventive analysis
-   - 06_ENVIRONMENT_EXTERNAL: 400+ lines, config + connections + scheduling combined
-   - 07_SECURITY_PERFORMANCE: 300+ lines, security assessment + performance analysis
-   - 08_PATTERNS_STANDARDS: 400+ lines, naming + reusability + cross-region patterns
-   - 09_RUNBOOK: 400+ lines, operational procedures
-   - 10_ONBOARDING_FAQ: 500+ lines, 20+ FAQ items + onboarding guide + glossary
-   - 11_MIGRATION_ASSESSMENT: 400+ lines, consolidated migration assessment
+   DEPTH GUIDANCE:
+   This project has {total_jobs} jobs across {total_groups} groups.
+
+   Scale document depth to match the actual content available:
+   - Write as much as needed to cover every relevant finding. Do NOT pad.
+   - Do NOT truncate to hit a target. Include everything relevant.
+   - A 4-job project may produce 50-line docs. A 250-job project may produce 1000+ line docs.
+   - Depth comes from ACTUAL content (expressions, rules, schemas, risks), not filler.
+   - Every claim needs a specific job name and component reference.
+   - Show actual code/expressions/SQL, then explain. Never just summarize.
 
    NARRATIVE RULES:
    - Never summarize when you can enumerate
@@ -545,7 +577,6 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - Cross-reference data from multiple groups to build comprehensive docs.
    - Match the depth and structure shown in reference doc templates from the bundle.
    - Include specific expressions, column names, job names -- not just summaries.
-   - Meet or exceed the depth target line count for each doc.
 
    ADAPTIVE CATALOG:
    - Always generate: 00-06, 09-11
@@ -562,11 +593,24 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - Schema docs must include column-level detail (names, types, nullable)
    - Data flow docs must include tMap expressions with explanations
 
+PHASE 3.5 -- DOC VALIDATION (before cleanup):
+   After ALL Phase 3 doc agents return, validate the output:
+   1. Run: Bash ls -la {staging_abs}/*.md
+   2. Required docs (must exist and be >500 bytes): 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW,
+      02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE, 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK,
+      09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT.
+   3. Optional docs (generate if content warrants): 06_ENVIRONMENT_EXTERNAL, 07_SECURITY_PERFORMANCE,
+      08_PATTERNS_STANDARDS.
+   4. If any REQUIRED doc is missing or under 500 bytes:
+      - Identify which Phase 3 agent was responsible (Core, Business+Ops, or Patterns+User).
+      - Re-spawn ONLY that agent with the same instructions. Max 1 retry per agent.
+   5. After retries, proceed to Phase 4 with whatever docs exist. Log any still-missing docs as WARNINGS.
+
 PHASE 4 -- CLEANUP & PUBLISH:
-   - Delete the output/{project_id}/docs_staging/_analysis/ directory and all its contents.
-   - Delete the output/{project_id}/docs_staging/_preprocess/ directory and all its contents.
-   - Write output/{project_id}/docs_staging/index.json mapping docs to groups.
-   - Write output/{project_id}/logs/run_{project_id}_{{timestamp}}.log.
+   - Delete the {staging_abs}/_analysis/ directory and all its contents.
+   - Delete the {staging_abs}/_preprocess/ directory and all its contents.
+   - Write {staging_abs}/index.json mapping docs to groups.
+   - Write {logs_abs}/run_{project_id}_{{timestamp}}.log.
    - Do NOT call insert_to_rag -- the server will push docs to RAG automatically after successful generation.
 {hindsight_phase4}
 PROHIBITED ACTIONS:
@@ -575,8 +619,9 @@ PROHIBITED ACTIONS:
    - Do NOT read .agent/ docs or CLAUDE.md or mcp-workflow.md.
    - Do NOT create _scratch/ directories or other intermediate files (the _analysis/ and _preprocess/ directories are allowed).
    - Do NOT run mkdir, ls, wc for verification -- directories are pre-created.
-   - Do NOT call get_analysis_prompts() or get_reference_docs() -- use the pre-bundled files in _preprocess/.
-   - Only final .md docs, _analysis/, and _preprocess/ files go to output/{project_id}/docs_staging/.
+   - Do NOT call get_analysis_prompts(), get_reference_docs(), get_scan_status, get_chunks, fetch_json, fetch_chunk, trigger_scan, or any other MCP/fetch tools.
+     ALL scan data, prompts, and reference docs are pre-bundled in _preprocess/.
+   - Only final .md docs, _analysis/, and _preprocess/ files go to {staging_abs}/.
 
 FILE READING GUIDANCE (prevents cascading failures):
    - For files > 500 lines, use `Bash cat file | head -N` or `tail -n +M | head -N` instead of the Read tool.
@@ -611,7 +656,8 @@ FILE READING GUIDANCE (prevents cascading failures):
 
         # Diagnostic logging
         logger.info(f"claude resolved path: {resolved_cmd}")
-        logger.info(f"Spawning Claude Code: {cmd[0]} -p '...' --dangerously-skip-permissions  cwd={config.project_root}")
+        _subprocess_cwd = Path(__file__).resolve().parent.parent.parent.parent.parent
+        logger.info(f"Spawning Claude Code: {cmd[0]} -p '...' --dangerously-skip-permissions  cwd={_subprocess_cwd}")
         await self.log_manager.emit(
             project_id,
             f"claude resolved: {resolved_cmd} | Python {sys.version}",
@@ -635,7 +681,7 @@ FILE READING GUIDANCE (prevents cascading failures):
                 text=True,
                 encoding="utf-8",
                 env=env,
-                cwd=str(config.project_root),
+                cwd=str(_subprocess_cwd),
             )
 
             # Write prompt via stdin to avoid cmd.exe argument parsing issues

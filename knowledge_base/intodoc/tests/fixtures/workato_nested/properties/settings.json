@@ -1,0 +1,5 @@
+[
+  {"name": "api_base_url", "value": "https://api.example.com"},
+  {"name": "batch_size", "value": "100"},
+  {"name": "retry_count", "value": "3"}
+]

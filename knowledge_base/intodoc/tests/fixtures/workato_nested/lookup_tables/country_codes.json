@@ -1,0 +1,10 @@
+{
+  "id": 501,
+  "name": "country_codes",
+  "columns": [
+    {"name": "country_name", "type": "string"},
+    {"name": "iso_code", "type": "string"},
+    {"name": "region", "type": "string"}
+  ],
+  "row_count": 195
+}

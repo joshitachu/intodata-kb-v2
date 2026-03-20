@@ -688,27 +688,40 @@ class ScannerService:
         return [{"group": g, "job_count": c} for g, c in sorted(groups.items())]
 
     def get_analysis_prompts(self, platform: str = "talend") -> dict:
-        """Read all analysis prompt files + best_practices.yaml for a platform.
+        """Read analysis prompts for a platform.
 
-        Returns a single dict with all prompts bundled together, eliminating
-        the need for sub-agents to make 16+ individual Read calls.
+        Prefers consolidated ANALYSIS_GUIDE.md (single file) over 22 individual
+        .txt prompt files. Falls back to individual files for backward compat.
 
-        Prompt resolution order:
-        1. Platform-specific prompts (platforms/{platform}/prompts/)
-        2. Shared prompts (platforms/_shared/prompts/) -- only for passes
-           not covered by the platform
+        Resolution order for consolidated guide:
+        1. Platform-specific: platforms/{platform}/prompts/ANALYSIS_GUIDE.md
+        2. Shared fallback: platforms/_shared/prompts/ANALYSIS_GUIDE.md
+
+        If no guide exists, falls back to bundling individual .txt files.
         """
-        platforms_root = (
-            config.project_root
-            / "intodoc"
-            / "src"
-            / "intodoc"
-            / "platforms"
-        )
+        import intodoc.platforms as _plat_pkg
+        platforms_root = Path(_plat_pkg.__file__).parent
         platform_dir = platforms_root / platform
         shared_dir = platforms_root / "_shared"
 
-        # Start with shared prompts as base layer
+        # --- Try consolidated ANALYSIS_GUIDE.md first ---
+        guide_file = platform_dir / "prompts" / "ANALYSIS_GUIDE.md"
+        if not guide_file.exists():
+            guide_file = shared_dir / "prompts" / "ANALYSIS_GUIDE.md"
+
+        if guide_file.exists():
+            try:
+                guide_content = guide_file.read_text(encoding="utf-8")
+                return {
+                    "platform": platform,
+                    "prompt_count": 1,
+                    "prompts": {"ANALYSIS_GUIDE": guide_content},
+                    "consolidated": True,
+                }
+            except OSError:
+                logger.warning("Failed to read %s, falling back to individual prompts", guide_file)
+
+        # --- Fallback: bundle individual .txt prompt files ---
         prompts: dict[str, str] = {}
         shared_prompts_dir = shared_dir / "prompts"
         if shared_prompts_dir.exists():
@@ -744,7 +757,35 @@ class ScannerService:
             "platform": platform,
             "prompt_count": len(prompts),
             "prompts": prompts,
+            "consolidated": False,
         }
+
+    def get_phase3_guide(self, platform: str = "talend") -> dict:
+        """Read PHASE_3_GUIDE.md for cross-group synthesis guidance.
+
+        Resolution order:
+        1. Platform-specific: platforms/{platform}/prompts/PHASE_3_GUIDE.md
+        2. Shared fallback: platforms/_shared/prompts/PHASE_3_GUIDE.md
+        """
+        import intodoc.platforms as _plat_pkg
+        platforms_root = Path(_plat_pkg.__file__).parent
+        platform_dir = platforms_root / platform
+        shared_dir = platforms_root / "_shared"
+
+        guide_file = platform_dir / "prompts" / "PHASE_3_GUIDE.md"
+        if not guide_file.exists():
+            guide_file = shared_dir / "prompts" / "PHASE_3_GUIDE.md"
+
+        if guide_file.exists():
+            try:
+                return {
+                    "platform": platform,
+                    "content": guide_file.read_text(encoding="utf-8"),
+                }
+            except OSError:
+                return {"error": f"Failed to read {guide_file}"}
+
+        return {"error": f"No PHASE_3_GUIDE.md found for platform '{platform}'"}
 
     # Reference doc -> agent group mapping (consolidated 12-doc structure)
     _AGENT_REFERENCE_DOCS: dict[str, list[str]] = {
@@ -769,7 +810,10 @@ class ScannerService:
         Returns the content of matching reference docs from intodoc/reference-docs/,
         eliminating the need for sub-agents to make individual Read calls.
         """
-        ref_dir = config.project_root / "intodoc" / "reference-docs"
+        # Resolve from source tree (not config.project_root which may be /opt/)
+        # __file__ -> services/ -> mcp_server/ -> src/ -> mcp-server/ -> knowledge_base/
+        _source_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+        ref_dir = _source_root / "intodoc" / "reference-docs"
         if not ref_dir.exists():
             return {"error": f"Reference docs directory not found: {ref_dir}"}
 

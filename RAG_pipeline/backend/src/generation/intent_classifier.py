@@ -39,12 +39,16 @@ Classify the user's query into ONE of these categories:
 6. **system_overview** — The user asks what's in the system/knowledge base, what data is available, a general overview of available information.
 7. **hybrid** — The user asks a content question that also references a specific project (e.g. "what Talend jobs does project X have?" needs both project metadata AND document search).
 8. **my_profile** — The user asks about their own identity, role, permissions, or project access. Examples: "what's my role?", "what are my permissions?", "which projects can I access?", "who am I?", "what can I do?"
+9. **summary** — The user wants to summarize a specific document (e.g. "summarize the HR policy", "give me an overview of document X").
+10. **conversation_summary** — The user wants to summarize or recap the current conversation/chat (e.g. "summarize our chat", "what have we discussed?", "recap everything", "summarize all your answers"). Only use this when a conversation context note is provided.
 
 Also extract:
 - **project**: If the query mentions a specific project name, extract it (just the name, lowercase). Null if no specific project mentioned.
 
+Note: When a "[Context: ...]" note is appended to the message indicating an active conversation, consider whether the user is referring to the conversation itself vs. a specific document.
+
 Respond with ONLY a JSON object, no markdown, no explanation:
-{"action": "search|project_list|project_detail|document_stats|document_list|system_overview|hybrid|my_profile", "project": "name_or_null"}
+{"action": "search|project_list|project_detail|document_stats|document_list|system_overview|hybrid|my_profile|summary|conversation_summary", "project": "name_or_null"}
 """
 
 
@@ -52,6 +56,7 @@ class Action(str, Enum):
     SEARCH = "search"
     RESPOND = "respond"
     METADATA = "metadata"
+    CONVERSATION_SUMMARY = "conversation_summary"
 
 
 class QueryType(str, Enum):
@@ -115,14 +120,18 @@ def _parse_classifier_response(raw: str) -> tuple[str, str | None]:
     return action, project
 
 
-async def _llm_classify(query: str) -> tuple[str, str | None]:
+async def _llm_classify(query: str, conversation_context: str | None = None) -> tuple[str, str | None]:
     """Call the LLM to classify the query. Returns (action_str, project)."""
     import httpx
     from src.config import settings
 
+    user_content = query
+    if conversation_context:
+        user_content += f"\n\n[Context: {conversation_context}]"
+
     messages = [
         {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
-        {"role": "user", "content": query},
+        {"role": "user", "content": user_content},
     ]
 
     # Try Kimi first (fastest, ~0.5-1s for short responses)
@@ -199,10 +208,29 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
 
     try:
         t0 = time.perf_counter()
-        action_str, project = await _llm_classify(stripped)
+        action_str, project = await _llm_classify(stripped, conversation_context)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
-        if action_str in _METADATA_ACTIONS:
+        if action_str == "conversation_summary":
+            logger.info(
+                "LLM classify (%dms): %r -> CONVERSATION_SUMMARY",
+                elapsed_ms, stripped[:80],
+            )
+            return QueryAnalysis(
+                action=Action.CONVERSATION_SUMMARY,
+                cleaned_query=stripped,
+            )
+        elif action_str == "summary":
+            logger.info(
+                "LLM classify (%dms): %r -> SEARCH/SUMMARY",
+                elapsed_ms, stripped[:80],
+            )
+            return QueryAnalysis(
+                action=Action.SEARCH,
+                cleaned_query=stripped,
+                query_type=QueryType.SUMMARY,
+            )
+        elif action_str in _METADATA_ACTIONS:
             intent = MetadataIntent(action_str)
             logger.info(
                 "LLM classify (%dms): %r -> METADATA/%s, project=%s",

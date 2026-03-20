@@ -1,0 +1,23 @@
+[
+  {
+    "type": "action",
+    "provider": "postgresql",
+    "name": "insert_row",
+    "label": "Insert Order to Postgres",
+    "input": {
+      "table": "orders",
+      "order_id": "{{trigger.OrderId}}",
+      "customer_name": "{{trigger.CustomerName}}"
+    }
+  },
+  {
+    "type": "action",
+    "provider": "slack",
+    "name": "post_message",
+    "label": "Notify Slack",
+    "input": {
+      "channel": "#orders",
+      "message": "New order: {{trigger.OrderId}}"
+    }
+  }
+]

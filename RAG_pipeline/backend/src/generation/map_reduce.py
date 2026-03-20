@@ -82,6 +82,7 @@ async def resolve_document_id(
     results = await client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_embedding,
+        using="dense",
         query_filter=search_filter,
         limit=1,
         with_payload=True,

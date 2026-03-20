@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, QueryUsage
 from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
+from src.generation.prompt_builder import build_conversation_summary_messages
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
@@ -315,8 +316,12 @@ async def _prepare_rag_context(
         logger.info("Injecting %d user memories + %d quality insights + %d corrections",
                      len(user_memories), len(quality_insights), len(corrections))
 
-    # 1. Route query via heuristics (no LLM call)
-    analysis = await analyze_query_async(query)
+    # 1. Route query via LLM classifier
+    conv_ctx = (
+        f"The user is in an active conversation with {len(existing_messages)} previous messages."
+        if has_history else None
+    )
+    analysis = await analyze_query_async(query, conversation_context=conv_ctx)
     document_sources: list[DocumentSource] = []
 
     # Fetch system knowledge for injection
@@ -386,6 +391,22 @@ async def _prepare_rag_context(
             precomputed_answer=answer,
         )
 
+    if analysis.action == Action.CONVERSATION_SUMMARY:
+        # Conversation summary — build from chat history, no document search
+        logger.info("Conversation summary requested — building from history")
+        history = truncate_history(
+            existing_messages,
+            max_tokens=MAX_HISTORY_TOKENS * 2,
+            max_messages=MAX_HISTORY_MESSAGES * 2,
+        )
+        messages = build_conversation_summary_messages(query, history, memory_context=memory_context)
+        answer = await generate_answer(messages) if precompute else None
+        return RAGContext(
+            llm_messages=messages,
+            document_sources=[],
+            precomputed_answer=answer,
+        )
+
     if analysis.query_type == QueryType.SUMMARY:
         # SUMMARY — map-reduce pipeline for full-document summarization
         logger.info("Summary query detected in conversation — resolving document")
@@ -398,10 +419,23 @@ async def _prepare_rag_context(
                 document_sources=[doc_source],
                 precomputed_answer=answer,
             )
+        elif has_history:
+            logger.info("Document not found for summary — falling back to conversation summary")
+            history = truncate_history(
+                existing_messages,
+                max_tokens=MAX_HISTORY_TOKENS * 2,
+                max_messages=MAX_HISTORY_MESSAGES * 2,
+            )
+            messages = build_conversation_summary_messages(query, history, memory_context=memory_context)
+            answer = await generate_answer(messages) if precompute else None
+            return RAGContext(
+                llm_messages=messages,
+                document_sources=[],
+                precomputed_answer=answer,
+            )
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
-            history = truncate_history(existing_messages) if has_history else None
-            messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge)
+            messages = build_no_results_messages(query, memory_context=memory_context, system_knowledge=system_knowledge)
             if precompute:
                 answer = await generate_answer(messages)
             else:

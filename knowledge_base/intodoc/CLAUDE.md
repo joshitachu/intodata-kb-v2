@@ -17,7 +17,7 @@ intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-outpu
 - **Scanner**: Multi-platform -- Talend (XML/XMI), Workato (JSON recipes), Generic (any codebase)
 - **Platform plugins**: 3 implemented (Talend, Workato, Generic) via `PlatformPlugin` ABC
   - **Talend**: 22 Talend-specific prompts (p01-p22), TalendDistiller, 257 jobs/4528 components (Vaxxinova)
-  - **Workato**: 14 asset types, recursive block walker, datapill extraction, 15 prompt overrides (full parity with Talend)
+  - **Workato**: 14 asset types, recursive block walker, datapill extraction, 17 prompt overrides (5 shared fallbacks: p04, p10, p11, p14, p15)
   - **Generic**: Universal fallback, extension-based classification, directory-based job grouping
 - **Shared prompts**: 12 platform-agnostic prompts in `_shared/prompts/`, overridable per platform
 - **BaseDistiller**: Common chunking logic (~30K token chunks), extended by TalendDistiller/WorkatoDistiller

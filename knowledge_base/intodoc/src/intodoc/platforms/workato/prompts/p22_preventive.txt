@@ -1,0 +1,206 @@
+You are analyzing a Workato integration project. Your task is to produce a **Preventive Analysis** -- a forward-looking assessment that predicts what will go wrong next, identifies missing safeguards, catalogs anti-patterns, scores recipe fragility, and provides health score inputs for a composite project health metric.
+
+This is NOT a description of current issues (that is covered by error handling and known issues passes). This pass focuses on **latent risks that have not yet manifested**, **missing safeguards that should exist**, and **anti-patterns that will cause future failures**.
+
+## Workato Context
+
+### Anti-Patterns to Detect
+
+- **Delete-then-create without monitor block**: A `run_sql DELETE` or `delete_record` action followed by `create_record`/`upsert_record` without wrapping both operations in a monitor/catch block. If the create fails after the delete, the target has missing data until the next successful run.
+- **Foreach/catch swallowing errors silently**: A monitor/catch block inside a foreach loop where the catch block continues the loop without logging the error, sending a notification, or recording the failed item. Failed items are silently skipped and the recipe appears successful.
+- **call_recipe without error propagation**: A `call_recipe` action inside a monitor/catch block where the catch block does not re-raise, notify, or log the callee failure. The parent recipe continues processing with stale or missing data from the failed sub-recipe.
+- **Recipe version proliferation**: Multiple recipe copies with version suffixes (recipe_v1, recipe_v2, recipe_v3) or Copy_of_ prefixes where the canonical active version is unclear. Inactive copies may be accidentally activated or referenced by orchestrators.
+- **Unbounded queries without pagination**: `search_records` or `run_sql` actions with no WHERE filter, no date range, no LIMIT clause, and no pagination -- vulnerable to data volume growth causing recipe timeouts or memory exhaustion.
+- **Hardcoded environment values**: Connection names, URLs, IDs, email addresses, or thresholds embedded directly in recipe action inputs instead of account properties or lookup tables. Breaks environment promotion (DEV -> PROD).
+- **Polling triggers without deduplication (WAP-003)**: Polling triggers (`new_record`, `updated_record`) on short intervals without proper `since` parameter or external deduplication. Can process the same record multiple times, causing duplicate creates or repeated side effects.
+- **Unbounded foreach loops without batch controls (WAP-004)**: A foreach loop over a large list (e.g., all results from `search_records`) with no pagination, no batch size limit, and single-record actions inside the loop. Causes recipe timeouts, excessive API calls, and task quota exhaustion.
+- **Overly deep block nesting (WAP-006)**: Recipes with block tree nesting deeper than 5 levels (e.g., if inside foreach inside if inside monitor inside foreach). Extremely difficult to debug, and datapill references become fragile when blocks are restructured.
+- **Event topics without dead letter handling (WAP-007)**: Event topics where subscriber recipes can fail without any mechanism to capture, log, or retry the failed event. Failed subscriber runs appear only in job history and may go unnoticed, leading to silent data loss.
+- **API recipes without rate limiting or authentication (WAP-008)**: API recipes exposed via API Platform without rate limiting, authentication (API key, JWT, OAuth2), or input validation. Unrestricted endpoints consume tasks rapidly and risk abuse.
+- **No logging or audit trail (WAP-010)**: Recipes that process data without logging key events (records processed, errors encountered, decisions made) to Workato DB, an external database, or a notification channel. When issues arise, there is no audit trail.
+
+### Missing Safeguards to Catalog
+
+- **No monitor/catch blocks**: Recipes without any monitor/catch error handling -- failures terminate the recipe with only job history as evidence. No notification, no retry, no recovery.
+- **No retry logic**: Actions calling external APIs (`send_request`, app-specific actions) with no action-level retry configuration and no manual retry in catch blocks. Transient failures (timeouts, rate limits, 5xx errors) cause immediate recipe failure.
+- **No notification in catch blocks**: Catch blocks that stop the recipe or continue silently without sending a notification (`send_email`, `send_message` to Slack/Teams) or publishing to an error event topic.
+- **No data freshness checks**: No comparison of extraction timestamps, no "last successful run" tracking, no staleness detection for polling triggers.
+- **No referential integrity validation**: Lookup/search actions with no check for empty results -- downstream actions receive null datapills and create incomplete records.
+- **No idempotency**: Recipes that cannot be safely re-run without side effects (duplicate creates, double-counting, repeated deletions). Missing deduplication keys on upsert operations.
+- **No graceful degradation**: No fallback behavior when upstream dependencies fail -- the recipe halts entirely or produces corrupt output with no partial-success handling.
+
+### Fragile Patterns to Flag
+
+- **Hardcoded fiscal years**: SQL queries or conditional expressions with literal year values (e.g., `'2023/2024'`) that must be manually updated each cycle.
+- **Sentinel dates**: Magic date values used as "no date" markers (e.g., `'1900-01-01'`, `'9999-12-31'`) that may conflict with real data.
+- **Fixed connection or object references**: Target app object names, table names, or schema fields hardcoded in action inputs instead of parameterized via properties.
+- **Version proliferation**: Recipes with many copies (Copy_of_, _v2, _v3, _old, _test, _backup) where the canonical version is unclear.
+- **Credential values in action inputs**: API keys, tokens, or passwords embedded in recipe action input fields instead of using Workato connections or encrypted properties.
+
+### Single Points of Failure
+
+- **Shared lookup tables**: Lookup tables consumed by many recipes across folders (e.g., status code mappings, customer ID translations) where corruption or accidental deletion cascades everywhere.
+- **Single orchestrator recipe**: One parent recipe controlling all sub-recipes via `call_recipe` with no fallback if the orchestrator itself fails or is accidentally stopped.
+- **Single connection**: All recipes for a business domain depending on one Workato connection. If the connection's credentials expire or are revoked, all recipes in that domain fail simultaneously.
+- **Shared event topics**: A single event topic feeding multiple subscriber recipes -- if the publisher fails or publishes corrupt data, all subscribers are affected.
+
+### Implicit Assumptions
+
+- **Upstream recipe always runs first**: Recipes that read data written by other recipes with no check that the upstream recipe ran successfully.
+- **Schema never changes**: Datapill references and action input mappings that assume the source app's field structure is static. Schema changes in the source app silently break datapill references.
+- **API contracts are stable**: `send_request` actions calling external APIs with no version pinning -- API changes break the integration silently.
+- **Execution order is guaranteed**: Recipes that depend on timing (e.g., "recipe A runs before recipe B") but have no explicit orchestration (call_recipe or event topic) enforcing the order.
+
+## What to Extract
+
+### 1. Latent Failure Scenarios
+
+For each identified scenario where a failure COULD occur but has not been explicitly handled:
+
+- **trigger**: What event or condition would cause this failure
+- **impact**: What happens when it fails (data loss, stale data, corrupt data, silent error)
+- **probability**: HIGH / MEDIUM / LOW (based on how common the trigger is)
+- **detection_difficulty**: EASY / MODERATE / HARD / UNDETECTABLE (how long before someone notices)
+- **affected_jobs**: List of recipe names
+- **proposed_fix**: Specific remediation (not generic advice)
+
+### 2. Missing Safeguard Catalog
+
+For each missing safeguard:
+
+- **safeguard**: What should exist (e.g., "monitor/catch block with Slack notification")
+- **protects_against**: What failure mode it prevents
+- **affected_jobs**: Recipes missing this safeguard
+- **effort_to_add**: TRIVIAL (< 1 hour) / SMALL (1-4 hours) / MEDIUM (1-2 days) / LARGE (1 week+)
+
+### 3. Anti-Pattern Instances
+
+For each detected anti-pattern:
+
+- **pattern**: Which anti-pattern from the list above (or a new one you identify)
+- **location**: Recipe name and step/component
+- **specific_risk**: What exactly could go wrong in THIS instance
+- **proposed_fix**: How to remediate
+
+### 4. Fragility Score per Recipe
+
+Rate every recipe on a 4-point scale:
+
+- **BRITTLE**: Multiple anti-patterns, no error handling, hardcoded values, no safeguards. Will break under any change.
+- **FRAGILE**: Some anti-patterns or missing safeguards. Likely to break under moderate change.
+- **ADEQUATE**: Basic error handling present, no critical anti-patterns. Handles expected failures.
+- **ROBUST**: Comprehensive error handling (monitor/catch + notification), retry logic, input validation, parameterized properties. Handles unexpected failures gracefully.
+
+### 5. Technical Debt Indicators
+
+- **copy_variants**: Recipes with Copy_of_, _Backup, _DEBUG, _COPY, _TEST, _old, _v2+ suffixes/prefixes
+- **version_proliferation**: Recipes where multiple versions exist and the canonical active version is unclear
+- **hardcoded_values**: Count of hardcoded URLs, IDs, email addresses, thresholds in action inputs
+- **code_duplication**: Groups of near-identical recipes that should be consolidated into callable sub-recipes
+- **missing_cleanup**: Inactive (stopped) recipes that are never called but still exist in the project
+
+### 6. Cascading Failure Chains
+
+Trace failure propagation paths:
+
+- **source**: The initial failure point (recipe + step)
+- **propagation**: How the failure spreads (via call_recipe chains, shared event topics, shared lookup tables, shared target app tables)
+- **blast_radius**: CRITICAL (affects all folders/domains) / HIGH (affects multiple folders) / MEDIUM (affects one folder) / LOW (affects one recipe)
+
+### 7. Health Score Inputs
+
+Calculate percentage scores for these dimensions (0-100):
+
+- **error_handling_pct**: % of recipes with at least one monitor/catch block covering critical actions
+- **data_integrity_pct**: % of write operations (create/update/upsert/delete/run_sql) with guards (monitor/catch, row count validation, deduplication keys)
+- **code_hygiene_pct**: % of recipes that are NOT copy/backup/debug/test variants
+- **observability_pct**: % of recipes with logging or monitoring (Workato DB logging, Slack/email notifications in catch blocks, error event topic publishing)
+
+## Output Format
+
+Return a JSON object with this exact structure:
+
+```json
+{
+  "latent_failures": [
+    {
+      "id": "LF-001",
+      "trigger": "Target API returns 429 (rate limited) during foreach loop processing",
+      "impact": "Action inside foreach fails. If no monitor/catch inside the loop, the entire loop stops and the recipe fails. Records processed before the failure are committed but remaining records are lost for this run.",
+      "probability": "MEDIUM",
+      "detection_difficulty": "HARD",
+      "affected_jobs": ["Order_Sync_Recipe", "Customer_Bulk_Update_Recipe"],
+      "proposed_fix": "Wrap actions inside the foreach loop in a monitor/catch block. In the catch, log the failed record to Workato DB and continue the loop. Add a post-loop check that sends a notification if any records failed."
+    }
+  ],
+  "missing_safeguards": [
+    {
+      "safeguard": "Monitor/catch block with Slack notification for audit trail",
+      "protects_against": "Silent failures -- recipe terminates with only job history as evidence",
+      "affected_jobs": ["Daily_Report_Recipe", "Customer_Cleanup_Recipe"],
+      "effort_to_add": "SMALL"
+    }
+  ],
+  "anti_pattern_instances": [
+    {
+      "pattern": "Delete-then-create without monitor block",
+      "location": "Data_Refresh_Recipe / run_sql_1 (DELETE) + create_record_1",
+      "specific_risk": "DELETE removes all current-period rows from the target table. If create_record fails, the table has missing data until the next successful run. Downstream reports show gaps.",
+      "proposed_fix": "Wrap both the DELETE and CREATE steps in a single monitor/catch block. In the catch, send a notification and log the error. Consider using UPSERT instead of DELETE+INSERT."
+    }
+  ],
+  "fragility_scores": [
+    {
+      "job_name": "Order_Sync_Recipe",
+      "score": "FRAGILE",
+      "rationale": "Has monitor/catch on main actions but foreach loop is unprotected. Hardcoded status codes in if-blocks. No retry logic on API calls."
+    }
+  ],
+  "technical_debt": {
+    "copy_variants": {
+      "count": 5,
+      "jobs": ["Copy_of_Order_Sync_Recipe", "Customer_Sync_v1_old"]
+    },
+    "version_proliferation": {
+      "count": 3,
+      "jobs": ["Invoice_Export_v3", "Invoice_Export_v2", "Invoice_Export_v1"]
+    },
+    "hardcoded_values": {
+      "count": 8,
+      "examples": ["API endpoint URL in send_request action", "Subsidiary ID '2' in NetSuite upsert", "Email 'admin@company.com' in error notification"]
+    },
+    "code_duplication": {
+      "count": 2,
+      "groups": ["5 customer sync recipes with identical search + upsert pattern across folders"]
+    },
+    "missing_cleanup": {
+      "count": 3,
+      "jobs": ["Old_Salesforce_Sync (inactive)", "Test_Webhook_Handler (inactive)"]
+    }
+  },
+  "cascade_chains": [
+    {
+      "source": "Shared lookup table: status_code_mappings",
+      "propagation": "Lookup table is read by 12 recipes across 3 folders. Accidental deletion or corruption of lookup entries breaks status resolution in all recipes simultaneously.",
+      "blast_radius": "CRITICAL"
+    }
+  ],
+  "health_scores": {
+    "error_handling_pct": 40,
+    "data_integrity_pct": 25,
+    "code_hygiene_pct": 75,
+    "observability_pct": 30
+  }
+}
+```
+
+## Instructions
+
+- **Be thorough and forward-looking.** Focus on what WILL go wrong, not what HAS gone wrong.
+- Every identified risk should have a specific, actionable fix -- not generic advice like "add error handling." Name specific recipes, steps, and scenarios.
+- Latent failures are the highest-value findings -- these are problems waiting to happen. Rate them by both probability and detection difficulty.
+- Health scores should be calculated from actual recipe counts, not estimated. If 8 out of 20 recipes have monitor/catch blocks, error_handling_pct = 40.
+- Technical debt indicators help quantify the maintenance burden. Copy variants and version proliferation are strong signals of accumulated debt.
+- Cascading failure chains are critical findings -- trace the full blast radius from initial failure to final impact, including event topic subscriber chains and callable recipe dependency trees.
+- Pay special attention to Workato-specific risks: event topic subscribers that silently lose failed events, foreach loops without per-item error handling, API recipes without rate limiting, and polling triggers without deduplication.
+- Recipes loaded from nested export formats (with sibling `steps.json` files) should be analyzed with the same rigor as inline recipes -- do not skip them.

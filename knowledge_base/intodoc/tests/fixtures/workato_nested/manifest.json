@@ -1,0 +1,10 @@
+{
+  "export_id": "nested-test-001",
+  "export_manifest_id": "m-001",
+  "assets": [
+    {"type": "recipe", "name": "Sync Orders"},
+    {"type": "recipe", "name": "Process Returns"},
+    {"type": "connection", "name": "salesforce"},
+    {"type": "connection", "name": "postgres"}
+  ]
+}

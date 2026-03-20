@@ -45,8 +45,23 @@ class WorkatoPlugin(GenericPlugin):
         ".recipe_function.json": FileType.JOB,
     }
 
+    # Parent directory name -> FileType for content-based fallback
+    _DIR_NAME_MAP: dict[str, FileType] = {
+        "recipes": FileType.JOB,
+        "connections": FileType.CONNECTION,
+        "lookup_tables": FileType.SCHEMA,
+        "properties": FileType.CONTEXT,
+        "custom_adapters": FileType.ROUTINE,
+        "api_endpoints": FileType.JOB,
+        "api_collections": FileType.JOB,
+        "lcap_apps": FileType.JOB,
+        "recipe_functions": FileType.JOB,
+        "topics": FileType.CONNECTION,
+        "schemas": FileType.SCHEMA,
+    }
+
     def classify_file(self, path: Path) -> FileType:
-        """Classify by Workato asset type suffix, then fall back to Generic."""
+        """Classify by Workato asset type suffix, parent directory, then fall back to Generic."""
         name = path.name.lower()
 
         # Check Workato-specific asset type suffixes
@@ -57,6 +72,17 @@ class WorkatoPlugin(GenericPlugin):
         # manifest.json at root
         if name == "manifest.json":
             return FileType.CONFIG
+
+        # Parent directory fallback for nested export formats
+        if name.endswith(".json"):
+            parent_name = path.parent.name.lower()
+            # Check immediate parent (e.g. recipes/sync_customers/recipe.json)
+            if parent_name in self._DIR_NAME_MAP:
+                return self._DIR_NAME_MAP[parent_name]
+            # Check grandparent (e.g. recipes/sync_customers/recipe.json -> recipes)
+            grandparent_name = path.parent.parent.name.lower() if path.parent.parent else ""
+            if grandparent_name in self._DIR_NAME_MAP:
+                return self._DIR_NAME_MAP[grandparent_name]
 
         # Fall back to Generic classification
         return super().classify_file(path)

@@ -54,6 +54,37 @@ NO_RESULTS_PROMPT = (
 )
 
 
+CONVERSATION_SUMMARY_PROMPT = (
+    "You are a helpful knowledge-base assistant. "
+    "The user wants a summary of the conversation so far. "
+    "Review the history and provide a clear, well-structured summary.\n\n"
+    "## Formatting rules\n"
+    "- Use markdown: headings, bullet lists, bold where appropriate.\n"
+    "- Organize by topic/theme, not chronologically.\n"
+    "- Highlight key findings, answers, and unresolved questions.\n"
+    "- Be comprehensive but concise.\n"
+    "- Do NOT add information not discussed in the conversation."
+)
+
+
+def build_conversation_summary_messages(
+    query: str,
+    history: list[dict[str, str]],
+    memory_context: str | None = None,
+) -> list[dict[str, str]]:
+    """Build LLM messages for summarizing the conversation history."""
+    messages: list[dict[str, str]] = [{"role": "system", "content": CONVERSATION_SUMMARY_PROMPT}]
+
+    if memory_context:
+        messages.append({"role": "system", "content": memory_context})
+
+    if history:
+        messages.extend(history)
+
+    messages.append({"role": "user", "content": query})
+    return messages
+
+
 CORRECTION_EXTRACTION_PROMPT = (
     "The user corrected the assistant's previous answer. "
     "Extract a concise correction statement.\n\n"

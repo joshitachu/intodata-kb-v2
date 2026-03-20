@@ -1,0 +1,17 @@
+{
+  "id": 90002,
+  "name": "Process Returns",
+  "description": "Handles return requests from customers",
+  "trigger_application": "salesforce",
+  "running": false,
+  "version_no": 2,
+  "trigger": {
+    "provider": "salesforce",
+    "name": "updated_record",
+    "title": "Updated Case in Salesforce",
+    "input": {
+      "sobject": "Case",
+      "filter": "Type = 'Return'"
+    }
+  }
+}

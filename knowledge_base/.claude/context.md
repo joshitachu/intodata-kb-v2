@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Workato + Generic platform plugins COMPLETE. Workato analysis prompts at FULL PARITY with Talend (22 dimensions).
-**Last session**: 2026-03-18
-**Last completed**: 7 missing Workato analysis prompts (p07, p12, p16, p17, p18, p20, p21). Total: 15 Workato-specific + 7 shared fallbacks = 22 analysis dimensions.
+**Status**: Workato scanner Format C support deployed -- 6 field mismatch bugs fixed. Scanner now handles all 3 known export formats (API/SDK, flat, manifest/package) with generic extraction.
+**Last session**: 2026-03-20
+**Last completed**: Workato scanner Format C fixes: wrapped steps.json, trigger/action/connection field fallbacks, new step types (conditional, repeat_for_each, formula, lookup, trigger-as-step), recipe metadata-only classification.
 
 ## What's Done
 
@@ -10,7 +10,7 @@
 - Multi-platform architecture: Talend, Workato, Generic implemented
 - Platform-agnostic shared prompts (12 in `_shared/prompts/`) + platform overrides
 - BaseDistiller with platform-specific subclasses (TalendDistiller, WorkatoDistiller)
-- 22 Talend-specific prompt files (p01-p22) + 15 Workato overrides (full parity)
+- 22 Talend-specific prompt files (p01-p22) + 17 Workato overrides (5 shared fallbacks remain)
 - 12 consolidated reference docs (00-11) defining output format/depth
 - Universal IR with 99.4% expression parse rate (Phase 2)
 - Two-layer credential filter: Layer 1 (raw text regex) + Layer 2 (post-parse structural)
@@ -55,6 +55,13 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Recent Changes
 
+- **Gate validation between phases** (2026-03-20): Phase 2.5 validates analysis files (>1KB) before Phase 3. Phase 3.5 validates 9 required docs (>500 bytes) before cleanup. Both gates retry failed agents once (max 1 retry). Prompt-only change.
+- **Phase 2 filesystem boundary + scaled target** (2026-03-20): Sub-agents prohibited from reading outside staging dir. Analysis target scales with preprocessed data size (5-40KB, ~50% of input).
+- **Consolidated analysis guide** (2026-03-20): Single ANALYSIS_GUIDE.md (12KB) replaces 22 bundled prompts (222KB). Dynamic depth scaling replaces hard-coded line minimums. Phase 3 gets dedicated PHASE_3_GUIDE.md. 94% token reduction for Phase 2.
+- **Bundle splitting** (2026-03-19): Prompt bundles split at 200KB, ref doc bundles at 80KB. Now superseded by consolidated guide for platforms that have ANALYSIS_GUIDE.md; legacy splitting still works as fallback.
+- **Workato p09+p22 overrides** (2026-03-19): Created Workato-specific p09_business_logic.txt and p22_preventive.txt. Replaced all Talend terms. Added API collection, property list, nested steps, event topic extraction targets. Referenced WAP-003--WAP-010 anti-patterns. 17 Workato overrides total (5 shared fallbacks remain: p04, p10, p11, p14, p15).
+- **Fix doc gen prompt delivery** (2026-03-19): Fixed 4 broken path resolutions in doc generation. Analysis prompts now use `intodoc.platforms.__file__` (package path). Reference docs use source-tree-relative `__file__` path. Removed redundant Phase 1 MCP calls from prompt. Fixed subprocess cwd to source tree (has `.mcp.json`). Added warning log for failed prompt bundling.
+- **Content-based asset discovery** (2026-03-19): Replaced Workato scanner's 12 hardcoded `rglob("*.suffix.json")` calls with content-based classification. New `_classify_json_content()` reads JSON structure (key signatures) to determine asset type (15+ types). Single-pass `_build_asset_registry()` reuses `walk_repo()` output. Added nested folder format support (recipe.json + steps.json siblings, connection.json in dirs). Added property_list, api_collection types. 126 tests pass (51 new).
 - **Workato full prompt parity** (2026-03-18): Created 7 missing Workato-specific analysis prompts (p07_state, p12_data_quality, p16_performance, p17_cross_folder, p18_reusability, p20_lineage_matrix, p21_expression_catalog). Workato now has 22 analysis dimensions matching Talend (15 overrides + 7 shared fallbacks). Zero Talend terminology in any Workato prompt. All prompts use real-world Workato best practices (task consumption, recipe functions, layered error defense, datapill formulas).
 - **Workato + Generic plugins** (2026-03-17): Added WorkatoPlugin (14 asset types, recursive block walker, datapill extraction, manifest building), GenericPlugin (universal fallback), BaseDistiller (extracted from TalendDistiller), 12 shared prompts, 8 Workato prompt overrides. Registry + scanner_service updated. 93 new tests, 200 total pass.
 - **Assessment page** (2026-03-13): New `AssessmentService` generates self-contained HTML assessment from doc 00 (exec summary) + doc 11 (migration). Jinja2 template with sidebar TOC, responsive CSS, print-friendly. Auto-regenerates after doc generation. Endpoints: `POST /generate-assessment`, `GET /assessment`. Fixed missing `logger` import in projects.py.
@@ -75,10 +82,11 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 ## Next Steps
 
 - [ ] Restart MCP server: `sudo systemctl restart mcp-server`
-- [ ] Test doc generation → verify consolidated 12-doc output with depth targets
-- [ ] Verify 12 reference docs exist and old 25 are removed
-- [ ] Monitor generation time and doc quality (depth targets met?)
-- [ ] Verify large group splitting works (USA group → 2 parts)
+- [ ] Test doc generation with consolidated guide → verify 12-doc output
+- [ ] Compare output quality with previous generation (should be equal or better)
+- [ ] Monitor generation time (target: under 20 min with reduced token input)
+- [ ] Test small-project behavior: verify docs are appropriately sized, not padded
+- [ ] Verify backward compat: remove ANALYSIS_GUIDE.md temporarily, confirm 22 .txt files still work
 - [ ] Record baseline benchmark run on VPS (`python -m benchmark run --tag baseline-v1`)
 - [ ] Deploy Phase 1 code to VPS (`docker compose up -d --build backend`)
 - [x] Workato scanner plugin (complete, needs real project data for E2E validation)

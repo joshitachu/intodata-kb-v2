@@ -23,6 +23,8 @@
 ## Scanner CLI
 
 - [x] Talend platform plugin (parser, prompts, best practices)
+- [x] Workato platform plugin (content-based discovery, 3 export formats, 22 prompts)
+- [x] Generic platform plugin (extension-based classification)
 - [x] File walker + credential filter
 - [x] Chunker (group by region, ~30K tokens/chunk)
 - [x] Click CLI entry point (`intodoc scan`)
@@ -45,6 +47,10 @@
 - [x] Reset stuck status endpoint
 - [x] get_analysis_prompts() bundled tool (replaces 16+ Read calls)
 - [x] get_reference_docs(agent_group) bundled tool
+- [x] Consolidated ANALYSIS_GUIDE.md (94% token reduction: 222KB -> 12KB)
+- [x] PHASE_3_GUIDE.md for cross-group synthesis
+- [x] Dynamic depth scaling (replaces hard-coded line minimums)
+- [x] get_phase3_guide() method in scanner_service
 
 ## Dashboard
 
@@ -79,7 +85,7 @@
 
 | Component | Files | Tests | Status |
 |-----------|-------|-------|--------|
-| Scanner CLI | 15+ Python files | pytest | Complete (Talend) |
+| Scanner CLI | 15+ Python files | 126 Workato tests | Complete (Talend, Workato, Generic) |
 | MCP Server | 12+ Python files | -- | Complete |
 | Dashboard | 10+ TypeScript files | Vitest | Complete |
 

@@ -1,0 +1,35 @@
+[
+  {
+    "type": "if",
+    "condition": {
+      "field": "{{trigger.Status}}",
+      "operator": "equals",
+      "value": "Approved"
+    },
+    "steps_on_true": [
+      {
+        "type": "action",
+        "provider": "postgresql",
+        "name": "update_row",
+        "label": "Update Return Status",
+        "input": {
+          "table": "returns",
+          "case_id": "{{trigger.CaseId}}",
+          "status": "processed"
+        }
+      }
+    ],
+    "steps_on_false": [
+      {
+        "type": "action",
+        "provider": "slack",
+        "name": "post_message",
+        "label": "Escalate Return",
+        "input": {
+          "channel": "#returns-review",
+          "message": "Return needs review: {{trigger.CaseId}}"
+        }
+      }
+    ]
+  }
+]

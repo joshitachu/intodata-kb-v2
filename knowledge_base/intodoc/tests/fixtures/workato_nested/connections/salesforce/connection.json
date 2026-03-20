@@ -1,0 +1,7 @@
+{
+  "id": 301,
+  "name": "salesforce",
+  "provider": "salesforce",
+  "authorization_type": "oauth2",
+  "base_url": "https://login.salesforce.com"
+}

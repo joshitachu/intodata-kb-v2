@@ -20,6 +20,11 @@
 | Build system | hatchling (NOT setuptools) | pyproject.toml configured for hatchling; setuptools causes build failures | 2026-02 |
 | Hindsight memory | Cross-project + project-specific memory via recall/retain tools | Lessons from past runs inform future generation | 2026-03 |
 | Polling + SSE | Dashboard uses both SSE log streaming and 10s polling | SSE alone is fragile; polling catches missed state changes | 2026-03 |
+| Content-based discovery | Workato scanner uses JSON content classification instead of filename patterns | Works with any export format (flat suffix, wrapped, nested folder); single pass reuses walk_repo() output | 2026-03 |
+| Workato generic extraction | All field reads use `or` fallback chains (e.g. `provider or application`); param extractors iterate all keys instead of hardcoded lists | Handles 3 known export formats (A=code blocks, B=flat, C=manifest/package) plus unknown future variations | 2026-03 |
+| Bundle splitting | Prompt bundles split at 200KB, ref doc bundles at 80KB; glob patterns in orchestrator prompt | Prevents exceeding Claude's 256KB file-read limit and 25K token limit as platforms add more prompts | 2026-03 |
+| Consolidated analysis guide | Single ANALYSIS_GUIDE.md per platform replaces 22 bundled .txt prompts; PHASE_3_GUIDE.md for cross-group synthesis | 94% token reduction (222KB->12KB), eliminates conflicting instructions, coherent single-document format; original .txt files kept for backward compat | 2026-03 |
+| Dynamic depth scaling | Inject project metrics (total_jobs, total_groups) into prompt instead of hard-coded line minimums | Small projects don't pad, large projects don't truncate; depth driven by content not arbitrary targets | 2026-03 |
 
 ## Code Patterns
 
@@ -76,6 +81,13 @@
 - Very large docs (e.g. 17_DATA_QUALITY.md with 1,102 embedded rules) may fail RAG ingestion with 500 errors. Consider splitting.
 - SSE-only UI updates are fragile -- always pair with polling as a fallback.
 - Stuck states need an explicit user escape hatch (reset button) since disabling all actions locks the user out.
+
+### Scanner
+- Workato file discovery uses content-based classification (`_classify_json_content`), NOT filename patterns
+- The asset registry is built once from `walk_repo()` output -- no extra filesystem walk, no rglob
+- Three Workato export formats exist: flat suffix (`.recipe.json`), wrapped (`{"recipe": {...}}`), nested folder (`recipes/name/recipe.json` + `steps.json`)
+- Steps can live in a sibling `steps.json` file -- `_parse_recipe()` auto-merges them
+- When recipe filename is generic (e.g. `recipe.json`), use parent directory name as recipe name
 
 ### Build & Tooling
 - intodoc uses hatchling build system, NOT setuptools

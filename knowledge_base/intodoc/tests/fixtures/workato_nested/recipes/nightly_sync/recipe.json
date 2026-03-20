@@ -1,0 +1,10 @@
+{
+  "id": 90003,
+  "name": "Nightly Warehouse Sync",
+  "description": "Nightly sync of data to warehouse",
+  "trigger_application": "workato_scheduler",
+  "action_applications": ["postgresql", "amazon_s3"],
+  "connections_used": ["postgres_prod", "s3_bucket"],
+  "running": true,
+  "version_no": 3
+}

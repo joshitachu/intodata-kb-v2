@@ -1,0 +1,17 @@
+{
+  "id": 90001,
+  "name": "Sync Orders to Postgres",
+  "description": "Syncs new Salesforce orders to PostgreSQL",
+  "trigger_application": "salesforce",
+  "action_applications": ["postgresql"],
+  "running": true,
+  "version_no": 5,
+  "trigger": {
+    "provider": "salesforce",
+    "name": "new_record",
+    "title": "New Order in Salesforce",
+    "input": {
+      "sobject": "Order"
+    }
+  }
+}
