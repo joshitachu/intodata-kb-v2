@@ -13,8 +13,6 @@ from intodoc.models import (
     MetadataConnection,
     ParsedJob,
     ScanResult,
-    TMapEntry,
-    TRunJobRef,
 )
 from intodoc.platforms.workato import WorkatoPlugin
 from intodoc.platforms.workato.parser import WorkatoParser
@@ -172,56 +170,23 @@ class TestRecipeParsing:
                 return j
         pytest.fail(f"Job containing '{name_part}' not found")
 
-    def test_sync_recipe_components(self, scan_result):
-        """Sync recipe should have trigger + actions + conditions."""
+    def test_single_component_per_recipe(self, scan_result):
+        """Each recipe should produce exactly one WorkatoRecipe component."""
         job = self._find_job(scan_result, "Sync Customers")
+        assert len(job.components) == 1
+        assert job.components[0].component_type == "WorkatoRecipe"
 
-        comp_types = [c.component_type for c in job.components]
-
-        # Should have a trigger
-        assert any("Trigger" in t for t in comp_types)
-
-        # Should have actions
-        assert any("Action" in t for t in comp_types)
-
-        # Should have conditionals
-        assert any("Condition" in t for t in comp_types)
-
-    def test_sync_recipe_connections(self, scan_result):
-        """Sync recipe should have flow connections between steps."""
+    def test_raw_json_in_params(self, scan_result):
+        """Recipe params should contain the raw recipe JSON keys."""
         job = self._find_job(scan_result, "Sync Customers")
-        assert len(job.connections) > 0
+        param_names = {p.name for p in job.components[0].params}
+        assert "name" in param_names
 
-        # Should have FLOW connections
-        flow_conns = [c for c in job.connections if c.connector_name == "FLOW"]
-        assert len(flow_conns) > 0
-
-    def test_sync_recipe_datapills(self, scan_result):
-        """Sync recipe should have datapill references extracted as TMapEntry."""
+    def test_no_connections_or_tmap(self, scan_result):
+        """Raw passthrough recipes should have no connections or tmap_data."""
         job = self._find_job(scan_result, "Sync Customers")
-        assert len(job.tmap_data) > 0
-        assert len(job.tmap_data[0].entries) > 0
-
-        # Should reference salesforce fields
-        expressions = [e.expression for e in job.tmap_data[0].entries]
-        assert any("salesforce" in expr for expr in expressions)
-
-    def test_error_handling_recipe(self, scan_result):
-        """Error handling recipe should have monitor/catch/stop components."""
-        job = self._find_job(scan_result, "Error Handling")
-
-        comp_types = [c.component_type for c in job.components]
-        assert "WorkatoMonitor" in comp_types
-        assert "WorkatoCatch" in comp_types
-        assert "WorkatoStop" in comp_types
-
-    def test_error_handling_connections(self, scan_result):
-        """Error handling recipe should have ON_ERROR connection."""
-        job = self._find_job(scan_result, "Error Handling")
-
-        conn_types = [c.connector_name for c in job.connections]
-        assert "ON_ERROR" in conn_types
-        assert "STOP" in conn_types
+        assert len(job.connections) == 0
+        assert len(job.tmap_data) == 0
 
     def test_call_recipe_refs(self, scan_result):
         """Orchestrator recipe should have TRunJobRef for called recipes."""
@@ -232,292 +197,125 @@ class TestRecipeParsing:
         called_names = [ref.child_job for ref in job.trunjob_refs]
         assert any("Sync" in n or "12345" in n for n in called_names)
 
-    def test_foreach_loop(self, scan_result):
-        """Orchestrator recipe should have a foreach loop component."""
-        job = self._find_job(scan_result, "Orchestrator")
 
-        comp_types = [c.component_type for c in job.components]
-        assert any("Loop_foreach" in t for t in comp_types)
+# ── Noise Stripping ─────────────────────────────────────────────────
 
 
-# ── Datapill Extraction ─────────────────────────────────────────────
-
-
-class TestDatapillExtraction:
-    def test_extract_datapill_refs(self):
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-
-        input_data = {
-            "company_name": "#{_('data.salesforce.Account.Name')}",
-            "email": "#{_('data.salesforce.Account.Email')}",
-            "static_field": "hello world",
-            "complex": "Name: #{_('data.sf.Name')} - #{_('data.sf.Id')}",
-        }
-
-        entries = parser._extract_datapill_refs(input_data, "output")
-
-        # Should have entries for all fields
-        assert len(entries) >= 4
-
-        # Check datapill entries
-        datapill_entries = [e for e in entries if "#{" in e.expression]
-        assert len(datapill_entries) >= 3  # company_name, email, complex
-
-        # Check static mapping
-        static_entries = [e for e in entries if e.expression.startswith('"')]
-        assert len(static_entries) >= 1
-
-    def test_skip_non_string_values(self):
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-
-        input_data = {
-            "count": 42,
-            "active": True,
-            "name": "#{_('data.sf.Name')}",
-        }
-
-        entries = parser._extract_datapill_refs(input_data, "output")
-        # Only the string field should produce entries
-        assert len(entries) == 1
-        assert entries[0].column_name == "name"
-
-
-# ── Block Walker ────────────────────────────────────────────────────
-
-
-class TestBlockWalker:
+class TestNoiseStripping:
     @pytest.fixture
     def parser(self):
         from intodoc.scanner.credential_filter import CredentialFilter
         return WorkatoParser(CredentialFilter())
 
-    def test_simple_trigger_action(self, parser):
-        """Simple trigger -> action should create 2 components + 1 connection."""
-        code = {
-            "number": 0,
-            "provider": "salesforce",
-            "name": "new_record",
-            "keyword": "trigger",
-            "as": "sf_trigger",
-            "input": {"sobject": "Account"},
-            "block": [
+    def test_noise_keys_stripped(self, parser):
+        """Noise keys should be recursively removed from dicts."""
+        data = {
+            "name": "test",
+            "extended_input_schema": [{"type": "string"}],
+            "uuid": "abc-123",
+            "steps": [
                 {
-                    "number": 1,
-                    "provider": "netsuite",
-                    "name": "create_record",
-                    "keyword": "action",
-                    "as": "ns_create",
-                    "input": {"entity_type": "customer"},
-                    "block": [],
+                    "type": "action",
+                    "provider": "sf",
+                    "output_schema": [{"name": "id"}],
+                    "position": 1,
+                    "input": {
+                        "email": "test@example.com",
+                        "visible_config_fields": ["email"],
+                    },
                 }
             ],
         }
 
-        comps, conns = [], []
-        tmap, trefs = [], []
-        parser._walk_code_blocks(code, 0, comps, conns, tmap, trefs, "")
+        parser._strip_noise_keys(data)
 
-        assert len(comps) == 2
-        assert comps[0].component_type == "WorkatoTrigger_salesforce_new_record"
-        assert comps[1].component_type == "WorkatoAction_netsuite_create_record"
-        assert len(conns) == 1
-        assert conns[0].connector_name == "FLOW"
+        assert "name" in data
+        assert "extended_input_schema" not in data
+        assert "uuid" not in data
+        step = data["steps"][0]
+        assert "provider" in step
+        assert "output_schema" not in step
+        assert "position" not in step
+        assert "email" in step["input"]
+        assert "visible_config_fields" not in step["input"]
 
-    def test_conditional_blocks(self, parser):
-        """if/else should create condition components."""
-        code = {
-            "number": 0,
-            "provider": "clock",
-            "name": "scheduled",
-            "keyword": "trigger",
-            "as": "trigger",
-            "input": {},
-            "block": [
-                {
-                    "number": 1,
-                    "keyword": "if",
-                    "input": {"conditions": [{"operand": "present", "lhs": "x"}]},
-                    "block": [],
-                },
-                {
-                    "number": 2,
-                    "keyword": "else",
-                    "block": [],
-                },
-            ],
+    def test_noise_keys_in_nested_dicts(self, parser):
+        """Noise keys should be stripped at all nesting levels."""
+        data = {
+            "code": {
+                "keyword": "trigger",
+                "number": 0,
+                "block": [
+                    {"number": 1, "dynamicPickListSelection": {}, "provider": "sf"}
+                ],
+            }
         }
+        parser._strip_noise_keys(data)
+        assert "number" not in data["code"]
+        assert "number" not in data["code"]["block"][0]
+        assert "dynamicPickListSelection" not in data["code"]["block"][0]
+        assert "provider" in data["code"]["block"][0]
 
-        comps, conns = [], []
-        parser._walk_code_blocks(code, 0, comps, conns, [], [], "")
 
-        comp_types = [c.component_type for c in comps]
-        assert "WorkatoCondition_if" in comp_types
-        assert "WorkatoCondition_else" in comp_types
+# ── Call Recipe Detection ───────────────────────────────────────────
 
-    def test_monitor_catch(self, parser):
-        """monitor/catch should create appropriate components and connections."""
-        code = {
-            "number": 0,
-            "provider": "clock",
-            "name": "scheduled",
-            "keyword": "trigger",
-            "as": "trigger",
-            "input": {},
-            "block": [
-                {
-                    "number": 1,
-                    "keyword": "monitor",
-                    "block": [
-                        {
-                            "number": 2,
-                            "provider": "http",
-                            "name": "send_request",
-                            "keyword": "action",
-                            "as": "http_call",
-                            "input": {"url": "https://api.test.com"},
-                            "block": [],
-                        }
-                    ],
-                },
-                {
-                    "number": 3,
-                    "keyword": "catch",
-                    "block": [],
-                },
-            ],
-        }
 
-        comps, conns = [], []
-        parser._walk_code_blocks(code, 0, comps, conns, [], [], "")
+class TestCallRecipeDetection:
+    @pytest.fixture
+    def parser(self):
+        from intodoc.scanner.credential_filter import CredentialFilter
+        return WorkatoParser(CredentialFilter())
 
-        comp_types = [c.component_type for c in comps]
-        assert "WorkatoMonitor" in comp_types
-        assert "WorkatoCatch" in comp_types
-
-        # Check ON_ERROR connection
-        conn_types = [c.connector_name for c in conns]
-        assert "ON_ERROR" in conn_types
-
-    def test_foreach_loop(self, parser):
-        """foreach should create a loop component."""
-        code = {
-            "number": 0,
-            "provider": "clock",
-            "name": "scheduled",
-            "keyword": "trigger",
-            "as": "trigger",
-            "input": {},
-            "block": [
-                {
-                    "number": 1,
-                    "keyword": "foreach",
-                    "input": {"list": "#{_('data.trigger.items')}"},
-                    "block": [],
-                },
-            ],
-        }
-
-        comps, conns = [], []
-        parser._walk_code_blocks(code, 0, comps, conns, [], [], "")
-
-        assert any("Loop_foreach" in c.component_type for c in comps)
-
-    def test_stop_action(self, parser):
-        """stop should create a stop component."""
-        code = {
-            "number": 0,
-            "provider": "clock",
-            "name": "scheduled",
-            "keyword": "trigger",
-            "as": "trigger",
-            "input": {},
-            "block": [
-                {
-                    "number": 1,
-                    "keyword": "stop",
-                    "input": {"status": "failed", "message": "Error"},
-                },
-            ],
-        }
-
-        comps, conns = [], []
-        parser._walk_code_blocks(code, 0, comps, conns, [], [], "")
-
-        assert any("WorkatoStop" in c.component_type for c in comps)
-
-    def test_call_recipe_detection(self, parser):
-        """call_recipe action should generate TRunJobRef."""
+    def test_find_call_recipe_in_steps(self, parser):
+        """call_recipe actions should be detected in nested JSON."""
         parser._recipe_id_index = {"999": "Target Recipe"}
 
-        code = {
-            "number": 0,
-            "provider": "clock",
-            "name": "scheduled",
-            "keyword": "trigger",
-            "as": "trigger",
-            "input": {},
-            "block": [
+        data = {
+            "steps": [
+                {"type": "action", "provider": "sf", "name": "create"},
                 {
-                    "number": 1,
-                    "provider": "workato",
+                    "type": "action",
                     "name": "call_recipe",
-                    "keyword": "action",
-                    "as": "call_target",
                     "input": {"recipe_id": "999"},
-                    "block": [],
                 },
-            ],
+            ]
         }
 
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_code_blocks(code, 0, comps, conns, tmap, trefs, "")
+        refs = parser._find_call_recipe_refs(data)
+        assert len(refs) == 1
+        assert refs[0].child_job == "Target Recipe"
 
-        assert len(trefs) == 1
-        assert trefs[0].child_job == "Target Recipe"
+    def test_find_call_recipe_by_action_key(self, parser):
+        """action='call_recipe' should also be detected."""
+        parser._recipe_id_index = {"500": "Other Recipe"}
 
-    def test_nested_depth(self, parser):
-        """Deeply nested blocks should be correctly processed."""
-        code = {
-            "number": 0,
-            "provider": "clock",
-            "name": "scheduled",
-            "keyword": "trigger",
-            "as": "trigger",
-            "input": {},
-            "block": [
-                {
-                    "number": 1,
-                    "keyword": "foreach",
-                    "input": {"list": "items"},
-                    "block": [
-                        {
-                            "number": 2,
-                            "keyword": "if",
-                            "input": {"conditions": []},
-                            "block": [
-                                {
-                                    "number": 3,
-                                    "provider": "http",
-                                    "name": "send_request",
-                                    "keyword": "action",
-                                    "as": "nested_http",
-                                    "input": {},
-                                    "block": [],
-                                }
-                            ],
-                        }
-                    ],
-                },
-            ],
+        data = {
+            "steps": [
+                {"type": "action", "action": "call_recipe", "input": {"recipe_id": "500"}},
+            ]
         }
 
-        comps, conns = [], []
-        parser._walk_code_blocks(code, 0, comps, conns, [], [], "")
+        refs = parser._find_call_recipe_refs(data)
+        assert len(refs) == 1
+        assert refs[0].child_job == "Other Recipe"
 
-        # Should have: trigger + foreach + if + action = 4 components
-        assert len(comps) == 4
+    def test_unresolved_recipe_id(self, parser):
+        """Unknown recipe IDs should use fallback name."""
+        data = {
+            "steps": [
+                {"type": "action", "name": "call_recipe", "input": {"recipe_id": "unknown_id"}},
+            ]
+        }
+
+        refs = parser._find_call_recipe_refs(data)
+        assert len(refs) == 1
+        assert refs[0].child_job == "recipe_unknown_id"
+
+    def test_no_call_recipe(self, parser):
+        """Data without call_recipe should return empty list."""
+        data = {"steps": [{"type": "action", "name": "create", "input": {}}]}
+        refs = parser._find_call_recipe_refs(data)
+        assert len(refs) == 0
 
 
 # ── Connection Parsing ──────────────────────────────────────────────
@@ -559,7 +357,8 @@ class TestConnectionParsing:
 
 
 class TestWorkatoDistiller:
-    def test_distill_strips_noise(self):
+    def test_distill_is_passthrough(self):
+        """Distiller should be a no-op (noise already stripped in parser)."""
         from intodoc.platforms.workato.distiller import WorkatoDistiller
 
         distiller = WorkatoDistiller()
@@ -569,52 +368,18 @@ class TestWorkatoDistiller:
             group="root",
             components=[
                 Component(
-                    unique_name="action_1",
-                    component_type="WorkatoAction_sf_create",
+                    unique_name="test_recipe",
+                    component_type="WorkatoRecipe",
                     params=[
-                        ComponentParam(name="provider", value="salesforce", field_type="TEXT"),
-                        ComponentParam(name="uuid", value="abc-123", field_type="TEXT"),
-                        ComponentParam(name="extended_input_schema", value="[{...}]", field_type="TEXT"),
-                        ComponentParam(name="company_name", value="Test Corp", field_type="INPUT"),
+                        ComponentParam(name="name", value="test", field_type="TEXT"),
+                        ComponentParam(name="trigger", value='{"provider": "sf"}', field_type="INPUT"),
                     ],
                 ),
             ],
         )
 
         distilled = distiller._distill_job(job)
-
-        param_names = [p.name for p in distilled.components[0].params]
-        assert "provider" in param_names
-        assert "company_name" in param_names
-        assert "uuid" not in param_names
-        assert "extended_input_schema" not in param_names
-
-    def test_distill_keeps_empty_value_stripped(self):
-        from intodoc.platforms.workato.distiller import WorkatoDistiller
-
-        distiller = WorkatoDistiller()
-        job = ParsedJob(
-            name="test",
-            path="test",
-            group="root",
-            components=[
-                Component(
-                    unique_name="a",
-                    component_type="WorkatoAction_x_y",
-                    params=[
-                        ComponentParam(name="active", value="", field_type="TEXT"),
-                        ComponentParam(name="name", value="  ", field_type="TEXT"),
-                        ComponentParam(name="real", value="value", field_type="TEXT"),
-                    ],
-                ),
-            ],
-        )
-
-        distilled = distiller._distill_job(job)
-        param_names = [p.name for p in distilled.components[0].params]
-        assert "real" in param_names
-        assert "active" not in param_names
-        assert "name" not in param_names
+        assert distilled is job  # Same object, no modification
 
 
 # ── Unwrap Helper ────────────────────────────────────────────────────
@@ -640,231 +405,56 @@ class TestUnwrap:
         assert result is data
 
 
-# ── New-Format Step Walker ───────────────────────────────────────────
-
 NEW_FORMAT_FIXTURES = Path(__file__).parent.parent / "fixtures" / "workato_new_format"
 
 
-class TestStepsWalker:
+# ── Connection Scanning ────────────────────────────────────────────
+
+
+class TestConnectionScanning:
     @pytest.fixture
     def parser(self):
         from intodoc.scanner.credential_filter import CredentialFilter
-        return WorkatoParser(CredentialFilter())
-
-    def test_action_step(self, parser):
-        """Action step should create a Component with connection ref."""
-        parser._connection_id_index = {202: "hubspot"}
-        parser._connection_index = {"hubspot": MetadataConnection(
-            xmi_id="202", name="hubspot", connection_type="HubSpot",
-        )}
-
-        steps = [
-            {
-                "type": "action",
-                "provider": "hubspot",
-                "name": "create_contact",
-                "label": "Create HubSpot Contact",
-                "connection_id": 202,
-                "input": {"email": "{{trigger.Email}}"},
-            }
-        ]
-
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_steps(steps, 1, comps, conns, tmap, trefs, "")
-
-        assert len(comps) == 1
-        assert comps[0].component_type == "WorkatoAction_hubspot_create_contact"
-        assert comps[0].metadata_connection_ref == "hubspot"
-        # Datapill should be extracted
-        assert len(tmap) >= 1
-
-    def test_if_branches(self, parser):
-        """If step should create condition + recurse into true/false."""
-        steps = [
-            {
-                "type": "if",
-                "condition": {"field": "{{trigger.Country}}", "operator": "is_present"},
-                "steps_on_true": [
-                    {"type": "action", "provider": "hubspot", "name": "update", "label": "Update True", "input": {}},
-                ],
-                "steps_on_false": [
-                    {"type": "action", "provider": "slack", "name": "post", "label": "Notify False", "input": {}},
-                ],
-            }
-        ]
-
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_steps(steps, 1, comps, conns, tmap, trefs, "")
-
-        comp_types = [c.component_type for c in comps]
-        assert "WorkatoCondition_if" in comp_types
-        assert "WorkatoAction_hubspot_update" in comp_types
-        assert "WorkatoAction_slack_post" in comp_types
-        assert len(comps) == 3  # condition + true action + false action
-
-    def test_foreach_loop(self, parser):
-        """Foreach step should create loop + recurse into body."""
-        steps = [
-            {
-                "type": "foreach",
-                "list": "{{trigger.Tags}}",
-                "steps": [
-                    {"type": "action", "provider": "hubspot", "name": "add_tag", "label": "Add Tag", "input": {}},
-                ],
-            }
-        ]
-
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_steps(steps, 1, comps, conns, tmap, trefs, "")
-
-        comp_types = [c.component_type for c in comps]
-        assert any("Loop_foreach" in t for t in comp_types)
-        assert "WorkatoAction_hubspot_add_tag" in comp_types
-
-    def test_monitor_catch_stop(self, parser):
-        """Monitor/catch/stop steps should create appropriate components."""
-        steps = [
-            {
-                "type": "monitor",
-                "steps": [
-                    {"type": "action", "provider": "http", "name": "get", "label": "HTTP Get", "input": {}},
-                ],
-            },
-            {
-                "type": "catch",
-                "steps": [
-                    {"type": "action", "provider": "slack", "name": "post", "label": "Notify", "input": {}},
-                    {"type": "stop", "status": "failed", "message": "Error"},
-                ],
-            },
-        ]
-
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_steps(steps, 1, comps, conns, tmap, trefs, "")
-
-        comp_types = [c.component_type for c in comps]
-        assert "WorkatoMonitor" in comp_types
-        assert "WorkatoCatch" in comp_types
-        assert "WorkatoStop" in comp_types
-
-        conn_types = [c.connector_name for c in conns]
-        assert "ON_ERROR" in conn_types
-        assert "STOP" in conn_types
-
-    def test_call_recipe_detection(self, parser):
-        """call_recipe action in new format should generate TRunJobRef."""
-        parser._recipe_id_index = {"50002": "Enrichment Recipe"}
-
-        steps = [
-            {
-                "type": "action",
-                "provider": "workato",
-                "name": "call_recipe",
-                "label": "Call Enrichment",
-                "input": {"recipe_id": "50002"},
-            }
-        ]
-
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_steps(steps, 1, comps, conns, tmap, trefs, "")
-
-        assert len(trefs) == 1
-        assert trefs[0].child_job == "Enrichment Recipe"
-
-    def test_lookup_table_detection(self, parser):
-        """lookup_table_lookup action should create TMapEntry."""
-        steps = [
-            {
-                "type": "action",
-                "provider": "workato",
-                "name": "lookup_table_lookup",
-                "label": "Lookup Country",
-                "input": {
-                    "table_name": "country_codes",
-                    "lookup_column": "country_name",
-                    "lookup_value": "{{trigger.Country}}",
-                },
-            }
-        ]
-
-        comps, conns, tmap, trefs = [], [], [], []
-        parser._walk_steps(steps, 1, comps, conns, tmap, trefs, "")
-
-        lookup_entries = [e for e in tmap if e.table_name == "lookup_country_codes"]
-        assert len(lookup_entries) >= 1
-        assert lookup_entries[0].column_name == "country_name"
-
-
-# ── New Datapill Extraction ──────────────────────────────────────────
-
-
-class TestNewDatapillExtraction:
-    def test_handlebars_syntax(self):
-        """{{...}} datapill syntax should be extracted."""
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-
-        input_data = {
-            "email": "{{trigger.Email}}",
-            "name": "{{trigger.FirstName}} {{trigger.LastName}}",
-            "static": "hello world",
+        p = WorkatoParser(CredentialFilter())
+        p._connection_id_index = {201: "salesforce", 202: "hubspot"}
+        p._connection_index = {
+            "salesforce": MetadataConnection(xmi_id="201", name="salesforce", connection_type="Salesforce"),
+            "hubspot": MetadataConnection(xmi_id="202", name="hubspot", connection_type="HubSpot"),
         }
+        p._provider_to_conn = {"slack": "slack_prod"}
+        return p
 
-        entries = parser._extract_datapill_refs(input_data, "output")
+    def test_scan_connection_id(self, parser):
+        """connection_id values should be resolved via _connection_id_index."""
+        conns: set[str] = set()
+        parser._scan_connection_refs({"connection_id": 201, "provider": "salesforce"}, conns)
+        assert "salesforce" in conns
 
-        datapill_entries = [e for e in entries if "{{" in e.expression]
-        assert len(datapill_entries) >= 2  # email + name
+    def test_scan_provider(self, parser):
+        """provider values should be resolved to connections."""
+        conns: set[str] = set()
+        parser._scan_connection_refs({"provider": "slack"}, conns)
+        assert "slack_prod" in conns
 
-    def test_mixed_formats(self):
-        """Both old and new datapill formats should be extracted."""
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
+    def test_scan_trigger_application(self, parser):
+        """trigger_application should be detected."""
+        conns: set[str] = set()
+        parser._scan_connection_refs({"trigger_application": "salesforce"}, conns)
+        assert "salesforce" in conns
 
-        input_data = {
-            "old_ref": "#{_('data.salesforce.Account.Name')}",
-            "new_ref": "{{trigger.Email}}",
-            "static": "plain text",
-        }
+    def test_scan_action_applications(self, parser):
+        """action_applications list should be scanned."""
+        conns: set[str] = set()
+        parser._scan_connection_refs({"action_applications": ["salesforce", "hubspot"]}, conns)
+        assert "salesforce" in conns
+        assert "hubspot" in conns
 
-        entries = parser._extract_datapill_refs(input_data, "output")
-        # All 3 should produce entries (2 datapill + 1 static)
-        assert len(entries) == 3
-
-
-# ── Connection ID Resolution ────────────────────────────────────────
-
-
-class TestConnectionIdResolution:
-    def test_numeric_id_lookup(self):
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-        parser._connection_id_index = {201: "salesforce", 202: "hubspot"}
-
-        assert parser._resolve_connection_ref("salesforce", 201) == "salesforce"
-        assert parser._resolve_connection_ref("hubspot", 202) == "hubspot"
-
-    def test_provider_fallback(self):
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-        parser._provider_to_conn = {"slack": "slack_prod"}
-
-        # No numeric ID match, falls back to provider-to-conn
-        assert parser._resolve_connection_ref("slack") == "slack_prod"
-
-    def test_direct_name_match(self):
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-        parser._connection_index = {"hubspot": MetadataConnection(
-            xmi_id="202", name="hubspot", connection_type="HubSpot",
-        )}
-
-        assert parser._resolve_connection_ref("hubspot") == "hubspot"
-
-    def test_no_match_returns_empty(self):
-        from intodoc.scanner.credential_filter import CredentialFilter
-        parser = WorkatoParser(CredentialFilter())
-
-        assert parser._resolve_connection_ref("unknown") == ""
+    def test_scan_nested(self, parser):
+        """Connection refs deep in nested structures should be found."""
+        conns: set[str] = set()
+        data = {"steps": [{"type": "action", "provider": "salesforce", "input": {}}]}
+        parser._scan_connection_refs(data, conns)
+        assert "salesforce" in conns
 
 
 # ── New-Format Integration Test ──────────────────────────────────────
@@ -888,33 +478,27 @@ class TestNewFormatIntegration:
         assert isinstance(scan_result, ScanResult)
         assert scan_result.platform == "workato"
 
-    def test_recipe_has_components(self, scan_result):
-        """New-format recipe should have non-empty components."""
+    def test_recipe_has_single_component(self, scan_result):
+        """New-format recipe should have exactly one WorkatoRecipe component."""
         recipe_jobs = [j for j in scan_result.jobs if "sync_leads" in j.name.lower() or "sync leads" in j.name.lower()]
         assert len(recipe_jobs) >= 1
         job = recipe_jobs[0]
-        assert len(job.components) > 0
+        assert len(job.components) == 1
+        assert job.components[0].component_type == "WorkatoRecipe"
 
-        # Should have trigger + actions + conditions
-        comp_types = [c.component_type for c in job.components]
-        assert any("Trigger" in t for t in comp_types)
-        assert any("Action" in t for t in comp_types)
-        assert any("Condition" in t for t in comp_types)
-
-    def test_recipe_has_connections(self, scan_result):
-        """New-format recipe should have flow connections."""
+    def test_recipe_raw_json_params(self, scan_result):
+        """Raw recipe JSON keys should be present in component params."""
         recipe_jobs = [j for j in scan_result.jobs if "sync_leads" in j.name.lower() or "sync leads" in j.name.lower()]
         job = recipe_jobs[0]
-        assert len(job.connections) > 0
-        flow_conns = [c for c in job.connections if c.connector_name == "FLOW"]
-        assert len(flow_conns) > 0
+        param_names = {p.name for p in job.components[0].params}
+        assert "name" in param_names
 
-    def test_recipe_has_tmap_data(self, scan_result):
-        """New-format recipe should have datapill references."""
+    def test_recipe_no_connections_or_tmap(self, scan_result):
+        """Raw passthrough should have no connections or tmap_data."""
         recipe_jobs = [j for j in scan_result.jobs if "sync_leads" in j.name.lower() or "sync leads" in j.name.lower()]
         job = recipe_jobs[0]
-        assert len(job.tmap_data) > 0
-        assert len(job.tmap_data[0].entries) > 0
+        assert len(job.connections) == 0
+        assert len(job.tmap_data) == 0
 
     def test_recipe_has_purpose(self, scan_result):
         """New-format recipe should have description as purpose."""
@@ -938,11 +522,11 @@ class TestNewFormatIntegration:
         assert len(lookup_conns) >= 1
 
     def test_recipe_function_parsed(self, scan_result):
-        """Recipe function should be parsed as a job."""
+        """Recipe function should be parsed as a job with single component."""
         func_jobs = [j for j in scan_result.jobs if "func_" in j.name]
         assert len(func_jobs) >= 1
-        # Should have components from steps
-        assert len(func_jobs[0].components) > 0
+        assert len(func_jobs[0].components) == 1
+        assert func_jobs[0].components[0].component_type == "WorkatoRecipeFunction"
 
     def test_manifest_has_connections(self, scan_result):
         """Manifest should track connection usage from new-format recipes."""
@@ -1219,82 +803,37 @@ class TestNestedFormatIntegration:
         assert any("Process Returns" in n for n in job_names)
         assert any("Nightly" in n or "nightly" in n for n in job_names)
 
-    def test_recipes_have_steps_from_sibling(self, scan_result):
-        """Steps from sibling steps.json should be merged into recipes."""
+    def test_recipes_have_single_component(self, scan_result):
+        """Each recipe should have exactly one WorkatoRecipe component."""
         sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
-        # Should have trigger + 2 action steps from steps.json
-        assert len(sync_job.components) >= 3
+        assert len(sync_job.components) == 1
+        assert sync_job.components[0].component_type == "WorkatoRecipe"
 
-    def test_recipe_has_trigger(self, scan_result):
+    def test_recipe_has_steps_in_params(self, scan_result):
+        """Steps from sibling steps.json should be merged and appear in params."""
         sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
-        comp_types = [c.component_type for c in sync_job.components]
-        assert any("Trigger" in t for t in comp_types)
+        param_names = {p.name for p in sync_job.components[0].params}
+        assert "steps" in param_names
 
-    def test_recipe_has_actions(self, scan_result):
+    def test_recipe_no_tmap_or_connections(self, scan_result):
+        """Raw passthrough recipes should have no tmap_data or connections."""
         sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
-        comp_types = [c.component_type for c in sync_job.components]
-        assert any("Action" in t for t in comp_types)
+        assert len(sync_job.tmap_data) == 0
+        assert len(sync_job.connections) == 0
 
-    def test_recipe_has_datapills(self, scan_result):
-        sync_job = next(j for j in scan_result.jobs if "Sync Orders" in j.name)
-        assert len(sync_job.tmap_data) > 0
-
-    def test_conditional_recipe(self, scan_result):
-        """Process Returns recipe should have condition from steps.json."""
-        returns_job = next(j for j in scan_result.jobs if "Process Returns" in j.name)
-        comp_types = [c.component_type for c in returns_job.components]
-        # Condition type uses "if" for both "if" and "conditional" step types
-        assert "WorkatoCondition_if" in comp_types
-
-    def test_nightly_sync_has_wrapped_steps(self, scan_result):
-        """Nightly sync recipe (wrapped steps.json dict) should have components."""
+    def test_nightly_sync_has_single_component(self, scan_result):
+        """Nightly sync recipe should have a single WorkatoRecipe component."""
         nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
         assert nightly is not None, f"Nightly recipe not found. Jobs: {[j.name for j in scan_result.jobs]}"
-        # Should have components from the wrapped steps.json
-        assert len(nightly.components) >= 2
+        assert len(nightly.components) == 1
+        assert nightly.components[0].component_type == "WorkatoRecipe"
 
-    def test_nightly_sync_has_format_c_actions(self, scan_result):
-        """Steps using application/action (Format C) should resolve correctly."""
+    def test_nightly_sync_has_steps_in_params(self, scan_result):
+        """Nightly sync should have steps JSON in its params."""
         nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
         assert nightly is not None
-        comp_types = [c.component_type for c in nightly.components]
-        # Should have action with postgresql (from application field)
-        assert any("postgresql" in t for t in comp_types)
-
-    def test_nightly_sync_has_conditional(self, scan_result):
-        """conditional step type should be handled like if."""
-        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
-        assert nightly is not None
-        comp_types = [c.component_type for c in nightly.components]
-        assert any("Condition" in t for t in comp_types)
-
-    def test_nightly_sync_has_repeat_for_each(self, scan_result):
-        """repeat_for_each step type should be handled like foreach."""
-        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
-        assert nightly is not None
-        comp_types = [c.component_type for c in nightly.components]
-        assert any("Loop" in t for t in comp_types)
-
-    def test_nightly_sync_has_formula(self, scan_result):
-        """formula step type should produce a WorkatoFormula component."""
-        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
-        assert nightly is not None
-        comp_types = [c.component_type for c in nightly.components]
-        assert "WorkatoFormula" in comp_types
-
-    def test_nightly_sync_has_lookup(self, scan_result):
-        """lookup step type should produce a WorkatoLookup component."""
-        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
-        assert nightly is not None
-        comp_types = [c.component_type for c in nightly.components]
-        assert any("Lookup" in t for t in comp_types)
-
-    def test_nightly_sync_has_trigger_step(self, scan_result):
-        """trigger appearing as a step should produce a Trigger component."""
-        nightly = next((j for j in scan_result.jobs if "Nightly" in j.name or "nightly" in j.name), None)
-        assert nightly is not None
-        comp_types = [c.component_type for c in nightly.components]
-        assert any("Trigger" in t for t in comp_types)
+        param_names = {p.name for p in nightly.components[0].params}
+        assert "steps" in param_names
 
     def test_finds_connections(self, scan_result):
         """Should find all connections from nested dirs, including Format C."""

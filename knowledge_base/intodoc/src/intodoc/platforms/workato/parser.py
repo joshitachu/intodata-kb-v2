@@ -1,4 +1,10 @@
-"""Workato recipe parser -- extracts structured data from Workato export ZIPs."""
+"""Workato recipe parser -- raw JSON passthrough with credential filtering.
+
+Workato exports are self-describing JSON. Unlike Talend (opaque XML/XMI with
+cross-file ID references), Workato JSON needs no structural transformation.
+This parser strips credentials and schema noise, then passes cleaned raw JSON
+through to the LLM as a single Component per recipe.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,6 @@ from rich.console import Console
 from intodoc.models import (
     Component,
     ComponentParam,
-    Connection,
     ContextGroup,
     ContextVariable,
     FileType,
@@ -22,8 +27,6 @@ from intodoc.models import (
     ProjectManifest,
     Routine,
     ScanResult,
-    TMapData,
-    TMapEntry,
     TRunJobRef,
 )
 from intodoc.scanner.walker import walk_repo
@@ -32,11 +35,6 @@ if TYPE_CHECKING:
     from intodoc.scanner.credential_filter import CredentialFilter
 
 console = Console()
-
-# Regex to extract datapill references from input field values
-_DATAPILL_RE = re.compile(r"#\{_\('([^']+)'\)\}")
-# New-format handlebars datapill syntax: {{trigger.Email}}, {{steps.foo.bar}}
-_DATAPILL_NEW_RE = re.compile(r"\{\{([^}]+)\}\}")
 
 # Map Workato provider names to standardized connection types
 _PROVIDER_TYPE_MAP: dict[str, str] = {
@@ -79,8 +77,17 @@ _PROVIDER_TYPE_MAP: dict[str, str] = {
 class WorkatoParser:
     """Parse a Workato export into structured scan results.
 
-    Handles all 14 Workato asset types and the recursive recipe block tree.
+    Passes cleaned raw JSON through as a single Component per recipe.
+    Handles all 14 Workato asset types. Strips credentials and schema noise.
     """
+
+    # Keys that add noise without semantic value for the LLM
+    _NOISE_KEYS = frozenset({
+        "extended_input_schema", "extended_output_schema",
+        "input_schema", "output_schema",
+        "uuid", "number", "position",
+        "visible_config_fields", "dynamicPickListSelection", "toggleCfg",
+    })
 
     def __init__(self, cred_filter: CredentialFilter) -> None:
         self.cred_filter = cred_filter
@@ -91,6 +98,7 @@ class WorkatoParser:
         self._schema_index: dict[str, dict] = {}
         self._recipe_id_index: dict[str, str] = {}
         self._asset_registry: dict[str, list[Path]] = {}
+        self._parsed_recipe_data: dict[str, dict] = {}  # job_name -> cleaned recipe dict
 
     # ── Content-Based Asset Classification ─────────────────────────
 
@@ -574,33 +582,24 @@ class WorkatoParser:
                 name = data.get("name", func_path.stem.replace(".recipe_function", ""))
                 group = self._extract_group(func_path, root)
 
-                components: list[Component] = []
-                connections: list[Connection] = []
-                tmap_entries: list[TMapEntry] = []
-                trunjob_refs: list[TRunJobRef] = []
+                self._strip_noise_keys(data)
+                trunjob_refs = self._find_call_recipe_refs(data)
 
-                steps_data = data.get("steps", [])
-                if isinstance(steps_data, list):
-                    self._walk_steps(
-                        steps_data, 1, components, connections,
-                        tmap_entries, trunjob_refs, "",
-                    )
+                full_name = f"func_{name}"
+                self._parsed_recipe_data[full_name] = data
 
-                tmap_data: list[TMapData] = []
-                if tmap_entries:
-                    tmap_data.append(TMapData(
-                        input_tables=list({e.table_name for e in tmap_entries if e.table_name != "output"}),
-                        output_tables=["output"],
-                        entries=tmap_entries,
-                    ))
+                params = self._dict_to_params(data)
+                comp = Component(
+                    unique_name=re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower() or "func",
+                    component_type="WorkatoRecipeFunction",
+                    params=params,
+                )
 
                 jobs.append(ParsedJob(
-                    name=f"func_{name}",
+                    name=full_name,
                     path=str(func_path.relative_to(root)) if root in func_path.parents or root == func_path.parent else func_path.name,
                     purpose=data.get("description", ""),
-                    components=components,
-                    connections=connections,
-                    tmap_data=tmap_data,
+                    components=[comp],
                     trunjob_refs=trunjob_refs,
                     group=group,
                 ))
@@ -610,7 +609,7 @@ class WorkatoParser:
         return jobs
 
     def _parse_recipe(self, recipe_path: Path, root: Path) -> ParsedJob | None:
-        """Parse a single recipe file into a ParsedJob."""
+        """Parse a single recipe file into a ParsedJob with raw JSON passthrough."""
         text = self._read_filtered(recipe_path)
         data = json.loads(text)
         data = self._unwrap(data, "recipe")
@@ -625,7 +624,7 @@ class WorkatoParser:
                 name = stem.replace(".recipe", "")
         group = self._extract_group(recipe_path, root)
 
-        # Check for sibling steps.json (nested export format)
+        # Merge sibling steps.json (nested export format)
         steps_file = recipe_path.parent / "steps.json"
         if steps_file.exists():
             try:
@@ -638,754 +637,40 @@ class WorkatoParser:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Parse the code block tree
-        code_raw = data.get("code", "{}")
+        # Parse inline code JSON string into the dict
+        code_raw = data.get("code")
         if isinstance(code_raw, str):
             try:
-                code = json.loads(code_raw)
+                data["code"] = json.loads(code_raw)
             except json.JSONDecodeError:
-                code = {}
-        elif isinstance(code_raw, dict):
-            code = code_raw
-        else:
-            code = {}
+                pass
 
-        components: list[Component] = []
-        connections: list[Connection] = []
-        tmap_entries: list[TMapEntry] = []
-        trunjob_refs: list[TRunJobRef] = []
+        # Strip noise keys recursively
+        self._strip_noise_keys(data)
 
-        # Detect new format: recipe has trigger/steps at top level (after unwrap)
-        trigger_data = data.get("trigger")
-        steps_data = data.get("steps")
-        if isinstance(trigger_data, dict) or isinstance(steps_data, list):
-            # New format: walk trigger + steps
-            last_name = ""
-            if isinstance(trigger_data, dict):
-                last_name = self._walk_trigger(
-                    trigger_data, components, connections, tmap_entries,
-                )
-            if isinstance(steps_data, list):
-                self._walk_steps(
-                    steps_data, 1, components, connections,
-                    tmap_entries, trunjob_refs, last_name,
-                )
-        elif code:
-            self._walk_code_blocks(
-                code, 0, components, connections,
-                tmap_entries, trunjob_refs, "",
-            )
+        # Detect call_recipe references from raw JSON
+        trunjob_refs = self._find_call_recipe_refs(data)
 
-        # Build TMapData from extracted entries
-        tmap_data: list[TMapData] = []
-        if tmap_entries:
-            tmap_data.append(TMapData(
-                input_tables=list({e.table_name for e in tmap_entries if e.table_name != "output"}),
-                output_tables=["output"],
-                entries=tmap_entries,
-            ))
+        # Store cleaned data for manifest connection scanning
+        self._parsed_recipe_data[name] = data
+
+        # Build single component with all cleaned recipe keys as params
+        params = self._dict_to_params(data)
+        comp = Component(
+            unique_name=re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower() or "recipe",
+            component_type="WorkatoRecipe",
+            params=params,
+        )
 
         return ParsedJob(
             name=name,
             path=str(recipe_path.relative_to(root)) if root in recipe_path.parents or root == recipe_path.parent else recipe_path.name,
             purpose=data.get("description", ""),
             version=str(data.get("version_no", "")),
-            components=components,
-            connections=connections,
-            tmap_data=tmap_data,
+            components=[comp],
             trunjob_refs=trunjob_refs,
             group=group,
         )
-
-    # ── Core: Recursive Block Walker ────────────────────────────────
-
-    def _walk_code_blocks(
-        self,
-        node: dict,
-        depth: int,
-        components: list[Component],
-        connections: list[Connection],
-        tmap_entries: list[TMapEntry],
-        trunjob_refs: list[TRunJobRef],
-        parent_name: str,
-    ) -> str:
-        """Recursively walk the code block tree.
-
-        Creates Components and Connections for each step.
-        Returns the unique_name of the last component created.
-        """
-        keyword = node.get("keyword", "")
-        number = node.get("number", 0)
-        provider = node.get("provider", "")
-        action_name = node.get("name", "")
-
-        last_name = parent_name
-
-        if keyword in ("trigger", "action"):
-            comp = self._make_component(node, depth)
-            components.append(comp)
-
-            # Sequential connection from parent
-            if parent_name:
-                connections.append(Connection(
-                    name=f"flow_{parent_name}_to_{comp.unique_name}",
-                    source=parent_name,
-                    target=comp.unique_name,
-                    connector_name="FLOW",
-                    line_style=0,
-                ))
-
-            # Extract datapill field mappings
-            input_data = node.get("input", {})
-            if isinstance(input_data, dict):
-                tmap_entries.extend(
-                    self._extract_datapill_refs(input_data, comp.unique_name)
-                )
-
-            # Detect call_recipe
-            if action_name == "call_recipe" or (
-                provider == "workato" and action_name == "call_recipe"
-            ):
-                recipe_id = str(input_data.get("recipe_id", "")) if isinstance(input_data, dict) else ""
-                recipe_name = self._recipe_id_index.get(
-                    recipe_id, f"recipe_{recipe_id}"
-                )
-                trunjob_refs.append(TRunJobRef(
-                    child_job=recipe_name,
-                    child_job_xmi_id=recipe_id,
-                ))
-
-            last_name = comp.unique_name
-
-        elif keyword in ("if", "elsif", "else"):
-            comp = Component(
-                unique_name=f"condition_{keyword}_{number}",
-                component_type=f"WorkatoCondition_{keyword}",
-                params=self._extract_condition_params(node),
-            )
-            components.append(comp)
-            if parent_name:
-                line_style = 7 if keyword == "if" else 3
-                connections.append(Connection(
-                    name=f"cond_{parent_name}_to_{comp.unique_name}",
-                    source=parent_name,
-                    target=comp.unique_name,
-                    connector_name=keyword.upper(),
-                    line_style=line_style,
-                ))
-            last_name = comp.unique_name
-
-        elif keyword == "monitor":
-            comp = Component(
-                unique_name=f"monitor_{number}",
-                component_type="WorkatoMonitor",
-                params=[ComponentParam(
-                    name="keyword", value="monitor", field_type="TEXT",
-                )],
-            )
-            components.append(comp)
-            if parent_name:
-                connections.append(Connection(
-                    name=f"monitor_{parent_name}_to_{comp.unique_name}",
-                    source=parent_name,
-                    target=comp.unique_name,
-                    connector_name="MONITOR",
-                    line_style=0,
-                ))
-            last_name = comp.unique_name
-
-        elif keyword == "catch":
-            comp = Component(
-                unique_name=f"catch_{number}",
-                component_type="WorkatoCatch",
-                params=[ComponentParam(
-                    name="keyword", value="catch", field_type="TEXT",
-                )],
-            )
-            components.append(comp)
-            if parent_name:
-                connections.append(Connection(
-                    name=f"catch_{parent_name}_to_{comp.unique_name}",
-                    source=parent_name,
-                    target=comp.unique_name,
-                    connector_name="ON_ERROR",
-                    line_style=2,
-                ))
-            last_name = comp.unique_name
-
-        elif keyword in ("foreach", "repeat"):
-            comp = Component(
-                unique_name=f"loop_{keyword}_{number}",
-                component_type=f"WorkatoLoop_{keyword}",
-                params=self._extract_step_params(node),
-            )
-            components.append(comp)
-            if parent_name:
-                connections.append(Connection(
-                    name=f"loop_{parent_name}_to_{comp.unique_name}",
-                    source=parent_name,
-                    target=comp.unique_name,
-                    connector_name=keyword.upper(),
-                    line_style=0,
-                ))
-            last_name = comp.unique_name
-
-        elif keyword == "stop":
-            comp = Component(
-                unique_name=f"stop_{number}",
-                component_type="WorkatoStop",
-                params=self._extract_step_params(node),
-            )
-            components.append(comp)
-            if parent_name:
-                connections.append(Connection(
-                    name=f"stop_{parent_name}_to_{comp.unique_name}",
-                    source=parent_name,
-                    target=comp.unique_name,
-                    connector_name="STOP",
-                    line_style=4,
-                ))
-            last_name = comp.unique_name
-
-        # Recurse into child blocks
-        child_parent = last_name
-        for child_node in node.get("block", []):
-            if isinstance(child_node, dict):
-                child_parent = self._walk_code_blocks(
-                    child_node, depth + 1, components, connections,
-                    tmap_entries, trunjob_refs, child_parent,
-                )
-
-        return last_name
-
-    # ── New-Format Step Walker ──────────────────────────────────────
-
-    def _walk_trigger(
-        self,
-        trigger: dict,
-        components: list[Component],
-        connections: list[Connection],
-        tmap_entries: list[TMapEntry],
-    ) -> str:
-        """Extract trigger as the first Component from new-format recipe.trigger."""
-        provider = trigger.get("provider") or trigger.get("application", "unknown")
-        name = trigger.get("name") or trigger.get("type", "unknown")
-        comp_type = f"WorkatoTrigger_{provider}_{name}"
-        unique_name = f"{provider}_trigger_{name}"
-
-        params = self._extract_trigger_params(trigger)
-        conn_id = trigger.get("connection_id")
-        conn_ref = self._resolve_connection_ref(provider, conn_id)
-
-        # Extract datapill refs from trigger input
-        input_data = trigger.get("input", {})
-        if isinstance(input_data, dict):
-            tmap_entries.extend(self._extract_datapill_refs(input_data, unique_name))
-
-        components.append(Component(
-            unique_name=unique_name,
-            component_type=comp_type,
-            params=params,
-            metadata_connection_ref=conn_ref,
-        ))
-        return unique_name
-
-    def _walk_steps(
-        self,
-        steps: list,
-        depth: int,
-        components: list[Component],
-        connections: list[Connection],
-        tmap_entries: list[TMapEntry],
-        trunjob_refs: list[TRunJobRef],
-        parent_name: str,
-    ) -> str:
-        """Recursively walk new-format steps[] array."""
-        last_name = parent_name
-
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-
-            step_type = step.get("type", "")
-
-            if step_type == "action":
-                comp = self._make_step_component(step, depth)
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"flow_{last_name}_to_{comp.unique_name}",
-                        source=last_name,
-                        target=comp.unique_name,
-                        connector_name="FLOW",
-                        line_style=0,
-                    ))
-                # Extract datapill refs
-                input_data = step.get("input", {})
-                if isinstance(input_data, dict):
-                    tmap_entries.extend(
-                        self._extract_datapill_refs(input_data, comp.unique_name)
-                    )
-                # Detect call_recipe
-                provider = step.get("provider") or step.get("application", "")
-                action_name = step.get("name") or step.get("action", "")
-                if action_name == "call_recipe":
-                    recipe_id = str(input_data.get("recipe_id", "")) if isinstance(input_data, dict) else ""
-                    recipe_name = self._recipe_id_index.get(
-                        recipe_id, f"recipe_{recipe_id}"
-                    )
-                    trunjob_refs.append(TRunJobRef(
-                        child_job=recipe_name,
-                        child_job_xmi_id=recipe_id,
-                    ))
-                # Detect lookup_table references
-                if action_name == "lookup_table_lookup" and isinstance(input_data, dict):
-                    table_name = input_data.get("table_name", "")
-                    if table_name:
-                        tmap_entries.append(TMapEntry(
-                            table_name=f"lookup_{table_name}",
-                            column_name=input_data.get("lookup_column", ""),
-                            expression=input_data.get("lookup_value", ""),
-                        ))
-                last_name = comp.unique_name
-
-            elif step_type in ("if", "conditional"):
-                comp = Component(
-                    unique_name=f"condition_if_{depth}_{id(step) % 10000}",
-                    component_type="WorkatoCondition_if",
-                    params=self._extract_new_condition_params(step),
-                )
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"cond_{last_name}_to_{comp.unique_name}",
-                        source=last_name,
-                        target=comp.unique_name,
-                        connector_name="IF",
-                        line_style=7,
-                    ))
-                # Recurse into true/false branches
-                true_steps = step.get("steps_on_true", [])
-                if true_steps:
-                    self._walk_steps(
-                        true_steps, depth + 1, components, connections,
-                        tmap_entries, trunjob_refs, comp.unique_name,
-                    )
-                false_steps = step.get("steps_on_false", [])
-                if false_steps:
-                    self._walk_steps(
-                        false_steps, depth + 1, components, connections,
-                        tmap_entries, trunjob_refs, comp.unique_name,
-                    )
-                last_name = comp.unique_name
-
-            elif step_type in ("foreach", "repeat", "repeat_for_each"):
-                comp = Component(
-                    unique_name=f"loop_{step_type}_{depth}_{id(step) % 10000}",
-                    component_type=f"WorkatoLoop_{step_type}",
-                    params=[ComponentParam(
-                        name="type", value=step_type, field_type="TEXT",
-                    )],
-                )
-                # Add list param for foreach
-                list_val = step.get("list", "")
-                if list_val:
-                    comp.params.append(ComponentParam(
-                        name="list", value=str(list_val), field_type="INPUT",
-                    ))
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"loop_{last_name}_to_{comp.unique_name}",
-                        source=last_name,
-                        target=comp.unique_name,
-                        connector_name=step_type.upper(),
-                        line_style=0,
-                    ))
-                # Recurse into loop body
-                inner_steps = step.get("steps", [])
-                if inner_steps:
-                    self._walk_steps(
-                        inner_steps, depth + 1, components, connections,
-                        tmap_entries, trunjob_refs, comp.unique_name,
-                    )
-                last_name = comp.unique_name
-
-            elif step_type == "monitor":
-                comp = Component(
-                    unique_name=f"monitor_{depth}_{id(step) % 10000}",
-                    component_type="WorkatoMonitor",
-                    params=[ComponentParam(
-                        name="type", value="monitor", field_type="TEXT",
-                    )],
-                )
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"monitor_{last_name}_to_{comp.unique_name}",
-                        source=last_name,
-                        target=comp.unique_name,
-                        connector_name="MONITOR",
-                        line_style=0,
-                    ))
-                inner_steps = step.get("steps", [])
-                if inner_steps:
-                    self._walk_steps(
-                        inner_steps, depth + 1, components, connections,
-                        tmap_entries, trunjob_refs, comp.unique_name,
-                    )
-                last_name = comp.unique_name
-
-            elif step_type == "catch":
-                comp = Component(
-                    unique_name=f"catch_{depth}_{id(step) % 10000}",
-                    component_type="WorkatoCatch",
-                    params=[ComponentParam(
-                        name="type", value="catch", field_type="TEXT",
-                    )],
-                )
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"catch_{last_name}_to_{comp.unique_name}",
-                        source=last_name,
-                        target=comp.unique_name,
-                        connector_name="ON_ERROR",
-                        line_style=2,
-                    ))
-                inner_steps = step.get("steps", [])
-                if inner_steps:
-                    self._walk_steps(
-                        inner_steps, depth + 1, components, connections,
-                        tmap_entries, trunjob_refs, comp.unique_name,
-                    )
-                last_name = comp.unique_name
-
-            elif step_type == "stop":
-                comp = Component(
-                    unique_name=f"stop_{depth}_{id(step) % 10000}",
-                    component_type="WorkatoStop",
-                    params=[
-                        ComponentParam(name="type", value="stop", field_type="TEXT"),
-                        ComponentParam(
-                            name="status",
-                            value=step.get("status", ""),
-                            field_type="TEXT",
-                        ),
-                        ComponentParam(
-                            name="message",
-                            value=step.get("message", ""),
-                            field_type="TEXT",
-                        ),
-                    ],
-                )
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"stop_{last_name}_to_{comp.unique_name}",
-                        source=last_name,
-                        target=comp.unique_name,
-                        connector_name="STOP",
-                        line_style=4,
-                    ))
-                last_name = comp.unique_name
-
-            elif step_type == "formula":
-                params = self._extract_new_step_params(step)
-                label = step.get("label", "")
-                unique = f"formula_{depth}_{id(step) % 10000}"
-                if label:
-                    unique = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
-                comp = Component(unique_name=unique, component_type="WorkatoFormula", params=params)
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"flow_{last_name}_to_{comp.unique_name}",
-                        source=last_name, target=comp.unique_name,
-                        connector_name="FLOW", line_style=0,
-                    ))
-                last_name = comp.unique_name
-
-            elif step_type == "lookup":
-                provider = step.get("provider") or step.get("application", "unknown")
-                action_name = step.get("name") or step.get("action", "lookup")
-                comp = self._make_step_component(step, depth)
-                comp.component_type = f"WorkatoLookup_{provider}_{action_name}"
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"flow_{last_name}_to_{comp.unique_name}",
-                        source=last_name, target=comp.unique_name,
-                        connector_name="FLOW", line_style=0,
-                    ))
-                input_data = step.get("input", {})
-                if isinstance(input_data, dict):
-                    tmap_entries.extend(self._extract_datapill_refs(input_data, comp.unique_name))
-                last_name = comp.unique_name
-
-            elif step_type == "trigger":
-                # Trigger appearing as a step (e.g., in steps.json)
-                app = step.get("provider") or step.get("application", "unknown")
-                trigger_name = step.get("name") or step.get("type", "unknown")
-                label = step.get("label", "")
-                params = self._extract_new_step_params(step)
-                unique = f"{app}_trigger_step"
-                if label:
-                    unique = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
-                comp = Component(
-                    unique_name=unique,
-                    component_type=f"WorkatoTrigger_{app}_{trigger_name}",
-                    params=params,
-                )
-                components.append(comp)
-                if last_name:
-                    connections.append(Connection(
-                        name=f"flow_{last_name}_to_{comp.unique_name}",
-                        source=last_name, target=comp.unique_name,
-                        connector_name="FLOW", line_style=0,
-                    ))
-                last_name = comp.unique_name
-
-        return last_name
-
-    def _make_step_component(self, step: dict, depth: int) -> Component:
-        """Create a Component from a new-format action step."""
-        provider = step.get("provider") or step.get("application", "unknown")
-        action_name = step.get("name") or step.get("action", "unknown")
-        label = step.get("label", "")
-        comp_type = f"WorkatoAction_{provider}_{action_name}"
-
-        # Build unique name from label (snake_case) or provider_action
-        if label:
-            unique_name = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
-        else:
-            unique_name = f"{provider}_{action_name}_{depth}"
-
-        params = self._extract_new_step_params(step)
-        conn_id = step.get("connection_id")
-        conn_ref = self._resolve_connection_ref(provider, conn_id)
-
-        return Component(
-            unique_name=unique_name,
-            component_type=comp_type,
-            params=params,
-            metadata_connection_ref=conn_ref,
-        )
-
-    @staticmethod
-    def _extract_new_step_params(step: dict) -> list[ComponentParam]:
-        """Extract params from new-format action step (generic -- all keys)."""
-        _SKIP_KEYS = {"input", "output", "output_schema", "steps", "steps_on_true",
-                      "steps_on_false", "steps_on_error", "type", "step_id"}
-        params: list[ComponentParam] = []
-        for key, val in step.items():
-            if key in _SKIP_KEYS or val is None:
-                continue
-            if isinstance(val, (dict, list)):
-                val_str = json.dumps(val)
-                field_type = "INPUT"
-            else:
-                val_str = str(val)
-                field_type = "TEXT"
-            if val_str.strip():
-                params.append(ComponentParam(name=key, value=val_str, field_type=field_type))
-        # Also extract input fields
-        input_data = step.get("input", {})
-        if isinstance(input_data, dict):
-            for field_name, field_val in input_data.items():
-                if field_val is None:
-                    continue
-                val_str = json.dumps(field_val) if isinstance(field_val, (dict, list)) else str(field_val)
-                if val_str.strip():
-                    params.append(ComponentParam(
-                        name=field_name, value=val_str, field_type="INPUT",
-                    ))
-        return params
-
-    @staticmethod
-    def _extract_trigger_params(trigger: dict) -> list[ComponentParam]:
-        """Extract params from new-format trigger object (generic -- all keys)."""
-        _SKIP_KEYS = {"input", "output_schema", "output"}
-        params: list[ComponentParam] = []
-        for key, val in trigger.items():
-            if key in _SKIP_KEYS or val is None:
-                continue
-            if isinstance(val, (dict, list)):
-                val_str = json.dumps(val)
-                field_type = "INPUT"
-            else:
-                val_str = str(val)
-                field_type = "TEXT"
-            if val_str.strip():
-                params.append(ComponentParam(name=key, value=val_str, field_type=field_type))
-        # Also extract input fields (datapill-level detail)
-        input_data = trigger.get("input", {})
-        if isinstance(input_data, dict):
-            for field_name, field_val in input_data.items():
-                if field_val is None:
-                    continue
-                val_str = json.dumps(field_val) if isinstance(field_val, (dict, list)) else str(field_val)
-                if val_str.strip():
-                    params.append(ComponentParam(
-                        name=field_name, value=val_str, field_type="INPUT",
-                    ))
-        return params
-
-    @staticmethod
-    def _extract_new_condition_params(step: dict) -> list[ComponentParam]:
-        """Extract condition params from new-format if step."""
-        params: list[ComponentParam] = [
-            ComponentParam(name="type", value="if", field_type="TEXT"),
-        ]
-        condition = step.get("condition", {})
-        if isinstance(condition, dict):
-            for key in ("field", "operator", "value"):
-                val = condition.get(key)
-                if val:
-                    params.append(ComponentParam(
-                        name=key, value=str(val), field_type="TEXT",
-                    ))
-        return params
-
-    # ── Component Creation ──────────────────────────────────────────
-
-    def _make_component(self, node: dict, depth: int) -> Component:
-        """Create a Component from an action/trigger node."""
-        keyword = node.get("keyword", "action")
-        provider = node.get("provider", "unknown")
-        action_name = node.get("name", "unknown")
-        number = node.get("number", 0)
-
-        # Build component type: WorkatoTrigger_salesforce_new_record
-        # or WorkatoAction_netsuite_create_record
-        prefix = "WorkatoTrigger" if keyword == "trigger" else "WorkatoAction"
-        comp_type = f"{prefix}_{provider}_{action_name}"
-
-        unique_name = node.get("as", f"{provider}_{action_name}_{number}")
-
-        params = self._extract_step_params(node)
-
-        # Add provider reference as metadata_connection_ref
-        conn_ref = ""
-        if provider:
-            # Try direct match first, then provider-to-connection mapping
-            if provider in self._connection_index:
-                conn_ref = provider
-            elif provider in self._provider_to_conn:
-                conn_ref = self._provider_to_conn[provider]
-
-        return Component(
-            unique_name=unique_name,
-            component_type=comp_type,
-            params=params,
-            metadata_connection_ref=conn_ref,
-        )
-
-    def _resolve_connection_ref(self, provider: str, connection_id: int | None = None) -> str:
-        """Resolve a connection reference by numeric ID, provider name, or provider-to-conn map."""
-        # 1. Numeric connection_id lookup
-        if connection_id is not None:
-            name = self._connection_id_index.get(connection_id)
-            if name:
-                return name
-        # 2. Direct provider name in connection index
-        if provider and provider in self._connection_index:
-            return provider
-        # 3. Provider-to-connection mapping
-        if provider and provider in self._provider_to_conn:
-            return self._provider_to_conn[provider]
-        return ""
-
-    def _extract_step_params(self, node: dict) -> list[ComponentParam]:
-        """Extract meaningful parameters from a step node."""
-        params: list[ComponentParam] = []
-
-        # Core identification fields
-        for key in ("provider", "name", "as", "title", "description", "keyword"):
-            val = node.get(key)
-            if val and isinstance(val, str):
-                params.append(ComponentParam(
-                    name=key, value=val, field_type="TEXT",
-                ))
-
-        # Input fields (the core action configuration)
-        input_data = node.get("input", {})
-        if isinstance(input_data, dict):
-            for field_name, field_val in input_data.items():
-                if field_val is None:
-                    continue
-                val_str = json.dumps(field_val) if isinstance(field_val, (dict, list)) else str(field_val)
-                if val_str.strip():
-                    params.append(ComponentParam(
-                        name=field_name,
-                        value=val_str,
-                        field_type="INPUT",
-                    ))
-
-        return params
-
-    def _extract_condition_params(self, node: dict) -> list[ComponentParam]:
-        """Extract condition parameters from if/elsif/else nodes."""
-        params: list[ComponentParam] = []
-
-        params.append(ComponentParam(
-            name="keyword",
-            value=node.get("keyword", ""),
-            field_type="TEXT",
-        ))
-
-        input_data = node.get("input", {})
-        if isinstance(input_data, dict):
-            # Extract condition type and operand
-            for key in ("type", "operand"):
-                val = input_data.get(key)
-                if val:
-                    params.append(ComponentParam(
-                        name=key, value=str(val), field_type="TEXT",
-                    ))
-            # Extract conditions array
-            conditions = input_data.get("conditions", [])
-            if conditions:
-                params.append(ComponentParam(
-                    name="conditions",
-                    value=json.dumps(conditions),
-                    field_type="CONDITION",
-                ))
-
-        return params
-
-    # ── Datapill Extraction ─────────────────────────────────────────
-
-    def _extract_datapill_refs(
-        self, input_data: dict, table_name: str = "output",
-    ) -> list[TMapEntry]:
-        """Extract datapill references from input fields as TMapEntry objects."""
-        entries: list[TMapEntry] = []
-        for field_name, field_value in input_data.items():
-            if not isinstance(field_value, str):
-                continue
-            # Find all datapill references (old #{_('...')} and new {{...}} syntax)
-            pills_old = _DATAPILL_RE.findall(field_value)
-            pills_new = _DATAPILL_NEW_RE.findall(field_value)
-            if pills_old or pills_new:
-                for _pill_path in pills_old or pills_new:
-                    entries.append(TMapEntry(
-                        table_name=table_name,
-                        column_name=field_name,
-                        expression=field_value,
-                    ))
-            elif (
-                field_value.strip()
-                and not field_value.startswith("{")
-                and not field_value.startswith("[")
-            ):
-                # Static mapping (constant value)
-                entries.append(TMapEntry(
-                    table_name=table_name,
-                    column_name=field_name,
-                    expression=f'"{field_value}"',
-                ))
-        return entries
 
     # ── Phase 6 continued: API and LCAP assets ──────────────────────
 
@@ -1610,18 +895,11 @@ class WorkatoParser:
                 for called in calls:
                     job_called_by.setdefault(called, []).append(job.name)
 
-            # Connection usage
+            # Connection usage -- scan raw recipe data
             conns_used: set[str] = set()
-            for comp in job.components:
-                if comp.metadata_connection_ref:
-                    conns_used.add(comp.metadata_connection_ref)
-                # Also check provider param for implicit connection
-                for p in comp.params:
-                    if p.name == "provider":
-                        if p.value in self._connection_index:
-                            conns_used.add(p.value)
-                        elif p.value in self._provider_to_conn:
-                            conns_used.add(self._provider_to_conn[p.value])
+            raw = self._parsed_recipe_data.get(job.name, {})
+            if raw:
+                self._scan_connection_refs(raw, conns_used)
             if conns_used:
                 job_connections_used[job.name] = sorted(conns_used)
                 for conn in conns_used:
@@ -1636,6 +914,96 @@ class WorkatoParser:
             routines_used_by=routines_used_by,
             job_groups=job_groups,
         )
+
+    # ── Raw JSON Helpers ─────────────────────────────────────────────
+
+    def _strip_noise_keys(self, obj: object) -> None:
+        """Recursively remove noise keys from dicts at all nesting levels."""
+        if isinstance(obj, dict):
+            for key in list(obj.keys()):
+                if key in self._NOISE_KEYS:
+                    del obj[key]
+                else:
+                    self._strip_noise_keys(obj[key])
+        elif isinstance(obj, list):
+            for item in obj:
+                self._strip_noise_keys(item)
+
+    def _find_call_recipe_refs(self, obj: object) -> list[TRunJobRef]:
+        """Walk JSON recursively, find call_recipe actions, return TRunJobRefs."""
+        refs: list[TRunJobRef] = []
+        if isinstance(obj, dict):
+            if obj.get("name") == "call_recipe" or obj.get("action") == "call_recipe":
+                input_data = obj.get("input", {})
+                recipe_id = str(input_data.get("recipe_id", "")) if isinstance(input_data, dict) else ""
+                if recipe_id:
+                    recipe_name = self._recipe_id_index.get(recipe_id, f"recipe_{recipe_id}")
+                    refs.append(TRunJobRef(child_job=recipe_name, child_job_xmi_id=recipe_id))
+            for val in obj.values():
+                refs.extend(self._find_call_recipe_refs(val))
+        elif isinstance(obj, list):
+            for item in obj:
+                refs.extend(self._find_call_recipe_refs(item))
+        return refs
+
+    def _scan_connection_refs(self, obj: object, conns: set[str]) -> None:
+        """Recursively scan JSON for connection references."""
+        if isinstance(obj, dict):
+            # Numeric connection_id
+            conn_id = obj.get("connection_id")
+            if conn_id is not None:
+                try:
+                    name = self._connection_id_index.get(int(conn_id))
+                    if name:
+                        conns.add(name)
+                except (ValueError, TypeError):
+                    pass
+            # Provider / application / trigger_application fields
+            for key in ("provider", "application", "trigger_application"):
+                val = obj.get(key)
+                if isinstance(val, str) and val:
+                    if val in self._connection_index:
+                        conns.add(val)
+                    elif val in self._provider_to_conn:
+                        conns.add(self._provider_to_conn[val])
+            # action_applications list
+            apps = obj.get("action_applications")
+            if isinstance(apps, list):
+                for app in apps:
+                    if isinstance(app, str):
+                        if app in self._connection_index:
+                            conns.add(app)
+                        elif app in self._provider_to_conn:
+                            conns.add(self._provider_to_conn[app])
+            # connections_used list
+            cu = obj.get("connections_used")
+            if isinstance(cu, list):
+                for c in cu:
+                    if isinstance(c, str) and c in self._connection_index:
+                        conns.add(c)
+            # Recurse into values
+            for val in obj.values():
+                self._scan_connection_refs(val, conns)
+        elif isinstance(obj, list):
+            for item in obj:
+                self._scan_connection_refs(item, conns)
+
+    @staticmethod
+    def _dict_to_params(data: dict) -> list[ComponentParam]:
+        """Convert a dict's top-level keys to ComponentParam list."""
+        params: list[ComponentParam] = []
+        for key, val in data.items():
+            if val is None:
+                continue
+            if isinstance(val, (dict, list)):
+                val_str = json.dumps(val)
+                field_type = "INPUT"
+            else:
+                val_str = str(val)
+                field_type = "TEXT"
+            if val_str.strip():
+                params.append(ComponentParam(name=key, value=val_str, field_type=field_type))
+        return params
 
     # ── Helpers ──────────────────────────────────────────────────────
 
