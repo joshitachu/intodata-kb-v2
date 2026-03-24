@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.config import settings
-from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage
+from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
 
@@ -138,3 +138,4 @@ app.include_router(ingest.router, prefix="/api/v1")
 app.include_router(conversations.router, prefix="/api/v1")
 app.include_router(benchmark.router, prefix="/api/v1")
 app.include_router(usage.router, prefix="/api/v1")
+app.include_router(projects_api.router, prefix="/api/v1")

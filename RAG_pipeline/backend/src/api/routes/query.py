@@ -62,6 +62,10 @@ async def query(
     """Run a RAG query: embed → search → generate answer with citations."""
     user_groups = get_user_groups(user)
     project_ids = await get_user_project_ids(user, db)
+    if body.project_id:
+        if project_ids is not None and body.project_id not in project_ids:
+            raise HTTPException(403, "No access to this project")
+        project_ids = [body.project_id]
     try:
         return await run_rag_query(
             request=body,
@@ -147,6 +151,10 @@ async def query_stream(
     """
     user_groups = get_user_groups(user)
     project_ids = await get_user_project_ids(user, db)
+    if body.project_id:
+        if project_ids is not None and body.project_id not in project_ids:
+            raise HTTPException(403, "No access to this project")
+        project_ids = [body.project_id]
     start = time.perf_counter()
     uid = str(user.id)
 

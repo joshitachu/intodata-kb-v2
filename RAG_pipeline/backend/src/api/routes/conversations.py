@@ -225,6 +225,10 @@ async def send_message(
     # Get user's groups and project access for RBAC filtering
     user_groups = [role.name for role in user.roles]
     project_ids = await get_user_project_ids(user, db)
+    if request.project_id:
+        if project_ids is not None and request.project_id not in project_ids:
+            raise HTTPException(403, "No access to this project")
+        project_ids = [request.project_id]
 
     # Run conversational RAG pipeline
     response = await run_conversational_rag(
@@ -274,6 +278,10 @@ async def send_message_stream(
     # Get user's groups and project access for RBAC filtering
     user_groups = [role.name for role in user.roles]
     project_ids = await get_user_project_ids(user, db)
+    if request.project_id:
+        if project_ids is not None and request.project_id not in project_ids:
+            raise HTTPException(403, "No access to this project")
+        project_ids = [request.project_id]
 
     async def event_generator():
         try:

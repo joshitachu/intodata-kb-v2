@@ -15,6 +15,10 @@ class QueryRequest(BaseModel):
         default=None,
         description="Optional: restrict search to specific documents",
     )
+    project_id: str | None = Field(
+        default=None,
+        description="Optional: restrict search to a specific project",
+    )
 
 
 class Source(BaseModel):
@@ -124,6 +128,10 @@ class ConversationMessageRequest(BaseModel):
     query: str = Field(..., min_length=1, description="User's message/question")
     top_k: int = Field(default=5, ge=1, le=50)
     threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    project_id: str | None = Field(
+        default=None,
+        description="Optional: restrict search to a specific project",
+    )
 
 
 class MessageResponse(BaseModel):

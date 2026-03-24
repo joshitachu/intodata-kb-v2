@@ -6,6 +6,7 @@ export const QueryRequestSchema = z.object({
   query: z.string().min(3),
   top_k: z.number().int().min(1).max(50).optional().default(3),
   threshold: z.number().min(0).max(1).optional().default(0.4),
+  project_id: z.string().optional(),
 });
 
 export type QueryRequest = z.input<typeof QueryRequestSchema>;
@@ -119,6 +120,7 @@ export const ConversationMessageRequestSchema = z.object({
   query: z.string().min(1),
   top_k: z.number().int().min(1).max(50).optional().default(10),
   threshold: z.number().min(0).max(1).optional().default(0.5),
+  project_id: z.string().optional(),
 });
 
 export type ConversationMessageRequest = z.input<
@@ -228,6 +230,22 @@ export const DocsProjectsResponseSchema = z.object({
 });
 
 export type DocsProjectsResponse = z.infer<typeof DocsProjectsResponseSchema>;
+
+// --- User Projects (RAG project selector) ---
+
+export const UserProjectSchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  platform: z.string(),
+});
+
+export type UserProject = z.infer<typeof UserProjectSchema>;
+
+export const UserProjectsResponseSchema = z.object({
+  projects: z.array(UserProjectSchema),
+});
+
+export type UserProjectsResponse = z.infer<typeof UserProjectsResponseSchema>;
 
 // --- Deep Dive ---
 
