@@ -427,7 +427,8 @@
       "Bash(python3 -m pytest tests/test_platforms/test_workato.py -v --tb=short 2>&1 | tail -120)",
       "Bash(python3 -m pytest tests/test_platforms/test_workato.py -v --tb=short 2>&1 | tail -30)",
       "Bash(python3 -m pytest tests/test_platforms/test_workato.py -v 2>&1 | head -120\\\\)",
-      "Bash(python3 -m pytest tests/test_platforms/test_workato.py -v 2>&1 | tail -30)"
+      "Bash(python3 -m pytest tests/test_platforms/test_workato.py -v 2>&1 | tail -30)",
+      "Bash(which nginx 2>/dev/null; nginx -v 2>&1; systemctl status nginx 2>&1 | head -5)"
     ]
   }
 }

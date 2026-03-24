@@ -6,7 +6,7 @@ set -euo pipefail
 # Example: sudo bash deploy/caddy-install.sh myapp.duckdns.org
 
 DOMAIN="${1:-}"
-INSTALL_DIR="/opt/intodata-kb"
+INSTALL_DIR="/home/intodata/intodata-kb-v2"
 
 if [ -z "$DOMAIN" ]; then
     echo "Usage: $0 <domain>"

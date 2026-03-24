@@ -5,9 +5,9 @@ set -euo pipefail
 # Usage: sudo bash deploy/deploy.sh
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-INSTALL_DIR="/opt/intodata-kb"
+INSTALL_DIR="/home/intodata/intodata-kb"
 VENV_DIR="$INSTALL_DIR/venv"
-SERVICE_USER="deploy"
+SERVICE_USER="intodata"
 
 echo "=== intodata-kb deployment ==="
 echo "Repo:    $REPO_DIR"
@@ -126,10 +126,10 @@ echo "[OK] fail2ban configured"
 
 # ── 10. PostgreSQL backup cron ─────────────────────────────────────────────
 
-cp "$INSTALL_DIR/deploy/backup-postgres.sh" /opt/intodata-kb/backup-postgres.sh
-chmod +x /opt/intodata-kb/backup-postgres.sh
+cp "$INSTALL_DIR/deploy/backup-postgres.sh" /home/intodata/intodata-kb/backup-postgres.sh
+chmod +x /home/intodata/intodata-kb/backup-postgres.sh
 # Add daily cron job if not already present
-CRON_CMD="0 2 * * * /opt/intodata-kb/backup-postgres.sh >> /var/log/intodata-backup.log 2>&1"
+CRON_CMD="0 2 * * * /home/intodata/intodata-kb/backup-postgres.sh >> /var/log/intodata-backup.log 2>&1"
 (crontab -l 2>/dev/null | grep -qF "backup-postgres.sh") || (crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
 echo "[OK] Daily PostgreSQL backup cron installed (02:00)"
 

@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Automated PostgreSQL backup for intodata-kb
 # Usage: ./backup-postgres.sh
-# Cron:  0 2 * * * /opt/intodata-kb/backup-postgres.sh >> /var/log/intodata-backup.log 2>&1
+# Cron:  0 2 * * * /home/intodata/intodata-kb/backup-postgres.sh >> /var/log/intodata-backup.log 2>&1
 
-BACKUP_DIR="/opt/intodata-kb/backups"
+BACKUP_DIR="/home/intodata/intodata-kb/backups"
 RETENTION_DAYS=14
 DB_NAME="${POSTGRES_DB:-intodata_kb}"
 DB_USER="${POSTGRES_USER:-admin}"
