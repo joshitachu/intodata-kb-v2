@@ -1,5 +1,16 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-03-24
+
+### [Fix]: Project-scoped chat should filter admin results by selected project
+
+- **Files changed**: `backend/src/retrieval/search.py` (lines 82-90)
+- **Problem**: When an admin user selected a specific project in the chat UI (e.g., aliTalend), search results still included documents from all projects (workatozipoppp, wrokato2, udateddocs). The `project_id` sent by the frontend was ignored for admins.
+- **Root cause**: `_build_search_filter()` line 44: `if "admin" not in user_groups` skipped the entire RBAC filter for admins, including the project_ids restriction. The `elif` chain had no branch handling admin + project_ids.
+- **Change**: Added a new `elif` branch after the existing non-admin conditions: when `"admin" in user_groups` AND `project_ids` is not None and non-empty, add a `FieldCondition` filtering `allowed_groups` to only the specified project IDs. When no project is selected (`project_ids=None`), admin still sees everything as before.
+- **Why this approach**: Minimal one-branch addition to the existing filter logic. Non-admin RBAC is unchanged. Admin-without-project is unchanged. Only admin-with-explicit-project-scope gets the new filter.
+- **Verification**: Code review confirms the `elif` chain logic is correct — the new branch only fires when `user_groups` contains "admin" AND `project_ids` is provided and non-empty.
+
 ## Session: 2026-03-18 (LLM-based Conversation vs Document Summary Detection)
 
 ### [Feature]: Add CONVERSATION_SUMMARY intent to LLM classifier

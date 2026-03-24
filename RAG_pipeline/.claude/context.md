@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Conversation summary intent + Qdrant query_points fix implemented (2026-03-18). Needs deployment + testing.
-**Last session**: 2026-03-18
-**Last completed**: LLM-based conversation vs document summary detection — extended intent classifier with `summary` and `conversation_summary` actions, added conversation context passing, dedicated conversation summary prompt/handler, graceful fallback from document summary to conversation summary. Fixed `using="dense"` bug in `map_reduce.py` and `query.py`.
+**Status**: Admin project-scoped search fix applied (2026-03-24). Needs deployment + testing.
+**Last session**: 2026-03-24
+**Last completed**: Fixed `_build_search_filter()` in `search.py` — admin users selecting a project in the chat UI now get results filtered to only that project's documents. Previously the admin bypass skipped all filtering including project scope.
 
 ## What's Done
 
@@ -47,6 +47,7 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Recent Changes
 
+- **Admin project-scoped search** (2026-03-24): Fixed `_build_search_filter()` in `search.py` to apply `allowed_groups` filter when admin selects a specific project. Without this fix, admins saw all documents regardless of project selection.
 - **Conversation summary intent** (2026-03-18): LLM classifier now distinguishes "summarize our chat" from "summarize document X". Added `CONVERSATION_SUMMARY` action, conversation context passing, dedicated prompt builder. Fixed `using="dense"` Qdrant crash in `map_reduce.py` and `query.py`. Files: `intent_classifier.py`, `prompt_builder.py`, `conversational_rag.py`, `map_reduce.py`, `query.py`.
 - **Auto-detect corrections** (2026-03-16): When a user corrects the chatbot ("no that's wrong, it's actually X"), the system detects it via keyword heuristics, extracts a structured correction via LLM, and stores it in a shared `rag-corrections` Hindsight bank. Corrections are recalled for ALL users on relevant queries and injected as "## Known corrections" in the LLM context. Zero latency impact (fire-and-forget). Files: `hindsight_client.py`, `prompt_builder.py`, `conversational_rag.py`, `rag_chain.py`, `query.py`.
 - **Deploy Security + RBAC to VPS** (2026-03-09): Deployed all Phase 6.1/6.2 changes to running VPS. Reverted docker-compose ports to public (no Caddy yet). Added MCP_INGEST_API_KEY to .env and docker-compose.yml. Fixed migration 006 setval bug (`GREATEST(..., 1)` to avoid 0 on empty sequences). Migration 006 applied successfully — permissions, role_permissions, project_assignments, audit_logs tables created and seeded. All services healthy.

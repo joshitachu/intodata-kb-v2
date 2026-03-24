@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Loader2 } from "lucide-react";
+import { Plus, Loader2, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConversationItem } from "./ConversationItem";
 import type { ConversationResponse } from "@/types";
@@ -13,6 +13,8 @@ interface ConversationListProps {
   onCreate: () => void;
   onDelete: (id: number) => void;
   isCreating: boolean;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
 export function ConversationList({
@@ -23,11 +25,19 @@ export function ConversationList({
   onCreate,
   onDelete,
   isCreating,
+  isCollapsed,
+  onToggleCollapse,
 }: ConversationListProps) {
-  return (
-    <div className="w-64 border-r bg-card flex flex-col h-full">
-      <div className="p-4 border-b flex items-center justify-between">
-        <h2 className="font-semibold text-sm">Conversations</h2>
+  if (isCollapsed) {
+    return (
+      <div className="w-12 border-r bg-card flex flex-col h-full items-center py-3 gap-2">
+        <button
+          onClick={onToggleCollapse}
+          className="p-1.5 rounded-md hover:bg-muted transition-colors"
+          title="Expand conversations"
+        >
+          <PanelLeftOpen className="h-4 w-4" />
+        </button>
         <button
           onClick={onCreate}
           disabled={isCreating}
@@ -43,6 +53,38 @@ export function ConversationList({
             <Plus className="h-4 w-4" />
           )}
         </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-64 border-r bg-card flex flex-col h-full">
+      <div className="p-4 border-b flex items-center justify-between">
+        <h2 className="font-semibold text-sm">Conversations</h2>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onCreate}
+            disabled={isCreating}
+            className={cn(
+              "p-1.5 rounded-md hover:bg-muted transition-colors",
+              "disabled:opacity-50 disabled:cursor-not-allowed"
+            )}
+            title="New conversation"
+          >
+            {isCreating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            onClick={onToggleCollapse}
+            className="p-1.5 rounded-md hover:bg-muted transition-colors"
+            title="Collapse conversations"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-1">

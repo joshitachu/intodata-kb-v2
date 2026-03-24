@@ -79,6 +79,15 @@ def _build_search_filter(
                     match=MatchAny(any=["__none__"]),
                 )
             )
+    elif "admin" in user_groups and project_ids is not None and project_ids:
+        # Admin selected a specific project → restrict to that project's docs.
+        # Without project_ids (None), admin sees everything as before.
+        conditions.append(
+            FieldCondition(
+                key="allowed_groups",
+                match=MatchAny(any=project_ids),
+            )
+        )
 
     if document_ids:
         conditions.append(

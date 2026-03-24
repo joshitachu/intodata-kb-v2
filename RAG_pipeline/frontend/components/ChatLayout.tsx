@@ -21,6 +21,7 @@ export function ChatLayout() {
   >(null);
   const [mode, setMode] = useState<ChatMode>("chat");
   const [selectedProject, setSelectedProject] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const queryClient = useQueryClient();
   const { data: conversationList, isLoading: isLoadingList } =
@@ -154,6 +155,8 @@ export function ChatLayout() {
         onCreate={handleCreateConversation}
         onDelete={handleDeleteConversation}
         isCreating={createMutation.isPending}
+        isCollapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
       />
       <ChatWindow
         conversation={activeConversation ?? null}
