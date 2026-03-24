@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+ARG VITE_LOGIN_URL=http://localhost:3000/login
+ENV VITE_LOGIN_URL=$VITE_LOGIN_URL
 RUN npm run build
 
 FROM nginx:alpine

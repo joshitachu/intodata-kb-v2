@@ -1,4 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <rect width="100" height="100" rx="20" fill="#059669"/>
-  <text x="50" y="68" font-size="55" font-weight="bold" text-anchor="middle" fill="white" font-family="Arial, sans-serif">ID</text>
+  <rect width="100" height="100" rx="18" fill="#001e4d"/>
+  <path d="M30 70 Q50 20 70 70" fill="none" stroke="#fe9543" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="62" cy="38" r="10" fill="#6370b0" opacity="0.9"/>
+  <line x1="50" y1="30" x2="50" y2="55" stroke="#ebebed" stroke-width="4" stroke-linecap="round"/>
+  <line x1="40" y1="42.5" x2="60" y2="42.5" stroke="#ebebed" stroke-width="4" stroke-linecap="round"/>
 </svg>

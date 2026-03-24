@@ -108,7 +108,9 @@
       "Bash(sudo systemctl restart mcp-server && sleep 1 && sudo systemctl status mcp-server --no-pager -l | head -15)",
       "Bash(/opt/intodata-kb/venv/bin/python -c \"\nimport intodoc.platforms as _plat_pkg\nfrom pathlib import Path\np = Path\\(_plat_pkg.__file__\\).parent\nprint\\('platforms root:', p\\)\nprint\\('workato exists:', \\(p / 'workato'\\).exists\\(\\)\\)\nprint\\('workato prompts dir:', \\(p / 'workato' / 'prompts'\\).exists\\(\\)\\)\nif \\(p / 'workato' / 'prompts'\\).exists\\(\\):\n    import os\n    print\\('workato prompt files:', os.listdir\\(p / 'workato' / 'prompts'\\)\\)\n\")",
       "Bash(sudo journalctl -u mcp-server --since \"1 min ago\" --no-pager | tail -20)",
-      "Bash(sudo systemctl status mcp-server --no-pager -l | head -15)"
+      "Bash(sudo systemctl status mcp-server --no-pager -l | head -15)",
+      "Bash(git rm -f .claude/settings.local.json 2>/dev/null; git add deploy/mcp-server.service && git rebase --continue)",
+      "Bash(git add -A && git rebase --continue)"
     ]
   },
   "enabledMcpjsonServers": [

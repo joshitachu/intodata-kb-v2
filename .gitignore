@@ -47,3 +47,10 @@ htmlcov/
 
 # Binary uploads
 knowledge_base/mcp-server/data/uploads/
+
+# Scan output (generated data, not code)
+knowledge_base/intodoc-output/
+
+# Claude Code local settings
+.claude/settings.local.json
+**/.claude/settings.local.json
