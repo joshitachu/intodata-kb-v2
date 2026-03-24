@@ -140,7 +140,7 @@ export default function AdminProjectAssignmentsPage() {
             setShowAssign(!showAssign);
             setError("");
           }}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700"
+          className="px-4 py-2 bg-[#001e4d] text-white text-sm rounded-md hover:bg-[#001e4d]/90"
         >
           {showAssign ? "Cancel" : "Assign Project"}
         </button>
@@ -189,7 +189,7 @@ export default function AdminProjectAssignmentsPage() {
           </div>
           <button
             type="submit"
-            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
+            className="px-4 py-2 bg-[#a0e06f] text-[#060e1e] text-sm rounded-md hover:bg-[#a0e06f]/90"
           >
             Assign
           </button>
@@ -270,7 +270,7 @@ export default function AdminProjectAssignmentsPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <span className="text-xs bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+                  <span className="text-xs bg-[#001e4d]/10 text-[#001e4d] px-1.5 py-0.5 rounded">
                     {a.project_id}
                   </span>
                 </td>

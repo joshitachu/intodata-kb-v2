@@ -3,10 +3,10 @@ interface Props {
 }
 
 const chipColors: Record<string, string> = {
-  ready: "border-[#00D4FF]/40 text-[#00D4FF]",
+  ready: "border-accent-primary/40 text-accent-primary",
   registered: "border-slate-500/40 text-slate-400",
   scanning: "border-yellow-500/40 text-yellow-400",
-  generating: "border-purple-400/40 text-purple-400",
+  generating: "border-[#6370b0]/40 text-[#6370b0]",
   error: "border-red-400/40 text-red-400",
 };
 

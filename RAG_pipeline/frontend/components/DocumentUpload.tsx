@@ -123,7 +123,7 @@ export function DocumentUpload() {
       </div>
 
       {upload.isSuccess && (
-        <div className="flex items-center gap-2 text-sm text-green-600">
+        <div className="flex items-center gap-2 text-sm text-[#a0e06f]">
           <CheckCircle className="h-4 w-4" />
           <span>{upload.data.message}</span>
         </div>

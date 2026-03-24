@@ -5,8 +5,8 @@ interface Props {
 }
 
 const statusColors: Record<string, string> = {
-  running: "border-[#00D4FF]/40 text-[#00D4FF]",
-  completed: "border-emerald-500/40 text-emerald-400",
+  running: "border-accent-primary/40 text-accent-primary",
+  completed: "border-[#a0e06f]/40 text-[#a0e06f]",
   failed: "border-red-400/40 text-red-400",
 };
 
@@ -39,7 +39,7 @@ export default function ScanHistory({ projectId }: Props) {
 
   return (
     <div className="card-dark">
-      <div className="px-4 py-3 border-b border-white/[0.05] bg-[#16161F] rounded-t">
+      <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t">
         <h3 className="text-sm font-mono text-slate-400">
           Scan History
           {runs.length > 0 && (

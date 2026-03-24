@@ -14,7 +14,7 @@ interface Props {
 const levelColors: Record<string, string> = {
   error: "text-red-400",
   warning: "text-yellow-400",
-  info: "text-green-400",
+  info: "text-[#a0e06f]",
 };
 
 export default function LogPanel({
@@ -72,12 +72,12 @@ export default function LogPanel({
   }
 
   return (
-    <div className="bg-[#0D0D14] rounded border border-white/[0.07]">
+    <div className="bg-surface-deep rounded border border-white/[0.07]">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.05]">
         <div className="flex items-center gap-3">
           <h3 className="text-xs font-mono uppercase tracking-widest text-slate-500">Logs</h3>
           <select
-            className="bg-[#16161F] text-slate-300 text-xs font-mono border border-white/[0.07] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#00D4FF]/50"
+            className="bg-surface-raised text-slate-300 text-xs font-mono border border-white/[0.07] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
             value={mode === "live" ? "live" : activeFile}
             onChange={(e) => handleModeChange(e.target.value)}
           >

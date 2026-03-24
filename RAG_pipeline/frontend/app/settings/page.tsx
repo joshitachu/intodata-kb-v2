@@ -55,7 +55,7 @@ export default function SettingsPage() {
         <section>
           <h2 className="text-lg font-medium mb-4">About</h2>
           <div className="text-sm text-muted-foreground space-y-1">
-            <p>IntoData Knowledge Base v0.1.0</p>
+            <p>Nexus v0.1.0</p>
             <p>RAG-powered search over company documents</p>
             <p>Stack: FastAPI + Next.js + Qdrant + PostgreSQL + Ollama</p>
           </div>
@@ -72,11 +72,11 @@ function ServiceRow({ name, status }: { name: string; status: string }) {
       <span className="font-medium">{name}</span>
       <div className="flex items-center gap-2">
         {isOk ? (
-          <CheckCircle className="h-4 w-4 text-green-500" />
+          <CheckCircle className="h-4 w-4 text-[#a0e06f]" />
         ) : (
           <XCircle className="h-4 w-4 text-destructive" />
         )}
-        <span className={isOk ? "text-green-600" : "text-destructive"}>
+        <span className={isOk ? "text-[#a0e06f]" : "text-destructive"}>
           {status}
         </span>
       </div>

@@ -38,7 +38,8 @@ export function useScan() {
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (projectId: string) => api.generate(projectId),
+    mutationFn: ({ projectId, templateProfileId }: { projectId: string; templateProfileId?: number }) =>
+      api.generate(projectId, templateProfileId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }

@@ -67,13 +67,13 @@ export default function KpiBar({ projects }: Props) {
 
   const kpis: KpiItem[] = [
     { label: "Projects", numericValue: projectCount, color: "text-slate-300", seed: 42 },
-    { label: "Components", numericValue: jobCount, color: "text-[#00D4FF]", seed: 137 },
-    { label: "Documents", numericValue: docCount, color: "text-emerald-400", seed: 256 },
+    { label: "Components", numericValue: jobCount, color: "text-accent-primary", seed: 137 },
+    { label: "Documents", numericValue: docCount, color: "text-[#a0e06f]", seed: 256 },
     {
       label: "Last Activity",
       numericValue: 0,
       displayValue: timeAgo(latestTimestamp),
-      color: "text-violet-400",
+      color: "text-[#6370b0]",
       tooltip: formatAbsoluteDate(latestTimestamp),
       seed: 512,
     },

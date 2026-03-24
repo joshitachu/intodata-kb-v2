@@ -44,7 +44,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50">
-      <div className="bg-[#111118] border border-white/[0.07] rounded shadow-2xl w-full max-w-md p-6 animate-fade-in">
+      <div className="bg-surface-card border border-white/[0.07] rounded shadow-2xl w-full max-w-md p-6 animate-fade-in">
         <h2 className="text-lg font-semibold text-slate-100 mb-4">Add Repository</h2>
 
         {/* Tabs */}
@@ -52,7 +52,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
           <button
             className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
               tab === "path"
-                ? "bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/40"
+                ? "bg-accent-primary/10 text-accent-primary border border-accent-primary/40"
                 : "border border-white/[0.07] text-slate-400 hover:text-slate-200"
             }`}
             onClick={() => setTab("path")}
@@ -62,7 +62,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
           <button
             className={`px-3 py-1.5 text-sm font-medium rounded transition-all ${
               tab === "zip"
-                ? "bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/40"
+                ? "bg-accent-primary/10 text-accent-primary border border-accent-primary/40"
                 : "border border-white/[0.07] text-slate-400 hover:text-slate-200"
             }`}
             onClick={() => setTab("zip")}
@@ -116,7 +116,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
               <input
                 type="file"
                 accept=".zip"
-                className="w-full text-sm text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-[#16161F] file:text-slate-300 hover:file:bg-[#1e1e2a]"
+                className="w-full text-sm text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-surface-raised file:text-slate-300 hover:file:bg-[#1e2d4a]"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
             </div>
@@ -139,7 +139,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
             Cancel
           </button>
           <button
-            className="px-4 py-2 text-sm font-medium bg-[#00D4FF] text-[#0A0A0F] rounded hover:bg-[#00D4FF]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="px-4 py-2 text-sm font-medium bg-accent-primary text-surface-bg rounded hover:bg-accent-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
             disabled={busy || !projectId || (tab === "path" ? !url : !file)}
             onClick={tab === "path" ? handleSubmitPath : handleSubmitZip}
           >

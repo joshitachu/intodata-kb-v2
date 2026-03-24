@@ -8,8 +8,8 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: {
-    default: "IntoData Knowledge Base",
-    template: "%s | IntoData KB",
+    default: "Nexus — Intodata",
+    template: "%s | Nexus",
   },
   description: "RAG-powered knowledge base for company documents",
   icons: {

@@ -5,18 +5,28 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Geist", "system-ui", "sans-serif"],
+        sans: ["Massilia", "Segoe UI", "system-ui", "sans-serif"],
         mono: ["DM Mono", "ui-monospace", "monospace"],
       },
       colors: {
         surface: {
-          bg: "#0A0A0F",
-          card: "#111118",
-          raised: "#16161F",
+          bg: "#060e1e",
+          card: "#0d1a2e",
+          raised: "#132240",
+          deep: "#081425",
         },
         "border-dim": "rgba(255,255,255,0.07)",
         accent: {
-          cyan: "#00D4FF",
+          primary: "#fe9543",
+          secondary: "#6370b0",
+          tertiary: "#a0e06f",
+        },
+        brand: {
+          navy: "#001e4d",
+          light: "#ebebed",
+          orange: "#fe9543",
+          purple: "#6370b0",
+          green: "#a0e06f",
         },
         platform: {
           talend: "#4285F4",
@@ -27,7 +37,7 @@ export default {
       boxShadow: {
         card: "0 2px 8px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.07)",
         "card-hover":
-          "0 4px 16px rgba(0,212,255,0.12), inset 0 0 0 1px rgba(0,212,255,0.25)",
+          "0 4px 16px rgba(254,149,67,0.12), inset 0 0 0 1px rgba(254,149,67,0.25)",
       },
       borderRadius: {
         card: "4px",

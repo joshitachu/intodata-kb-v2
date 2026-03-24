@@ -40,7 +40,7 @@ export default function DailyUsageChart({ data, metric = "count" }: Props) {
     label: formatDate(d.date),
   }));
 
-  const color = metric === "cost_usd" ? "#10b981" : "#3b82f6";
+  const color = metric === "cost_usd" ? "#a0e06f" : "#fe9543";
   const label = metric === "cost_usd" ? "Cost (USD)" : "Queries";
 
   return (

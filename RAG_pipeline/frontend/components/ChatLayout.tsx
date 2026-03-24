@@ -112,7 +112,10 @@ export function ChatLayout() {
     } else {
       // Normal chat flow
       try {
-        await sendStreamMessage(request);
+        await sendStreamMessage({
+          ...request,
+          project_id: selectedProject || undefined,
+        });
       } catch (error) {
         console.error("Failed to send message:", error);
       }

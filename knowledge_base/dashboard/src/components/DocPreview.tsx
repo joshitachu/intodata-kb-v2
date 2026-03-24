@@ -50,7 +50,7 @@ export default function DocPreview({ projectId }: Props) {
 
   return (
     <div className="card-dark">
-      <div className="px-4 py-3 border-b border-white/[0.05] bg-[#16161F] rounded-t flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t flex items-center justify-between">
         <h3 className="text-sm font-mono text-slate-400">
           Documentation
           {docs.length > 0 && (
@@ -61,7 +61,7 @@ export default function DocPreview({ projectId }: Props) {
         </h3>
         {hasDocs && (
           <button
-            className="btn-ghost-cyan"
+            className="btn-ghost"
             disabled={generateAssessment.isPending}
             onClick={() => generateAssessment.mutate()}
           >
@@ -86,7 +86,7 @@ export default function DocPreview({ projectId }: Props) {
                   <button
                     className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
                       selectedDoc === doc.name
-                        ? "bg-[#00D4FF]/10 text-[#00D4FF]"
+                        ? "bg-accent-primary/10 text-accent-primary"
                         : "text-slate-400 hover:bg-white/[0.02]"
                     }`}
                     onClick={() => setSelectedDoc(selectedDoc === doc.name ? null : doc.name)}

@@ -64,12 +64,12 @@ export function MessageBubble({ message, isStreaming, usage }: MessageBubbleProp
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {message.latency_ms && <span>{message.latency_ms}ms</span>}
             {usage && usage.input_tokens > 0 && (
-              <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">
+              <span className="bg-[#001e4d]/10 text-[#001e4d] px-1.5 py-0.5 rounded">
                 {usage.input_tokens + usage.output_tokens} tokens
               </span>
             )}
             {usage && usage.cost_usd > 0 && (
-              <span className="bg-green-50 text-green-700 px-1.5 py-0.5 rounded">
+              <span className="bg-[#a0e06f]/10 text-[#a0e06f] px-1.5 py-0.5 rounded">
                 ${usage.cost_usd.toFixed(4)}
               </span>
             )}

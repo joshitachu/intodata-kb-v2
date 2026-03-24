@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Search, MessageSquare, FileText, BookOpen, Settings, LogOut, Shield, Users, KeyRound, FolderKanban, BarChart3, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -36,7 +37,10 @@ export function Sidebar() {
   return (
     <aside className="w-56 border-r bg-card flex flex-col h-full">
       <div className="p-4 border-b">
-        <h1 className="font-bold text-lg">IntoData KB</h1>
+        <div className="flex items-center gap-2">
+          <Image src="/intodata-logo.png" alt="Nexus" width={28} height={28} className="w-7 h-7" />
+          <h1 className="font-bold text-lg">Nexus</h1>
+        </div>
         <p className="text-xs text-muted-foreground">Knowledge Base</p>
       </div>
 
@@ -108,7 +112,7 @@ export function Sidebar() {
             </button>
           </div>
         )}
-        <p className="text-xs text-muted-foreground">IntoData KB v0.1.0</p>
+        <p className="text-xs text-muted-foreground">Nexus v0.1.0</p>
       </div>
     </aside>
   );

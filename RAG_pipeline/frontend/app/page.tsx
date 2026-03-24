@@ -5,6 +5,7 @@ import { SearchBar } from "@/components/SearchBar";
 import { ResponseDisplay } from "@/components/ResponseDisplay";
 import { ModeToggle, type SearchMode } from "@/components/ModeToggle";
 import { ProjectSelector } from "@/components/ProjectSelector";
+import { RagProjectSelector } from "@/components/RagProjectSelector";
 import { DeepDiveDisplay } from "@/components/DeepDiveDisplay";
 import { useSearch } from "@/hooks/useSearch";
 import { useDeepDive } from "@/hooks/useDeepDive";
@@ -24,7 +25,7 @@ export default function HomePage() {
       deepDive.query({ project_id: selectedProject, question: query });
     } else {
       search.mutate(
-        { query },
+        { query, project_id: selectedProject || undefined },
         {
           onSuccess: (response) => {
             setCurrentResponse(response);
@@ -61,8 +62,13 @@ export default function HomePage() {
       <div className="flex flex-col items-center gap-4 mb-4">
         <ModeToggle mode={mode} onModeChange={handleModeChange} />
 
-        {isDeepDive && (
+        {isDeepDive ? (
           <ProjectSelector
+            selectedProject={selectedProject}
+            onProjectChange={setSelectedProject}
+          />
+        ) : (
+          <RagProjectSelector
             selectedProject={selectedProject}
             onProjectChange={setSelectedProject}
           />

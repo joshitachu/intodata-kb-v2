@@ -5,6 +5,7 @@ import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
 import { ProjectSelector } from "./ProjectSelector";
+import { RagProjectSelector } from "./RagProjectSelector";
 import type { ChatMode } from "./ModeToggle";
 import type {
   ConversationDetailResponse,
@@ -75,8 +76,13 @@ export function ChatWindow({
           </h2>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
-          {isDeepDive && (
+          {isDeepDive ? (
             <ProjectSelector
+              selectedProject={selectedProject}
+              onProjectChange={onProjectChange}
+            />
+          ) : (
+            <RagProjectSelector
               selectedProject={selectedProject}
               onProjectChange={onProjectChange}
             />

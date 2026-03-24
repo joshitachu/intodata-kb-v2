@@ -1,18 +1,25 @@
+import { useState } from "react";
 import { useScan, useGenerate, usePushToRag, useResetStatus } from "../hooks/useProjects";
+import { useProfiles } from "../hooks/useTemplates";
 
 interface Props {
   projectId: string;
   status: string;
+  platform?: string;
   onAction: (projectId: string) => void;
 }
 
-export default function ActionButtons({ projectId, status, onAction }: Props) {
+export default function ActionButtons({ projectId, status, platform, onAction }: Props) {
   const scan = useScan();
   const generate = useGenerate();
   const push = usePushToRag();
   const resetStatus = useResetStatus();
+  const { data: profilesData } = useProfiles({ platform: platform || undefined });
+
+  const [selectedProfileId, setSelectedProfileId] = useState<number | undefined>(undefined);
 
   const busy = status === "scanning" || status === "generating";
+  const profiles = profilesData?.profiles ?? [];
 
   return (
     <div className="card-actions flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
@@ -28,12 +35,33 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
         </svg>
       </button>
 
+      {/* Profile selector (compact) */}
+      {profiles.length > 0 && (
+        <select
+          value={selectedProfileId ?? ""}
+          onChange={(e) => setSelectedProfileId(e.target.value ? Number(e.target.value) : undefined)}
+          className="bg-transparent border border-white/[0.08] rounded text-xs text-slate-500 px-1.5 py-1 max-w-[120px] focus:border-accent-primary/40 focus:outline-none"
+          title="Template profile"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <option value="">Default</option>
+          {profiles.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      )}
+
       {/* Generate */}
       <button
         className="btn-icon-action"
         disabled={busy || generate.isPending}
-        title="Generate Docs"
-        onClick={() => { onAction(projectId); generate.mutate(projectId); }}
+        title={selectedProfileId ? `Generate (Profile: ${profiles.find(p => p.id === selectedProfileId)?.name})` : "Generate Docs"}
+        onClick={() => {
+          onAction(projectId);
+          generate.mutate({ projectId, templateProfileId: selectedProfileId });
+        }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -45,7 +73,7 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
 
       {/* Push to RAG */}
       <button
-        className="btn-ghost-cyan !px-2 !py-0.5 !text-xs"
+        className="btn-ghost !px-2 !py-0.5 !text-xs"
         disabled={busy || push.isPending}
         title="Push to RAG"
         onClick={() => { onAction(projectId); push.mutate(projectId); }}
