@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Workato scanner Format C support deployed -- 6 field mismatch bugs fixed. Scanner now handles all 3 known export formats (API/SDK, flat, manifest/package) with generic extraction.
-**Last session**: 2026-03-20
-**Last completed**: Workato scanner Format C fixes: wrapped steps.json, trigger/action/connection field fallbacks, new step types (conditional, repeat_for_each, formula, lookup, trigger-as-step), recipe metadata-only classification.
+**Status**: Template Management & Scoring Pipeline implemented (Phases A-F complete). New Phase 2.6 scoring sub-agent, DB-backed template system with versioning/profiles, full dashboard UI (catalogue, editor, profiles, A/B comparison, document reference).
+**Last session**: 2026-03-24
+**Last completed**: Transparency Layer feature -- scoring pipeline (Phase 2.6), template DB schema + CRUD + REST API, TemplateResolver with cascade, dashboard template catalogue/editor/version timeline, profile management + swapping, A/B run comparison, document catalogue page.
 
 ## What's Done
 
@@ -55,6 +55,7 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Recent Changes
 
+- **Template Management & Scoring Pipeline** (2026-03-24): Full Transparency Layer feature. Phase 2.6 scoring sub-agent (8-dimension rubric, anti-patterns, red flags, security checklist). DB-backed template system (4 new tables, Alembic migration, TemplateResolver with cascade). Dashboard: template catalogue/editor, version timeline with diff, profile management, A/B run comparison, document catalogue. Profile dropdown on Generate button for template swapping.
 - **Gate validation between phases** (2026-03-20): Phase 2.5 validates analysis files (>1KB) before Phase 3. Phase 3.5 validates 9 required docs (>500 bytes) before cleanup. Both gates retry failed agents once (max 1 retry). Prompt-only change.
 - **Phase 2 filesystem boundary + scaled target** (2026-03-20): Sub-agents prohibited from reading outside staging dir. Analysis target scales with preprocessed data size (5-40KB, ~50% of input).
 - **Consolidated analysis guide** (2026-03-20): Single ANALYSIS_GUIDE.md (12KB) replaces 22 bundled prompts (222KB). Dynamic depth scaling replaces hard-coded line minimums. Phase 3 gets dedicated PHASE_3_GUIDE.md. 94% token reduction for Phase 2.
@@ -81,20 +82,21 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Next Steps
 
+- [ ] Run Alembic migration: `cd mcp-server && alembic upgrade head`
+- [ ] Run seed script: `cd mcp-server && python scripts/seed_templates.py`
 - [ ] Restart MCP server: `sudo systemctl restart mcp-server`
-- [ ] Test doc generation with consolidated guide → verify 12-doc output
-- [ ] Compare output quality with previous generation (should be equal or better)
-- [ ] Monitor generation time (target: under 20 min with reduced token input)
-- [ ] Test small-project behavior: verify docs are appropriately sized, not padded
-- [ ] Verify backward compat: remove ANALYSIS_GUIDE.md temporarily, confirm 22 .txt files still work
-- [ ] Record baseline benchmark run on VPS (`python -m benchmark run --tag baseline-v1`)
-- [ ] Deploy Phase 1 code to VPS (`docker compose up -d --build backend`)
+- [ ] Test template CRUD via dashboard (create, edit, version, diff)
+- [ ] Test profile creation and template swapping via Generate button
+- [ ] Test doc generation with scoring Phase 2.6 → verify `_assessment/scorecard.md` output
+- [ ] Test A/B comparison: generate with 2 profiles, compare runs in dashboard
+- [ ] Test filesystem fallback: generate without any DB templates, verify backward compat
+- [ ] Deploy to VPS: `docker compose up -d --build`
+- [ ] E2E test: doc generation with consolidated guide → verify 12-doc output + scorecard
 - [x] Workato scanner plugin (complete, needs real project data for E2E validation)
 - [x] Generic scanner plugin (complete)
 - [ ] MuleSoft scanner plugin
 - [ ] dbt scanner plugin
 - [ ] E2E test: `intodoc scan <dir> --platform workato` with real Workato export
 - [ ] E2E test: `intodoc scan <dir> --platform generic` with real project
-- [ ] E2E testing of doc generation pipeline
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.

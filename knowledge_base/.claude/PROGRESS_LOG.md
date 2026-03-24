@@ -3,6 +3,85 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-03-24
+
+### [Feature]: Transparency Layer -- Scoring Pipeline + Template Management & Swapping
+
+Full implementation of the template management system and scoring pipeline enhancement across 6 phases (A-F). This is the largest single feature addition to the platform.
+
+#### Phase A: Scoring Pipeline (New Phase 2.6)
+
+- **Files created**:
+  - `mcp-server/src/mcp_server/templates/scoring-rubric.md` -- 8 dimensions x 5 levels scoring rubric
+  - `mcp-server/src/mcp_server/templates/anti-patterns.md` -- 29 anti-patterns across 6 categories (AP-SEC, AP-ERR, AP-DQ, AP-PERF, AP-ARCH, AP-OPS)
+  - `mcp-server/src/mcp_server/templates/red-flags.md` -- 28 red flags across 5 categories
+  - `mcp-server/src/mcp_server/templates/security-checklist.md` -- 7-category structured security review
+  - `mcp-server/src/mcp_server/templates/pattern-library.md` -- 15 known good patterns
+- **Files modified**:
+  - `mcp-server/src/mcp_server/services/claude_service.py` -- Added Phase 2.6 (Score & Assess) to mega-prompt, scoring template bundling to `_preprocess_scan_data()`, `_assessment/` directory creation, Phase 3 now reads scorecard
+- **Change**: New scoring sub-agent between Phase 2.5 and Phase 3 reads all analysis files + scoring templates, produces `_assessment/scorecard.md` with 8-dimension quantitative scores + evidence. Phase 3 agents reference scores in generated docs.
+
+#### Phase B: Database Foundation
+
+- **Files created**:
+  - `mcp-server/src/mcp_server/db/template_models.py` -- 4 SQLAlchemy models: Template, TemplateVersion, TemplateProfile, ProfileAssignment
+  - `mcp-server/src/mcp_server/services/template_service.py` -- Full CRUD for templates, versions, profiles, assignments (diff, rollback, clone, set-default)
+  - `mcp-server/src/mcp_server/api/routes/templates.py` -- 20+ REST endpoints for template/version/profile/assignment management
+  - `mcp-server/scripts/seed_templates.py` -- Idempotent migration of filesystem templates to DB
+  - `mcp-server/alembic.ini`, `alembic/env.py`, `alembic/script.py.mako` -- Async Alembic setup
+  - `mcp-server/alembic/versions/001_add_template_management.py` -- Migration for 4 new tables + 2 new columns
+- **Files modified**:
+  - `mcp-server/src/mcp_server/db/models.py` -- Added `template_profile_id` (INT FK) and `template_snapshot` (JSONB) to GenerateRun
+  - `mcp-server/src/mcp_server/db/__init__.py` -- Exports for new models
+  - `mcp-server/src/mcp_server/schemas.py` -- 15+ new Pydantic schema classes + extended GenerateRequest/GenerateRunResponse
+  - `mcp-server/src/mcp_server/api/app.py` -- Registered template/profile/generate_runs routers
+  - `mcp-server/pyproject.toml` -- Added `alembic>=1.13.0`
+
+#### Phase C: Template Resolver + Pipeline Integration
+
+- **Files created**:
+  - `mcp-server/src/mcp_server/services/template_resolver.py` -- Resolution cascade: explicit profile -> project-scoped default -> platform default -> filesystem fallback
+- **Files modified**:
+  - `mcp-server/src/mcp_server/services/claude_service.py` -- `_preprocess_scan_data()` now accepts `template_profile_id`, returns `(groups, snapshot)` tuple, uses DB templates with filesystem fallback
+  - `mcp-server/src/mcp_server/api/routes/projects.py` -- Passes `template_profile_id` through generate endpoint to background task
+  - `mcp-server/src/mcp_server/services/project_registry.py` -- `complete_generate_run()` accepts template fields
+
+#### Phase D: Dashboard -- Template Catalogue + Editor
+
+- **Files created**:
+  - `dashboard/src/components/templates/TemplateCatalogue.tsx` -- Filterable template grid with category/platform/search filters
+  - `dashboard/src/components/templates/TemplateEditor.tsx` -- Inline editor with version selector, required commit messages
+  - `dashboard/src/components/templates/VersionTimeline.tsx` -- Version history with colored unified diff viewer
+  - `dashboard/src/hooks/useTemplates.ts` -- 12 React Query hooks for template APIs
+- **Files modified**:
+  - `dashboard/src/api/client.ts` -- ~20 new API methods for templates/versions/profiles/assignments
+  - `dashboard/src/types.ts` -- Template, TemplateVersion, TemplateProfile, ProfileAssignment, ProfileDetail interfaces
+  - `dashboard/src/App.tsx` -- Top-level nav (Projects/Templates/Profiles/Docs), template editor layout
+
+#### Phase E: Dashboard -- Profiles & Swapping
+
+- **Files created**:
+  - `dashboard/src/components/templates/ProfileManager.tsx` -- Profile list/create/clone UI, set-default, platform filter
+  - `dashboard/src/components/templates/ProfileDetail.tsx` -- Per-template version assignment with add-override dropdown
+- **Files modified**:
+  - `dashboard/src/components/ActionButtons.tsx` -- Profile selector dropdown next to Generate button
+  - `dashboard/src/components/RunHistory.tsx` -- Profile column showing P#{id} or "default"
+  - `dashboard/src/hooks/useProjects.ts` -- `useGenerate` accepts `templateProfileId`
+
+#### Phase F: A/B Comparison + Document Catalogue
+
+- **Files created**:
+  - `mcp-server/src/mcp_server/api/routes/generate_runs.py` -- Template snapshot + run comparison endpoints
+  - `dashboard/src/components/templates/ABComparison.tsx` -- Run selector, metrics comparison table, template diff display
+  - `dashboard/src/components/templates/DocumentCatalogue.tsx` -- Auto-generated reference of 12 doc types with template links
+- **Files modified**:
+  - `dashboard/src/App.tsx` -- Added "A/B Compare" tab, "Docs" top-nav page
+
+- **Why this approach**: Templates stored in DB for versioning and admin visibility. Full-copy variants (not section overrides) for simplicity. Per-platform template sets. Filesystem fallback is permanent for backward compatibility. Resolution cascade gives flexibility (explicit profile > project default > platform default > filesystem).
+- **Verification**: `npx tsc --noEmit` passes clean. All new components type-check. Backend Python files syntax-verified.
+
+---
+
 ## Session: 2026-03-20
 
 ### [Fix]: Workato Scanner Format C Support -- 6 Field Mismatch Bugs

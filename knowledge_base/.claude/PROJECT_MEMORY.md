@@ -25,6 +25,12 @@
 | Bundle splitting | Prompt bundles split at 200KB, ref doc bundles at 80KB; glob patterns in orchestrator prompt | Prevents exceeding Claude's 256KB file-read limit and 25K token limit as platforms add more prompts | 2026-03 |
 | Consolidated analysis guide | Single ANALYSIS_GUIDE.md per platform replaces 22 bundled .txt prompts; PHASE_3_GUIDE.md for cross-group synthesis | 94% token reduction (222KB->12KB), eliminates conflicting instructions, coherent single-document format; original .txt files kept for backward compat | 2026-03 |
 | Dynamic depth scaling | Inject project metrics (total_jobs, total_groups) into prompt instead of hard-coded line minimums | Small projects don't pad, large projects don't truncate; depth driven by content not arbitrary targets | 2026-03 |
+| Template DB storage | Templates, versions, profiles in PostgreSQL with Alembic migrations | Enables admin visibility, versioning with commit messages, A/B testing via profiles | 2026-03 |
+| Template resolution cascade | Explicit profile -> project-scoped default -> platform default -> filesystem fallback | Flexible selection with permanent backward compat; filesystem always works as safety net | 2026-03 |
+| Full-copy template variants | Profiles map template slots to specific versions (full copies, not section overrides) | Simpler to reason about; each version is self-contained and independently testable | 2026-03 |
+| Per-platform template sets | Templates have optional `platform` field; profiles scoped to platform | Talend and Workato templates are independent; prevents cross-contamination | 2026-03 |
+| Phase 2.6 scoring | New scoring sub-agent between Phase 2.5 gate and Phase 3 doc writing | Quantitative grounding for docs; enables comparison across runs; scorecard included in final output | 2026-03 |
+| Template snapshots on runs | `template_snapshot` JSONB on GenerateRun records `{slug: version_id}` | Exact reproducibility; enables meaningful A/B comparison between runs using different profiles | 2026-03 |
 
 ## Code Patterns
 
@@ -39,10 +45,13 @@
 ### Dashboard (React)
 - React 19 + Vite 6 + TypeScript 5 strict
 - Tailwind CSS 3 for styling
-- Custom hooks: `useProjects()`, `useLogStream()`, `useResetStatus()`
+- Custom hooks: `useProjects()`, `useLogStream()`, `useResetStatus()`, `useTemplates()`, `useProfiles()`
 - API client pattern: centralized `client.ts` with typed fetch wrappers
 - credentials:"include" on all fetch calls (JWT cookies)
 - 401 response -> redirect to login page
+- Top-level nav: Projects / Templates / Profiles / Docs
+- Template editor: inline textarea with version selector + required commit messages
+- Profile dropdown on Generate button for template swapping
 
 ## Completed Tasks
 
@@ -54,6 +63,8 @@
 | MCP server v1 | 2026-02 | 8 MCP tools, REST API, dual mode |
 | Dashboard v1 | 2026-02 | Project list, actions, log panel |
 | Doc generation pipeline | 2026-02 | 4-phase workflow, parallel sub-agents, staging dir |
+| Template management system | 2026-03-24 | DB-backed templates, versioning, profiles, A/B comparison, dashboard UI |
+| Scoring pipeline (Phase 2.6) | 2026-03-24 | 8-dimension rubric, anti-patterns, red flags, security checklist, scorecard output |
 | Documentation restructuring | 2026-02-19 | .agent pattern, SOPs, system docs |
 | Fix stuck status | 2026-03-03 | Reset endpoint, polling fallback, reset button |
 | JWT auth integration | 2026-03-04 | Shared JWT across all services |
@@ -124,12 +135,16 @@ knowledge_base/
   .mcp.json                         -- MCP server config for Claude Code
   mcp-server/src/mcp_server/        -- MCP + REST server
     mcp/server.py                   -- 8 MCP tools
-    api/routes/                     -- REST endpoints (projects, health, logs, webhook)
-    services/                       -- Business logic (registry, scanner, RAG bridge, claude)
-    db/                             -- SQLAlchemy models (Project, ScanRun, GenerateRun)
+    api/routes/                     -- REST endpoints (projects, health, logs, webhook, templates, generate_runs)
+    services/                       -- Business logic (registry, scanner, RAG bridge, claude, template_service, template_resolver)
+    db/                             -- SQLAlchemy models (Project, ScanRun, GenerateRun, Template, TemplateVersion, TemplateProfile, ProfileAssignment)
+    templates/                      -- Scoring templates (rubric, anti-patterns, red-flags, security, patterns)
+    scripts/seed_templates.py       -- DB seeder for filesystem templates
+    alembic/                        -- Database migrations
   dashboard/src/                    -- React control panel
     components/                     -- ProjectList, ActionButtons, LogPanel, etc.
-    hooks/                          -- useProjects, useLogStream, useResetStatus
+    components/templates/           -- TemplateCatalogue, TemplateEditor, VersionTimeline, ProfileManager, ProfileDetail, ABComparison, DocumentCatalogue
+    hooks/                          -- useProjects, useLogStream, useResetStatus, useTemplates
     api/client.ts                   -- REST API client
   intodoc/src/intodoc/              -- Scanner CLI
     cli.py                          -- Click entry point

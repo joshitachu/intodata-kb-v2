@@ -51,6 +51,12 @@
 - [x] PHASE_3_GUIDE.md for cross-group synthesis
 - [x] Dynamic depth scaling (replaces hard-coded line minimums)
 - [x] get_phase3_guide() method in scanner_service
+- [x] Template management system (DB models, CRUD service, REST API, Alembic migration)
+- [x] Template resolver with cascade (profile -> project default -> platform default -> filesystem)
+- [x] Phase 2.6 scoring pipeline (rubric, anti-patterns, red flags, security checklist, pattern library)
+- [x] A/B run comparison endpoint
+- [x] Template snapshot recording on generate runs
+- [x] Seed script for filesystem -> DB migration
 
 ## Dashboard
 
@@ -61,9 +67,19 @@
 - [x] Polling fallback (refetchInterval: 10s)
 - [x] Reset button for stuck states
 - [x] JWT auth (credentials:"include", 401 redirect)
-- [ ] Scan history view
-- [ ] Doc preview/download
-- [ ] Project settings/config panel
+- [x] Scan history view
+- [x] Doc preview/download
+- [x] Project settings/config panel
+- [x] Template catalogue with category/platform/search filters
+- [x] Template editor with version selector + commit messages
+- [x] Version timeline with colored unified diff viewer
+- [x] Profile management (create, clone, set-default, platform filter)
+- [x] Profile detail with per-template version assignment
+- [x] Profile dropdown on Generate button for template swapping
+- [x] Run history with profile column
+- [x] A/B run comparison (metrics table + template diff)
+- [x] Document catalogue (12 doc type reference with template links)
+- [x] Top-level navigation (Projects / Templates / Profiles / Docs)
 
 ## Deployment
 
@@ -86,7 +102,7 @@
 | Component | Files | Tests | Status |
 |-----------|-------|-------|--------|
 | Scanner CLI | 15+ Python files | 126 Workato tests | Complete (Talend, Workato, Generic) |
-| MCP Server | 12+ Python files | -- | Complete |
-| Dashboard | 10+ TypeScript files | Vitest | Complete |
+| MCP Server | 20+ Python files | -- | Complete (templates, profiles, scoring) |
+| Dashboard | 20+ TypeScript files | Vitest | Complete (templates, profiles, A/B, docs) |
 
 See `PROGRESS_LOG.md` for detailed session history.
