@@ -77,6 +77,11 @@ export const api = {
       body: JSON.stringify({ project_id: projectId }),
     }),
 
+  deleteProject: (projectId: string) =>
+    request<{ status: string; message: string }>(`/mcp/projects/${projectId}`, {
+      method: "DELETE",
+    }),
+
   getStatus: (projectId: string) =>
     request<{
       project_id: string;

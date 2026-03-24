@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_server.db.models import GenerateRun, Project, ScanRun
@@ -145,6 +145,16 @@ class ProjectRegistry:
             project.platform = platform
         await self.db.flush()
         return project
+
+    async def delete_project(self, project_id: str) -> bool:
+        """Delete a project and all related records (cascade deletes scan_runs, generate_runs)."""
+        project = await self.get_project(project_id)
+        if not project:
+            return False
+        await self.db.delete(project)
+        await self.db.flush()
+        logger.info("Deleted project: %s", project_id)
+        return True
 
     async def list_scan_runs(self, project_id: str) -> list[ScanRun]:
         result = await self.db.execute(

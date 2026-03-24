@@ -25,6 +25,7 @@ from mcp_server.schemas import (
     DeepDiveProject,
     DeepDiveProjectsResponse,
     DeepDiveRequest,
+    DeleteProjectResponse,
     DocFileInfo,
     DocListResponse,
     GenerateRequest,
@@ -555,6 +556,79 @@ async def update_project(project_id: str, req: UpdateProjectRequest, request: Re
             raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
         await db.commit()
         return _project_to_response(project)
+
+
+@router.delete("/projects/{project_id}", response_model=DeleteProjectResponse)
+async def delete_project(project_id: str, request: Request):
+    """Permanently delete a project and all associated data.
+
+    Cleans up: RAG documents/vectors (best-effort), filesystem artifacts, DB records.
+    Blocked if project is currently scanning or generating.
+    """
+    await require_project_access(request, project_id)
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+        if project.status in ("scanning", "generating"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete project while status is '{project.status}'. "
+                       "Reset the status first or wait for the operation to complete.",
+            )
+
+        # 1. RAG cleanup (best-effort)
+        rag_cleaned = False
+        rag_error = None
+        try:
+            bridge = RagBridge()
+            result = await bridge.delete_project_documents(project_id)
+            rag_cleaned = True
+            logger.info("RAG cleanup for %s: %s", project_id, result)
+        except Exception as e:
+            rag_error = str(e)
+            logger.warning("RAG cleanup failed for %s (continuing): %s", project_id, e)
+
+        # 2. Filesystem cleanup
+        files_cleaned = True
+        dirs_to_remove = [
+            config.repos_dir / project_id,
+            config.intodoc_output_dir / project_id,
+            config.project_root / "output" / project_id,
+        ]
+        for d in dirs_to_remove:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                logger.info("Removed directory: %s", d)
+
+        # Remove log files matching {project_id}_*.log
+        for log_file in config.logs_dir.glob(f"{project_id}_*.log"):
+            try:
+                log_file.unlink()
+                logger.info("Removed log file: %s", log_file)
+            except OSError as e:
+                logger.warning("Failed to remove log file %s: %s", log_file, e)
+                files_cleaned = False
+
+        # 3. DB cleanup (cascade handles scan_runs, generate_runs)
+        deleted = await registry.delete_project(project_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        await db.commit()
+
+    logger.info("Deleted project %s (rag=%s, files=%s)", project_id, rag_cleaned, files_cleaned)
+    return DeleteProjectResponse(
+        status="deleted",
+        message=f"Project '{project_id}' has been permanently deleted.",
+        details={
+            "rag_cleaned": rag_cleaned,
+            "files_cleaned": files_cleaned,
+            "rag_error": rag_error,
+        },
+    )
 
 
 @router.get("/projects/{project_id}/usage", response_model=ProjectUsageResponse)

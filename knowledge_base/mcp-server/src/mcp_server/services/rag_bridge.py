@@ -21,6 +21,23 @@ class RagBridge:
         self.log_manager = log_manager
         self._api_key = config.ingest_api_key
 
+    async def delete_project_documents(self, project_id: str) -> dict:
+        """Delete all documents for a project from the RAG pipeline.
+
+        Returns the response dict from the RAG API.
+        """
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.delete(
+                f"{self.base_url}/api/v1/ingest/by-project/{project_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def push_markdown(
         self,
         project_id: str,

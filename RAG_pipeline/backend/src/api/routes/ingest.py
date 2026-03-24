@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, UploadFile
+from sqlalchemy import delete, select
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.routes.auth import limiter
 from src.config import settings
+from src.db.models.document import Document
+from src.db.models.user import ProjectAssignment
 from src.ingestion.pipeline import ingest_document, ingest_text
 from src.rbac.permissions import get_user_groups, get_user_project_ids
+from src.retrieval.vector_store import delete_document_points
 from src.schemas import IngestResponse, MarkdownIngestRequest
+
+logger = logging.getLogger(__name__)
 
 
 async def verify_ingest_api_key(
@@ -80,6 +88,48 @@ async def ingest(
         status=job.status,
         message=f"Ingested {job.chunks_created} chunks",
     )
+
+
+@router.delete(
+    "/ingest/by-project/{project_id}",
+    dependencies=[Depends(verify_ingest_api_key)],
+)
+async def delete_project_documents(
+    project_id: str,
+    db: DBSession,
+    qdrant: QdrantClient,
+) -> dict:
+    """Delete all documents (and their Qdrant vectors) for a project.
+
+    Used by the MCP server when deleting a project to clean up RAG data.
+    """
+    # Find all documents belonging to this project
+    result = await db.execute(
+        select(Document).where(Document.project_id == project_id)
+    )
+    docs = list(result.scalars().all())
+
+    # Delete Qdrant vectors for each document
+    for doc in docs:
+        try:
+            await delete_document_points(qdrant, doc.id)
+        except Exception as e:
+            logger.warning("Failed to delete Qdrant points for document %d: %s", doc.id, e)
+
+    # Delete document rows (cascades to ingestion_jobs)
+    if docs:
+        doc_ids = [d.id for d in docs]
+        await db.execute(delete(Document).where(Document.id.in_(doc_ids)))
+
+    # Delete project_assignments for this project
+    await db.execute(
+        delete(ProjectAssignment).where(ProjectAssignment.project_id == project_id)
+    )
+
+    await db.commit()
+
+    logger.info("Deleted %d documents for project %s", len(docs), project_id)
+    return {"deleted_documents": len(docs), "project_id": project_id}
 
 
 @router.post("/ingest/md", response_model=IngestResponse, dependencies=[Depends(verify_ingest_api_key)])

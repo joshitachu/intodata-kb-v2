@@ -171,6 +171,18 @@ class StatusResponse(BaseModel):
     message: str = ""
 
 
+class DeleteProjectDetails(BaseModel):
+    rag_cleaned: bool = False
+    files_cleaned: bool = False
+    rag_error: str | None = None
+
+
+class DeleteProjectResponse(BaseModel):
+    status: str
+    message: str = ""
+    details: DeleteProjectDetails = DeleteProjectDetails()
+
+
 # --- Documentation (PDF) ---
 
 class DocFileInfo(BaseModel):

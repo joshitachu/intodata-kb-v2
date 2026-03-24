@@ -60,6 +60,14 @@ export function useResetStatus() {
   });
 }
 
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.deleteProject(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
 export function useGenerateRuns(projectId: string | null) {
   return useQuery({
     queryKey: ["generate-runs", projectId],

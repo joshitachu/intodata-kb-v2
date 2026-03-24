@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { useUpdateProject, useProjectUsage } from "../hooks/useProjects";
+import { useUpdateProject, useProjectUsage, useDeleteProject } from "../hooks/useProjects";
 import type { Project } from "../types";
 
 interface Props {
   project: Project | null;
+  onDeleted?: () => void;
 }
 
 const PLATFORMS = ["talend", "workato", "generic"];
@@ -14,18 +15,21 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-export default function ProjectSettings({ project }: Props) {
+export default function ProjectSettings({ project, onDeleted }: Props) {
   const updateProject = useUpdateProject();
+  const deleteProject = useDeleteProject();
   const usage = useProjectUsage(project?.id ?? null);
   const [displayName, setDisplayName] = useState("");
   const [platform, setPlatform] = useState("");
   const [saved, setSaved] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
 
   useEffect(() => {
     if (project) {
       setDisplayName(project.display_name);
       setPlatform(project.platform);
       setSaved(false);
+      setConfirmText("");
     }
   }, [project?.id]);
 
@@ -183,6 +187,55 @@ export default function ProjectSettings({ project }: Props) {
               </div>
             </div>
           ) : null}
+        </div>
+
+        {/* Danger Zone */}
+        <hr className="border-white/[0.05]" />
+        <div className="border border-red-500/30 rounded-lg p-4 space-y-3">
+          <h4 className="font-mono uppercase tracking-wider text-xs text-red-400">Danger Zone</h4>
+          <p className="text-sm text-slate-400">
+            Permanently delete this project and all associated data including scan results,
+            generated docs, and RAG documents. This action cannot be undone.
+          </p>
+          <div className="flex flex-col sm:flex-row items-start sm:items-end gap-3">
+            <div className="flex-1 w-full sm:w-auto">
+              <label className="block text-xs text-slate-500 mb-1">
+                Type <span className="font-mono text-red-400">{project.id}</span> to confirm
+              </label>
+              <input
+                type="text"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={project.id}
+                className="input-dark w-full sm:w-64"
+                disabled={deleteProject.isPending}
+              />
+            </div>
+            <button
+              onClick={() => {
+                if (!project || confirmText !== project.id) return;
+                deleteProject.mutate(project.id, {
+                  onSuccess: () => {
+                    setConfirmText("");
+                    onDeleted?.();
+                  },
+                });
+              }}
+              disabled={confirmText !== project.id || deleteProject.isPending}
+              className={`px-4 py-2 text-sm rounded font-medium transition-all whitespace-nowrap ${
+                confirmText === project.id && !deleteProject.isPending
+                  ? "bg-red-600 text-white hover:bg-red-500"
+                  : "bg-white/[0.05] text-slate-600 cursor-not-allowed"
+              }`}
+            >
+              {deleteProject.isPending ? "Deleting..." : "Permanently Delete"}
+            </button>
+          </div>
+          {deleteProject.isError && (
+            <p className="text-sm text-red-400">
+              Failed: {deleteProject.error?.message}
+            </p>
+          )}
         </div>
       </div>
     </div>

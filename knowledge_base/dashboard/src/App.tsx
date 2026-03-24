@@ -190,7 +190,12 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   {detailTab === "scans" && <ScanHistory projectId={activeProject} />}
                   {detailTab === "docs" && <DocPreview projectId={activeProject} />}
                   {detailTab === "compare" && <ABComparison projectId={activeProject} />}
-                  {detailTab === "settings" && <ProjectSettings project={activeProjectObj} />}
+                  {detailTab === "settings" && (
+                    <ProjectSettings
+                      project={activeProjectObj}
+                      onDeleted={() => setActiveProject(null)}
+                    />
+                  )}
                 </div>
               )}
             </>
