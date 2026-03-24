@@ -279,14 +279,19 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         await db.commit()
         run_id = run.id
 
-    background_tasks.add_task(_run_generate_background, req.project_id, run_id, log_mgr)
+    background_tasks.add_task(
+        _run_generate_background, req.project_id, run_id, log_mgr,
+        template_profile_id=req.template_profile_id,
+    )
     return StatusResponse(
         status="generation_triggered",
         message=f"Doc generation started for {req.project_id}",
     )
 
 
-async def _run_generate_background(project_id: str, run_id: int, log_mgr):
+async def _run_generate_background(
+    project_id: str, run_id: int, log_mgr, *, template_profile_id: int | None = None,
+):
     """Background task: spawn Claude Code for doc generation.
 
     Uses a staging directory (docs_staging/) so that existing docs survive
@@ -294,7 +299,7 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
     """
     claude = ClaudeService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
-    result = await claude.generate_docs(project_id)
+    result = await claude.generate_docs(project_id, template_profile_id=template_profile_id)
 
     success = result.get("success", False)
 
@@ -376,6 +381,8 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
                 doc_count=doc_count,
                 error_message=None,
                 log_file=log_file,
+                template_profile_id=template_profile_id,
+                template_snapshot=result.get("template_snapshot"),
             )
             await db.commit()
     else:
@@ -399,7 +406,7 @@ async def _run_generate_background(project_id: str, run_id: int, log_mgr):
                 output_tokens=result.get("output_tokens"),
                 num_turns=result.get("num_turns"),
                 session_id=result.get("session_id"),
-                doc_count=None,
+                doc_count=0,
                 error_message="Doc generation failed",
                 log_file=log_file,
             )
@@ -693,6 +700,8 @@ def _run_to_response(r) -> GenerateRunResponse:
         doc_count=r.doc_count,
         error_message=r.error_message,
         log_file=r.log_file,
+        template_profile_id=getattr(r, "template_profile_id", None),
+        template_snapshot=getattr(r, "template_snapshot", None),
     )
 
 

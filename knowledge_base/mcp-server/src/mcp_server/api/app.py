@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from mcp_server.config import config
 from mcp_server.db.models import Base
+import mcp_server.db.template_models  # noqa: F401 -- register with Base.metadata
 from mcp_server.db.session import engine
 from mcp_server.services.log_manager import LogManager
 
@@ -109,11 +110,26 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import health, logs, projects, webhook  # noqa: E402
+from mcp_server.api.routes import generate_runs, health, logs, projects, templates, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(
     projects.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    templates.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    templates.profile_router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    generate_runs.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

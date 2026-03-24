@@ -228,24 +228,31 @@ class ProjectRegistry:
         doc_count: int = 0,
         error_message: str | None = None,
         log_file: str | None = None,
+        template_profile_id: int | None = None,
+        template_snapshot: dict | None = None,
     ) -> None:
+        values = dict(
+            status=status,
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            duration_api_ms=duration_api_ms,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            num_turns=num_turns,
+            session_id=session_id,
+            doc_count=doc_count,
+            error_message=error_message,
+            log_file=log_file,
+            completed_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+        if template_profile_id is not None:
+            values["template_profile_id"] = template_profile_id
+        if template_snapshot is not None:
+            values["template_snapshot"] = template_snapshot
         await self.db.execute(
             update(GenerateRun)
             .where(GenerateRun.id == run_id)
-            .values(
-                status=status,
-                cost_usd=cost_usd,
-                duration_ms=duration_ms,
-                duration_api_ms=duration_api_ms,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                num_turns=num_turns,
-                session_id=session_id,
-                doc_count=doc_count,
-                error_message=error_message,
-                log_file=log_file,
-                completed_at=datetime.datetime.now(datetime.timezone.utc),
-            )
+            .values(**values)
         )
         await self.db.flush()
 

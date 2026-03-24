@@ -24,9 +24,9 @@ export default function ProjectCard({
   return (
     <div
       className={`
-        project-card relative bg-[#111118] rounded border border-white/[0.07] border-l-4
+        project-card relative bg-surface-card rounded border border-white/[0.07] border-l-4
         ${platform.accentColor} cursor-pointer
-        ${isActive ? "ring-1 ring-[#00D4FF]/30 shadow-card-hover" : "shadow-card"}
+        ${isActive ? "ring-1 ring-accent-primary/30 shadow-card-hover" : "shadow-card"}
       `}
       onClick={() => onSelect(project.id)}
     >

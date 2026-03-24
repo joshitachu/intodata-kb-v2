@@ -49,6 +49,8 @@ export interface GenerateRun {
   doc_count: number;
   error_message: string | null;
   log_file: string | null;
+  template_profile_id: number | null;
+  template_snapshot: Record<string, number> | null;
 }
 
 export interface ScanRun {
@@ -86,4 +88,58 @@ export interface ProjectUsage {
   total_cost_usd: number;
   total_scan_runs: number;
   completed_scan_runs: number;
+}
+
+// --- Templates ---
+
+export interface Template {
+  id: number;
+  slug: string;
+  category: string;
+  platform: string | null;
+  display_name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  latest_version: number | null;
+}
+
+export interface TemplateVersion {
+  id: number;
+  template_id: number;
+  version_number: number;
+  content: string | null;
+  change_summary: string;
+  created_by: string | null;
+  content_hash: string | null;
+  byte_size: number | null;
+  created_at: string | null;
+}
+
+export interface TemplateProfile {
+  id: number;
+  name: string;
+  description: string | null;
+  platform: string | null;
+  scope: string;
+  scope_ref: string | null;
+  is_default: boolean;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ProfileAssignment {
+  id: number;
+  profile_id: number;
+  template_slug: string;
+  template_display_name: string;
+  version_id: number;
+  version_number: number;
+  created_at: string | null;
+}
+
+export interface ProfileDetail extends TemplateProfile {
+  assignments: ProfileAssignment[];
 }

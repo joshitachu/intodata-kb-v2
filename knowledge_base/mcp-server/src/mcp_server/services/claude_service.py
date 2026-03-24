@@ -189,15 +189,23 @@ class ClaudeService:
         return parts, job_count
 
     async def _preprocess_scan_data(
-        self, project_id: str, staging_dir: Path, platform: str = "talend",
-    ) -> list[str]:
+        self,
+        project_id: str,
+        staging_dir: Path,
+        platform: str = "talend",
+        template_profile_id: int | None = None,
+    ) -> tuple[list[str], dict[str, int]]:
         """Pre-process raw job JSONs into structured markdown summaries.
 
         Reads scan data via ScannerService and writes per-group markdown files
-        to staging_dir/_preprocess/{group}.md. Also bundles analysis prompts
-        and reference docs for sub-agents.
+        to staging_dir/_preprocess/{group}.md. Also bundles analysis prompts,
+        reference docs, and scoring templates for sub-agents.
 
-        Returns list of group names that were preprocessed.
+        When template_profile_id is set, reads templates from DB via
+        TemplateResolver. Otherwise falls back to filesystem.
+
+        Returns (group_names, template_snapshot) where template_snapshot maps
+        slug -> version_id for templates resolved from the DB.
         """
         preprocess_dir = staging_dir / "_preprocess"
         preprocess_dir.mkdir(parents=True, exist_ok=True)
@@ -388,9 +396,116 @@ class ClaudeService:
         else:
             logger.warning("Reference docs dir not found: %s", ref_dir)
 
-        return processed_groups
+        # --- Bundle scoring/assessment templates for Phase 2.6 ---
+        _templates_dir = Path(__file__).resolve().parent.parent / "templates"
+        scoring_templates = {
+            "_scoring_rubric.md": "scoring-rubric.md",
+            "_anti_patterns.md": "anti-patterns.md",
+            "_red_flags.md": "red-flags.md",
+            "_security_checklist.md": "security-checklist.md",
+            "_pattern_library.md": "pattern-library.md",
+        }
+        for dest_name, src_name in scoring_templates.items():
+            src_path = _templates_dir / src_name
+            if src_path.exists():
+                content = src_path.read_text(encoding="utf-8")
+                (preprocess_dir / dest_name).write_text(content, encoding="utf-8")
+                logger.info("Bundled scoring template %s: %d bytes", dest_name, len(content))
+            else:
+                logger.warning("Scoring template not found: %s", src_path)
 
-    async def generate_docs(self, project_id: str) -> dict:
+        # --- Override with DB templates if profile is set ---
+        template_snapshot: dict[str, int] = {}
+        if template_profile_id is not None:
+            try:
+                from mcp_server.db.session import async_session_factory as _sf
+                from mcp_server.services.template_resolver import TemplateResolver
+
+                async with _sf() as db:
+                    resolver = TemplateResolver(db)
+                    resolved = await resolver.resolve_all(
+                        profile_id=template_profile_id,
+                        project_id=project_id,
+                        platform=platform,
+                    )
+                    template_snapshot = resolver.snapshot
+
+                    # Overwrite files with DB content where available
+                    slug_to_file: dict[str, str] = {
+                        "orchestration/phase3_guide": "_phase3_guide.md",
+                        "assessment/scoring_rubric": "_scoring_rubric.md",
+                        "assessment/anti_patterns": "_anti_patterns.md",
+                        "assessment/red_flags": "_red_flags.md",
+                        "assessment/security_checklist": "_security_checklist.md",
+                        "pattern/pattern_library": "_pattern_library.md",
+                    }
+                    for slug, filename in slug_to_file.items():
+                        if slug in resolved:
+                            (preprocess_dir / filename).write_text(
+                                resolved[slug], encoding="utf-8",
+                            )
+                            logger.info(
+                                "DB template override: %s -> %s (%d bytes)",
+                                slug, filename, len(resolved[slug]),
+                            )
+
+                    # Analysis guide override
+                    analysis_slugs = [
+                        s for s in resolved if s.startswith("analysis/")
+                    ]
+                    if analysis_slugs:
+                        # Combine all analysis templates into a single guide
+                        parts = []
+                        for slug in sorted(analysis_slugs):
+                            parts.append(f"## {slug}\n\n{resolved[slug]}\n\n")
+                        guide = "# Analysis Guide (from template profile)\n\n" + "".join(parts)
+                        (preprocess_dir / "_analysis_guide.md").write_text(
+                            guide, encoding="utf-8",
+                        )
+                        logger.info(
+                            "DB template override: analysis guide (%d templates, %d bytes)",
+                            len(analysis_slugs), len(guide),
+                        )
+
+                    # Reference doc overrides
+                    ref_map = {
+                        "_ref_core": ["output/00_executive_summary", "output/01_project_overview",
+                                      "output/02_architecture_inventory", "output/03_data_flows_lineage"],
+                        "_ref_business_ops": ["output/04_business_logic", "output/05_operations_risk",
+                                              "output/06_environment_external"],
+                        "_ref_patterns_user": ["output/07_security_performance", "output/08_patterns_standards",
+                                               "output/09_runbook", "output/10_onboarding_faq",
+                                               "output/11_migration_assessment"],
+                    }
+                    for bundle_name, slugs in ref_map.items():
+                        entries = []
+                        for slug in slugs:
+                            if slug in resolved:
+                                entries.append(f"---\n## {slug}\n\n{resolved[slug]}\n\n")
+                        if entries:
+                            header = f"# Reference Docs Bundle: {bundle_name}\n\n"
+                            bundle = header + "".join(entries)
+                            (preprocess_dir / f"{bundle_name}.md").write_text(
+                                bundle, encoding="utf-8",
+                            )
+                            logger.info(
+                                "DB template override: %s (%d docs, %d bytes)",
+                                bundle_name, len(entries), len(bundle),
+                            )
+
+                logger.info(
+                    "Template resolution complete: %d templates from profile %d",
+                    len(template_snapshot), template_profile_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Template resolution failed, using filesystem fallback: %s", e,
+                )
+                template_snapshot = {}
+
+        return processed_groups, template_snapshot
+
+    async def generate_docs(self, project_id: str, template_profile_id: int | None = None) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
         Returns dict with success, cost_usd, duration_ms, input_tokens, etc.
@@ -405,6 +520,7 @@ class ClaudeService:
         for d in [
             staging_dir,
             staging_dir / "_analysis",
+            staging_dir / "_assessment",
             output_dir / "logs",
         ]:
             d.mkdir(parents=True, exist_ok=True)
@@ -427,7 +543,9 @@ class ClaudeService:
         await self.log_manager.emit(
             project_id, "Pre-processing scan data...", level="info",
         )
-        preprocess_groups = await self._preprocess_scan_data(project_id, staging_dir, platform)
+        preprocess_groups, template_snapshot = await self._preprocess_scan_data(
+            project_id, staging_dir, platform, template_profile_id,
+        )
         await self.log_manager.emit(
             project_id,
             f"Pre-processed {len(preprocess_groups)} groups: {', '.join(preprocess_groups)}",
@@ -527,9 +645,34 @@ PHASE 2.5 -- GATE VALIDATION (before Phase 3):
       listing the groups without analysis. Phase 3 agents should note incomplete data in their docs.
    5. Only proceed to Phase 3 once this gate passes.
 
+PHASE 2.6 -- SCORE & ASSESS (one sub-agent, after Phase 2.5 gate passes):
+   Spawn ONE sub-agent to produce a structured assessment scorecard:
+   1. Read ALL {staging_abs}/_analysis/{{group}}.md files (every group's analysis).
+   2. Read the scoring reference templates:
+      - {staging_abs}/_preprocess/_scoring_rubric.md (8 dimensions x 5 levels with criteria)
+      - {staging_abs}/_preprocess/_anti_patterns.md (curated anti-pattern catalog with IDs)
+      - {staging_abs}/_preprocess/_red_flags.md (common issue indicators with IDs)
+      - {staging_abs}/_preprocess/_security_checklist.md (structured security review)
+      - {staging_abs}/_preprocess/_pattern_library.md (known good patterns for comparison)
+   3. Score each of the 8 dimensions (1-5) following the rubric criteria exactly.
+      Cite specific evidence: job names, component references, expressions, counts.
+   4. Identify anti-patterns (reference by AP-xxx-nnn ID) and red flags (RF-xxx-nnn ID).
+   5. Complete the security checklist evaluation.
+   6. Write the full scorecard to {staging_abs}/_assessment/scorecard.md using the exact format
+      defined in _scoring_rubric.md (summary table, detailed findings, anti-patterns, red flags, security).
+   7. Return a ~2KB summary to the orchestrator: overall score, top 3 risks, top 3 strengths.
+
+   IMPORTANT for the scoring sub-agent:
+   - Read ALL _analysis/ files -- the scorecard must reflect the ENTIRE project.
+   - Be SPECIFIC: "7/12 DEU jobs lack tLogCatcher" not "error handling is weak."
+   - Every score must cite evidence. A score without evidence is invalid.
+   - Do NOT read files outside {staging_abs}/.
+   - Do NOT use TodoWrite, mkdir, ls, or any MCP tools.
+
 PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
-   After ALL Phase 2 sub-agents complete, spawn 3 doc-assembly sub-agents in parallel.
+   After Phase 2.6 completes, spawn 3 doc-assembly sub-agents in parallel.
    Each Phase 3 agent reads the FULL _analysis/{{group}}.md files directly (no condensation step).
+   Each Phase 3 agent also reads {staging_abs}/_assessment/scorecard.md for quantitative grounding.
    Each doc agent also reads its REFERENCE DOC BUNDLE from _preprocess/ for format templates.
    Each Phase 3 agent also reads {staging_abs}/_preprocess/_phase3_guide.md for cross-group
    synthesis guidance (executive summary structure, cross-region comparison dimensions,
@@ -550,9 +693,18 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
 
    Each sub-agent prompt MUST include:
    - "Read ALL files in {staging_abs}/_analysis/ for your analysis data."
+   - "Read {staging_abs}/_assessment/scorecard.md for quantitative scores and evidence."
    - "Read ALL _ref_{{agent}}*.md files in {staging_abs}/_preprocess/ for format reference templates."
    - "Read {staging_abs}/_preprocess/_phase3_guide.md for cross-group synthesis guidance."
    - Do NOT call get_reference_docs() or get_analysis_prompts() -- use the pre-bundled files.
+
+   SCORECARD INTEGRATION:
+   - Reference specific scores from the scorecard in your documents.
+   - Example: "Security: 2/5 (see Assessment Scorecard for details)"
+   - Include anti-pattern IDs and red flag IDs where relevant.
+   - The Executive Summary (doc 00) MUST include the overall score and dimension summary table.
+   - The Migration Assessment (doc 11) MUST reference the Migration Readiness score.
+   - Operations & Risk (doc 05) MUST reference error handling and operations scores.
 
    DEPTH GUIDANCE:
    This project has {total_jobs} jobs across {total_groups} groups.
@@ -609,6 +761,7 @@ PHASE 3.5 -- DOC VALIDATION (before cleanup):
 PHASE 4 -- CLEANUP & PUBLISH:
    - Delete the {staging_abs}/_analysis/ directory and all its contents.
    - Delete the {staging_abs}/_preprocess/ directory and all its contents.
+   - KEEP {staging_abs}/_assessment/scorecard.md -- it is part of the final output.
    - Write {staging_abs}/index.json mapping docs to groups.
    - Write {logs_abs}/run_{project_id}_{{timestamp}}.log.
    - Do NOT call insert_to_rag -- the server will push docs to RAG automatically after successful generation.
@@ -617,11 +770,11 @@ PROHIBITED ACTIONS:
    - Do NOT use TodoWrite tool.
    - Do NOT run ASCII/Unicode validation scripts.
    - Do NOT read .agent/ docs or CLAUDE.md or mcp-workflow.md.
-   - Do NOT create _scratch/ directories or other intermediate files (the _analysis/ and _preprocess/ directories are allowed).
+   - Do NOT create _scratch/ directories or other intermediate files (the _analysis/, _assessment/, and _preprocess/ directories are allowed).
    - Do NOT run mkdir, ls, wc for verification -- directories are pre-created.
    - Do NOT call get_analysis_prompts(), get_reference_docs(), get_scan_status, get_chunks, fetch_json, fetch_chunk, trigger_scan, or any other MCP/fetch tools.
      ALL scan data, prompts, and reference docs are pre-bundled in _preprocess/.
-   - Only final .md docs, _analysis/, and _preprocess/ files go to {staging_abs}/.
+   - Only final .md docs, _analysis/, _assessment/, and _preprocess/ files go to {staging_abs}/.
 
 FILE READING GUIDANCE (prevents cascading failures):
    - For files > 500 lines, use `Bash cat file | head -N` or `tail -n +M | head -N` instead of the Read tool.
@@ -757,6 +910,8 @@ FILE READING GUIDANCE (prevents cascading failures):
 
             # Extract usage from the result event
             usage: dict = {"success": returncode == 0}
+            if template_snapshot:
+                usage["template_snapshot"] = template_snapshot
             if result_event:
                 usage["session_id"] = result_event.get("session_id")
                 usage["num_turns"] = result_event.get("num_turns")

@@ -15,8 +15,8 @@ from mcp_server.db.session import async_session_factory
 async def require_project_access(request: Request, project_id: str) -> None:
     """Check that the authenticated user can access the given project.
 
-    Access is granted if: superadmin, has view_all_projects or manage_projects
-    permission, or has a project_assignment row for this project.
+    Access is granted if: superadmin, has view_all_projects permission
+    (admin role), or has a project_assignment row for this project.
     """
     payload = getattr(request.state, "auth_payload", None)
     if not payload:
@@ -34,12 +34,12 @@ async def require_project_access(request: Request, project_id: str) -> None:
         if user_row and user_row[0]:
             return
 
-        # Check view_all_projects or manage_projects permission
+        # Check view_all_projects permission (admin role only)
         perm_result = await db.execute(text("""
             SELECT 1 FROM permissions p
             JOIN role_permissions rp ON rp.permission_id = p.id
             JOIN user_roles ur ON ur.role_id = rp.role_id
-            WHERE ur.user_id = :uid AND p.codename IN ('view_all_projects', 'manage_projects')
+            WHERE ur.user_id = :uid AND p.codename = 'view_all_projects'
             LIMIT 1
         """), {"uid": user_id})
         if perm_result.fetchone():

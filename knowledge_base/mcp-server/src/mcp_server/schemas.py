@@ -56,6 +56,7 @@ class ScanRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
+    template_profile_id: int | None = None
 
 
 class PushToRagRequest(BaseModel):
@@ -142,6 +143,8 @@ class GenerateRunResponse(BaseModel):
     doc_count: int = 0
     error_message: str | None = None
     log_file: str | None = None
+    template_profile_id: int | None = None
+    template_snapshot: dict | None = None
 
 
 class GenerateRunListResponse(BaseModel):
@@ -233,3 +236,136 @@ class ProjectUsageResponse(BaseModel):
     total_cost_usd: float = 0.0
     total_scan_runs: int = 0
     completed_scan_runs: int = 0
+
+
+# --- Templates ---
+
+class TemplateResponse(BaseModel):
+    id: int
+    slug: str
+    category: str
+    platform: str | None = None
+    display_name: str
+    description: str | None = None
+    is_active: bool = True
+    created_at: datetime.datetime | None = None
+    updated_at: datetime.datetime | None = None
+    latest_version: int | None = None
+
+
+class TemplateListResponse(BaseModel):
+    templates: list[TemplateResponse]
+    total: int
+
+
+class CreateTemplateRequest(BaseModel):
+    slug: str = Field(..., min_length=1, max_length=120)
+    category: str = Field(..., min_length=1, max_length=40)
+    platform: str | None = None
+    display_name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+
+
+class UpdateTemplateRequest(BaseModel):
+    display_name: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+
+
+class TemplateVersionResponse(BaseModel):
+    id: int
+    template_id: int
+    version_number: int
+    content: str | None = None  # omitted in list responses
+    change_summary: str
+    created_by: str | None = None
+    content_hash: str | None = None
+    byte_size: int | None = None
+    created_at: datetime.datetime | None = None
+
+
+class TemplateVersionListResponse(BaseModel):
+    versions: list[TemplateVersionResponse]
+    total: int
+
+
+class CreateVersionRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+    change_summary: str = Field(..., min_length=1, max_length=500)
+    created_by: str | None = None
+
+
+class DiffResponse(BaseModel):
+    slug: str
+    from_version: int
+    to_version: int
+    diff: str
+
+
+# --- Profiles ---
+
+class ProfileResponse(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    platform: str | None = None
+    scope: str = "global"
+    scope_ref: str | None = None
+    is_default: bool = False
+    created_by: str | None = None
+    created_at: datetime.datetime | None = None
+    updated_at: datetime.datetime | None = None
+
+
+class ProfileDetailResponse(ProfileResponse):
+    assignments: list["AssignmentResponse"] = []
+
+
+class ProfileListResponse(BaseModel):
+    profiles: list[ProfileResponse]
+    total: int
+
+
+class CreateProfileRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    platform: str | None = None
+    description: str | None = None
+    scope: str = "global"
+    scope_ref: str | None = None
+    created_by: str | None = None
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class CloneProfileRequest(BaseModel):
+    new_name: str = Field(..., min_length=1, max_length=200)
+    created_by: str | None = None
+
+
+# --- Assignments ---
+
+class AssignmentResponse(BaseModel):
+    id: int
+    profile_id: int
+    template_slug: str
+    template_display_name: str
+    version_id: int
+    version_number: int
+    created_at: datetime.datetime | None = None
+
+
+class AssignmentListResponse(BaseModel):
+    assignments: list[AssignmentResponse]
+    total: int
+
+
+class SetAssignmentRequest(BaseModel):
+    slug: str
+    version_id: int
+
+
+class BulkSetAssignmentsRequest(BaseModel):
+    assignments: list[SetAssignmentRequest]

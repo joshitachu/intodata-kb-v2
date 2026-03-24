@@ -29,8 +29,10 @@ def ensure_token_fresh() -> bool:
     False if refresh failed.
     """
     if not _CREDS_PATH.exists():
-        logger.warning("No Claude credentials file found at %s", _CREDS_PATH)
-        return False
+        # No OAuth credentials file — the CLI may be using an API key or
+        # another auth method that doesn't require token refresh.
+        logger.debug("No OAuth credentials file at %s — assuming API key auth", _CREDS_PATH)
+        return True
 
     try:
         creds = json.loads(_CREDS_PATH.read_text())

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -114,6 +115,14 @@ class GenerateRun(Base):
     doc_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     log_file: Mapped[str | None] = mapped_column(String(500))
+
+    # Template management
+    template_profile_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("template_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    template_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")

@@ -55,7 +55,7 @@ export default function ProjectSettings({ project }: Props) {
 
   return (
     <div className="card-dark">
-      <div className="px-4 py-3 border-b border-white/[0.05] bg-[#16161F] rounded-t">
+      <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t">
         <h3 className="text-sm font-mono text-slate-400">Project Settings</h3>
       </div>
 
@@ -63,26 +63,26 @@ export default function ProjectSettings({ project }: Props) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">Project ID</label>
-            <div className="text-sm font-mono bg-[#16161F] rounded px-3 py-2 text-slate-400 border border-white/[0.07]">
+            <div className="text-sm font-mono bg-surface-raised rounded px-3 py-2 text-slate-400 border border-white/[0.07]">
               {project.id}
             </div>
           </div>
           <div>
             <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">Source Type</label>
-            <div className="text-sm bg-[#16161F] rounded px-3 py-2 text-slate-400 border border-white/[0.07]">
+            <div className="text-sm bg-surface-raised rounded px-3 py-2 text-slate-400 border border-white/[0.07]">
               {project.source_type}
             </div>
           </div>
           <div>
             <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">Local Path</label>
-            <div className="text-sm font-mono bg-[#16161F] rounded px-3 py-2 text-slate-400 border border-white/[0.07] truncate" title={project.local_path}>
+            <div className="text-sm font-mono bg-surface-raised rounded px-3 py-2 text-slate-400 border border-white/[0.07] truncate" title={project.local_path}>
               {project.local_path}
             </div>
           </div>
           {project.repo_url && (
             <div>
               <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">Repo URL</label>
-              <div className="text-sm font-mono bg-[#16161F] rounded px-3 py-2 text-slate-400 border border-white/[0.07] truncate" title={project.repo_url}>
+              <div className="text-sm font-mono bg-surface-raised rounded px-3 py-2 text-slate-400 border border-white/[0.07] truncate" title={project.repo_url}>
                 {project.repo_url}
               </div>
             </div>
@@ -126,14 +126,14 @@ export default function ProjectSettings({ project }: Props) {
             disabled={!hasChanges || updateProject.isPending}
             className={`px-4 py-2 text-sm rounded font-medium transition-all ${
               hasChanges
-                ? "bg-[#00D4FF] text-[#0A0A0F] hover:bg-[#00D4FF]/90"
+                ? "bg-accent-primary text-surface-bg hover:bg-accent-primary/90"
                 : "bg-white/[0.05] text-slate-600 cursor-not-allowed"
             }`}
           >
             {updateProject.isPending ? "Saving..." : "Save Changes"}
           </button>
           {saved && (
-            <span className="text-sm text-emerald-400 font-medium">Saved!</span>
+            <span className="text-sm text-[#a0e06f] font-medium">Saved!</span>
           )}
           {updateProject.isError && (
             <span className="text-sm text-red-400">
@@ -152,20 +152,20 @@ export default function ProjectSettings({ project }: Props) {
             <p className="text-xs text-red-400">Failed to load usage data</p>
           ) : usage.data ? (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="bg-[#16161F] rounded px-3 py-2.5 border border-white/[0.07]">
+              <div className="bg-surface-raised rounded px-3 py-2.5 border border-white/[0.07]">
                 <div className="text-lg font-mono font-medium text-slate-300">
                   {usage.data.completed_generate_runs}/{usage.data.total_generate_runs}
                 </div>
                 <div className="text-xs text-slate-500">Generate Runs</div>
               </div>
-              <div className="bg-[#16161F] rounded px-3 py-2.5 border border-white/[0.07]">
+              <div className="bg-surface-raised rounded px-3 py-2.5 border border-white/[0.07]">
                 <div className="text-lg font-mono font-medium text-slate-300">
                   {usage.data.completed_scan_runs}/{usage.data.total_scan_runs}
                 </div>
                 <div className="text-xs text-slate-500">Scan Runs</div>
               </div>
-              <div className="bg-[#16161F] rounded px-3 py-2.5 border border-white/[0.07]">
-                <div className="text-lg font-mono font-medium text-[#00D4FF]">
+              <div className="bg-surface-raised rounded px-3 py-2.5 border border-white/[0.07]">
+                <div className="text-lg font-mono font-medium text-accent-primary">
                   {formatTokens(usage.data.total_input_tokens + usage.data.total_output_tokens)}
                 </div>
                 <div className="text-xs text-slate-500">
@@ -175,8 +175,8 @@ export default function ProjectSettings({ project }: Props) {
                   </span>
                 </div>
               </div>
-              <div className="bg-[#16161F] rounded px-3 py-2.5 border border-white/[0.07]">
-                <div className="text-lg font-mono font-medium text-emerald-400">
+              <div className="bg-surface-raised rounded px-3 py-2.5 border border-white/[0.07]">
+                <div className="text-lg font-mono font-medium text-[#a0e06f]">
                   ${usage.data.total_cost_usd.toFixed(2)}
                 </div>
                 <div className="text-xs text-slate-500">Total Cost</div>

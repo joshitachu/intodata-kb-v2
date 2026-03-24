@@ -7,8 +7,8 @@ interface Props {
 }
 
 const statusColors: Record<string, string> = {
-  running: "border-[#00D4FF]/40 text-[#00D4FF]",
-  completed: "border-emerald-500/40 text-emerald-400",
+  running: "border-accent-primary/40 text-accent-primary",
+  completed: "border-[#a0e06f]/40 text-[#a0e06f]",
   failed: "border-red-400/40 text-red-400",
 };
 
@@ -53,7 +53,7 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
 
   return (
     <div className="card-dark">
-      <div className="px-4 py-3 border-b border-white/[0.05] bg-[#16161F] rounded-t">
+      <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t">
         <h3 className="text-sm font-mono text-slate-400">
           Generation History
           {runs.length > 0 && (
@@ -77,6 +77,7 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
               <tr className="border-b border-white/[0.04] text-left font-mono text-xs text-slate-600 uppercase tracking-wider">
                 <th className="px-4 py-2.5 font-medium">Date</th>
                 <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-4 py-2.5 font-medium">Profile</th>
                 <th className="px-4 py-2.5 font-medium">Duration</th>
                 <th className="px-4 py-2.5 font-medium">Tokens In</th>
                 <th className="px-4 py-2.5 font-medium">Tokens Out</th>
@@ -100,6 +101,19 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
                       {run.status.toUpperCase()}
                     </span>
                   </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs">
+                    {run.template_profile_id ? (
+                      <span className="text-accent-primary/60 font-mono" title={
+                        run.template_snapshot
+                          ? `${Object.keys(run.template_snapshot).length} templates`
+                          : undefined
+                      }>
+                        P#{run.template_profile_id}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">default</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-slate-400 font-mono">
                     {formatDuration(run.duration_ms)}
                   </td>
@@ -116,7 +130,7 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
                   <td className="px-4 py-2.5">
                     {run.log_file && (
                       <button
-                        className="text-xs font-medium text-[#00D4FF]/70 hover:text-[#00D4FF] transition-colors"
+                        className="text-xs font-medium text-accent-primary/70 hover:text-accent-primary transition-colors"
                         onClick={() => onViewLog(run)}
                       >
                         View Log
