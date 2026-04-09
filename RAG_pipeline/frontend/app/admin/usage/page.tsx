@@ -341,7 +341,7 @@ export default function AdminUsagePage() {
               }}
               className={`pb-2 text-sm font-medium border-b-2 transition-colors ${
                 tab === t.key
-                  ? "border-[#fe9543] text-[#fe9543]"
+                  ? "border-primary text-primary"
                   : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
@@ -662,7 +662,7 @@ function PerUserTab({
             {users.map((user, i) => (
               <tr
                 key={user.user_id ?? "anon"}
-                className="border-b last:border-0 hover:bg-[#fe9543]/5 cursor-pointer transition-colors"
+                className="border-b last:border-0 hover:bg-muted cursor-pointer transition-colors"
                 onClick={() => onSelectUser(user.user_id)}
               >
                 <td className="px-4 py-2 text-gray-400">{i + 1}</td>
@@ -741,7 +741,7 @@ function UserDetailTab({
       <div className="flex items-center gap-4">
         <button
           onClick={onBack}
-          className="flex items-center gap-1 text-sm text-[#fe9543] hover:text-[#fe9543]/80"
+          className="flex items-center gap-1 text-sm text-primary hover:text-primary/80"
         >
           <ArrowLeft size={16} />
           Back to Per User

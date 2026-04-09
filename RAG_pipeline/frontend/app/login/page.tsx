@@ -2,11 +2,13 @@
 
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useAuthContext } from "@/components/AuthProvider";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") || "/";
+  const { loginAs } = useAuthContext();
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -36,12 +38,17 @@ function LoginForm() {
         return;
       }
 
+      // Update auth state immediately with the returned user data
+      const data = await res.json();
+      if (data.user) {
+        loginAs(data.user);
+      }
+
       // If redirect is an external URL (e.g. dashboard on port 8001), use window.location
       if (redirect.startsWith("http")) {
         window.location.href = redirect;
       } else {
         router.push(redirect);
-        router.refresh();
       }
     } catch {
       setError("Network error. Please try again.");
@@ -52,11 +59,12 @@ function LoginForm() {
 
   return (
     <div className="bg-white rounded-lg shadow-md p-8">
-      <div className="flex flex-col items-center mb-6">
-        <img src="/intodata-logo.png" alt="Nexus" className="h-10 w-auto mb-3" />
-        <h1 className="text-2xl font-bold text-gray-900">Nexus</h1>
-        <p className="text-sm text-gray-500 mt-1">Sign in to your account</p>
-      </div>
+      <h1 className="text-2xl font-bold text-gray-900 text-center mb-6">
+        IntoData KB
+      </h1>
+      <p className="text-sm text-gray-500 text-center mb-6">
+        Sign in to your account
+      </p>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
@@ -71,7 +79,7 @@ function LoginForm() {
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-[#fe9543] focus:border-[#fe9543]"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring"
             required
             autoFocus
             autoComplete="username"
@@ -90,7 +98,7 @@ function LoginForm() {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-[#fe9543] focus:border-[#fe9543]"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring"
             required
             autoComplete="current-password"
           />
@@ -105,7 +113,7 @@ function LoginForm() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full py-2 px-4 bg-[#001e4d] text-white font-medium rounded-md hover:bg-[#001e4d]/90 focus:outline-none focus:ring-2 focus:ring-[#fe9543] focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full py-2 px-4 bg-primary text-primary-foreground font-medium rounded-md hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? "Signing in..." : "Sign in"}
         </button>

@@ -23,6 +23,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mcp_server.db.models import Base
 
+# Maps category -> tier for auto-resolution
+TIER_BY_CATEGORY: dict[str, str] = {
+    "analysis": "policy",
+    "orchestration": "policy",
+    "output": "policy",
+    "assessment": "configurable",
+    "pattern": "addon",
+}
+
 
 class Template(Base):
     """A template slot (e.g. 'assessment/scoring_rubric')."""
@@ -36,6 +45,7 @@ class Template(Base):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    tier: Mapped[str] = mapped_column(String(20), default="configurable", nullable=False, index=True)
 
     # Relationships
     versions: Mapped[list[TemplateVersion]] = relationship(

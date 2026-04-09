@@ -113,6 +113,7 @@ class GenerateRun(Base):
     session_id: Mapped[str | None] = mapped_column(String(200))
 
     doc_count: Mapped[int] = mapped_column(Integer, default=0)
+    model_name: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
     log_file: Mapped[str | None] = mapped_column(String(500))
 

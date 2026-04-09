@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 
-export function useTemplates(params?: { category?: string; platform?: string }) {
+export function useTemplates(params?: { category?: string; platform?: string; tier?: string }) {
   return useQuery({
-    queryKey: ["templates", params?.category, params?.platform],
+    queryKey: ["templates", params?.category, params?.platform, params?.tier],
     queryFn: () => api.listTemplates(params),
     staleTime: 30_000,
   });
@@ -30,6 +30,22 @@ export function useVersion(slug: string | null, versionNumber: number | null) {
     queryKey: ["template-version", slug, versionNumber],
     queryFn: () => api.getVersion(slug!, versionNumber!),
     enabled: !!slug && versionNumber != null,
+  });
+}
+
+export function useCreateTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      slug: string;
+      category: string;
+      display_name: string;
+      platform?: string;
+      description?: string;
+    }) => api.createTemplate(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+    },
   });
 }
 

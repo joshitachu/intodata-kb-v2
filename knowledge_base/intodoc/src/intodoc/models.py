@@ -145,6 +145,7 @@ class ProjectManifest(BaseModel):
     job_contexts_used: dict[str, list[str]] = Field(default_factory=dict)
     routines_used_by: dict[str, list[str]] = Field(default_factory=dict)
     job_groups: dict[str, str] = Field(default_factory=dict)
+    job_external_systems: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # ── Scan Result ──────────────────────────────────────────────────────

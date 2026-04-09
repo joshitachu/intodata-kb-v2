@@ -22,6 +22,7 @@ interface AuthContextValue {
   isLoading: boolean;
   isAuthenticated: boolean;
   logout: () => Promise<void>;
+  loginAs: (user: AuthUser) => void;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -29,6 +30,7 @@ const AuthContext = createContext<AuthContextValue>({
   isLoading: true,
   isAuthenticated: false,
   logout: async () => {},
+  loginAs: () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {

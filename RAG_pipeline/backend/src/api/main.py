@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 
     # Ensure default admin user exists (seed data)
     from src.db.session import get_db
-    from src.db.models import User, Role, Permission, role_permissions
+    from src.db.models import User, Role, Permission
     from src.auth.security import hash_password
     from sqlalchemy import select, text
     async for db in get_db():
@@ -69,21 +69,12 @@ async def lifespan(app: FastAPI):
             await db.commit()
             logger.info("Updated existing admin user with password hash")
 
-        # Ensure RBAC permissions exist (idempotent)
+        # Verify RBAC permissions exist (idempotent check only)
         existing_perms = (await db.execute(select(Permission.codename))).scalars().all()
         if not existing_perms:
-            # Tables may not exist yet (pre-migration); skip seeding
             logger.info("No permissions table data yet, skipping RBAC seed (run migration 006)")
-        else:
-            # Ensure admin role has all permissions
-            admin_role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one_or_none()
-            if admin_role:
-                all_perms = (await db.execute(select(Permission))).scalars().all()
-                existing_perm_ids = {p.codename for p in admin_role.permissions}
-                for perm in all_perms:
-                    if perm.codename not in existing_perm_ids:
-                        admin_role.permissions.append(perm)
-                await db.commit()
+        # Note: admin role permissions are managed by migrations (012+).
+        # Do NOT auto-sync admin role to all permissions here.
 
     yield
     logger.info("Shutting down IntoData KB API")

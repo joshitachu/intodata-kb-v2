@@ -48,7 +48,20 @@
       "Bash(docker-compose ps frontend 2>&1)",
       "Bash(docker-compose logs frontend --tail 20 2>&1)",
       "Bash(docker-compose build frontend 2>&1)",
-      "Bash(git add knowledge_base/.claude/settings.local.json && git rebase --continue)"
+      "Bash(git add knowledge_base/.claude/settings.local.json && git rebase --continue)",
+      "Bash(git push origin master)",
+      "Bash(git checkout dev && git reset --hard master)",
+      "Bash(git stash && git checkout dev && git reset --hard master && git stash pop 2>/dev/null; true)",
+      "Bash(gh api repos/joshitachu/intodata-kb-v2/contents/knowledge_base/mcp-server/src/mcp_server/services/claude_service.py --jq '.content' | base64 -d)",
+      "Bash(gh api repos/joshitachu/intodata-kb-v2/contents/knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py --jq '.content' | base64 -d)",
+      "Bash(kill 62699)",
+      "Bash(lsof -p 70273 2>/dev/null | grep claude_service | head -5)",
+      "Bash(which pandoc; which wkhtmltopdf; which weasyprint; which prince; npm list -g mdpdf 2>/dev/null; pip3 list 2>/dev/null | grep -i -E 'markdown|pdf|weasy')",
+      "Bash(pandoc --version | head -5; which pdflatex; which xelatex; which lualatex)",
+      "Bash(which typst; pip3 show weasyprint 2>/dev/null; pip3 show pdfkit 2>/dev/null; brew list --formula 2>/dev/null | grep -E 'weasy|wkhtml|typst')",
+      "Bash(brew install typst)",
+      "Bash(cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 && pandoc GEBRUIKERSHANDLEIDING.md -o docs/GEBRUIKERSHANDLEIDING.pdf --pdf-engine=typst -V mainfont=\"Helvetica\")",
+      "Bash(open /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/docs/GEBRUIKERSHANDLEIDING.pdf)"
     ]
   },
   "enabledMcpjsonServers": [

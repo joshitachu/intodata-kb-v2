@@ -151,10 +151,11 @@ export const api = {
 
   // --- Templates ---
 
-  listTemplates: (params?: { category?: string; platform?: string }) => {
+  listTemplates: (params?: { category?: string; platform?: string; tier?: string }) => {
     const qs = new URLSearchParams();
     if (params?.category) qs.set("category", params.category);
     if (params?.platform) qs.set("platform", params.platform);
+    if (params?.tier) qs.set("tier", params.tier);
     const query = qs.toString();
     return request<{ templates: import("../types").Template[]; total: number }>(
       `/mcp/templates/${query ? `?${query}` : ""}`
@@ -162,7 +163,7 @@ export const api = {
   },
 
   getTemplate: (slug: string) =>
-    request<import("../types").Template>(`/mcp/templates/${slug}`),
+    request<import("../types").Template>(`/mcp/templates/by-slug?slug=${encodeURIComponent(slug)}`),
 
   createTemplate: (data: { slug: string; category: string; display_name: string; platform?: string; description?: string }) =>
     request<import("../types").Template>("/mcp/templates/", {
@@ -171,35 +172,35 @@ export const api = {
     }),
 
   updateTemplate: (slug: string, data: { display_name?: string; description?: string; is_active?: boolean }) =>
-    request<import("../types").Template>(`/mcp/templates/${slug}`, {
+    request<import("../types").Template>(`/mcp/templates/by-slug?slug=${encodeURIComponent(slug)}`, {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
 
   listVersions: (slug: string) =>
     request<{ versions: import("../types").TemplateVersion[]; total: number }>(
-      `/mcp/templates/${slug}/versions`
+      `/mcp/templates/versions?slug=${encodeURIComponent(slug)}`
     ),
 
   getVersion: (slug: string, versionNumber: number) =>
     request<import("../types").TemplateVersion>(
-      `/mcp/templates/${slug}/versions/${versionNumber}`
+      `/mcp/templates/versions/detail?slug=${encodeURIComponent(slug)}&version_number=${versionNumber}`
     ),
 
   createVersion: (slug: string, data: { content: string; change_summary: string; created_by?: string }) =>
-    request<import("../types").TemplateVersion>(`/mcp/templates/${slug}/versions`, {
+    request<import("../types").TemplateVersion>(`/mcp/templates/versions?slug=${encodeURIComponent(slug)}`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
   diffVersions: (slug: string, from: number, to: number) =>
     request<{ slug: string; from_version: number; to_version: number; diff: string }>(
-      `/mcp/templates/${slug}/diff?from=${from}&to=${to}`
+      `/mcp/templates/diff?slug=${encodeURIComponent(slug)}&from=${from}&to=${to}`
     ),
 
   rollbackVersion: (slug: string, versionNumber: number) =>
     request<import("../types").TemplateVersion>(
-      `/mcp/templates/${slug}/rollback/${versionNumber}`,
+      `/mcp/templates/rollback?slug=${encodeURIComponent(slug)}&version_number=${versionNumber}`,
       { method: "POST" }
     ),
 
@@ -248,13 +249,13 @@ export const api = {
 
   setAssignment: (profileId: number, slug: string, versionId: number) =>
     request<import("../types").ProfileAssignment>(
-      `/mcp/profiles/${profileId}/assignments/${slug}`,
+      `/mcp/profiles/${profileId}/assignments?slug=${encodeURIComponent(slug)}`,
       { method: "PATCH", body: JSON.stringify({ slug, version_id: versionId }) }
     ),
 
   deleteAssignment: (profileId: number, slug: string) =>
     request<import("../types").StatusResponse>(
-      `/mcp/profiles/${profileId}/assignments/${slug}`,
+      `/mcp/profiles/${profileId}/assignments?slug=${encodeURIComponent(slug)}`,
       { method: "DELETE" }
     ),
 };

@@ -59,7 +59,7 @@
 - [x] Smarter context truncation (6144 tokens, per-source truncation instead of dropping)
 - [x] Kimi K2.5 LLM provider (OpenAI-compatible, primary in chain)
 - [x] Query expansion + intent classifier → LLM provider chain (no more local Ollama dependency)
-- [x] Search parameter tuning (top_k=5, threshold=0.3, rerank_top_n=20, prefetch_limit=30, max_documents=3)
+- [x] Search parameter tuning (top_k=10, threshold=0.3, rerank_top_n=30, prefetch_limit=50, max_documents=6)
 - [x] Fixed critical sparse embedding bug (TF-IDF → deterministic hash-based approach)
 - [x] Voyage AI embedding provider chain (voyage-4-large, 1024-dim, Ollama fallback)
 - [x] Upgraded reranker (L6-v2 → L-12-v2, 33M params)

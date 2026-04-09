@@ -107,7 +107,7 @@ export function DocList({ projectId, selectedDoc, onSelectDoc }: DocListProps) {
               <p className="text-xs text-muted-foreground">
                 {formatSize(doc.size_bytes)}
                 {doc.has_pdf && (
-                  <span className="ml-2 inline-flex items-center gap-1 text-[#a0e06f]">
+                  <span className="ml-2 inline-flex items-center gap-1 text-green-600">
                     <CheckCircle className="h-3 w-3" />
                     PDF
                   </span>

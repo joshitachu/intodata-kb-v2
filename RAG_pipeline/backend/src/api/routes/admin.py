@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import func as sa_func
 
-from src.api.dependencies import AdminUser, DBSession, ManagerUser, ProjectManager
+from src.api.dependencies import AdminUser, AuditViewer, DBSession, ManagerUser, ProjectManager
 from src.api.routes.auth import limiter
 from src.auth.security import hash_password
 from src.auth.service import AuthService
@@ -463,7 +463,7 @@ async def get_user_projects(user_id: int, manager: ProjectManager, db: DBSession
 
 @router.get("/audit-logs")
 async def list_audit_logs(
-    admin: AdminUser,
+    admin: AuditViewer,
     db: DBSession,
     action: str | None = None,
     user_id: int | None = None,
@@ -472,10 +472,6 @@ async def list_audit_logs(
     limit: int = Query(default=50, ge=1, le=100),
 ):
     """List audit log entries (paginated, filterable)."""
-    from src.rbac.permissions import has_permission, VIEW_AUDIT_LOGS
-    if not has_permission(admin, VIEW_AUDIT_LOGS):
-        raise HTTPException(status_code=403, detail="Permission required: view_audit_logs")
-
     base_filter = select(AuditLog).order_by(AuditLog.created_at.desc())
     if action:
         base_filter = base_filter.where(AuditLog.action == action)
@@ -515,7 +511,7 @@ async def list_audit_logs(
 
 @router.get("/usage/summary")
 async def usage_summary(
-    admin: AdminUser,
+    admin: AuditViewer,
     db: DBSession,
     days: int = 30,
 ):
@@ -606,7 +602,7 @@ async def usage_summary(
 
 @router.get("/usage/recent")
 async def usage_recent(
-    admin: AdminUser,
+    admin: AuditViewer,
     db: DBSession,
     skip: int = 0,
     limit: int = Query(default=50, ge=1, le=100),
@@ -645,7 +641,7 @@ async def usage_recent(
 
 @router.get("/usage/by-user")
 async def usage_by_user(
-    admin: AdminUser,
+    admin: AuditViewer,
     db: DBSession,
     days: int = 30,
 ):
@@ -692,7 +688,7 @@ async def usage_by_user(
 @router.get("/usage/user/{user_id}")
 async def usage_user_detail(
     user_id: int,
-    admin: AdminUser,
+    admin: AuditViewer,
     db: DBSession,
     days: int = 30,
 ):
@@ -810,7 +806,7 @@ async def usage_user_detail(
 
 @router.get("/usage/daily-by-user")
 async def usage_daily_by_user(
-    admin: AdminUser,
+    admin: AuditViewer,
     db: DBSession,
     days: int = 30,
     top: int = 10,

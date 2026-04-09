@@ -3,6 +3,17 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-03-30
+
+### [Fix]: Template creation 500 error (MissingGreenlet)
+
+- **Files changed**: `mcp-server/src/mcp_server/api/routes/templates.py` (lines 8, 44)
+- **Problem**: `POST /mcp/templates/` returned 500 with `MissingGreenlet` exception
+- **Root cause**: `_template_to_response()` accessed `t.versions` (lazy-loaded relationship) in async context. SQLAlchemy async sessions cannot lazy-load; they require explicit eager loading via `selectinload`. The `create_template` path didn't eager-load versions, so accessing `t.versions` triggered the error.
+- **Change**: Added `from sqlalchemy import inspect as sa_inspect`. Changed condition from `if lv is None and t.versions` to `if lv is None and "versions" in sa_inspect(t).dict` -- checks if the relationship is already loaded before accessing it. If not loaded, `latest_version` stays `None`.
+- **Why this approach**: Idiomatic SQLAlchemy pattern for async-safe relationship access. Avoids try/except, doesn't require changing every caller to pass `latest_version`, and works for any future endpoint that might not eager-load versions.
+- **Verification**: Endpoints using `selectinload(Template.versions)` (list, get) still populate `latest_version`. The `create_template` endpoint returns `latest_version: null` without error.
+
 ## Session: 2026-03-24
 
 ### [Feature]: Transparency Layer -- Scoring Pipeline + Template Management & Swapping

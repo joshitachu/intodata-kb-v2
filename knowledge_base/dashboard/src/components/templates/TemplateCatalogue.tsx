@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTemplates } from "../../hooks/useTemplates";
-import type { Template } from "../../types";
+import type { Template, TemplateTier } from "../../types";
 
 const CATEGORIES = [
   { value: "", label: "All" },
@@ -12,19 +12,43 @@ const CATEGORIES = [
   { value: "platform", label: "Platform" },
 ];
 
+const TIERS = [
+  { value: "", label: "All Tiers" },
+  { value: "policy", label: "Policy" },
+  { value: "configurable", label: "Configurable" },
+  { value: "addon", label: "Addon" },
+];
+
+const TIER_STYLES: Record<TemplateTier, string> = {
+  policy: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+  configurable: "border-sky-500/30 bg-sky-500/10 text-sky-400",
+  addon: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+};
+
+function TierBadge({ tier }: { tier: TemplateTier }) {
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 border rounded font-medium ${TIER_STYLES[tier]}`}>
+      {tier}
+    </span>
+  );
+}
+
 interface Props {
   onSelect: (slug: string) => void;
   selectedSlug: string | null;
+  defaultPlatform?: string;
 }
 
-export default function TemplateCatalogue({ onSelect, selectedSlug }: Props) {
+export default function TemplateCatalogue({ onSelect, selectedSlug, defaultPlatform }: Props) {
   const [categoryFilter, setCategoryFilter] = useState("");
-  const [platformFilter, setPlatformFilter] = useState("");
+  const [platformFilter, setPlatformFilter] = useState(defaultPlatform ?? "");
+  const [tierFilter, setTierFilter] = useState("");
   const [search, setSearch] = useState("");
 
   const { data, isLoading } = useTemplates({
     category: categoryFilter || undefined,
     platform: platformFilter || undefined,
+    tier: tierFilter || undefined,
   });
 
   const templates = (data?.templates ?? []).filter((t) => {
@@ -73,6 +97,17 @@ export default function TemplateCatalogue({ onSelect, selectedSlug }: Props) {
           <option value="talend">Talend</option>
           <option value="workato">Workato</option>
         </select>
+        <select
+          value={tierFilter}
+          onChange={(e) => setTierFilter(e.target.value)}
+          className="input-dark w-auto"
+        >
+          {TIERS.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {isLoading ? (
@@ -105,6 +140,7 @@ export default function TemplateCatalogue({ onSelect, selectedSlug }: Props) {
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">{t.display_name}</span>
                         <div className="flex items-center gap-2">
+                          <TierBadge tier={t.tier} />
                           {t.platform && (
                             <span className="text-xs px-1.5 py-0.5 border border-white/[0.1] rounded text-slate-500">
                               {t.platform}

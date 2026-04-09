@@ -57,7 +57,7 @@ function formatFloat(n: number | null | undefined, decimals = 2): string {
 
 function relevanceColor(score: number | null | undefined): string {
   if (score == null) return "text-gray-400";
-  if (score >= 4) return "text-[#a0e06f] font-semibold";
+  if (score >= 4) return "text-green-600 font-semibold";
   if (score >= 3) return "text-yellow-600 font-semibold";
   return "text-red-600 font-semibold";
 }
@@ -204,7 +204,7 @@ function RunsListView({
             {runs.map((run) => (
               <tr
                 key={run.id}
-                className="border-b last:border-0 hover:bg-[#fe9543]/5 cursor-pointer transition-colors"
+                className="border-b last:border-0 hover:bg-muted cursor-pointer transition-colors"
                 onClick={() => onSelectRun(run.id)}
               >
                 <td className="px-3 py-2 text-gray-500">{run.id}</td>
@@ -273,7 +273,7 @@ function RunDetailView({
       <div className="flex items-center gap-4">
         <button
           onClick={onBack}
-          className="flex items-center gap-1 text-sm text-[#fe9543] hover:text-[#fe9543]/80"
+          className="flex items-center gap-1 text-sm text-primary hover:text-primary/80"
         >
           <ArrowLeft size={16} />
           Back to Runs

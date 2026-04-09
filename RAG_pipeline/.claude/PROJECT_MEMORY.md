@@ -18,10 +18,13 @@
 | Integrations | Phase 2 (deferred) | Company tooling unknown | 2026-02-05 |
 | Intent routing | Zero-LLM heuristic (was LLM router) | All queries → SEARCH; keyword regex for summary detection. LLM call was pure overhead — Qdrant search is ~50ms | 2026-02-23 |
 | Search threshold | 0.3 (was 0.7→0.4→0.2→0.4→0.3) | 0.3 suits API embeddings (Voyage AI); was 0.4 for nomic-embed-text | 2026-02-23 |
+| Anti-hallucination | CRITICAL RULES in all system prompts + context boundary footer | LLM was fabricating SQL queries, migration plans, API endpoints not in any document. Explicit rules + footer dramatically reduce fabrication | 2026-03-27 |
+| History anchoring | First exchange always kept + recent messages | Was purely recency-based — lost original topic in long conversations, causing self-contradictions | 2026-03-27 |
+| Ollama context window | `num_ctx=16384` in both chat calls | gemma3 default is 8K, insufficient for 8192-token context + history + prompt | 2026-03-27 |
 | Kimi thinking mode | Disabled via `extra_body` | Thinking mode adds 8-25s/call with no RAG quality benefit; temp must be exactly 0.6 in instant mode (API rejects all other values with 400) | 2026-02-23 |
 | HTTP clients | Singleton with lazy init | Reuses TCP connections, avoids per-request overhead | 2026-02-23 |
 | Chunk size | 256 tokens / 100 overlap | Larger overlap = better coherence; sentence-boundary snapping prevents mid-sentence splits | 2026-02-23 |
-| Context window | 6144 tokens / per-source truncation | Was 4096 with drop-entire-source; now all sources represented | 2026-02-23 |
+| Context window | 10000 tokens (search) / 8192 (chat) / per-source truncation | Was 6144/3000; chat was severely under-resourced | 2026-03-27 |
 | Source merging | Document-level (not chunk-level) | Users don't need chunk granularity; numbered refs enable clickable UI links | 2026-02-09 |
 | Markdown rendering | react-markdown + remark-gfm | Standard, lightweight, supports GFM tables/lists | 2026-02-09 |
 | Summarization | Map-reduce (not stuff-all-in-context) | top_k=3 can't summarize a 50-chunk document; map-reduce scales to any size | 2026-02-10 |

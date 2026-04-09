@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -43,35 +44,51 @@ from src.schemas import DocumentSource, MessageResponse, Source
 logger = logging.getLogger(__name__)
 
 ENCODING_NAME = "cl100k_base"
-MAX_HISTORY_TOKENS = 2000
-MAX_CONTEXT_TOKENS = 3000
-MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_TOKENS = 8000
+MAX_CONTEXT_TOKENS = 8192
+MAX_HISTORY_MESSAGES = 20
 
 CONVERSATIONAL_SYSTEM_PROMPT = (
     "You are a helpful knowledge-base assistant for a company. "
-    "You have access to the conversation history and retrieved context. "
-    "Answer the user's question based ONLY on the provided context. "
-    "If the context does not contain enough information, say so clearly.\n\n"
+    "You have access to the conversation history and retrieved context.\n\n"
+    "## CRITICAL RULES\n"
+    "1. Answer ONLY using information from the retrieved context below. "
+    "NEVER use your general knowledge or training data to fill gaps.\n"
+    "2. If the context only partially covers the answer, state what you found and what is missing: "
+    "'Based on the available documents, I found [X]. The documents do not contain [Y].' "
+    "Never fabricate details to fill gaps.\n"
+    "3. NEVER invent details (SQL queries, API endpoints, config values, etc.) "
+    "that are not explicitly in the context.\n"
+    "4. Every factual claim must cite a source reference [N].\n"
+    "5. Be consistent with your previous answers. When asked about your sources or reasoning, "
+    "refer back to the [N] references you cited. Do not retract correctly cited information.\n\n"
     "## Formatting rules\n"
-    "- Use **markdown** in your answers: headings, bullet lists, bold, code blocks where appropriate.\n"
-    "- Cite sources using numbered references like [1], [2], etc. Only cite a source if you actually use information from it.\n"
-    "- Do NOT cite sources for basic questions unrelated to the knowledge base.\n\n"
-    "For follow-up questions, use conversation context to understand references "
-    "like 'it', 'that', 'the previous topic'."
+    "- Use **markdown**: headings, bullet lists, bold, code blocks.\n"
+    "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
+    "- Do NOT cite sources for greetings or small talk.\n\n"
+    "For follow-up questions, use conversation context to understand "
+    "references like 'it', 'that', 'the previous topic'."
 )
 
 CONTEXT_FIRST_SYSTEM_PROMPT = (
     "You are a helpful knowledge-base assistant for a company. "
-    "You have access to the conversation history and retrieved context. "
-    "Answer the user's question based ONLY on the provided context. "
-    "If the provided context does not contain enough information to answer "
-    "the question, respond with exactly [NEED_SEARCH] and nothing else.\n\n"
+    "You have access to the conversation history and retrieved context.\n\n"
+    "## CRITICAL RULES\n"
+    "1. Answer ONLY using information from the retrieved context below. "
+    "NEVER use your general knowledge or training data to fill gaps.\n"
+    "2. If the context does not contain the answer, respond with exactly "
+    "[NEED_SEARCH] and nothing else.\n"
+    "3. NEVER invent details (SQL queries, API endpoints, config values, etc.) "
+    "that are not explicitly in the context.\n"
+    "4. Every factual claim must cite a source reference [N].\n"
+    "5. Be consistent with your previous answers. When asked about your sources or reasoning, "
+    "refer back to the [N] references you cited. Do not retract correctly cited information.\n\n"
     "## Formatting rules\n"
-    "- Use **markdown** in your answers: headings, bullet lists, bold, code blocks where appropriate.\n"
-    "- Cite sources using numbered references like [1], [2], etc. Only cite a source if you actually use information from it.\n"
-    "- Do NOT cite sources for basic questions unrelated to the knowledge base.\n\n"
-    "For follow-up questions, use conversation context to understand references "
-    "like 'it', 'that', 'the previous topic'."
+    "- Use **markdown**: headings, bullet lists, bold, code blocks.\n"
+    "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
+    "- Do NOT cite sources for greetings or small talk.\n\n"
+    "For follow-up questions, use conversation context to understand "
+    "references like 'it', 'that', 'the previous topic'."
 )
 
 
@@ -101,17 +118,40 @@ def _build_memory_context(
     return "\n".join(parts) if parts else None
 
 
-def get_previous_sources(messages: list[ConversationMessage]) -> list[DocumentSource]:
+def get_previous_sources(
+    messages: list[ConversationMessage],
+    project_ids: list[str] | None = None,
+) -> list[DocumentSource]:
     """Get sources from the most recent assistant message that has them."""
     for msg in reversed(messages):
         if msg.role == "assistant" and msg.sources:
-            return [DocumentSource(**s) for s in msg.sources]
+            doc_sources = [DocumentSource(**s) for s in msg.sources]
+            if project_ids is not None:
+                doc_sources = [
+                    ds for ds in doc_sources
+                    if any(ds.filename.startswith(f"{pid}/") for pid in project_ids)
+                ]
+            return doc_sources
     return []
+
+
+_CANT_ANSWER_PATTERNS = re.compile(
+    r"(?:I (?:could not|couldn't|cannot|can't|don't|do not) find|"
+    r"(?:no|not enough) (?:relevant |available )?(?:information|documents?|context|data)|"
+    r"not (?:available|found|present) in (?:the|my) (?:available |retrieved )?(?:context|documents?|sources?))",
+    re.IGNORECASE,
+)
 
 
 def needs_new_search(answer: str) -> bool:
     """Check if the LLM response indicates it needs more information."""
-    return "[NEED_SEARCH]" in answer
+    if "[NEED_SEARCH]" in answer:
+        return True
+    # Safety net: catch "I don't know" style responses that should have been [NEED_SEARCH]
+    stripped = answer.strip()
+    if len(stripped) < 200 and _CANT_ANSWER_PATTERNS.search(stripped):
+        return True
+    return False
 
 
 def build_context_from_document_sources(
@@ -124,7 +164,14 @@ def build_context_from_document_sources(
     total_tokens = 0
 
     for ds in doc_sources:
-        header = f"[Reference {ds.reference_number}: {ds.filename}]"
+        # Extract project name from scoped filename (format: project_id/filename)
+        fname_parts = ds.filename.split("/", 1)
+        if len(fname_parts) == 2:
+            display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+        else:
+            display_name = ds.filename
+
+        header = f"[Reference {ds.reference_number}: {display_name}]"
         block = f"{header}\n{ds.text}\n"
         block_tokens = len(enc.encode(block))
 
@@ -133,7 +180,9 @@ def build_context_from_document_sources(
         parts.append(block)
         total_tokens += block_tokens
 
-    return "\n".join(parts)
+    context = "\n".join(parts)
+    context += "\n\n---\nThe above is ALL available information. Do NOT add details beyond what is shown."
+    return context
 
 
 def build_conversational_messages_with_context(
@@ -173,28 +222,41 @@ def truncate_history(
 ) -> list[dict[str, str]]:
     """Truncate conversation history to fit within token budget.
 
-    Takes the most recent messages first, working backwards until we hit
-    the token limit. Returns messages in chronological order.
+    Always keeps the first user+assistant pair (anchors the conversation
+    topic), then fills remaining budget with the most recent messages.
+    Returns messages in chronological order.
     """
     enc = tiktoken.get_encoding(ENCODING_NAME)
 
-    # Take last N messages first
-    recent = messages[-max_messages:] if len(messages) > max_messages else messages
+    if len(messages) <= 2:
+        return [{"role": m.role, "content": m.content} for m in messages]
 
-    # Work backwards from most recent, collecting messages within token budget
+    # Always keep first exchange (anchors conversation topic)
+    first_pair = messages[:2]
+    first_pair_msgs = [{"role": m.role, "content": m.content} for m in first_pair]
+    first_pair_tokens = sum(len(enc.encode(m.content)) for m in first_pair)
+
+    remaining_budget = max_tokens - first_pair_tokens
+    remaining_count = max_messages - 2
+
+    if remaining_budget <= 0:
+        return first_pair_msgs
+
+    # Fill with most recent messages (backwards)
+    recent = messages[2:]
+    recent = recent[-remaining_count:] if len(recent) > remaining_count else recent
+
     selected: list[dict[str, str]] = []
     total_tokens = 0
-
     for msg in reversed(recent):
         msg_tokens = len(enc.encode(msg.content))
-        if total_tokens + msg_tokens > max_tokens:
+        if total_tokens + msg_tokens > remaining_budget:
             break
         selected.append({"role": msg.role, "content": msg.content})
         total_tokens += msg_tokens
-
-    # Reverse to get chronological order
     selected.reverse()
-    return selected
+
+    return first_pair_msgs + selected
 
 
 def build_context(
@@ -208,11 +270,18 @@ def build_context(
     total_tokens = 0
 
     for src in sources:
+        # Extract project name from scoped filename (format: project_id/filename)
+        fname_parts = src.filename.split("/", 1)
+        if len(fname_parts) == 2:
+            display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+        else:
+            display_name = src.filename
+
         if reference_numbers and src.document_id in reference_numbers:
             ref_num = reference_numbers[src.document_id]
-            header = f"[Reference {ref_num}: {src.filename}]"
+            header = f"[Reference {ref_num}: {display_name}]"
         else:
-            header = f"[Source: {src.filename}, chunk {src.chunk_index}]"
+            header = f"[Source: {display_name}, chunk {src.chunk_index}]"
         block = f"{header}\n{src.text}\n"
         block_tokens = len(enc.encode(block))
 
@@ -221,7 +290,9 @@ def build_context(
         parts.append(block)
         total_tokens += block_tokens
 
-    return "\n".join(parts)
+    context = "\n".join(parts)
+    context += "\n\n---\nThe above is ALL available information. Do NOT add details beyond what is shown."
+    return context
 
 
 def build_conversational_messages(
@@ -282,8 +353,8 @@ async def _prepare_rag_context(
     query: str,
     user_groups: list[str],
     qdrant: AsyncQdrantClient,
-    top_k: int = 3,
-    threshold: float = 0.4,
+    top_k: int = settings.default_top_k,
+    threshold: float = settings.default_threshold,
     user_id: str | None = None,
     precompute: bool = True,
     project_ids: list[str] | None = None,
@@ -341,18 +412,40 @@ async def _prepare_rag_context(
             user_id=int(user_id) if user_id else None,
         )
 
-        # For HYBRID: also run vector search
+        # Enrich metadata with document content for content-relevant intents
         hybrid_sources: list[Source] = []
-        if analysis.metadata_intent == MetadataIntent.HYBRID:
-            hybrid_sources = await search_similar(
-                client=qdrant,
-                query=analysis.cleaned_query,
-                user_groups=user_groups,
-                top_k=top_k,
-                threshold=threshold,
-                project_ids=project_ids,
-            )
+        content_relevant = analysis.metadata_intent not in (
+            MetadataIntent.MY_PROFILE,
+            MetadataIntent.DOCUMENT_LIST,
+        )
+        if content_relevant:
+            # Use targeted query for project_detail to find overview docs
+            if analysis.metadata_intent == MetadataIntent.PROJECT_DETAIL:
+                project_name = analysis.extracted_project or "project"
+                enrichment_query = f"{project_name} executive summary overview architecture assessment"
+            else:
+                enrichment_query = analysis.cleaned_query
 
+            if settings.reranker_enabled:
+                hybrid_sources = await search_and_rerank(
+                    client=qdrant,
+                    query=enrichment_query,
+                    user_groups=user_groups,
+                    top_k=top_k,
+                    threshold=threshold,
+                    project_ids=project_ids,
+                )
+            else:
+                hybrid_sources = await search_similar(
+                    client=qdrant,
+                    query=enrichment_query,
+                    user_groups=user_groups,
+                    top_k=top_k,
+                    threshold=threshold,
+                    project_ids=project_ids,
+                )
+
+        document_sources = []
         if hybrid_sources:
             document_sources = merge_sources_by_document(hybrid_sources)
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
@@ -447,7 +540,7 @@ async def _prepare_rag_context(
             )
 
     # QA — try context-first, search only if needed
-    previous_doc_sources = get_previous_sources(existing_messages)
+    previous_doc_sources = get_previous_sources(existing_messages, project_ids=project_ids)
 
     if previous_doc_sources and precompute:
         # Try answering from previous context + history (non-streaming only)
@@ -472,9 +565,23 @@ async def _prepare_rag_context(
             logger.info("[NEED_SEARCH] detected — running semantic search")
             previous_doc_sources = []  # clear so we enter search below
     elif previous_doc_sources and not precompute:
-        # Streaming path: skip context-first optimization, go straight to search
-        logger.info("Streaming mode — skipping context-first check, going to search")
-        previous_doc_sources = []
+        # Streaming path: run context-first check (same as non-streaming)
+        logger.info("Streaming mode — running context-first check")
+        context = build_context_from_document_sources(previous_doc_sources)
+        llm_messages = build_conversational_messages_with_context(
+            query, context, existing_messages,
+            memory_context=memory_context,
+        )
+        answer = await generate_answer(llm_messages)
+        if not needs_new_search(answer):
+            return RAGContext(
+                llm_messages=llm_messages,
+                document_sources=previous_doc_sources,
+                precomputed_answer=answer,
+            )
+        else:
+            logger.info("[NEED_SEARCH] detected in streaming — running search")
+            previous_doc_sources = []
 
     if not previous_doc_sources:
         # Search path (first message, or LLM requested search)
@@ -602,8 +709,8 @@ async def run_conversational_rag(
     user_groups: list[str],
     qdrant: AsyncQdrantClient,
     db: AsyncSession,
-    top_k: int = 3,
-    threshold: float = 0.4,
+    top_k: int = settings.default_top_k,
+    threshold: float = settings.default_threshold,
     user_id: str | None = None,
     project_ids: list[str] | None = None,
 ) -> MessageResponse:
@@ -727,8 +834,8 @@ async def run_conversational_rag_stream(
     user_groups: list[str],
     qdrant: AsyncQdrantClient,
     db: AsyncSession,
-    top_k: int = 3,
-    threshold: float = 0.4,
+    top_k: int = settings.default_top_k,
+    threshold: float = settings.default_threshold,
     user_id: str | None = None,
     project_ids: list[str] | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:

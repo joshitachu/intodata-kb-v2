@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Search, MessageSquare, FileText, BookOpen, Settings, LogOut, Shield, Users, KeyRound, FolderKanban, BarChart3, FlaskConical } from "lucide-react";
+import { Search, MessageSquare, FileText, BookOpen, Network, Settings, LogOut, Shield, Users, KeyRound, FolderKanban, BarChart3, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -13,34 +12,52 @@ const navItems = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/docs", label: "Project Docs", icon: BookOpen },
+  { href: "/topology", label: "Topology", icon: Network },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
+
+type PermissionCodename =
+  | "manage_users"
+  | "manage_roles"
+  | "assign_projects"
+  | "view_all_projects"
+  | "manage_projects"
+  | "view_assigned_projects"
+  | "query_rag"
+  | "ingest_documents"
+  | "view_audit_logs";
+
+interface AdminSubLink {
+  href: string;
+  label: string;
+  icon: typeof Users;
+  superadminOnly?: boolean;
+  perm?: PermissionCodename;
+}
 
 export function Sidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuthContext();
-  const { hasAnyAdminPermission, hasPermission } = usePermissions();
+  const { hasAnyAdminPermission, hasPermission, isSuperadmin } = usePermissions();
 
-  // Admin sub-links with their required permissions
-  const adminSubLinks = [
-    { href: "/admin/users", label: "Users", icon: Users, perm: "manage_users" as const },
-    { href: "/admin/roles", label: "Roles", icon: KeyRound, perm: "manage_roles" as const },
-    { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, perm: "assign_projects" as const },
-    { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "manage_users" as const },
-    { href: "/admin/benchmark", label: "Benchmark", icon: FlaskConical, perm: "manage_users" as const },
+  const adminSubLinks: AdminSubLink[] = [
+    { href: "/admin/users", label: "Users", icon: Users, superadminOnly: true },
+    { href: "/admin/roles", label: "Roles", icon: KeyRound, superadminOnly: true },
+    { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, superadminOnly: true },
+    { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },
+    { href: "/admin/benchmark", label: "Benchmark", icon: FlaskConical, perm: "view_audit_logs" },
   ];
 
-  const visibleAdminLinks = adminSubLinks.filter(
-    (link) => hasPermission(link.perm),
-  );
+  const visibleAdminLinks = adminSubLinks.filter((link) => {
+    if (link.superadminOnly) return isSuperadmin;
+    if (link.perm) return hasPermission(link.perm);
+    return false;
+  });
 
   return (
     <aside className="w-56 border-r bg-card flex flex-col h-full">
       <div className="p-4 border-b">
-        <div className="flex items-center gap-2">
-          <Image src="/intodata-logo.png" alt="Nexus" width={28} height={28} className="w-7 h-7" />
-          <h1 className="font-bold text-lg">Nexus</h1>
-        </div>
+        <h1 className="font-bold text-lg">IntoData KB</h1>
         <p className="text-xs text-muted-foreground">Knowledge Base</p>
       </div>
 
@@ -63,7 +80,7 @@ export function Sidebar() {
         {hasAnyAdminPermission && (
           <>
             <Link
-              href={visibleAdminLinks[0]?.href ?? "/admin/users"}
+              href={visibleAdminLinks[0]?.href ?? "/admin/usage"}
               className={cn(
                 "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
                 pathname.startsWith("/admin")
@@ -112,7 +129,7 @@ export function Sidebar() {
             </button>
           </div>
         )}
-        <p className="text-xs text-muted-foreground">Nexus v0.1.0</p>
+        <p className="text-xs text-muted-foreground">IntoData KB v0.1.0</p>
       </div>
     </aside>
   );

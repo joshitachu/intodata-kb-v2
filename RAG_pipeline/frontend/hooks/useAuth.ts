@@ -18,6 +18,8 @@ interface UseAuthReturn {
   isLoading: boolean;
   isAuthenticated: boolean;
   logout: () => Promise<void>;
+  /** Set user state directly (e.g. after login). */
+  loginAs: (user: AuthUser) => void;
   /** Attempt a token refresh on 401. Returns true if refreshed (caller should retry). */
   handleUnauthorized: () => Promise<boolean>;
 }
@@ -41,6 +43,11 @@ export function useAuth(): UseAuthReturn {
     } finally {
       setIsLoading(false);
     }
+  }, []);
+
+  const loginAs = useCallback((u: AuthUser) => {
+    setUser(u);
+    setIsLoading(false);
   }, []);
 
   const logout = useCallback(async () => {
@@ -101,6 +108,7 @@ export function useAuth(): UseAuthReturn {
     isLoading,
     isAuthenticated: user !== null,
     logout,
+    loginAs,
     handleUnauthorized,
   };
 }

@@ -3,14 +3,14 @@
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 const COLORS = [
-  "#fe9543",
-  "#6370b0",
-  "#a0e06f",
-  "#001e4d",
-  "#ef4444",
+  "#3b82f6",
+  "#10b981",
   "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#06b6d4",
+  "#f97316",
   "#ec4899",
-  "#14b8a6",
 ];
 
 interface PieEntry {

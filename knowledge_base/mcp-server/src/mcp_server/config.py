@@ -48,6 +48,16 @@ class MCPServerConfig(BaseSettings):
     jwt_algorithm: str = "HS256"
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
 
+    # Doc generation
+    doc_generation_model: str = "claude-sonnet-4-6"
+    doc_generation_write_model: str = "claude-opus-4-6"
+
+    # Ollama (for AI job summaries)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_summary_model: str = "gemma3:12b"
+    ollama_summary_concurrency: int = 4
+    auto_generate_summaries: bool = True
+
     # App
     log_level: str = "INFO"
 

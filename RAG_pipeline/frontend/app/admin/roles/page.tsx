@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuthContext } from "@/components/AuthProvider";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface PermissionItem {
@@ -30,6 +32,8 @@ interface EditState {
 }
 
 export default function AdminRolesPage() {
+  const { user: authUser } = useAuthContext();
+  const router = useRouter();
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,6 +165,17 @@ export default function AdminRolesPage() {
       : [...ids, permId];
   }
 
+  // Superadmin-only guard
+  useEffect(() => {
+    if (authUser && !authUser.is_superadmin) {
+      router.replace("/admin/usage");
+    }
+  }, [authUser, router]);
+
+  if (!authUser?.is_superadmin) {
+    return <p className="text-muted-foreground p-4">Access denied. Superadmin only.</p>;
+  }
+
   if (loading) {
     return <p className="text-muted-foreground p-4">Loading roles...</p>;
   }
@@ -175,7 +190,7 @@ export default function AdminRolesPage() {
             setEditState(null);
             setError("");
           }}
-          className="px-4 py-2 bg-[#001e4d] text-white text-sm rounded-md hover:bg-[#001e4d]/90"
+          className="px-4 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90"
         >
           {showCreate ? "Cancel" : "Create Role"}
         </button>
@@ -246,7 +261,7 @@ export default function AdminRolesPage() {
           )}
           <button
             type="submit"
-            className="px-4 py-2 bg-[#a0e06f] text-[#060e1e] text-sm rounded-md hover:bg-[#a0e06f]/90"
+            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
           >
             Create
           </button>
@@ -257,7 +272,7 @@ export default function AdminRolesPage() {
       {editState && (
         <form
           onSubmit={handleEdit}
-          className="bg-white border-2 border-[#fe9543]/40 rounded-lg p-4 mb-6 space-y-3"
+          className="bg-white border-2 border-primary/30 rounded-lg p-4 mb-6 space-y-3"
         >
           <h3 className="font-medium text-sm text-gray-700">
             Editing Role: {editState.name}
@@ -317,7 +332,7 @@ export default function AdminRolesPage() {
             <button
               type="submit"
               disabled={actionLoading === editState.roleId}
-              className="px-4 py-2 bg-[#001e4d] text-white text-sm rounded-md hover:bg-[#001e4d]/90 disabled:opacity-50"
+              className="px-4 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90 disabled:opacity-50"
             >
               Save Changes
             </button>
@@ -369,7 +384,7 @@ export default function AdminRolesPage() {
                     {role.permissions.map((p) => (
                       <span
                         key={p.id}
-                        className="text-xs bg-[#6370b0]/10 text-[#6370b0] px-1.5 py-0.5 rounded"
+                        className="text-xs bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded"
                         title={p.description || undefined}
                       >
                         {p.codename}
@@ -382,7 +397,7 @@ export default function AdminRolesPage() {
                     <button
                       onClick={() => startEdit(role)}
                       disabled={actionLoading === role.id}
-                      className="text-xs text-[#fe9543] hover:text-[#fe9543]/80 disabled:opacity-50"
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-50"
                     >
                       Edit
                     </button>

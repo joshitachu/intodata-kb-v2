@@ -111,11 +111,11 @@ export function ChatLayout() {
         console.error("Deep dive failed:", error);
       }
     } else {
-      // Normal chat flow
+      // Normal chat flow — pass project_id if set
       try {
         await sendStreamMessage({
           ...request,
-          project_id: selectedProject || undefined,
+          project_id: request.project_id || selectedProject || undefined,
         });
       } catch (error) {
         console.error("Failed to send message:", error);

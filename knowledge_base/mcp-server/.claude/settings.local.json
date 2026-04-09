@@ -1,6 +1,16 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/alembic current 2>&1)",
+      "Bash(psql -h localhost -U admin -d intodata_kb -c \"SELECT EXISTS \\(SELECT FROM information_schema.tables WHERE table_name = 'templates'\\)\" 2>&1)",
+      "Bash(PGPASSWORD=devpassword123 psql -h localhost -U admin -d intodata_kb -c \"SELECT EXISTS \\(SELECT FROM information_schema.tables WHERE table_name = 'templates'\\)\" 2>&1)",
+      "Bash(PGPASSWORD=devpassword123 psql -h localhost -U admin -d intodata_kb -c \"SELECT column_name FROM information_schema.columns WHERE table_name = 'templates' ORDER BY ordinal_position\" 2>&1)",
+      "Bash(PGPASSWORD=devpassword123 psql -h localhost -U admin -d intodata_kb -c \"\nALTER TABLE generate_runs ADD COLUMN template_profile_id INTEGER;\nALTER TABLE generate_runs ADD COLUMN template_snapshot JSONB;\nALTER TABLE generate_runs ADD CONSTRAINT fk_generate_runs_template_profile FOREIGN KEY \\(template_profile_id\\) REFERENCES template_profiles\\(id\\) ON DELETE SET NULL;\n\" 2>&1)",
+      "Bash(PGPASSWORD=devpassword123 psql -h localhost -U admin -d intodata_kb -c \"\\\\d generate_runs\" 2>&1 | tail -5)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "intodoc"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

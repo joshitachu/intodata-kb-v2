@@ -7,35 +7,38 @@ from src.schemas import Source
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTEXT_TOKENS = 6144
+MAX_CONTEXT_TOKENS = 10000
 ENCODING_NAME = "cl100k_base"
 
 SYSTEM_PROMPT = (
     "You are a helpful knowledge-base assistant for a company. "
-    "Answer the user's question based ONLY on the provided context. "
-    "If the context does not contain enough information, say so clearly.\n\n"
+    "Answer the user's question based ONLY on the provided context.\n\n"
+    "## CRITICAL RULES\n"
+    "1. Answer ONLY using information from the retrieved context below. "
+    "NEVER use your general knowledge or training data to fill gaps.\n"
+    "2. If the context only partially covers the answer, state what you found and what is missing: "
+    "'Based on the available documents, I found [X]. The documents do not contain [Y].' "
+    "Never fabricate details to fill gaps.\n"
+    "3. NEVER invent details (SQL queries, API endpoints, config values, etc.) "
+    "that are not explicitly in the context.\n"
+    "4. Every factual claim must cite a source reference [N].\n"
+    "5. Be consistent with your previous answers. When asked about your sources or reasoning, "
+    "refer back to the [N] references you cited. Do not retract correctly cited information.\n\n"
     "## Formatting rules\n"
-    "- Use **markdown** in your answers: headings, bullet lists, bold, code blocks where appropriate.\n"
-    "- Cite sources using numbered references like [1], [2], etc. Only cite a source if you actually use information from it.\n"
-    "- Do NOT cite sources for basic questions unrelated to the knowledge base.\n\n"
-    "## Example\n"
-    "User: What is the onboarding process?\n\n"
-    "Assistant: The onboarding process involves several steps:\n\n"
-    "1. **HR orientation** on the first day [1]\n"
-    "2. **Team introduction** and workspace setup [1]\n"
-    "3. **Technical onboarding** with IT department [2]\n\n"
-    "User: What is the reason to live?\n\n"
-    "Assistant: I'm sorry, but the provided context does not contain information "
-    "regarding the philosophical reason to live. My knowledge base is limited to "
-    "company documentation."
+    "- Use **markdown**: headings, bullet lists, bold, code blocks.\n"
+    "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
+    "- Do NOT cite sources for greetings or small talk."
 )
 
 METADATA_SYSTEM_PROMPT = (
     "You are a helpful knowledge-base assistant for a company. "
     "You have access to structured system data (projects, documents, statistics) "
     "and optionally retrieved document content.\n\n"
-    "Answer using the provided system data. If document content is also provided, "
-    "incorporate it. Use markdown: tables for listings, bullet lists, bold for emphasis.\n"
+    "When document content is provided, use it as your PRIMARY source — "
+    "it contains the detailed analysis, scores, and findings. "
+    "Supplement with system data for structural details (status, timestamps, counts).\n"
+    "When only system data is available, answer from that.\n"
+    "Use markdown: tables for listings, bullet lists, bold for emphasis.\n"
     "Do NOT make up information beyond what is provided."
 )
 
@@ -152,11 +155,18 @@ def _build_context(
     truncated_sources = 0
 
     for src in sources:
+        # Extract project name from scoped filename (format: project_id/filename)
+        fname_parts = src.filename.split("/", 1)
+        if len(fname_parts) == 2:
+            display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+        else:
+            display_name = src.filename
+
         if reference_numbers and src.document_id in reference_numbers:
             ref_num = reference_numbers[src.document_id]
-            header = f"[Reference {ref_num}: {src.filename}]"
+            header = f"[Reference {ref_num}: {display_name}]"
         else:
-            header = f"[Source: {src.filename}, chunk {src.chunk_index}]"
+            header = f"[Source: {display_name}, chunk {src.chunk_index}]"
 
         block = f"{header}\n{src.text}\n"
         block_tokens = len(enc.encode(block))
@@ -187,7 +197,9 @@ def _build_context(
         f"Context: {len(parts)} sources used ({total_tokens}/{MAX_CONTEXT_TOKENS} tokens), "
         f"{truncated_sources} truncated, {len(sources) - len(parts)} dropped"
     )
-    return "\n".join(parts)
+    context = "\n".join(parts)
+    context += "\n\n---\nThe above is ALL available information. Do NOT add details beyond what is shown."
+    return context
 
 
 def build_no_results_messages(

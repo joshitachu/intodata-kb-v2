@@ -47,6 +47,8 @@ Also extract:
 
 Note: When a "[Context: ...]" note is appended to the message indicating an active conversation, consider whether the user is referring to the conversation itself vs. a specific document.
 
+Note: Questions asking "why", "how", "what is this based on", "explain the methodology", or "what are the details" about a project's scores, findings, or assessments are **search** queries (they need document content), not **project_detail** (which is for structural metadata like platform, status, scan dates).
+
 Respond with ONLY a JSON object, no markdown, no explanation:
 {"action": "search|project_list|project_detail|document_stats|document_list|system_overview|hybrid|my_profile|summary|conversation_summary", "project": "name_or_null"}
 """
@@ -148,7 +150,7 @@ async def _llm_classify(query: str, conversation_context: str | None = None) -> 
                 response = await client.chat.completions.create(
                     model=settings.kimi_llm_model,
                     messages=messages,
-                    temperature=0.6,
+                    temperature=settings.kimi_temperature,
                     max_tokens=64,
                     extra_body={"thinking": {"type": "disabled"}},
                 )

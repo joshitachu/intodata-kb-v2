@@ -57,6 +57,7 @@ class ScanRequest(BaseModel):
 class GenerateRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     template_profile_id: int | None = None
+    model: str | None = Field(None, description="Model override for orchestrator")
 
 
 class PushToRagRequest(BaseModel):
@@ -143,6 +144,7 @@ class GenerateRunResponse(BaseModel):
     doc_count: int = 0
     error_message: str | None = None
     log_file: str | None = None
+    model_name: str | None = None
     template_profile_id: int | None = None
     template_snapshot: dict | None = None
 
@@ -260,6 +262,7 @@ class TemplateResponse(BaseModel):
     display_name: str
     description: str | None = None
     is_active: bool = True
+    tier: str = "configurable"
     created_at: datetime.datetime | None = None
     updated_at: datetime.datetime | None = None
     latest_version: int | None = None
@@ -276,6 +279,7 @@ class CreateTemplateRequest(BaseModel):
     platform: str | None = None
     display_name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
+    tier: str | None = None
 
 
 class UpdateTemplateRequest(BaseModel):
@@ -381,3 +385,57 @@ class SetAssignmentRequest(BaseModel):
 
 class BulkSetAssignmentsRequest(BaseModel):
     assignments: list[SetAssignmentRequest]
+
+
+# --- AI Summaries ---
+
+class GenerateSummariesResponse(BaseModel):
+    project_id: str
+    status: str  # "started" | "completed" | "no_scan"
+    summary_count: int = 0
+    error_count: int = 0
+    errors: list[str] = []
+
+
+# --- Project Graph (Topology) ---
+
+class GraphConnectionInfo(BaseModel):
+    name: str
+    connection_type: str = ""
+    host: str = ""
+    database: str = ""
+
+
+class JobScanMetadata(BaseModel):
+    purpose: str = ""
+    author: str = ""
+    modification_date: str = ""
+    component_count: int = 0
+    component_types: list[str] = []
+    subgroup: str = ""
+    has_docs: bool = False
+    external_systems: list[str] = []
+    summary: str = ""
+    direction: str = ""
+
+
+class ProjectGraphResponse(BaseModel):
+    project_id: str
+    manifest: dict
+    connections: list[GraphConnectionInfo] = []
+    job_metadata: dict[str, JobScanMetadata] = {}
+
+
+class JobDocSection(BaseModel):
+    heading: str
+    content: str
+
+
+class JobDetailResponse(BaseModel):
+    project_id: str
+    job_name: str
+    group: str
+    scan_data: dict = {}
+    doc_sections: list[JobDocSection] = []
+    summary: str = ""
+    direction: str = ""

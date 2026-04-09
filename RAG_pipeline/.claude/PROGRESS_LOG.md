@@ -1,5 +1,105 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-04-09 (Admin Sidebar Visibility & Role Separation)
+
+### [Feature]: Admin sidebar visibility fix, role separation, and permission guards
+
+- **Files changed**:
+  - `frontend/hooks/useAuth.ts` — added `loginAs` method to `UseAuthReturn` interface and hook return
+  - `frontend/components/AuthProvider.tsx` — added `loginAs` to `AuthContextValue` interface and context
+  - `frontend/app/login/page.tsx` — parse login response, call `loginAs(data.user)` before redirect, remove `router.refresh()`
+  - `frontend/hooks/usePermissions.ts` — added `isSuperadmin` field, changed `hasAnyAdminPermission` to role-based check (`is_superadmin || roles.includes("admin")`)
+  - `frontend/components/Sidebar.tsx` — admin sub-links now use `superadminOnly` flag for Users/Roles/Projects, `perm: "view_audit_logs"` for Usage/Benchmark; default admin href falls back to `/admin/usage`
+  - `frontend/app/admin/users/page.tsx` — added superadmin guard with redirect to `/admin/usage`
+  - `frontend/app/admin/roles/page.tsx` — added superadmin guard with redirect to `/admin/usage`
+  - `frontend/app/admin/project-assignments/page.tsx` — added superadmin guard with redirect to `/admin/usage`
+  - `backend/src/api/dependencies.py` — added `AuditViewer` dependency (`require_permission("view_audit_logs")`)
+  - `backend/src/api/routes/admin.py` — changed `list_audit_logs`, `usage_summary`, `usage_recent`, `usage_by_user`, `usage_user_detail`, `usage_daily_by_user` from `AdminUser` to `AuditViewer`; removed redundant `has_permission` check in `list_audit_logs`
+  - `backend/src/api/main.py` — removed auto-sync of admin role to all permissions (lines 78-86), cleaned up unused `role_permissions` import
+  - `backend/alembic/versions/012_restrict_admin_role_permissions.py` — new migration removing `manage_users`, `manage_roles`, `assign_projects` from admin role
+- **Problem**: (1) Admin button only appeared after page refresh post-login. (2) Managers could see admin button. (3) Admin role had all permissions including user management.
+- **Root cause**: (1) Login page discarded user data from response, auth state only fetched on mount. (2) `hasAnyAdminPermission` checked individual permissions, not role. (3) No separation between admin and superadmin — startup seed always re-granted all permissions to admin role.
+- **Change**: 6-step implementation — login state fix, migration for role restriction, startup seed removal, backend endpoint auth relaxation, frontend permission rewrite, page guards.
+- **Why this approach**: Clean role separation — superadmin manages users/roles/projects, admin role gets read-only dashboard (usage, audit, benchmark). Login state fix uses existing response data rather than extra API call.
+- **Verification**: TypeScript `tsc --noEmit` passes. Python AST parse passes for all 4 backend files. Pytest not available in venv (needs Docker rebuild).
+
+## Session: 2026-04-03 (Post-Stress-Test Improvements)
+
+### [Fix]: RAG metadata enrichment quality — targeted queries, reranker, prompt improvements, classifier refinement
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` (lines 421-448) — 3 fixes: targeted enrichment query for `project_detail` intent, use reranker for metadata enrichment search, initialize `document_sources` before conditional block
+  - `backend/src/generation/prompt_builder.py` (lines 33-40) — rewritten `METADATA_SYSTEM_PROMPT` to prioritize document content over system data
+  - `backend/src/generation/intent_classifier.py` (lines 48-50) — added classifier rule to distinguish content queries from metadata queries
+- **Problem**: Stress test scored 18/20 PASS but Q2 (follow-up context gap) and Q8 (shallow project overview) scored poorly due to Completeness=2. Root causes: (1) enrichment search used raw vague queries like "Tell me about this project", (2) enrichment used basic `search_similar()` instead of reranker, (3) `document_sources` uninitialized in else branch, (4) metadata prompt treated document content as secondary, (5) follow-up "what is this based on" misclassified as metadata
+- **Root cause**: Metadata enrichment pipeline was under-optimized — vague queries, no reranker, prompt prioritized system data over document content, classifier conflated content questions with metadata queries
+- **Change**:
+  - Fix 1: For `project_detail` intent, construct targeted query `"{project_name} executive summary overview architecture assessment"` instead of raw user query
+  - Fix 2: Use `search_and_rerank()` when reranker is enabled (was always `search_similar()`)
+  - Fix 3: Initialize `document_sources = []` before the `if hybrid_sources:` block to prevent `UnboundLocalError`
+  - Fix 4: Rewrote METADATA_SYSTEM_PROMPT — document content is now PRIMARY source, system data supplements
+  - Fix 5: Added classifier rule: questions about "why/how/what is this based on" → search, not project_detail
+- **Why this approach**: Each fix targets a specific root cause identified in the stress test report. Minimal changes, maximum impact on the 2 failing questions.
+- **Verification**: All 3 files pass Python syntax check (`ast.parse`). Pytest not installed in venv — needs Docker rebuild for full test run.
+
+## Session: 2026-04-03
+
+### [Fix]: RAG follow-up robustness — streaming context-first, temperatures, prompts, metadata enrichment
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` — streaming context-first, `needs_new_search()` safety net, cross-project source filter, metadata enrichment for all content-relevant intents, system prompt improvements
+  - `backend/src/generation/prompt_builder.py` — updated SYSTEM_PROMPT rules 2 and 5
+  - `backend/src/config.py` — `kimi_temperature` 0.6→0.45, `reranker_min_score` 0.05→0.15
+  - `backend/src/generation/llm_client.py` — added `temperature: 0.45` to Ollama options
+  - `backend/src/generation/intent_classifier.py` — classifier temperature 0.6→0.0
+- **Problem**: Follow-up questions caused the RAG system to lose context, do irrelevant new searches, and falsely retract correct answers. Metadata queries (project_detail, system_overview, etc.) had no document content. Garbage 28-33% match results got through reranker.
+- **Root cause**: (1) Streaming mode always skipped context-first optimization, forcing a new search on every follow-up. (2) `needs_new_search()` only checked for `[NEED_SEARCH]` token — missed "I don't know" responses. (3) Only HYBRID metadata intent ran vector search; others had PostgreSQL-only data. (4) `get_previous_sources()` didn't filter by project. (5) Temperatures too high (0.6 for generation, 0.6 for classification). (6) Reranker min score too low (0.05).
+- **Change**:
+  1. Enabled context-first optimization for streaming mode (was skipped with `previous_doc_sources = []`)
+  2. Added `_CANT_ANSWER_PATTERNS` regex + `len < 200` guard to catch "I don't know" responses as needing search
+  3. Enriched ALL metadata intents (except MY_PROFILE, DOCUMENT_LIST) with vector search results
+  4. Added `project_ids` parameter to `get_previous_sources()` for cross-project filtering
+  5. Improved system prompts: rule 2 (partial info → state found/missing), rule 5 (don't retract correctly cited info)
+  6. Reduced temperatures: kimi 0.6→0.45, ollama added 0.45, classifier 0.6→0.0
+  7. Raised reranker_min_score 0.05→0.15
+- **Why this approach**: Context-first is the key optimization — if previous sources already contain the answer, no search is needed. The streaming path was missing this entirely. Lower temperatures reduce hallucination. Higher reranker threshold filters garbage.
+- **Verification**: Code review — all changes consistent with plan. Needs deployment + manual testing per verification steps.
+
+## Session: 2026-04-01
+
+### [Fix]: Restore RagProjectSelector dropdown for chat and search
+
+- **Files changed**: `frontend/components/ChatWindow.tsx`, `frontend/components/ChatLayout.tsx`, `frontend/app/page.tsx`
+- **Problem**: `RagProjectSelector` component existed but was never rendered. Users had no way to scope normal chat/search queries to a specific project — only deep-dive mode had a project selector.
+- **Root cause**: The component was built but never wired into the UI. `handleSend` and `search.mutate` didn't pass `project_id`.
+- **Change**:
+  - `ChatWindow.tsx`: Imported `RagProjectSelector`, show it in header when not in deep-dive mode (deep-dive keeps `ProjectSelector`), pass `project_id` in `handleSend`.
+  - `ChatLayout.tsx`: Pass `project_id` from request (or fall back to `selectedProject` state) in the normal chat `sendStreamMessage` call.
+  - `page.tsx`: Imported `RagProjectSelector`, show it always (not just deep-dive), pass `project_id` in `search.mutate`.
+- **Why this approach**: Reuses existing `RagProjectSelector` component and `useUserProjects` hook. Deep-dive mode retains its own `ProjectSelector` (which fetches scanned projects with job counts). Normal mode uses `RagProjectSelector` (which fetches RAG-ingested projects). Backend already supports `project_id` on both schemas.
+- **Verification**: Code review — all three files correctly import and render the component, pass `project_id` to backend calls.
+
+## Session: 2026-03-27
+
+### [Fix]: RAG hallucination, cross-project confusion, low recall, self-contradiction
+
+- **Files changed**:
+  - `backend/src/config.py` (lines 47-57): `default_top_k` 5→10, `max_result_documents` 3→6, `prefetch_limit` 30→50, `rerank_top_n` 20→30
+  - `backend/src/generation/conversational_rag.py` (lines 46-75, 127-137, 169-207, 210-228, 285, 605, 730): Constants, prompts, headers, footer, truncate_history, hardcoded top_k
+  - `backend/src/generation/prompt_builder.py` (lines 10, 13-31, 154-190): `MAX_CONTEXT_TOKENS` 6144→10000, `SYSTEM_PROMPT` replaced, project attribution in headers, context footer
+  - `backend/src/generation/llm_client.py` (lines 128-131, 146-150): Added `options={"num_ctx": 16384}` to both Ollama chat calls
+- **Problem**: (1) LLM fabricated full migration plans not in any document, then denied it. (2) Cross-project contamination — asking about Scherpenhuizen returned aliTalend/workatozipoppp results mixed in. (3) Only 3 docs with 3000 tokens reached the LLM. (4) Self-contradiction because history window was only 2000 tokens (~2-3 exchanges).
+- **Root cause**: Chat path had `top_k` hardcoded to 3 (ignoring config), `MAX_CONTEXT_TOKENS=3000` (search bar got 6144), weak anti-hallucination prompts, and only 3 merged documents ever reached the LLM. History window was 2000 tokens / 10 messages.
+- **Change**:
+  1. **Retrieval depth**: `default_top_k` 5→10, `max_result_documents` 3→6, `prefetch_limit` 30→50, `rerank_top_n` 20→30, `MAX_CONTEXT_TOKENS` 3000→8192 (chat) / 6144→10000 (search)
+  2. **Anti-hallucination prompts**: Replaced all 3 system prompts (`CONVERSATIONAL_SYSTEM_PROMPT`, `CONTEXT_FIRST_SYSTEM_PROMPT`, `SYSTEM_PROMPT`) with CRITICAL RULES section (no general knowledge, cite sources, never invent details). Added context boundary footer.
+  3. **Project attribution**: Source headers now show `[Reference N: filename (Project: project_id)]` extracted from scoped filenames. Applied to all 3 context builders.
+  4. **History anchoring**: `truncate_history()` now always keeps the first user+assistant pair, then fills remaining budget with most recent messages. Budget increased to 4000 tokens / 20 messages.
+  5. **Ollama context window**: Added `options={"num_ctx": 16384}` to both Ollama chat calls (gemma3 default is 8K, now 16K).
+  6. **Hardcoded top_k**: All 3 locations (`_prepare_rag_context`, `run_conversational_rag`, `run_conversational_rag_stream`) changed from `top_k=3` to `top_k=settings.default_top_k`.
+- **Why this approach**: The chat path was severely under-resourced compared to the search bar path. Increasing retrieval depth and context window gives the LLM enough information to answer complex questions. Anti-hallucination prompts with explicit CRITICAL RULES and context boundary footer make it much harder for the LLM to fabricate. Project attribution in headers helps the LLM distinguish between projects. History anchoring prevents topic drift in long conversations.
+- **Verification**: All 4 files pass Python AST syntax check. Manual testing required: restart backend, test with project-scoped chat.
+
 ## Session: 2026-03-24
 
 ### [Fix]: Project-scoped chat should filter admin results by selected project

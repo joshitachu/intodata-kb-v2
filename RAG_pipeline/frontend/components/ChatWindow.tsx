@@ -60,7 +60,7 @@ export function ChatWindow({
   }
 
   function handleSend(message: string) {
-    onSendMessage({ query: message });
+    onSendMessage({ query: message, project_id: selectedProject || undefined });
   }
 
   const isDeepDive = mode === "deep-dive";

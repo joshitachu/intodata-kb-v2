@@ -1,11 +1,14 @@
-import { useState, useEffect } from "react";
-import { useVersion, useVersions, useCreateVersion } from "../../hooks/useTemplates";
+import { useState, useEffect, useRef } from "react";
+import { useVersion, useVersions, useCreateVersion, useTemplate } from "../../hooks/useTemplates";
 
 interface Props {
   slug: string;
 }
 
 export default function TemplateEditor({ slug }: Props) {
+  const { data: templateData } = useTemplate(slug);
+  const isPolicy = templateData?.tier === "policy";
+
   const { data: versionsData } = useVersions(slug);
   const versions = versionsData?.versions ?? [];
   const latestNum = versions.length > 0 ? versions[0].version_number : null;
@@ -19,6 +22,16 @@ export default function TemplateEditor({ slug }: Props) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState("");
   const [commitMsg, setCommitMsg] = useState("");
+  const uploadRef = useRef<HTMLInputElement>(null);
+
+  async function handleUploadFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    setContent(text);
+    setEditing(true);
+    if (uploadRef.current) uploadRef.current.value = "";
+  }
 
   useEffect(() => {
     if (versionData?.content) {
@@ -50,7 +63,20 @@ export default function TemplateEditor({ slug }: Props) {
       {/* Header */}
       <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-mono text-slate-300">{slug}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-mono text-slate-300">{slug}</h3>
+            {templateData?.tier && (
+              <span className={`text-[10px] px-1.5 py-0.5 border rounded font-medium ${
+                templateData.tier === "policy"
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                  : templateData.tier === "addon"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                    : "border-sky-500/30 bg-sky-500/10 text-sky-400"
+              }`}>
+                {templateData.tier}
+              </span>
+            )}
+          </div>
           {activeVersion != null && (
             <span className="text-xs text-slate-500">
               v{activeVersion}
@@ -77,13 +103,35 @@ export default function TemplateEditor({ slug }: Props) {
             </select>
           )}
 
-          {!editing ? (
-            <button
-              className="btn-ghost !text-xs"
-              onClick={() => setEditing(true)}
-            >
-              Edit
-            </button>
+          {isPolicy ? (
+            <span className="flex items-center gap-1.5 text-xs text-amber-400/70 px-2 py-1">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+              Managed via source control
+            </span>
+          ) : !editing ? (
+            <>
+              <button
+                className="btn-ghost !text-xs"
+                onClick={() => uploadRef.current?.click()}
+              >
+                Upload
+              </button>
+              <input
+                ref={uploadRef}
+                type="file"
+                accept=".md,.txt,.json,.xml,.yaml,.yml"
+                className="hidden"
+                onChange={handleUploadFile}
+              />
+              <button
+                className="btn-ghost !text-xs"
+                onClick={() => setEditing(true)}
+              >
+                Edit
+              </button>
+            </>
           ) : (
             <button
               className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1"

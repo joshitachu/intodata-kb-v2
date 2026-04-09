@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from mcp_server.db.session import async_session_factory  # noqa: E402
+from mcp_server.db.template_models import TIER_BY_CATEGORY  # noqa: E402
 from mcp_server.services.template_service import TemplateService  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -54,10 +55,9 @@ def _find_platform_prompts(platform: str) -> list[tuple[str, str, Path]]:
             display = f"Phase 3 Guide ({platform.title()})"
             results.append((slug, display, f))
         elif name.startswith("p"):
-            # Legacy prompt: p01_inventory.txt -> analysis/p01_inventory
-            slug = f"analysis/{platform}_{name}"
-            display = f"{name.replace('_', ' ').title()} ({platform.title()})"
-            results.append((slug, display, f))
+            # Legacy individual prompts (p01-p22) -- skip.
+            # These are superseded by the consolidated ANALYSIS_GUIDE.
+            continue
 
     return results
 
@@ -145,23 +145,32 @@ async def seed() -> None:
         skipped = 0
 
         for slug, display_name, file_path in templates:
+            category = _slug_to_category(slug)
+            platform = _slug_to_platform(slug)
+            expected_tier = TIER_BY_CATEGORY.get(category, "configurable")
+
             existing = await svc.get_template(slug)
             if existing:
-                logger.info("  SKIP: %s (already exists)", slug)
+                # Ensure tier is up-to-date (idempotent upgrade)
+                if existing.tier != expected_tier:
+                    existing.tier = expected_tier
+                    await svc.db.flush()
+                    logger.info("  TIER: %s -> %s", slug, expected_tier)
+                else:
+                    logger.info("  SKIP: %s (already exists)", slug)
                 skipped += 1
                 continue
 
             content = file_path.read_text(encoding="utf-8")
-            category = _slug_to_category(slug)
-            platform = _slug_to_platform(slug)
 
-            # Create template
+            # Create template with tier
             template = await svc.create_template(
                 slug=slug,
                 category=category,
                 display_name=display_name,
                 platform=platform,
                 description=f"Seeded from {file_path.name}",
+                tier=expected_tier,
             )
 
             # Create v1
@@ -172,7 +181,7 @@ async def seed() -> None:
                 created_by="seed_script",
             )
 
-            logger.info("  CREATE: %s (v1, %d bytes)", slug, len(content))
+            logger.info("  CREATE: %s (v1, %d bytes, tier=%s)", slug, len(content), expected_tier)
             created += 1
 
         await db.commit()

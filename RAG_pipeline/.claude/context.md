@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Admin project-scoped search fix applied (2026-03-24). Needs deployment + testing.
-**Last session**: 2026-03-24
-**Last completed**: Fixed `_build_search_filter()` in `search.py` — admin users selecting a project in the chat UI now get results filtered to only that project's documents. Previously the admin bypass skipped all filtering including project scope.
+**Status**: Admin sidebar visibility & role separation implemented (2026-04-09). Needs `docker-compose up -d --build backend frontend` + `alembic upgrade head` (migration 012).
+**Last session**: 2026-04-09
+**Last completed**: Admin sidebar fix (instant post-login), role separation (admin=read-only dashboard, superadmin=full management), permission guards on frontend pages, relaxed backend auth for usage/audit endpoints.
 
 ## What's Done
 
@@ -16,8 +16,8 @@
   - **Query expansion**: LLM-generated alternatives via provider chain (more-specific + more-general)
   - **Chat-with-document**: Optional document_ids filter on all search functions
   - Named vectors in Qdrant (dense + sparse), payload indexes for RBAC + document_id
-  - **Tuned parameters**: top_k=5, threshold=0.3, rerank_top_n=20, prefetch_limit=30, max_documents=3
-- Generation: **Multi-provider LLM client** (Kimi K2.5 → Ollama fallback chain, sync + **streaming SSE**), prompt builder (6144 token context with per-source truncation), RAG chain with intent routing
+  - **Tuned parameters**: top_k=10, threshold=0.3, rerank_top_n=30, prefetch_limit=50, max_documents=6
+- Generation: **Multi-provider LLM client** (Kimi K2.5 → Ollama fallback chain, sync + **streaming SSE**, Ollama num_ctx=16384), prompt builder (10000 token context with per-source truncation), RAG chain with intent routing + anti-hallucination prompts
 - **Embedding provider chain**: Voyage AI (voyage-4-large, 1024-dim) → Ollama (nomic-embed-text, 768-dim) fallback
 - **Intent classifier**: Zero-LLM heuristic router (keyword-based summary detection, all queries go through SEARCH)
 - **Map-reduce summarization**: Full-document summaries via parallel map → reduce
@@ -47,6 +47,10 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Recent Changes
 
+- **Admin sidebar visibility & role separation** (2026-04-09): Login sets auth state instantly (no refresh needed), admin role restricted to read-only dashboard (usage/audit/benchmark), superadmin-only for user/role/project management. Migration 012 + frontend guards + backend AuditViewer dependency.
+- **Post-stress-test improvements** (2026-04-03): 5 fixes — targeted enrichment query for project_detail (overview docs), reranker for metadata enrichment, document_sources init bug, METADATA_SYSTEM_PROMPT rewrite (doc content primary), classifier prompt refinement (content vs metadata). Files: `conversational_rag.py`, `prompt_builder.py`, `intent_classifier.py`.
+- **RAG follow-up robustness** (2026-04-03): Streaming context-first enabled, `needs_new_search()` safety net, metadata enrichment for all content intents, cross-project source filter, prompt improvements (partial info + no retraction), temperatures lowered (kimi 0.45, ollama 0.45, classifier 0.0), reranker_min_score 0.05→0.15. Files: `conversational_rag.py`, `prompt_builder.py`, `config.py`, `llm_client.py`, `intent_classifier.py`.
+- **RAG hallucination/recall fix** (2026-03-27): Increased retrieval depth (`top_k` 5→10, `max_result_documents` 3→6, `prefetch_limit` 30→50, `rerank_top_n` 20→30), `MAX_CONTEXT_TOKENS` 3000→8192 (chat) / 6144→10000 (search), strengthened anti-hallucination prompts, added project attribution to source headers, improved history truncation (anchors first exchange, 4000 tokens / 20 messages), added `num_ctx=16384` to Ollama calls, fixed hardcoded `top_k=3` in chat path. Files: `config.py`, `conversational_rag.py`, `prompt_builder.py`, `llm_client.py`.
 - **Admin project-scoped search** (2026-03-24): Fixed `_build_search_filter()` in `search.py` to apply `allowed_groups` filter when admin selects a specific project. Without this fix, admins saw all documents regardless of project selection.
 - **Conversation summary intent** (2026-03-18): LLM classifier now distinguishes "summarize our chat" from "summarize document X". Added `CONVERSATION_SUMMARY` action, conversation context passing, dedicated prompt builder. Fixed `using="dense"` Qdrant crash in `map_reduce.py` and `query.py`. Files: `intent_classifier.py`, `prompt_builder.py`, `conversational_rag.py`, `map_reduce.py`, `query.py`.
 - **Auto-detect corrections** (2026-03-16): When a user corrects the chatbot ("no that's wrong, it's actually X"), the system detects it via keyword heuristics, extracts a structured correction via LLM, and stores it in a shared `rag-corrections` Hindsight bank. Corrections are recalled for ALL users on relevant queries and injected as "## Known corrections" in the LLM context. Zero latency impact (fire-and-forget). Files: `hindsight_client.py`, `prompt_builder.py`, `conversational_rag.py`, `rag_chain.py`, `query.py`.

@@ -1,8 +1,8 @@
 # Current State
 
 **Status**: Template Management & Scoring Pipeline implemented (Phases A-F complete). New Phase 2.6 scoring sub-agent, DB-backed template system with versioning/profiles, full dashboard UI (catalogue, editor, profiles, A/B comparison, document reference).
-**Last session**: 2026-03-24
-**Last completed**: Transparency Layer feature -- scoring pipeline (Phase 2.6), template DB schema + CRUD + REST API, TemplateResolver with cascade, dashboard template catalogue/editor/version timeline, profile management + swapping, A/B run comparison, document catalogue page.
+**Last session**: 2026-03-30
+**Last completed**: Fix MissingGreenlet 500 error on `POST /mcp/templates/` -- async-safe relationship access in `_template_to_response()`.
 
 ## What's Done
 
@@ -55,6 +55,7 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Recent Changes
 
+- **Fix template creation 500** (2026-03-30): Fixed `MissingGreenlet` in `_template_to_response()` by using `sa_inspect(t).dict` to check if `versions` relationship is loaded before accessing it.
 - **Template Management & Scoring Pipeline** (2026-03-24): Full Transparency Layer feature. Phase 2.6 scoring sub-agent (8-dimension rubric, anti-patterns, red flags, security checklist). DB-backed template system (4 new tables, Alembic migration, TemplateResolver with cascade). Dashboard: template catalogue/editor, version timeline with diff, profile management, A/B run comparison, document catalogue. Profile dropdown on Generate button for template swapping.
 - **Gate validation between phases** (2026-03-20): Phase 2.5 validates analysis files (>1KB) before Phase 3. Phase 3.5 validates 9 required docs (>500 bytes) before cleanup. Both gates retry failed agents once (max 1 retry). Prompt-only change.
 - **Phase 2 filesystem boundary + scaled target** (2026-03-20): Sub-agents prohibited from reading outside staging dir. Analysis target scales with preprocessed data size (5-40KB, ~50% of input).

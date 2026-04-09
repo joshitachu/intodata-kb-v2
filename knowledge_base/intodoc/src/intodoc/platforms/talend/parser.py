@@ -31,6 +31,100 @@ if TYPE_CHECKING:
 
 console = Console()
 
+# ── External System Detection ────────────────────────────────────────
+
+# Utility / routing components that don't represent external systems
+_INTERNAL_COMPONENTS: frozenset[str] = frozenset({
+    "tMap", "tLogRow", "tJavaRow", "tJava", "tJavaFlex", "tPrejob", "tPostjob",
+    "tRunJob", "tFixedFlowInput", "tFlowToIterate", "tSetGlobalVar", "tContextLoad",
+    "tRouteInput", "tRouteOutput",
+    "tUnite", "tReplicate", "tSortRow", "tFilterRow", "tAggregateRow",
+    "tFileInputDelimited", "tFileOutputDelimited", "tFileInputExcel", "tFileOutputExcel",
+    "tWriteJSONField", "tExtractJSONFields", "tExtractXMLField",
+    "tSchemaComplianceCheck", "tSleep", "tLoop", "tFileList", "tFileDelete",
+    "tFileCopy", "tFileExist",
+    "tMsgBox", "tWarn", "tDie", "tBufferInput", "tBufferOutput",
+    "tNormalize", "tDenormalize", "tIterateToFlow",
+})
+
+# Component name prefix -> generic system name
+_TALEND_SYSTEM_MAP: dict[str, str] = {
+    "tSalesforce": "Salesforce",
+    "tBigQuery": "BigQuery",
+    "tMysql": "MySQL",
+    "tMSSql": "MSSQL",
+    "tPostgresql": "PostgreSQL",
+    "tOracle": "Oracle",
+    "tSnowflake": "Snowflake",
+    "tRedshift": "Redshift",
+    "tMongoDB": "MongoDB",
+    "tCassandra": "Cassandra",
+    "tHBase": "HBase",
+    "tHive": "Hive",
+    "tImpala": "Impala",
+    "tNeo4j": "Neo4j",
+    "tAmazonS3": "Amazon S3",
+    "tS3": "Amazon S3",
+    "tAzureStorage": "Azure Storage",
+    "tGoogleStorage": "Google Cloud Storage",
+    "tRESTClient": "REST API",
+    "tREST": "REST API",
+    "tHTTP": "HTTP API",
+    "tSOAP": "SOAP API",
+    "tWebService": "SOAP API",
+    "tKafka": "Kafka",
+    "tActiveMQ": "ActiveMQ",
+    "tRabbitMQ": "RabbitMQ",
+    "tFTP": "FTP",
+    "tSFTP": "SFTP",
+    "tSAP": "SAP",
+    "tLDAP": "LDAP",
+    "tJDBC": "JDBC",
+    "tElasticsearch": "Elasticsearch",
+    "tDynamoDB": "DynamoDB",
+    "tMarketo": "Marketo",
+    "tNetSuite": "NetSuite",
+    "tSendMail": "Email",
+}
+
+# Suffixes to strip when falling back to component-name heuristic
+_STRIP_SUFFIXES = (
+    "Input", "Output", "Connection", "Close", "Open", "Row",
+    "BulkExec", "CDC", "Commit", "Rollback", "Lookup",
+)
+
+
+def _extract_talend_external_system(component_type: str) -> str | None:
+    """Map a Talend component type to a generic external system name.
+
+    Returns None for internal/utility components.
+    """
+    if component_type in _INTERNAL_COMPONENTS:
+        return None
+
+    # Longest-prefix match against _TALEND_SYSTEM_MAP
+    best_match: str | None = None
+    best_len = 0
+    for prefix, system in _TALEND_SYSTEM_MAP.items():
+        if component_type.startswith(prefix) and len(prefix) > best_len:
+            best_match = system
+            best_len = len(prefix)
+    if best_match:
+        return best_match
+
+    # Fallback: strip 't' prefix + known suffixes -> title case
+    name = component_type
+    if name.startswith("t") and len(name) > 1:
+        name = name[1:]
+    for suffix in _STRIP_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    if len(name) < 3:
+        return None
+    return name
+
+
 # XMI namespaces used in Talend files
 NS = {
     "xmi": "http://www.omg.org/XMI",
@@ -581,6 +675,15 @@ class TalendParser:
             # routines_used_by
             for rname in job.raw_routines:
                 m.routines_used_by.setdefault(rname, []).append(job.name)
+
+            # job_external_systems (derived from component types)
+            systems: set[str] = set()
+            for comp in job.components:
+                system = _extract_talend_external_system(comp.component_type)
+                if system:
+                    systems.add(system)
+            if systems:
+                m.job_external_systems[job.name] = sorted(systems)
 
         return m
 

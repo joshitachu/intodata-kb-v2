@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useAuthContext } from "@/components/AuthProvider";
+import { useRouter } from "next/navigation";
 
 interface Role {
   id: number;
@@ -31,14 +33,9 @@ interface PasswordResetState {
   confirm: string;
 }
 
-interface EditUserState {
-  userId: number;
-  username: string;
-  email: string;
-  role_ids: number[];
-}
-
 export default function AdminUsersPage() {
+  const { user: authUser } = useAuthContext();
+  const router = useRouter();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,7 +51,6 @@ export default function AdminUsersPage() {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [passwordReset, setPasswordReset] = useState<PasswordResetState | null>(null);
   const [confirmDeactivate, setConfirmDeactivate] = useState<AdminUser | null>(null);
-  const [editUser, setEditUser] = useState<EditUserState | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -185,38 +181,15 @@ export default function AdminUsersPage() {
     }
   }
 
-  function startEditUser(user: AdminUser) {
-    setEditUser({
-      userId: user.id,
-      username: user.username,
-      email: user.email,
-      role_ids: user.roles.map((r) => r.id),
-    });
-  }
-
-  async function handleEditUser() {
-    if (!editUser) return;
-    setActionLoading(editUser.userId);
-    setError("");
-    try {
-      const res = await fetch(`/api/admin/users/${editUser.userId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role_ids: editUser.role_ids }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        setError(data?.detail || "Failed to update user roles");
-        return;
-      }
-      setEditUser(null);
-      setSuccessMsg(`Roles updated for ${editUser.username}`);
-      await fetchUsers();
-    } catch {
-      setError("Network error");
-    } finally {
-      setActionLoading(null);
+  // Superadmin-only guard
+  useEffect(() => {
+    if (authUser && !authUser.is_superadmin) {
+      router.replace("/admin/usage");
     }
+  }, [authUser, router]);
+
+  if (!authUser?.is_superadmin) {
+    return <p className="text-muted-foreground p-4">Access denied. Superadmin only.</p>;
   }
 
   if (loading) {
@@ -229,7 +202,7 @@ export default function AdminUsersPage() {
         <h1 className="text-2xl font-bold">User Management</h1>
         <button
           onClick={() => setShowCreate(!showCreate)}
-          className="px-4 py-2 bg-[#001e4d] text-white text-sm rounded-md hover:bg-[#001e4d]/90"
+          className="px-4 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90"
         >
           {showCreate ? "Cancel" : "Create User"}
         </button>
@@ -237,8 +210,8 @@ export default function AdminUsersPage() {
 
       {/* Success toast */}
       {successMsg && (
-        <div className="mb-4 p-3 bg-[#a0e06f]/10 border border-[#a0e06f]/30 rounded-md">
-          <p className="text-sm text-[#a0e06f]">{successMsg}</p>
+        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-md">
+          <p className="text-sm text-green-700">{successMsg}</p>
         </div>
       )}
 
@@ -311,7 +284,7 @@ export default function AdminUsersPage() {
           )}
           <button
             type="submit"
-            className="px-4 py-2 bg-[#a0e06f] text-[#060e1e] text-sm rounded-md hover:bg-[#a0e06f]/90"
+            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
           >
             Create
           </button>
@@ -358,7 +331,7 @@ export default function AdminUsersPage() {
               <button
                 onClick={handleResetPasswordSubmit}
                 disabled={actionLoading === passwordReset.userId}
-                className="px-4 py-2 text-sm text-white bg-[#001e4d] rounded-md hover:bg-[#001e4d]/90 disabled:opacity-50"
+                className="px-4 py-2 text-sm text-primary-foreground bg-primary rounded-md hover:bg-primary/90 disabled:opacity-50"
               >
                 Reset Password
               </button>
@@ -388,60 +361,6 @@ export default function AdminUsersPage() {
                 className="px-4 py-2 text-sm text-white bg-red-600 rounded-md hover:bg-red-700"
               >
                 Deactivate
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Roles Modal */}
-      {editUser && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-xl">
-            <h3 className="text-lg font-semibold mb-4">
-              Edit User: {editUser.username}
-            </h3>
-            <div className="space-y-3">
-              <div className="text-sm text-gray-600">
-                <p><span className="font-medium text-gray-700">Username:</span> {editUser.username}</p>
-                <p><span className="font-medium text-gray-700">Email:</span> {editUser.email}</p>
-              </div>
-              {roles.length > 0 && (
-                <div>
-                  <p className="text-sm font-medium text-gray-700 mb-2">Roles</p>
-                  <div className="flex gap-2 flex-wrap">
-                    {roles.map((role) => (
-                      <label key={role.id} className="flex items-center gap-1 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={editUser.role_ids.includes(role.id)}
-                          onChange={(e) => {
-                            const ids = e.target.checked
-                              ? [...editUser.role_ids, role.id]
-                              : editUser.role_ids.filter((id) => id !== role.id);
-                            setEditUser({ ...editUser, role_ids: ids });
-                          }}
-                        />
-                        {role.name}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => { setEditUser(null); setError(""); }}
-                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleEditUser}
-                disabled={actionLoading === editUser.userId}
-                className="px-4 py-2 text-sm text-white bg-[#001e4d] rounded-md hover:bg-[#001e4d]/90 disabled:opacity-50"
-              >
-                Save
               </button>
             </div>
           </div>
@@ -487,7 +406,7 @@ export default function AdminUsersPage() {
                     {u.roles.map((r) => (
                       <span
                         key={r.id}
-                        className="text-xs bg-[#001e4d]/10 text-[#001e4d] px-1.5 py-0.5 rounded"
+                        className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded"
                       >
                         {r.name}
                       </span>
@@ -498,7 +417,7 @@ export default function AdminUsersPage() {
                   <span
                     className={`text-xs px-2 py-0.5 rounded ${
                       u.is_active
-                        ? "bg-[#a0e06f]/10 text-[#a0e06f]"
+                        ? "bg-green-50 text-green-700"
                         : "bg-red-50 text-red-700"
                     }`}
                   >
@@ -513,13 +432,6 @@ export default function AdminUsersPage() {
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
                     <button
-                      onClick={() => startEditUser(u)}
-                      disabled={actionLoading === u.id}
-                      className="text-xs text-[#fe9543] hover:text-[#fe9543]/80 disabled:opacity-50"
-                    >
-                      Edit
-                    </button>
-                    <button
                       onClick={() =>
                         setPasswordReset({
                           userId: u.id,
@@ -529,7 +441,7 @@ export default function AdminUsersPage() {
                         })
                       }
                       disabled={actionLoading === u.id}
-                      className="text-xs text-[#fe9543] hover:text-[#fe9543]/80 disabled:opacity-50"
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-50"
                     >
                       Reset PW
                     </button>
@@ -546,7 +458,7 @@ export default function AdminUsersPage() {
                       <button
                         onClick={() => handleActivate(u.id)}
                         disabled={actionLoading === u.id}
-                        className="text-xs text-[#a0e06f] hover:text-[#a0e06f]/80 disabled:opacity-50"
+                        className="text-xs text-green-600 hover:text-green-800 disabled:opacity-50"
                       >
                         Activate
                       </button>

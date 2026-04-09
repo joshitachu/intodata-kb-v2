@@ -449,22 +449,17 @@ class ClaudeService:
                                 slug, filename, len(resolved[slug]),
                             )
 
-                    # Analysis guide override
-                    analysis_slugs = [
-                        s for s in resolved if s.startswith("analysis/")
-                    ]
-                    if analysis_slugs:
-                        # Combine all analysis templates into a single guide
-                        parts = []
-                        for slug in sorted(analysis_slugs):
-                            parts.append(f"## {slug}\n\n{resolved[slug]}\n\n")
-                        guide = "# Analysis Guide (from template profile)\n\n" + "".join(parts)
+                    # Analysis guide override -- use only the consolidated guide,
+                    # not individual p01-p22 dimension prompts
+                    guide_slug = f"analysis/{platform}_guide"
+                    if guide_slug in resolved:
+                        guide = resolved[guide_slug]
                         (preprocess_dir / "_analysis_guide.md").write_text(
                             guide, encoding="utf-8",
                         )
                         logger.info(
-                            "DB template override: analysis guide (%d templates, %d bytes)",
-                            len(analysis_slugs), len(guide),
+                            "DB template override: %s -> _analysis_guide.md (%d bytes)",
+                            guide_slug, len(guide),
                         )
 
                     # Reference doc overrides
@@ -505,7 +500,12 @@ class ClaudeService:
 
         return processed_groups, template_snapshot
 
-    async def generate_docs(self, project_id: str, template_profile_id: int | None = None) -> dict:
+    async def generate_docs(
+        self,
+        project_id: str,
+        template_profile_id: int | None = None,
+        model: str | None = None,
+    ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
         Returns dict with success, cost_usd, duration_ms, input_tokens, etc.
@@ -571,10 +571,19 @@ class ClaudeService:
             analysis_target_kb, total_preprocess_bytes,
         )
 
+        phase2_header = (
+            "PHASE 2 -- GROUP ANALYSIS (parallel sub-agents):\n"
+            "   Spawn one sub-agent per group (all in parallel). Each sub-agent:"
+        )
+
         # Determine which analysis guide file the sub-agents should read
         analysis_guide_file = "_analysis_guide.md"
         if not (staging_dir / "_preprocess" / "_analysis_guide.md").exists():
             analysis_guide_file = "_analysis_prompts*.md"  # legacy fallback
+
+        # Determine effective model (per-run override > config default)
+        effective_model = model or config.doc_generation_model
+        write_model = config.doc_generation_write_model
 
         # Build Hindsight memory steps conditionally
         hindsight_phase1 = ""
@@ -607,8 +616,7 @@ PHASE 1 -- SETUP:
    - Phase 3 synthesis guide: {staging_abs}/_preprocess/_phase3_guide.md
    - Reference doc templates: {staging_abs}/_preprocess/_ref_*.md files per Phase 3 agent (may be split with _1, _2 suffixes -- read ALL matching files).
 
-PHASE 2 -- GROUP ANALYSIS (parallel sub-agents):
-   Spawn one sub-agent per group (all in parallel). Each sub-agent:
+{phase2_header}
    1. Reads {staging_abs}/_preprocess/{analysis_guide_file} for analysis guidance.
    2. Reads {staging_abs}/_preprocess/{{group}}.md for ALL scan data.
       If the group is split ({{group}}_part1.md and {{group}}_part2.md exist), read BOTH parts.
@@ -670,7 +678,8 @@ PHASE 2.6 -- SCORE & ASSESS (one sub-agent, after Phase 2.5 gate passes):
    - Do NOT use TodoWrite, mkdir, ls, or any MCP tools.
 
 PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
-   After Phase 2.6 completes, spawn 3 doc-assembly sub-agents in parallel.
+   After Phase 2.6 completes, spawn 3 doc-assembly sub-agents in parallel using model: "{write_model}".
+   IMPORTANT: When spawning Phase 3 Task agents, pass model="{write_model}" to each Task tool call.
    Each Phase 3 agent reads the FULL _analysis/{{group}}.md files directly (no condensation step).
    Each Phase 3 agent also reads {staging_abs}/_assessment/scorecard.md for quantitative grounding.
    Each doc agent also reads its REFERENCE DOC BUNDLE from _preprocess/ for format templates.
@@ -697,7 +706,6 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - "Read ALL _ref_{{agent}}*.md files in {staging_abs}/_preprocess/ for format reference templates."
    - "Read {staging_abs}/_preprocess/_phase3_guide.md for cross-group synthesis guidance."
    - Do NOT call get_reference_docs() or get_analysis_prompts() -- use the pre-bundled files.
-
    SCORECARD INTEGRATION:
    - Reference specific scores from the scorecard in your documents.
    - Example: "Security: 2/5 (see Assessment Scorecard for details)"
@@ -802,18 +810,27 @@ FILE READING GUIDANCE (prevents cascading failures):
         cmd = [
             resolved_cmd,
             "-p", "-",
+            "--model", effective_model,
+            "--max-turns", "200",
             "--dangerously-skip-permissions",
             "--output-format", "stream-json",
             "--verbose",
         ]
 
-        # Diagnostic logging
-        logger.info(f"claude resolved path: {resolved_cmd}")
+        # Diagnostic logging — model, project metrics
         _subprocess_cwd = Path(__file__).resolve().parent.parent.parent.parent.parent
-        logger.info(f"Spawning Claude Code: {cmd[0]} -p '...' --dangerously-skip-permissions  cwd={_subprocess_cwd}")
+        logger.info(
+            "Doc generation config: model=%s, write_model=%s, "
+            "groups=%d, jobs=%d, max_turns=200",
+            effective_model, write_model,
+            total_groups, total_jobs,
+        )
+        logger.info(f"claude resolved path: {resolved_cmd}")
+        logger.info(f"Spawning Claude Code: {cmd[0]} -p '...' --model {effective_model}  cwd={_subprocess_cwd}")
         await self.log_manager.emit(
             project_id,
-            f"claude resolved: {resolved_cmd} | Python {sys.version}",
+            f"Model: {effective_model} | Write model: {write_model} | "
+            f"Groups: {total_groups} | Jobs: {total_jobs}",
             level="info",
         )
         await self.log_manager.emit(
@@ -909,7 +926,7 @@ FILE READING GUIDANCE (prevents cascading failures):
             returncode = await asyncio.to_thread(proc.wait)
 
             # Extract usage from the result event
-            usage: dict = {"success": returncode == 0}
+            usage: dict = {"success": returncode == 0, "model_name": effective_model}
             if template_snapshot:
                 usage["template_snapshot"] = template_snapshot
             if result_event:
@@ -930,7 +947,6 @@ FILE READING GUIDANCE (prevents cascading failures):
                 model_usage = result_event.get("modelUsage", {})
                 if model_usage:
                     usage["model_name"] = next(iter(model_usage.keys()), "claude")
-
             if returncode == 0:
                 await self.log_manager.emit(
                     project_id,

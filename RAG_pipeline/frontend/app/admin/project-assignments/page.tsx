@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuthContext } from "@/components/AuthProvider";
 
 interface AssignmentItem {
   id: number;
@@ -22,6 +24,8 @@ interface AssignForm {
 }
 
 export default function AdminProjectAssignmentsPage() {
+  const { user: authUser } = useAuthContext();
+  const router = useRouter();
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -125,6 +129,17 @@ export default function AdminProjectAssignmentsPage() {
     new Set(assignments.map((a) => a.project_id)),
   ).sort();
 
+  // Superadmin-only guard
+  useEffect(() => {
+    if (authUser && !authUser.is_superadmin) {
+      router.replace("/admin/usage");
+    }
+  }, [authUser, router]);
+
+  if (!authUser?.is_superadmin) {
+    return <p className="text-muted-foreground p-4">Access denied. Superadmin only.</p>;
+  }
+
   if (loading) {
     return (
       <p className="text-muted-foreground p-4">Loading project assignments...</p>
@@ -140,7 +155,7 @@ export default function AdminProjectAssignmentsPage() {
             setShowAssign(!showAssign);
             setError("");
           }}
-          className="px-4 py-2 bg-[#001e4d] text-white text-sm rounded-md hover:bg-[#001e4d]/90"
+          className="px-4 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90"
         >
           {showAssign ? "Cancel" : "Assign Project"}
         </button>
@@ -189,7 +204,7 @@ export default function AdminProjectAssignmentsPage() {
           </div>
           <button
             type="submit"
-            className="px-4 py-2 bg-[#a0e06f] text-[#060e1e] text-sm rounded-md hover:bg-[#a0e06f]/90"
+            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
           >
             Assign
           </button>
@@ -270,7 +285,7 @@ export default function AdminProjectAssignmentsPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <span className="text-xs bg-[#001e4d]/10 text-[#001e4d] px-1.5 py-0.5 rounded">
+                  <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">
                     {a.project_id}
                   </span>
                 </td>

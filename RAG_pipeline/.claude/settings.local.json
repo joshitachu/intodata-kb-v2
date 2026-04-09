@@ -37,7 +37,12 @@
       "WebFetch(domain:localhost)",
       "WebFetch(domain:docs.voyageai.com)",
       "Bash(rm:*)",
-      "Bash(claude:*)"
+      "Bash(claude:*)",
+      "Bash(python3 -m pytest --tb=short -q 2>&1 | tail -30)",
+      "Bash(ls .venv/bin/pytest 2>/dev/null && .venv/bin/pytest --tb=short -q 2>&1 | tail -30)",
+      "Bash(ls .venv 2>/dev/null; which pytest 2>/dev/null; ls -la /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/RAG_pipeline/backend/.venv/bin/py* 2>/dev/null)",
+      "Bash(/Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/RAG_pipeline/backend/.venv/bin/python -c \"\nimport ast, sys\nfiles = [\n    'src/api/main.py',\n    'src/api/dependencies.py', \n    'src/api/routes/admin.py',\n    'alembic/versions/012_restrict_admin_role_permissions.py',\n]\nfor f in files:\n    try:\n        with open\\(f\\) as fh:\n            ast.parse\\(fh.read\\(\\)\\)\n        print\\(f'OK: {f}'\\)\n    except SyntaxError as e:\n        print\\(f'FAIL: {f}: {e}'\\)\n        sys.exit\\(1\\)\nprint\\('All Python files parse successfully'\\)\n\" 2>&1)",
+      "Bash(.venv/bin/python -m alembic upgrade head 2>&1)"
     ]
   }
 }

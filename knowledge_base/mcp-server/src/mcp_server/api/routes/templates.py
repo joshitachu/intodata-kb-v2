@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import inspect as sa_inspect
 
 from mcp_server.db.session import async_session_factory
 from mcp_server.schemas import (
@@ -40,7 +41,7 @@ profile_router = APIRouter(prefix="/profiles", tags=["profiles"])
 
 def _template_to_response(t, latest_version: int | None = None) -> TemplateResponse:
     lv = latest_version
-    if lv is None and t.versions:
+    if lv is None and "versions" in sa_inspect(t).dict:
         lv = t.versions[0].version_number if t.versions else None
     return TemplateResponse(
         id=t.id,
@@ -50,6 +51,7 @@ def _template_to_response(t, latest_version: int | None = None) -> TemplateRespo
         display_name=t.display_name,
         description=t.description,
         is_active=t.is_active,
+        tier=t.tier,
         created_at=t.created_at,
         updated_at=t.updated_at,
         latest_version=lv,
@@ -88,18 +90,19 @@ def _assignment_to_response(a) -> AssignmentResponse:
 async def list_templates(
     category: str | None = Query(None),
     platform: str | None = Query(None),
+    tier: str | None = Query(None),
 ):
     async with async_session_factory() as db:
         svc = TemplateService(db)
-        templates = await svc.list_templates(category=category, platform=platform)
+        templates = await svc.list_templates(category=category, platform=platform, tier=tier)
         return TemplateListResponse(
             templates=[_template_to_response(t) for t in templates],
             total=len(templates),
         )
 
 
-@router.get("/{slug}", response_model=TemplateResponse)
-async def get_template(slug: str):
+@router.get("/by-slug", response_model=TemplateResponse)
+async def get_template(slug: str = Query(...)):
     async with async_session_factory() as db:
         svc = TemplateService(db)
         t = await svc.get_template(slug)
@@ -121,13 +124,14 @@ async def create_template(req: CreateTemplateRequest):
             display_name=req.display_name,
             platform=req.platform,
             description=req.description,
+            tier=req.tier,
         )
         await db.commit()
-        return _template_to_response(t)
+        return _template_to_response(t, latest_version=None)
 
 
-@router.patch("/{slug}", response_model=TemplateResponse)
-async def update_template(slug: str, req: UpdateTemplateRequest):
+@router.patch("/by-slug", response_model=TemplateResponse)
+async def update_template(slug: str = Query(...), req: UpdateTemplateRequest = ...):
     async with async_session_factory() as db:
         svc = TemplateService(db)
         t = await svc.update_template(
@@ -144,8 +148,8 @@ async def update_template(slug: str, req: UpdateTemplateRequest):
 
 # ── Versions ───────────────────────────────────────────────────────────
 
-@router.get("/{slug}/versions", response_model=TemplateVersionListResponse)
-async def list_versions(slug: str):
+@router.get("/versions", response_model=TemplateVersionListResponse)
+async def list_versions(slug: str = Query(...)):
     async with async_session_factory() as db:
         svc = TemplateService(db)
         versions = await svc.list_versions(slug)
@@ -155,8 +159,8 @@ async def list_versions(slug: str):
         )
 
 
-@router.get("/{slug}/versions/{version_number}", response_model=TemplateVersionResponse)
-async def get_version(slug: str, version_number: int):
+@router.get("/versions/detail", response_model=TemplateVersionResponse)
+async def get_version(slug: str = Query(...), version_number: int = Query(...)):
     async with async_session_factory() as db:
         svc = TemplateService(db)
         v = await svc.get_version(slug, version_number)
@@ -165,25 +169,28 @@ async def get_version(slug: str, version_number: int):
         return _version_to_response(v, include_content=True)
 
 
-@router.post("/{slug}/versions", response_model=TemplateVersionResponse, status_code=201)
-async def create_version(slug: str, req: CreateVersionRequest):
+@router.post("/versions", response_model=TemplateVersionResponse, status_code=201)
+async def create_version(slug: str = Query(...), req: CreateVersionRequest = ...):
     async with async_session_factory() as db:
         svc = TemplateService(db)
-        v = await svc.create_version(
-            slug,
-            content=req.content,
-            change_summary=req.change_summary,
-            created_by=req.created_by,
-        )
+        try:
+            v = await svc.create_version(
+                slug,
+                content=req.content,
+                change_summary=req.change_summary,
+                created_by=req.created_by,
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
         if not v:
             raise HTTPException(404, f"Template not found: {slug}")
         await db.commit()
         return _version_to_response(v, include_content=True)
 
 
-@router.get("/{slug}/diff", response_model=DiffResponse)
+@router.get("/diff", response_model=DiffResponse)
 async def diff_versions(
-    slug: str,
+    slug: str = Query(...),
     from_v: int = Query(..., alias="from"),
     to_v: int = Query(..., alias="to"),
 ):
@@ -195,11 +202,14 @@ async def diff_versions(
         return DiffResponse(slug=slug, from_version=from_v, to_version=to_v, diff=diff)
 
 
-@router.post("/{slug}/rollback/{version_number}", response_model=TemplateVersionResponse)
-async def rollback_version(slug: str, version_number: int):
+@router.post("/rollback", response_model=TemplateVersionResponse)
+async def rollback_version(slug: str = Query(...), version_number: int = Query(...)):
     async with async_session_factory() as db:
         svc = TemplateService(db)
-        v = await svc.rollback_version(slug, version_number)
+        try:
+            v = await svc.rollback_version(slug, version_number)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
         if not v:
             raise HTTPException(404, f"Version not found: {slug} v{version_number}")
         await db.commit()
@@ -338,8 +348,8 @@ async def bulk_set_assignments(profile_id: int, req: BulkSetAssignmentsRequest):
         )
 
 
-@profile_router.patch("/{profile_id}/assignments/{slug}", response_model=AssignmentResponse)
-async def set_assignment(profile_id: int, slug: str, req: SetAssignmentRequest):
+@profile_router.patch("/{profile_id}/assignments", response_model=AssignmentResponse)
+async def set_assignment(profile_id: int, slug: str = Query(...), req: SetAssignmentRequest = ...):
     async with async_session_factory() as db:
         svc = TemplateService(db)
         a = await svc.set_assignment(profile_id, slug, req.version_id)
@@ -354,8 +364,8 @@ async def set_assignment(profile_id: int, slug: str, req: SetAssignmentRequest):
         raise HTTPException(500, "Assignment saved but could not reload")
 
 
-@profile_router.delete("/{profile_id}/assignments/{slug}", response_model=StatusResponse)
-async def delete_assignment(profile_id: int, slug: str):
+@profile_router.delete("/{profile_id}/assignments", response_model=StatusResponse)
+async def delete_assignment(profile_id: int, slug: str = Query(...)):
     async with async_session_factory() as db:
         svc = TemplateService(db)
         ok = await svc.delete_assignment(profile_id, slug)

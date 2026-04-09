@@ -92,6 +92,8 @@ export interface ProjectUsage {
 
 // --- Templates ---
 
+export type TemplateTier = "policy" | "configurable" | "addon";
+
 export interface Template {
   id: number;
   slug: string;
@@ -100,6 +102,7 @@ export interface Template {
   display_name: string;
   description: string | null;
   is_active: boolean;
+  tier: TemplateTier;
   created_at: string | null;
   updated_at: string | null;
   latest_version: number | null;

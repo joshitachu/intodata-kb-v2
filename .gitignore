@@ -54,3 +54,10 @@ knowledge_base/intodoc-output/
 # Claude Code local settings
 .claude/settings.local.json
 **/.claude/settings.local.json
+
+# Claude Code temp files
+tmpclaude-*
+
+# Claude Code skills (auto-generated, not project code)
+.agents/
+.claude/skills/

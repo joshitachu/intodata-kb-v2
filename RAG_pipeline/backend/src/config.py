@@ -44,17 +44,17 @@ class Settings(BaseSettings):
     # Reranking
     reranker_enabled: bool = True
     reranker_model: str = "rerank-2.5"
-    rerank_top_n: int = 20
-    reranker_min_score: float = 0.05
+    rerank_top_n: int = 30
+    reranker_min_score: float = 0.15
 
     # Query expansion
     query_expansion_enabled: bool = False
 
     # Search tuning
-    default_top_k: int = 5
+    default_top_k: int = 8
     default_threshold: float = 0.3
-    prefetch_limit: int = 30
-    max_result_documents: int = 3
+    prefetch_limit: int = 50
+    max_result_documents: int = 6
 
     # Metadata queries
     metadata_queries_enabled: bool = True

@@ -128,6 +128,7 @@ async def _ollama_generate(messages: list[dict[str, str]]) -> tuple[str, UsageSt
     response = await client.chat(
         model=settings.ollama_llm_model,
         messages=messages,
+        options={"num_ctx": 16384, "temperature": 0.45},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
     usage = UsageStats(
@@ -147,6 +148,7 @@ async def _ollama_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str |
         model=settings.ollama_llm_model,
         messages=messages,
         stream=True,
+        options={"num_ctx": 16384, "temperature": 0.45},
     )
     acc = StreamUsageStats(provider="ollama", model=settings.ollama_llm_model)
     async for chunk in stream:

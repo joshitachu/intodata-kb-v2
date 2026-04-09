@@ -14,11 +14,9 @@ dependencies = [
     "litellm>=1.40",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
-    "jinja2>=3.1",
     "rich>=13.0",
     "pathspec>=0.12",
     "gitpython>=3.1",
-    "weasyprint>=62.0",
     "requests>=2.31",
     "pyyaml>=6.0",
 ]

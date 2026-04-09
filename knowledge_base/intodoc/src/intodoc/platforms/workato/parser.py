@@ -873,6 +873,43 @@ class WorkatoParser:
 
     # ── Phase 8: Build manifest ─────────────────────────────────────
 
+    # Internal providers to skip when extracting external systems
+    _INTERNAL_PROVIDERS: frozenset[str] = frozenset({
+        "clock", "workato", "workato_scheduler", "logger",
+    })
+
+    def _extract_external_systems(self, recipe_data: dict) -> list[str]:
+        """Extract external system display names from a recipe's provider fields."""
+        providers: set[str] = set()
+        self._collect_providers(recipe_data, providers)
+        # Filter internal providers
+        providers -= self._INTERNAL_PROVIDERS
+        # Map to display names
+        systems: set[str] = set()
+        for p in providers:
+            display = _PROVIDER_TYPE_MAP.get(p, p.replace("_", " ").title())
+            systems.add(display)
+        return sorted(systems)
+
+    @staticmethod
+    def _collect_providers(obj: object, providers: set[str]) -> None:
+        """Recursively collect provider/application values from parsed recipe JSON."""
+        if isinstance(obj, dict):
+            for key in ("provider", "application", "trigger_application"):
+                val = obj.get(key)
+                if isinstance(val, str) and val:
+                    providers.add(val)
+            apps = obj.get("action_applications")
+            if isinstance(apps, list):
+                for app in apps:
+                    if isinstance(app, str) and app:
+                        providers.add(app)
+            for val in obj.values():
+                WorkatoParser._collect_providers(val, providers)
+        elif isinstance(obj, list):
+            for item in obj:
+                WorkatoParser._collect_providers(item, providers)
+
     def _build_manifest(
         self, jobs: list[ParsedJob], routines: list[Routine],
     ) -> ProjectManifest:
@@ -884,6 +921,7 @@ class WorkatoParser:
         job_contexts_used: dict[str, list[str]] = {}
         routines_used_by: dict[str, list[str]] = {}
         job_groups: dict[str, str] = {}
+        job_external_systems: dict[str, list[str]] = {}
 
         for job in jobs:
             job_groups[job.name] = job.group
@@ -905,6 +943,12 @@ class WorkatoParser:
                 for conn in conns_used:
                     connection_used_by.setdefault(conn, []).append(job.name)
 
+            # External systems (derived from provider fields)
+            if raw:
+                ext_systems = self._extract_external_systems(raw)
+                if ext_systems:
+                    job_external_systems[job.name] = ext_systems
+
         return ProjectManifest(
             job_calls=job_calls,
             job_called_by=job_called_by,
@@ -913,6 +957,7 @@ class WorkatoParser:
             job_contexts_used=job_contexts_used,
             routines_used_by=routines_used_by,
             job_groups=job_groups,
+            job_external_systems=job_external_systems,
         )
 
     # ── Raw JSON Helpers ─────────────────────────────────────────────

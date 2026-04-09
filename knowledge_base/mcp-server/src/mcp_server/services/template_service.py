@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from mcp_server.db.template_models import (
+    TIER_BY_CATEGORY,
     ProfileAssignment,
     Template,
     TemplateProfile,
@@ -32,15 +33,18 @@ class TemplateService:
         *,
         category: str | None = None,
         platform: str | None = None,
+        tier: str | None = None,
         active_only: bool = True,
     ) -> list[Template]:
-        stmt = select(Template)
+        stmt = select(Template).options(selectinload(Template.versions))
         if category:
             stmt = stmt.where(Template.category == category)
         if platform:
             stmt = stmt.where(
                 (Template.platform == platform) | (Template.platform.is_(None))
             )
+        if tier:
+            stmt = stmt.where(Template.tier == tier)
         if active_only:
             stmt = stmt.where(Template.is_active.is_(True))
         stmt = stmt.order_by(Template.category, Template.slug)
@@ -70,13 +74,16 @@ class TemplateService:
         display_name: str,
         platform: str | None = None,
         description: str | None = None,
+        tier: str | None = None,
     ) -> Template:
+        resolved_tier = tier or TIER_BY_CATEGORY.get(category, "configurable")
         template = Template(
             slug=slug,
             category=category,
             platform=platform,
             display_name=display_name,
             description=description,
+            tier=resolved_tier,
         )
         self.db.add(template)
         await self.db.flush()
@@ -148,6 +155,14 @@ class TemplateService:
         template = await self.get_template(slug)
         if not template:
             return None
+
+        # Policy templates can only be updated by privileged actors
+        _PRIVILEGED_ACTORS = {"system", "seed_script", "migration"}
+        if template.tier == "policy" and (created_by or "") not in _PRIVILEGED_ACTORS:
+            raise PermissionError(
+                f"Template '{slug}' is a policy template and cannot be edited via the dashboard. "
+                "Policy templates are managed via source control and the seed script."
+            )
 
         # Get next version number
         stmt = select(func.max(TemplateVersion.version_number)).where(

@@ -1,5 +1,6 @@
 import { useProfile, useTemplates, useVersions, useSetAssignment } from "../../hooks/useTemplates";
 import { useState } from "react";
+import NewTemplateModal from "./NewTemplateModal";
 
 interface Props {
   profileId: number;
@@ -7,8 +8,11 @@ interface Props {
 
 export default function ProfileDetail({ profileId }: Props) {
   const { data: profile, isLoading } = useProfile(profileId);
-  const { data: templatesData } = useTemplates();
+  const { data: templatesData } = useTemplates({
+    platform: profile?.platform ?? undefined,
+  });
   const [addingSlug, setAddingSlug] = useState<string | null>(null);
+  const [showNewTemplate, setShowNewTemplate] = useState(false);
 
   if (isLoading || !profile) {
     return <div className="p-4 text-sm text-slate-500">Loading profile...</div>;
@@ -67,9 +71,21 @@ export default function ProfileDetail({ profileId }: Props) {
                 </option>
               ))}
             </select>
+            <button
+              className="btn-ghost !text-xs whitespace-nowrap"
+              onClick={() => setShowNewTemplate(true)}
+            >
+              + New
+            </button>
           </div>
         )}
       </div>
+
+      <NewTemplateModal
+        open={showNewTemplate}
+        onClose={() => setShowNewTemplate(false)}
+        onCreated={(slug) => setAddingSlug(slug)}
+      />
     </div>
   );
 }

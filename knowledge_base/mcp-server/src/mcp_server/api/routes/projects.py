@@ -31,9 +31,15 @@ from mcp_server.schemas import (
     GenerateRequest,
     GenerateRunListResponse,
     GenerateRunResponse,
+    GenerateSummariesResponse,
+    GraphConnectionInfo,
+    JobDetailResponse,
+    JobDocSection,
+    JobScanMetadata,
     LogFileListResponse,
     LogFileResponse,
     PdfGenerateResponse,
+    ProjectGraphResponse,
     ProjectListResponse,
     ProjectResponse,
     ProjectUsageResponse,
@@ -51,6 +57,7 @@ from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.scanner_service import ScannerService
+from mcp_server.services.summary_service import SummaryService
 
 router = APIRouter(tags=["projects"])
 
@@ -256,6 +263,23 @@ async def _run_scan_background(
             await registry.complete_scan_run(
                 run_id, status="completed", job_count=result["job_count"]
             )
+
+            # Auto-generate AI summaries after successful scan
+            if config.auto_generate_summaries:
+                try:
+                    svc = SummaryService()
+                    summary_result = await svc.generate_project_summaries(
+                        project_id, platform,
+                    )
+                    logger.info(
+                        "Auto-generated %d summaries for %s",
+                        summary_result["summary_count"], project_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Auto-summary generation failed for %s: %s",
+                        project_id, e,
+                    )
         else:
             await registry.update_status(
                 project_id, "error", error_message=result.get("error")
@@ -283,6 +307,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
     background_tasks.add_task(
         _run_generate_background, req.project_id, run_id, log_mgr,
         template_profile_id=req.template_profile_id,
+        model=req.model,
     )
     return StatusResponse(
         status="generation_triggered",
@@ -291,7 +316,12 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
 
 
 async def _run_generate_background(
-    project_id: str, run_id: int, log_mgr, *, template_profile_id: int | None = None,
+    project_id: str,
+    run_id: int,
+    log_mgr,
+    *,
+    template_profile_id: int | None = None,
+    model: str | None = None,
 ):
     """Background task: spawn Claude Code for doc generation.
 
@@ -300,7 +330,9 @@ async def _run_generate_background(
     """
     claude = ClaudeService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
-    result = await claude.generate_docs(project_id, template_profile_id=template_profile_id)
+    result = await claude.generate_docs(
+        project_id, template_profile_id=template_profile_id, model=model,
+    )
 
     success = result.get("success", False)
 
@@ -380,6 +412,7 @@ async def _run_generate_background(
                 num_turns=result.get("num_turns"),
                 session_id=result.get("session_id"),
                 doc_count=doc_count,
+                model_name=result.get("model_name"),
                 error_message=None,
                 log_file=log_file,
                 template_profile_id=template_profile_id,
@@ -408,6 +441,7 @@ async def _run_generate_background(
                 num_turns=result.get("num_turns"),
                 session_id=result.get("session_id"),
                 doc_count=0,
+                model_name=result.get("model_name"),
                 error_message="Doc generation failed",
                 log_file=log_file,
             )
@@ -774,6 +808,7 @@ def _run_to_response(r) -> GenerateRunResponse:
         doc_count=r.doc_count,
         error_message=r.error_message,
         log_file=r.log_file,
+        model_name=getattr(r, "model_name", None),
         template_profile_id=getattr(r, "template_profile_id", None),
         template_snapshot=getattr(r, "template_snapshot", None),
     )
@@ -943,6 +978,513 @@ async def get_assessment(project_id: str):
         path=str(html_path),
         media_type="text/html",
     )
+
+
+# --- Project Graph (Topology) ---
+
+
+# ── Fallback system derivation for old scans ─────────────────────────
+# Used at request time when manifest lacks job_external_systems.
+# Mirrors the scanner logic so the REST API stays self-contained.
+
+_FALLBACK_INTERNAL_COMPONENTS: frozenset[str] = frozenset({
+    "tMap", "tLogRow", "tJavaRow", "tJava", "tJavaFlex", "tPrejob", "tPostjob",
+    "tRunJob", "tFixedFlowInput", "tFlowToIterate", "tSetGlobalVar", "tContextLoad",
+    "tRouteInput", "tRouteOutput",
+    "tUnite", "tReplicate", "tSortRow", "tFilterRow", "tAggregateRow",
+    "tFileInputDelimited", "tFileOutputDelimited", "tFileInputExcel", "tFileOutputExcel",
+    "tWriteJSONField", "tExtractJSONFields", "tExtractXMLField",
+    "tSchemaComplianceCheck", "tSleep", "tLoop", "tFileList", "tFileDelete",
+    "tFileCopy", "tFileExist",
+    "tMsgBox", "tWarn", "tDie", "tBufferInput", "tBufferOutput",
+    "tNormalize", "tDenormalize", "tIterateToFlow",
+})
+
+_FALLBACK_TALEND_MAP: dict[str, str] = {
+    "tSalesforce": "Salesforce", "tBigQuery": "BigQuery",
+    "tMysql": "MySQL", "tMSSql": "MSSQL", "tPostgresql": "PostgreSQL",
+    "tOracle": "Oracle", "tSnowflake": "Snowflake", "tRedshift": "Redshift",
+    "tMongoDB": "MongoDB", "tCassandra": "Cassandra",
+    "tAmazonS3": "Amazon S3", "tS3": "Amazon S3",
+    "tRESTClient": "REST API", "tREST": "REST API",
+    "tHTTP": "HTTP API", "tSOAP": "SOAP API", "tWebService": "SOAP API",
+    "tKafka": "Kafka", "tFTP": "FTP", "tSFTP": "SFTP",
+    "tSAP": "SAP", "tLDAP": "LDAP", "tJDBC": "JDBC",
+    "tElasticsearch": "Elasticsearch", "tDynamoDB": "DynamoDB",
+    "tNetSuite": "NetSuite", "tSendMail": "Email",
+    "tHBase": "HBase", "tHive": "Hive", "tImpala": "Impala", "tNeo4j": "Neo4j",
+    "tAzureStorage": "Azure Storage", "tGoogleStorage": "Google Cloud Storage",
+    "tActiveMQ": "ActiveMQ", "tRabbitMQ": "RabbitMQ", "tMarketo": "Marketo",
+}
+
+_FALLBACK_WORKATO_MAP: dict[str, str] = {
+    "salesforce": "Salesforce", "netsuite": "NetSuite",
+    "postgresql": "PostgreSQL", "mysql": "MySQL", "snowflake": "Snowflake",
+    "redshift": "Redshift", "bigquery": "BigQuery",
+    "s3": "S3", "gcs": "GCS", "http": "HTTP/REST",
+    "workato_webhooks": "Webhook", "ftp": "FTP", "sftp": "SFTP", "smtp": "SMTP",
+    "jira": "Jira", "zendesk": "Zendesk", "slack": "Slack", "teams": "MSTeams",
+    "sap": "SAP", "oracle": "Oracle", "mssql": "MSSQL",
+    "dynamodb": "DynamoDB", "mongodb": "MongoDB",
+    "google_sheets": "GoogleSheets", "box": "Box", "dropbox": "Dropbox",
+    "workday": "Workday", "hubspot": "HubSpot", "marketo": "Marketo",
+    "stripe": "Stripe", "quickbooks": "QuickBooks", "xero": "Xero",
+    "servicenow": "ServiceNow", "email": "Email",
+}
+
+_FALLBACK_WORKATO_INTERNAL: frozenset[str] = frozenset({
+    "clock", "workato", "workato_scheduler", "logger",
+})
+
+
+def _fallback_talend_system(component_type: str) -> str | None:
+    """Derive external system from a Talend component type (fallback)."""
+    if component_type in _FALLBACK_INTERNAL_COMPONENTS:
+        return None
+    best: str | None = None
+    best_len = 0
+    for prefix, system in _FALLBACK_TALEND_MAP.items():
+        if component_type.startswith(prefix) and len(prefix) > best_len:
+            best = system
+            best_len = len(prefix)
+    if best:
+        return best
+    name = component_type
+    if name.startswith("t") and len(name) > 1:
+        name = name[1:]
+    for suffix in ("Input", "Output", "Connection", "Close", "Open", "Row",
+                    "BulkExec", "CDC", "Commit", "Rollback", "Lookup"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name if len(name) >= 3 else None
+
+
+def _fallback_collect_providers(obj: object, providers: set[str]) -> None:
+    """Recursively collect provider/application values from JSON."""
+    if isinstance(obj, dict):
+        for key in ("provider", "application", "trigger_application"):
+            val = obj.get(key)
+            if isinstance(val, str) and val:
+                providers.add(val)
+        apps = obj.get("action_applications")
+        if isinstance(apps, list):
+            for app in apps:
+                if isinstance(app, str) and app:
+                    providers.add(app)
+        for val in obj.values():
+            _fallback_collect_providers(val, providers)
+    elif isinstance(obj, list):
+        for item in obj:
+            _fallback_collect_providers(item, providers)
+
+
+def _derive_systems_from_job_json(job_data: dict, platform: str) -> list[str]:
+    """Derive external systems from per-job JSON at request time.
+
+    Used for old scans that predate the job_external_systems manifest field.
+    """
+    if platform == "talend":
+        systems: set[str] = set()
+        for comp in job_data.get("components", []):
+            system = _fallback_talend_system(comp.get("component_type", ""))
+            if system:
+                systems.add(system)
+        return sorted(systems)
+
+    if platform == "workato":
+        providers: set[str] = set()
+        for comp in job_data.get("components", []):
+            for param in comp.get("params", []):
+                value = param.get("value", "")
+                parsed = None
+                if isinstance(value, str) and value.startswith(("{", "[")):
+                    try:
+                        parsed = json.loads(value)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                if parsed is not None:
+                    _fallback_collect_providers(parsed, providers)
+        providers -= _FALLBACK_WORKATO_INTERNAL
+        return sorted({_FALLBACK_WORKATO_MAP.get(p, p.replace("_", " ").title()) for p in providers})
+
+    return []
+
+
+def _derive_direction(path: str, job_name: str) -> str:
+    """Derive data-flow direction from job path or naming conventions."""
+    path_lower = path.lower().replace("\\", "/")
+    # Path-based: Account/In/... or Account/Out/...
+    if "/in/" in path_lower:
+        return "OnRamp"
+    if "/out/" in path_lower:
+        return "OffRamp"
+    # Name-based conventions
+    name_lower = job_name.lower()
+    is_on = "onramp" in name_lower or "_onramp_" in name_lower
+    is_off = (
+        "offramp" in name_lower
+        or "_offramp_" in name_lower
+        or "_return_" in name_lower
+    )
+    if is_on and is_off:
+        return "Bidirectional"
+    if is_on:
+        return "OnRamp"
+    if is_off:
+        return "OffRamp"
+    return ""
+
+
+def _derive_node_summary(
+    job_name: str,
+    component_types: list[str],
+    external_systems: list[str],
+    direction: str,
+) -> str:
+    """Lightweight summary for graph nodes (no file I/O)."""
+    parts: list[str] = []
+    dir_label = {
+        "OnRamp": "Reads from",
+        "OffRamp": "Writes to",
+        "Bidirectional": "Syncs with",
+    }.get(direction, "Connects to")
+
+    if external_systems:
+        systems = " and ".join(external_systems[:3])
+        parts.append(f"{dir_label} {systems}")
+    if component_types:
+        notable = [t for t in component_types if t.startswith("t") and t[1:2].isupper()]
+        if notable:
+            parts.append(f"using {', '.join(notable[:3])}")
+    if not parts:
+        return ""
+    return ". ".join(parts) + "."
+
+
+_DOC_SUMMARY_HEADINGS = {
+    "data flow", "data flows", "lineage", "architecture", "inventory",
+    "business logic", "business rules", "overview", "purpose",
+}
+
+_MD_NOISE_RE = re.compile(r"\*\*|^\|.*\|$|^[-=]+$|^#+\s*", re.MULTILINE)
+
+
+def _derive_job_summary(
+    job_name: str,
+    doc_sections: list[JobDocSection],
+    component_types: list[str],
+    external_systems: list[str],
+) -> str:
+    """Rich summary from doc sections for the detail panel."""
+    # Try to find a relevant paragraph in doc sections
+    for section in doc_sections:
+        heading_lower = section.heading.lower()
+        if not any(kw in heading_lower for kw in _DOC_SUMMARY_HEADINGS):
+            continue
+        # Find paragraphs mentioning the job name
+        paragraphs = section.content.split("\n\n")
+        for para in paragraphs:
+            if job_name in para or job_name.lower() in para.lower():
+                clean = _MD_NOISE_RE.sub("", para).strip()
+                clean = re.sub(r"\s+", " ", clean)
+                if len(clean) < 20:
+                    continue
+                # Take first 2-3 sentences
+                sentences = re.split(r"(?<=[.!?])\s+", clean)
+                return " ".join(sentences[:3]).strip()
+
+    # Second pass: any section, first substantive paragraph mentioning the job
+    for section in doc_sections:
+        paragraphs = section.content.split("\n\n")
+        for para in paragraphs:
+            if job_name not in para and job_name.lower() not in para.lower():
+                continue
+            clean = _MD_NOISE_RE.sub("", para).strip()
+            clean = re.sub(r"\s+", " ", clean)
+            if len(clean) < 20:
+                continue
+            sentences = re.split(r"(?<=[.!?])\s+", clean)
+            return " ".join(sentences[:3]).strip()
+
+    # Fallback: synthesize from component data
+    if external_systems:
+        systems = ", ".join(external_systems[:4])
+        return f"Integration job connecting to {systems}."
+    if component_types:
+        types = ", ".join(component_types[:4])
+        return f"Processing job using {types}."
+    return ""
+
+
+@router.get("/projects/{project_id}/graph", response_model=ProjectGraphResponse)
+async def get_project_graph(project_id: str):
+    """Return manifest + connections data for topology visualization.
+
+    Reads external systems from manifest.job_external_systems (populated by
+    the scanner). Falls back to runtime derivation for old scans.
+    """
+    # Look up platform for fallback derivation on old scans
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+    platform = project.platform if project else "talend"
+
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
+    manifest_path = scan_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail=f"No scan data for project: {project_id}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    # Load connections.json
+    connections: list[GraphConnectionInfo] = []
+    connections_path = scan_dir / "connections.json"
+    if connections_path.exists():
+        raw = json.loads(connections_path.read_text(encoding="utf-8"))
+        seen: set[str] = set()
+        for c in raw:
+            name = c.get("name", "")
+            if name and name not in seen:
+                seen.add(name)
+                connections.append(GraphConnectionInfo(
+                    name=name,
+                    connection_type=c.get("connection_type", ""),
+                    host=c.get("host", ""),
+                    database=c.get("database", ""),
+                ))
+
+    # Check if docs exist for this project
+    docs_dir = config.project_root / "output" / project_id / "docs"
+    has_docs = docs_dir.exists() and any(docs_dir.glob("*.md"))
+
+    # Read external systems from manifest (populated by scanner)
+    job_external_systems: dict[str, list[str]] = manifest.get("job_external_systems", {})
+    needs_runtime_derivation = not job_external_systems
+
+    # Build job_connections_used / connection_used_by from external systems
+    # if the manifest doesn't already have connection edges
+    job_connections_used: dict[str, list[str]] = manifest.get("job_connections_used", {})
+    connection_used_by: dict[str, list[str]] = manifest.get("connection_used_by", {})
+    derive_edges = not job_connections_used
+
+    # Load AI-generated summaries (empty dict if not yet generated)
+    ai_summaries = SummaryService.load_summaries(project_id)
+
+    job_groups: dict[str, str] = manifest.get("job_groups", {})
+    jobs_dir = scan_dir / "jobs"
+    job_metadata: dict[str, JobScanMetadata] = {}
+    all_system_names: set[str] = set()
+
+    for job_name, group in job_groups.items():
+        ext_systems = job_external_systems.get(job_name, [])
+
+        # Extract component types from per-job JSON
+        comp_types: list[str] = []
+        comp_count = 0
+        purpose = ""
+        author = ""
+        modification_date = ""
+        job_data: dict | None = None
+
+        job_path = jobs_dir / group / f"{job_name}.json"
+        if job_path.exists():
+            try:
+                job_data = json.loads(job_path.read_text(encoding="utf-8"))
+                purpose = job_data.get("purpose", "")
+                author = job_data.get("author", "")
+                modification_date = job_data.get("modification_date", "")
+                components = job_data.get("components", [])
+                comp_count = len(components)
+                seen_types: set[str] = set()
+                for comp in components:
+                    ctype = comp.get("component_type", "")
+                    if ctype and ctype not in seen_types:
+                        seen_types.add(ctype)
+                        comp_types.append(ctype)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Fallback: derive systems at request time for old scans
+        if needs_runtime_derivation and not ext_systems and job_data:
+            ext_systems = _derive_systems_from_job_json(job_data, platform)
+
+        job_path_str = str(job_path) if job_path.exists() else ""
+        direction = _derive_direction(job_path_str, job_name)
+        # Prefer AI summary, fall back to heuristic
+        node_summary = ai_summaries.get(job_name) or _derive_node_summary(
+            job_name, comp_types, ext_systems, direction,
+        )
+
+        job_metadata[job_name] = JobScanMetadata(
+            purpose=purpose,
+            author=author,
+            modification_date=modification_date,
+            component_count=comp_count,
+            component_types=comp_types,
+            subgroup=group,
+            has_docs=has_docs,
+            external_systems=ext_systems,
+            summary=node_summary,
+            direction=direction,
+        )
+
+        # Synthesize connection edges from external systems
+        if derive_edges and ext_systems:
+            job_connections_used[job_name] = ext_systems
+            for sys_name in ext_systems:
+                all_system_names.add(sys_name)
+                if sys_name not in connection_used_by:
+                    connection_used_by[sys_name] = []
+                if job_name not in connection_used_by[sys_name]:
+                    connection_used_by[sys_name].append(job_name)
+
+    # If we derived edges, update manifest and add synthetic connection entries
+    if derive_edges and all_system_names:
+        manifest["job_connections_used"] = job_connections_used
+        manifest["connection_used_by"] = connection_used_by
+
+        existing_conn_names = {c.name for c in connections}
+        for sys_name in sorted(all_system_names):
+            if sys_name not in existing_conn_names:
+                connections.append(GraphConnectionInfo(
+                    name=sys_name,
+                    connection_type="derived",
+                ))
+
+    return ProjectGraphResponse(
+        project_id=project_id,
+        manifest=manifest,
+        connections=connections,
+        job_metadata=job_metadata,
+    )
+
+
+@router.get("/projects/{project_id}/jobs/{job_name}/detail", response_model=JobDetailResponse)
+async def get_job_detail(project_id: str, job_name: str):
+    """Return full scan data and relevant doc sections for a specific job."""
+    # Sanitize job_name
+    if "/" in job_name or "\\" in job_name or ".." in job_name:
+        raise HTTPException(status_code=400, detail="Invalid job name")
+
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
+    manifest_path = scan_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail=f"No scan data for project: {project_id}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    job_groups: dict[str, str] = manifest.get("job_groups", {})
+    group = job_groups.get(job_name, "")
+
+    if not group:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_name}")
+
+    # Read job JSON
+    job_path = scan_dir / "jobs" / group / f"{job_name}.json"
+    scan_data: dict = {}
+    if job_path.exists():
+        try:
+            scan_data = json.loads(job_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Find relevant doc sections mentioning this job
+    doc_sections: list[JobDocSection] = []
+    docs_dir = config.project_root / "output" / project_id / "docs"
+    if not docs_dir.exists():
+        docs_dir = config.project_root / "output" / project_id / "docs_staging"
+
+    if docs_dir.exists():
+        for md_path in sorted(docs_dir.glob("*.md")):
+            try:
+                content = md_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            # Split by ## headings and find sections mentioning the job
+            sections = re.split(r"(?=^## )", content, flags=re.MULTILINE)
+            for section in sections:
+                if job_name in section:
+                    lines = section.strip().split("\n", 1)
+                    heading = lines[0].lstrip("#").strip() if lines else ""
+                    body = lines[1].strip() if len(lines) > 1 else ""
+                    if heading and body:
+                        doc_sections.append(JobDocSection(heading=heading, content=body))
+
+    # Derive direction and summary
+    job_path_str = str(job_path) if job_path.exists() else ""
+    direction = _derive_direction(job_path_str, job_name)
+
+    comp_types = list({
+        c.get("component_type", "")
+        for c in scan_data.get("components", [])
+        if c.get("component_type")
+    })
+    ext_systems = list({
+        s for c in scan_data.get("components", [])
+        for s in ([c.get("external_system")] if c.get("external_system") else [])
+    })
+    # Prefer AI summary, fall back to heuristic
+    ai_summaries = SummaryService.load_summaries(project_id)
+    summary = ai_summaries.get(job_name) or _derive_job_summary(
+        job_name, doc_sections, comp_types, ext_systems,
+    )
+
+    return JobDetailResponse(
+        project_id=project_id,
+        job_name=job_name,
+        group=group,
+        scan_data=scan_data,
+        doc_sections=doc_sections,
+        summary=summary,
+        direction=direction,
+    )
+
+
+# --- AI Summaries ---
+
+
+@router.post(
+    "/projects/{project_id}/generate-summaries",
+    response_model=GenerateSummariesResponse,
+)
+async def generate_summaries(
+    project_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Generate AI-powered job summaries using Ollama (runs in background)."""
+    await require_project_access(request, project_id)
+
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
+    if not (scan_dir / "manifest.json").exists():
+        return GenerateSummariesResponse(
+            project_id=project_id, status="no_scan",
+        )
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+    platform = project.platform if project else "talend"
+
+    background_tasks.add_task(_run_summaries_background, project_id, platform)
+
+    return GenerateSummariesResponse(
+        project_id=project_id, status="started",
+    )
+
+
+async def _run_summaries_background(project_id: str, platform: str) -> None:
+    """Background task: generate AI summaries for all jobs."""
+    svc = SummaryService()
+    try:
+        result = await svc.generate_project_summaries(project_id, platform)
+        logger.info(
+            "Summary generation for %s: %d summaries, %d errors",
+            project_id, result["summary_count"], result["error_count"],
+        )
+    except Exception as e:
+        logger.error("Summary generation failed for %s: %s", project_id, e)
 
 
 # --- Deep Dive ---
