@@ -1,5 +1,162 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-04-10
+
+### [Perf]: Topology perf round 3 — root-cause for scherpenhuizen-talend
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+    - Extended `_FALLBACK_INTERNAL_COMPONENTS` (lines ~990-1006) to include the
+      tRunJob family + diagnostics: `tLogCatcher`, `tStatCatcher`, `tFlowMeter`,
+      `tFlowMeterCatcher`, `tChronometerStart`, `tChronometerStop`, `tAssert`,
+      `tAssertCatcher`. (`tRunJob`, `tPrejob`, `tPostjob`, `tWarn`, `tDie`,
+      `tLogRow` were already present.)
+    - In `_derive_systems_from_job_json` (lines ~1087-1105) for `platform == "talend"`:
+      added `and not system.startswith("REFERENCE")` belt-and-braces filter to
+      drop synthesized REFERENCE:* names that leak through the suffix-stripping
+      path; capped the result at `sorted(systems)[:6]` so a single hub-job
+      can't fan out across the entire view.
+  - `RAG_pipeline/frontend/app/topology/page.tsx`
+    - Added `lastFitKeyRef = useRef<string|null>(null)` next to `expandAnchorRef`
+      to gate fitView animations behind the meaningful layout identity.
+    - In the layout `useEffect`, replaced `setNodes([...bgNodes, ...laid])` with
+      a wrapper that initializes `data.dimmed: false, data.highlighted: false`
+      on every laid-out node — fixes the `undefined !== false` strict-equality
+      gap that defeated the round-2 same-reference fast path on the first
+      hover after a layout.
+    - In the same effect, gated the full-layout `fitView({padding: 0.1, duration: 300})`
+      call behind `fitKey = ${selectedProject}|${direction}|${compactMode}|${laid.length}`
+      vs `lastFitKeyRef.current` so the 300ms zoom no longer re-fires every
+      time `groupMembership` rebuilds with the same shape. Added `selectedProject`
+      to the effect's dependency array.
+    - In the project-change reset effect, added `lastFitKeyRef.current = null`
+      so a new project still gets its initial fit.
+    - In the search `useEffect` (`searchMatchIds.size > 0` block), capped the
+      auto-fit to `<= 8` matches so single-letter searches that match dozens
+      of nodes don't trigger a 400ms zoom-fit on every keystroke.
+- **Problem**: After rounds 1 and 2 of the topology perf pass, every project the
+  user tested felt snappy except `scherpenhuizen-talend` (toolbar showed 43 jobs
+  / 41 conn / 12 groups). Hovering and toggling on it still stuttered, ripple
+  was visible, viewport got stolen on direction/compact toggles.
+- **Root cause** (two-layer):
+  1. **Backend was synthesizing junk hub edges.** The on-disk manifest for
+     `scherpenhuizen-talend` has empty `job_connections_used`, `connection_used_by`,
+     and an absent `job_external_systems` (legacy scan). The `/projects/{id}/graph`
+     endpoint hit the runtime fallback in `_derive_systems_from_job_json` →
+     `_fallback_talend_system`. The fallback's suffix-stripping heuristic
+     (strip leading `t`, strip `Input/Output/Connection/...` suffixes) treats
+     `tRunJob`'s payload `REFERENCE:sendToMonitoringMOM` /
+     `REFERENCE:Trigger_Next_Interface_92` as foreign systems. Result: ~37
+     synthetic connection nodes and ~256 job→connection edges (vs the 0 that
+     the on-disk manifest implies), most of them noise, all of them hub-shaped.
+     Hub jobs like Oracle (29 jobs) and `REFERENCE:sendToMonitoringMOM` (27
+     jobs) caused every hover to dim ~30 adjacencies, and dagre had to lay
+     out 80+ nodes / 271 edges. **18x more edges** than the manifest hinted at.
+  2. **Frontend amplifiers defeated round-2's wins on the first hover after
+     any layout.** (a) `setNodes([...bgNodes, ...laid])` wrote nodes whose
+     `data.dimmed` was `undefined`, not `false`. The hover effect's
+     same-reference fast path is `if (n.data.dimmed === !isMatch && n.data.highlighted === isMatch) return n;`
+     — `undefined !== false` for every node, so every node got rewritten on the
+     first hover, defeating the whole optimization. After the first hover all
+     nodes had explicit `false`/`true` and subsequent hovers were fine — which
+     matches the user's lived experience: "all the others are fine, only
+     scherpenhuizen feels bad". (b) `fitView({duration: 300})` from the layout
+     effect re-fired every time `groupMembership` rebuilt with the same shape;
+     `fitView({duration: 400})` from the search effect re-fired on every
+     keystroke even when the match set was huge. Both stack and dominate frame
+     time on heavy graphs.
+- **Change**:
+  1. **Backend**: dropped `REFERENCE:*` synthesis at the source by adding
+     tRunJob-family component types to `_FALLBACK_INTERNAL_COMPONENTS` so they
+     return `None` from `_fallback_talend_system`. Added a defensive
+     `not system.startswith("REFERENCE")` filter in
+     `_derive_systems_from_job_json` against any future component type that
+     leaks REFERENCE:* through the suffix-stripping path. Capped the
+     fallback at 6 systems per job (modern scans populate
+     `job_external_systems` explicitly and bypass this path entirely, so the
+     cap is a noise-floor on the legacy fallback only).
+  2. **Frontend**: initialized `data.dimmed: false, data.highlighted: false`
+     on every laid-out node so the round-2 same-reference fast path takes
+     effect on the FIRST hover after a layout. Gated layout-effect `fitView`
+     behind `lastFitKeyRef` so only meaningful layout changes (project /
+     direction / compactMode / node count) re-zoom. Capped search-effect
+     `fitView` to `<= 8` matches so single-letter searches don't auto-zoom.
+- **Why this approach**: The backend fix is surgical — it touches only the
+  runtime fallback path used by legacy scans missing `job_external_systems`,
+  so projects with modern scans (e.g. `esbmain`) are not affected. The
+  frontend fix is also surgical — three targeted edits all consistent with
+  rounds 1/2's same-reference reconciliation pattern; no new components, no
+  new dependencies, no behavior changes the user has to learn. Real Talend
+  external systems (Oracle, MSSql, FTP, SAP, Salesforce, etc.) still appear
+  in scherpenhuizen-talend's topology — only the synthetic `REFERENCE:*`
+  noise disappears. If the user wants the REFERENCE noise back, the scanner
+  should populate `job_external_systems` explicitly via tRunJob → called-job
+  tracing — that's a scanner feature, not a graph-rendering feature.
+- **Trade-offs (intentional)**:
+  - Marginal `REFERENCE:*` "external systems" disappear from
+    scherpenhuizen-talend (they were never real systems anyway).
+  - `fitView` no longer auto-runs every time `groupMembership` rebuilds.
+    First load and explicit direction/compact toggles still fit.
+  - Search no longer auto-fits when there are >8 matches.
+- **Verification**: Backend needs `sudo systemctl restart mcp-server`
+  (editable install picks up the Python change). Frontend needs
+  `sudo docker compose up -d --build frontend` (prod ships a baked Next.js
+  standalone build). Smoke targets: (1) `GET /mcp/projects/scherpenhuizen-talend/graph`
+  with auth cookie should return ~10-15 connections (was ~37) and zero
+  entries starting with `REFERENCE:`. (2) Hover-rip across the canvas on
+  `/topology` for scherpenhuizen-talend should be instant on the first
+  hover after layout. (3) Type a search query — first letter should not
+  trigger a zoom-fit; once the match narrows to <=8, it should auto-fit.
+  (4) Smoke `esbmain` — its manifest already has `job_external_systems`
+  so its connection count should be unchanged (bypasses runtime derivation
+  entirely).
+
+### [Perf]: Topology hover/search node-reference stability (round 2)
+
+- **Files changed**: `RAG_pipeline/frontend/app/topology/page.tsx` — rewrote both the search-dimming `useEffect` (~lines 358-419) and the hover-dimming `useEffect` (~lines 432-491) so that `setNodes`/`setEdges` callbacks return the **same reference** for any node or edge whose `data.dimmed`/`data.highlighted` (or `style.opacity`) didn't actually change. The "clear" branch (`searchMatchIds === null` / `hoveredNodeId === null`) also short-circuits per node when it's already cleared.
+- **Problem**: After round 1 of the perf pass (backdrop-filter / infinite animations / mount animation / inline transitions / hover early-out / minimap gating), the topology view was still visibly "buggy" on small projects like `scherpenhuizen-talend` (43 jobs + 41 connections + 12 groups, ~84 nodes + 12 group-bg). User reported it specifically by name.
+- **Root cause**: Even with the `prevHoverRef` early-out, every *distinct* hover entry still rewrote the entire 80+ node array. The previous code did `nds.map((n) => ({ ...n, data: { ...n.data, dimmed, highlighted } }))` which produced a new node reference (and new `data` reference) for **every** node, regardless of whether the dimmed/highlighted values actually changed. ReactFlow saw 80+ "changed" nodes and reconciled all of them; `React.memo` on `JobNode`/`ConnectionNode`/`GroupSummaryNode` couldn't help because the `data` prop was a brand-new object every time. Net effect: each mouse-enter on a new node triggered a full graph re-render even though only ~5 nodes' dimming state had actually changed.
+- **Change**: Inside both `setNodes` callbacks, compare `n.data.dimmed === newDimmed && n.data.highlighted === newHighlighted` and `return n` (same reference) when nothing changed. Only return a new `{ ...n, data: { ... } }` when the values actually differ. Same idea for edges: compare `e.style?.opacity ?? undefined` against the new opacity and return the same edge ref when unchanged. Added a destructuring trick `const { opacity: _drop, ...restStyle } = e.style ?? {}` to drop `opacity` from the style object instead of setting it to `undefined` (which would still produce a new style object).
+- **Why this approach**: Preserves all existing behavior (search dimming, hover dimming, edge fading) but stops generating spurious reference changes. With same-reference data, ReactFlow's per-node component (memoized via `memo(JobNodeComponent)` etc.) skips render entirely. The dominant hover-time work goes from "rewrite + reconcile + repaint 80 nodes" to "rewrite + reconcile + repaint ~5-10 nodes" — roughly a 10x reduction on a graph this size.
+- **Verification**: Frontend rebuilt via `sudo docker compose up -d --build frontend` (build succeeded; `intodata-kb-v2-frontend-1` healthy in 8s). Smoke test target: `scherpenhuizen-talend` topology — hover-rip across the canvas, hover should now feel snappy without ripple lag, edge dimming should be instant, no visual regressions.
+
+### [Perf]: Topology view performance pass — cut lag when many things are open
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/app/topology/page.tsx` — removed `backdropFilter: "blur(1px)"` from `GroupBackgroundNode` (was line 65); added `prevHoverRef = useRef<string|null>(null)` and an early-out at the top of the hover-dimming `useEffect` (lines ~423-432); gated `<MiniMap>` JSX behind `(visibleNodes.length <= 150 || isCollapsed)` (was line 749).
+  - `RAG_pipeline/frontend/app/globals.css` — removed the two infinite edge animations (`.react-flow .react-flow__edge-path[style*="dash"]` and `.react-flow .react-flow__edge.animated path`, was lines 125-131); removed the `.topo-node-enter` rule that fired the 0.3s `node-enter` keyframe on every node mount (was lines 133-135). The `node-enter` and `edge-flow*` keyframes themselves are left orphaned/harmless. Kept the `.topo-node` `transform/box-shadow` 0.2s transition and the `:hover translateY(-1px)` (CSS-only, scoped, cheap).
+  - `RAG_pipeline/frontend/components/graph/JobNode.tsx` — removed `transition: "opacity 0.3s ease, box-shadow 0.3s ease"` from inline style (was line 43); removed `topo-node-enter` from className (was line 33).
+  - `RAG_pipeline/frontend/components/graph/ConnectionNode.tsx` — same removal of inline `transition` (was line 28) and `topo-node-enter` class (was line 18).
+  - `RAG_pipeline/frontend/components/graph/GroupSummaryNode.tsx` — same removal of inline `transition` (was line 30) and `topo-node-enter` class (was line 21).
+- **Problem**: Topology view felt sluggish with many visible nodes — hover ripples, pan/zoom stutter, heavy toggles for direction/compact/expand-collapse. Verified by reading source: five concrete amplifiers were active (backdrop-filter blur on every group, two infinite edge animations, per-node mount animation re-firing on every layout change, inline 0.3s opacity transition combined with hover dimming rewriting every node, MiniMap re-rendering all nodes on every viewport movement).
+- **Root cause**:
+  1. `backdrop-filter: blur(1px)` is one of the most expensive CSS properties — the GPU re-blurred behind every group box on every paint. ~10 groups = constant frame-rate killer.
+  2. `animation: edge-flow ... infinite` kept the GPU painting forever even when idle.
+  3. `.topo-node-enter` mount keyframe re-fired across the entire visible graph on every direction/compact/expand toggle (nodes remount, animation re-runs).
+  4. Inline `transition: opacity 0.3s` combined with hover dimming rewriting the entire `nodes` array on every mouse-enter produced the visible "ripple lag".
+  5. Hover-dimming `useEffect` had no early-out — any unrelated re-render that re-entered the same `hoveredNodeId` value still rewrote every node.
+- **Change**:
+  1. Killed `backdropFilter` on group backgrounds. Gradient + dashed border kept (cheap, visually almost identical at 1px blur).
+  2. Removed both `animation: edge-flow ... infinite` rules. Dashed edges are still dashed, just no longer painting forever.
+  3. Removed the `.topo-node-enter` rule and the class from all three node components. Layout toggles now snap instantly.
+  4. Removed inline `transition: opacity 0.3s ease, box-shadow 0.3s ease` from JobNode/ConnectionNode/GroupSummaryNode. Dimming is now instant (no 0.3s cross-fade across hundreds of nodes = no ripple).
+  5. Added `prevHoverRef = useRef<string|null>(null)` mirroring the existing `prevSearchRef` pattern. Hover effect early-outs when `hoveredNodeId === prevHoverRef.current`, eliminating redundant `setNodes` churn.
+  6. Wrapped `<MiniMap>` in `{(visibleNodes.length <= 150 || isCollapsed) && <MiniMap ... />}` — small projects keep it; heavy fully-expanded views drop it. The default lightweight collapsed view always keeps it because `isCollapsed === true`.
+- **Why this approach**: Frontend-only patch, no new components, no new dependencies, no behavior changes the user has to learn. Skipped the gradient → solid color regression on JobNode (visible regression for marginal gain) and skipped dagre memoization (verified the layout `useEffect` already depends on `flowResult`, not `nodes`, so dimming does not retrigger dagre — not the bottleneck).
+- **Trade-offs (intentional)**: No 0.3s opacity fade on dimming (instant instead). No scale+opacity entry animation on layout changes (instant). MiniMap hidden when `visibleNodes.length > 150 && !isCollapsed`. No `backdrop-filter: blur` on group backgrounds. None of these affect keyboard or accessibility.
+- **Verification**: Visual review of all 5 changed files. TypeScript-only edits in client components; no backend, no schema, no docker rebuild dependencies beyond the standard frontend rebuild (`docker compose up -d --build frontend`). Pre-existing TS errors in this tree are from missing local `node_modules` (`@xyflow/react`, `@dagrejs/dagre`) — the project's build runs in the Docker container which has them installed.
+
+### [Fix]: Topology view always starts in lightweight (compact + collapsed) interface
+
+- **Files changed**: `RAG_pipeline/frontend/app/topology/page.tsx`
+  - Initial state: `collapsedMode` default changed from `null` (auto-detect via `>30` jobs) to `true` (always collapsed). `compactMode` already defaulted to `true`.
+  - Project-change reset effect: removed `setCompactMode(false)` (was forcing compactMode off on every project switch — bug); changed `setCollapsedMode(null)` to `setCollapsedMode(true)`.
+- **Problem**: Switching to a project always rendered the full expanded ReactFlow graph (every job + connection node) on first load, which uses a lot of memory and is slow on large projects (`esbmain` has ~50 jobs and many connections). Even though `compactMode` defaulted to `true` in `useState`, the project-change effect immediately reset it to `false`, and `collapsedMode` only auto-collapsed projects with more than 30 jobs.
+- **Root cause**: The auto-detect heuristic (`>30` jobs) and the explicit `setCompactMode(false)` on project switch were both designed assuming "show as much as possible by default". User preference is the opposite: always start lightweight, let the user opt into expansion via the toolbar.
+- **Change**: Force `compactMode = true` and `collapsedMode = true` both at initial mount and on every project switch. The toolbar's Expand-All / Compact toggle still works for users who want the full view.
+- **Why this approach**: Single-line state defaults — no new props, no new components, no behavior change for the toolbar controls. Reversible if needed.
+- **Verification**: TypeScript-only change in a Next.js client component; no backend or schema impact. Frontend hot-reloads in dev; production rebuild required for the dashboard container if redeploying.
+
 ## Session: 2026-04-09 (Admin Sidebar Visibility & Role Separation)
 
 ### [Feature]: Admin sidebar visibility fix, role separation, and permission guards

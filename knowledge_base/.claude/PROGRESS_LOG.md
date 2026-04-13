@@ -3,6 +3,160 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-04-10
+
+### [Perf]: Topology graph endpoint -- stop synthesizing REFERENCE:* hub edges in legacy-scan fallback
+
+- **Files changed**: `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+  - `_FALLBACK_INTERNAL_COMPONENTS` (lines ~990-1006): added the tRunJob-family
+    diagnostics that were missing from the internal-components set:
+    `tLogCatcher`, `tStatCatcher`, `tFlowMeter`, `tFlowMeterCatcher`,
+    `tChronometerStart`, `tChronometerStop`, `tAssert`, `tAssertCatcher`.
+    (`tRunJob`, `tPrejob`, `tPostjob`, `tWarn`, `tDie`, `tLogRow` were already
+    present but the heuristic still leaked REFERENCE:* names through the
+    suffix-stripping path -- see below.)
+  - `_derive_systems_from_job_json` (lines ~1087-1105) Talend branch: added a
+    belt-and-braces filter `and not system.startswith("REFERENCE")` so any
+    component that produces a `REFERENCE:*` system name through the
+    suffix-stripping fallback is dropped instead of becoming a fake hub.
+    Also capped the result at `sorted(systems)[:6]` -- more than this means
+    the heuristic is matching noise. Modern scans populate
+    `job_external_systems` explicitly and bypass this path entirely, so the
+    cap is a noise-floor on the legacy fallback only.
+- **Problem**: `/mcp/projects/scherpenhuizen-talend/graph` returned ~37
+  connection nodes and ~256 job→connection edges even though the on-disk
+  manifest had `job_connections_used: {}`, `connection_used_by: {}`, and an
+  absent `job_external_systems` (legacy scan). The synthesized result was
+  hub-shaped: Oracle (29 jobs), `REFERENCE:sendToMonitoringMOM` (27 jobs),
+  `REFERENCE:Trigger_Next_Interface_92` (18 jobs). The frontend topology
+  view stuttered on hover/toggle because every hover dimmed ~30 adjacencies
+  and dagre had to lay out 80+ nodes / 271 edges (18x more than the manifest
+  hinted at). Most of the edges were noise -- the `REFERENCE:*` "systems" are
+  internal Talend job-call wiring, not real external systems.
+- **Root cause**: `_fallback_talend_system` strips a leading `t` and then
+  trailing `Input/Output/Connection/...` suffixes from the component type to
+  guess a system name. For `tRunJob`-family components the payload that
+  bubbles through is the called-job reference (`REFERENCE:sendToMonitoringMOM`,
+  `REFERENCE:Trigger_Next_Interface_92`, etc.), and the fallback was treating
+  those as foreign systems. The internal-components set was incomplete -- it
+  had `tRunJob` itself but not the diagnostic siblings -- and the function had
+  no defense against `REFERENCE:*` payloads that leaked through.
+- **Change**: Two layers. (1) Expanded `_FALLBACK_INTERNAL_COMPONENTS` so the
+  diagnostic family returns `None` from `_fallback_talend_system`. (2) Added
+  the `not system.startswith("REFERENCE")` filter directly in
+  `_derive_systems_from_job_json` for Talend, plus the `[:6]` cap on the
+  fallback result to prevent any future heuristic mismatch from generating
+  hub-shaped fake-system noise.
+- **Why this approach**: Surgical -- touches only the runtime-derivation
+  fallback path used by legacy scans missing `job_external_systems`. Real
+  scans bypass this path entirely. Real Talend external systems (Oracle,
+  MSSql, FTP, SAP, Salesforce, etc.) still surface in the topology -- only
+  the synthetic `REFERENCE:*` noise from `tRunJob` payloads disappears. If
+  the user wants the REFERENCE wiring back later, the scanner should
+  populate `job_external_systems` explicitly via tRunJob -> called-job
+  tracing -- that's a scanner feature, not a graph-rendering one.
+- **Verification**: Restart the systemd `mcp-server` (editable install picks
+  up the Python change), then `GET /mcp/projects/scherpenhuizen-talend/graph`
+  with the JWT cookie. Expect ~10-15 connections (was ~37) and zero entries
+  starting with `REFERENCE:`. Smoke `GET /mcp/projects/esbmain/graph` -- its
+  manifest already populates `job_external_systems`, so its shape is
+  unchanged (bypasses the runtime fallback entirely). The matching frontend
+  fix is logged in `RAG_pipeline/.claude/PROGRESS_LOG.md` (Perf round 3).
+
+### [Fix]: Topology job detail panel -- use real `**Purpose**` lines from inventory, drop AI summarizer
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+    - Added `_PURPOSE_LINE_RE` regex (line ~1220)
+    - Added `_extract_job_purpose_from_inventory(project_id, job_name)` helper
+    - Added `_extract_job_doc_sections(project_id, job_name)` helper
+    - Rewrote `get_job_detail()` to use the new helpers; removed the per-`.md`
+      `## `-split loop and the `SummaryService.load_summaries(project_id)` call.
+      Summary now prefers the structured `**Purpose**:` line from
+      `02_ARCHITECTURE_INVENTORY.md`, falling back to `_derive_job_summary` for
+      jobs missing from the inventory.
+- **Problem**: Clicking a job in `/topology` showed (a) the templated
+  `"Integration job connecting to {systems}."` placeholder or an unrelated
+  paragraph as the "What This Job Does" summary, and (b) "From the Docs"
+  returned the entire `## Job Architecture Details` section (~50 jobs, thousands
+  of lines) for every job click on `esbmain`.
+- **Root cause**:
+  1. `_derive_job_summary` substring-grepped paragraphs for the job name. The
+     correct `**Purpose**: ...` paragraph in `02_ARCHITECTURE_INVENTORY.md`
+     never contains the job name (the name lives in the preceding `#### {Name}`
+     heading), so it was always skipped. The first paragraph that did match was
+     the bare heading itself, which after `_MD_NOISE_RE` cleanup became too
+     short and was discarded -- so we fell into deeper sections or the
+     placeholder.
+  2. `get_job_detail()` split each `.md` by `## ` only, so any `## ` section
+     that mentioned the job name (including the giant inventory section) was
+     returned in full.
+  3. `SummaryService.load_summaries` had never been triggered for any project
+     (`summaries.json` does not exist), so it always returned `{}` -- it was
+     dead weight in the request path.
+- **Change**:
+  - `_extract_job_purpose_from_inventory` finds `#### {JobName}` (any depth
+    `##`-`####`), bounds the section by the next sibling-or-higher heading, and
+    extracts the `**Purpose**:` line verbatim, trimmed to 2-3 sentences.
+  - `_extract_job_doc_sections` walks every `.md` in `docs/` (or
+    `docs_staging/`), finds headings whose line starts with the job name, and
+    returns each as its own bounded section. Heading is prefixed with the doc's
+    pretty stem (e.g. `ARCHITECTURE INVENTORY - sjAccount_OffRamp_DWH`).
+  - `get_job_detail()` now: builds `doc_sections` from
+    `_extract_job_doc_sections`, computes `summary` as
+    `_extract_job_purpose_from_inventory(...) or _derive_job_summary(...) or ""`,
+    and no longer touches `SummaryService`.
+  - `summary_service.py`, `/generate-summaries` route, and the `ollama` dep are
+    untouched -- left dormant for any future opt-in use.
+- **Why this approach**: The doc generator already writes the brief, accurate
+  `**Purpose**:` line during the 4-phase workflow; the right fix is to parse it
+  out of the structured markdown rather than re-derive it heuristically (or
+  worse, regenerate it via an LLM). Zero LLM calls, zero changes to the
+  doc-generation pipeline, no schema changes, no frontend changes.
+- **Verification**:
+  - Direct helper smoke test (no auth):
+    - `_extract_job_purpose_from_inventory('esbmain', 'Account_Subscription')`
+      -> `"Manages webhook subscriptions for Account entities in the Business Central API v2.0."`
+    - `_extract_job_purpose_from_inventory('esbmain', 'sjAccount_OffRamp_DWH')`
+      -> `"Writes Customer golden record from CMM to BigQuery."`
+    - `_extract_job_doc_sections('esbmain', 'sjAccount_OffRamp_DWH')` ->
+      1 section, 531 chars (was previously the whole inventory section).
+  - End-to-end via `get_job_detail()` returns the same summary and bounded
+    sections.
+  - Sampled 8 jobs across `esbmain`: 6 returned real Purpose lines; 2 returned
+    `None` (not in the inventory) and correctly fell through to the heuristic.
+  - Workato project (different inventory layout, recipes use
+    `### N.M Recipe X: name` headings) returns `None` from the structured
+    extractor and falls back to `_derive_job_summary` -- no crash.
+  - `sudo systemctl restart mcp-server` -> `Active: active (running)`,
+    no import errors in `journalctl -u mcp-server`.
+
+### [Fix]: Topology view "Not Found" -- stale mcp-server binary + mislocated data
+
+- **Files changed**:
+  - `/etc/systemd/system/mcp-server.service` (replaced with repo copy from `deploy/mcp-server.service`)
+  - `/home/intodata/intodata-kb-v2/venv` (new symlink -> `/home/intodata/intodata-kb/venv`)
+  - `/home/intodata/intodata-kb-v2/knowledge_base/intodoc-output/` (populated from old path; 24 projects)
+  - `/home/intodata/intodata-kb-v2/knowledge_base/output/` (populated from old path; 19 projects)
+  - `/home/intodata/intodata-kb/knowledge_base/{intodoc-output,output}` (replaced with symlinks back to v2 as a safety net)
+  - `/home/intodata/intodata-kb/venv` (`pip install ollama>=0.4.0` -- new dep added in v2 pyproject.toml but never installed)
+- **Problem**: `/topology` page in the RAG frontend always rendered "Not Found / Retry". Logs showed `GET /mcp/projects/esbmain/graph HTTP/1.1 404 Not Found` while `GET /mcp/projects` returned 200. The 404 detail was FastAPI's default `{"detail":"Not Found"}` (route-not-registered), not the endpoint's own `"No scan data for project: ..."` body.
+- **Root cause**: Two stacked issues:
+  1. The installed systemd unit at `/etc/systemd/system/mcp-server.service` still pointed at the OLD checkout (`/home/intodata/intodata-kb/...`) and had not been updated when the v2 checkout was created. The `mcp-server` PID had been running uninterrupted since 2026-03-24, predating the topology feature commit `4a45b4d`. The `get_project_graph` route did not exist in the in-memory code, so FastAPI returned its default 404.
+  2. All scan/doc data the user generated lived under the OLD path (`intodata-kb/knowledge_base/{intodoc-output,output}`) because the running server's working directory was the OLD knowledge_base. Just restarting against the v2 unit would have flipped 404 -> "No scan data for project" until the data was moved.
+- **Change**:
+  1. Moved scan + docs data from `intodata-kb/knowledge_base/{intodoc-output,output}` to `intodata-kb-v2/knowledge_base/{intodoc-output,output}`. Left symlinks behind at the old paths so any stragglers still resolve.
+  2. Created `intodata-kb-v2/venv` as a symlink to the existing `intodata-kb/venv`. The existing venv already has `mcp_server` editable-installed pointing at the v2 source tree, so the symlink gives the new systemd unit a working interpreter without rebuilding the venv.
+  3. Installed `ollama>=0.4.0` into the existing venv -- new dep added to v2 `mcp-server/pyproject.toml` (used by `services/summary_service.py:13`) but never `pip install`-ed. Service was crash-looping with `ModuleNotFoundError: No module named 'ollama'` until this was fixed.
+  4. Copied `deploy/mcp-server.service` to `/etc/systemd/system/mcp-server.service`, ran `systemctl daemon-reload` and `systemctl restart mcp-server`. Service is now running from `/home/intodata/intodata-kb-v2/venv/bin/python -m mcp_server --serve --port 8002` with `WorkingDirectory=/home/intodata/intodata-kb-v2/knowledge_base`.
+- **Why this approach**: Symlinking the venv was much faster than rebuilding (would have required pulling weasyprint + system libs), and the existing venv's editable install already pointed at v2 source -- so all the topology code is loaded transparently. Moving (not copying) the data ensures a single source of truth going forward; the symlinks back to the old path are a temporary safety net.
+- **Verification**:
+  - `systemctl status mcp-server` -> `Active: active (running)` from `/home/intodata/intodata-kb-v2/venv/bin/python ...`
+  - `curl http://localhost:8002/openapi.json` lists `/mcp/projects/{project_id}/graph` (it didn't before)
+  - `curl http://localhost:8002/mcp/projects/esbmain/graph` -> 401 (auth required) instead of the previous 404 -- proves the route is now registered
+  - Direct invocation with env loaded: `await get_project_graph('esbmain')` returns `project_id=esbmain`, 6 connections, 21 job_metadata entries
+  - `config.intodoc_output_dir` resolves to `/home/intodata/intodata-kb-v2/knowledge_base/intodoc-output` and `esbmain/scan/manifest.json` exists there
+
 ## Session: 2026-03-30
 
 ### [Fix]: Template creation 500 error (MissingGreenlet)

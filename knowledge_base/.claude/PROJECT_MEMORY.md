@@ -84,6 +84,8 @@
 - Business rules tagged as BR-{GROUP}-NNN
 - Quantify everything: "75 jobs" not "many jobs"
 - Do NOT invent data -- every claim must trace to a group summary or manifest
+- **Per-job purpose lines live in `02_ARCHITECTURE_INVENTORY.md` as `#### {JobName}` followed by a `**Purpose**: ...` paragraph.** Do NOT substring-grep paragraphs for the job name -- the Purpose paragraph does NOT repeat the job name, so a naive grep matches the heading itself (too short, gets discarded) or an unrelated deeper section. Always parse the heading boundary and take the next paragraph that starts with `**Purpose**`. See `_extract_job_purpose_from_inventory` in `routes/projects.py`.
+- The Talend per-job JSON `purpose` field from the scanner is always empty -- the only source of real, brief job descriptions is the markdown `**Purpose**:` line written by Claude during doc generation.
 
 ### Process
 - Background sub-agents may return empty output files. Use `TaskOutput` or `resume` to retrieve results. Plan for fallback.
@@ -106,6 +108,17 @@
 - tMap distiller must strip noise BEFORE chunking to avoid token bloat
 - ENDPOINT/URL parameters are semantic -- never strip them
 - Connection matching uses REPOSITORY_PROPERTY_TYPE refs, not name heuristics
+
+### Deployment / Systemd
+- **Editing `deploy/mcp-server.service` in the repo does NOT update the installed unit.** The systemd unit at `/etc/systemd/system/mcp-server.service` must be re-copied + `systemctl daemon-reload` + `systemctl restart mcp-server` whenever the repo file changes (working directory, venv path, env file, etc.). On 2026-04-10 this caused the v2 checkout's MCP server to keep running stale code from a Mar-24 process for 2+ weeks; the topology endpoint `/mcp/projects/{id}/graph` returned FastAPI's default 404 because the route did not exist in the in-memory binary.
+- **After adding a new Python dependency to `mcp-server/pyproject.toml`, you MUST `pip install`** it into the venv that systemd uses. Editable installs do NOT auto-install new deps -- they only re-link source files. The `ollama` package was added to v2 deps but never installed, crash-looping the service with `ModuleNotFoundError: No module named 'ollama'` after the unit was finally re-installed.
+- **Canonical data location is now under `intodata-kb-v2/`**: `intodoc-output/` and `output/` live at `/home/intodata/intodata-kb-v2/knowledge_base/{intodoc-output,output}`. The old paths under `/home/intodata/intodata-kb/knowledge_base/` are now symlinks pointing at v2 as a temporary safety net.
+
+### Topology graph endpoint
+
+- **`/projects/{id}/graph` synthesizes `job_connections_used` / `connection_used_by` at request time when the manifest is missing `job_external_systems`.** This is the legacy-scan fallback path in `_derive_systems_from_job_json` -> `_fallback_talend_system` (`mcp-server/src/mcp_server/api/routes/projects.py`). Modern scans populate `job_external_systems` explicitly and bypass this path entirely. The Talend heuristic strips a leading `t` and trailing `Input/Output/Connection/...` suffixes from the component type to guess a system name -- so it MUST exclude every internal Talend component type that carries non-system payloads, otherwise it produces hub-shaped fake-system noise that wrecks topology rendering performance for legacy scans. Internal components to exclude: tMap, tRunJob, tPrejob, tPostjob, tWarn, tDie, tLog* (tLogRow, tLogCatcher), tStatCatcher, tFlowMeter, tFlowMeterCatcher, tChronometerStart, tChronometerStop, tAssert, tAssertCatcher, tJava*, tJavaRow, tJavaFlex, tFixedFlowInput, tFlowToIterate, tSetGlobalVar, tContextLoad, tRoute*, tUnite, tReplicate, tSortRow, tFilterRow, tAggregateRow, tFile* (Input/Output Delimited/Excel, List, Delete, Copy, Exist), tWriteJSONField, tExtract*Field, tSchemaComplianceCheck, tSleep, tLoop, tMsgBox, tBufferInput, tBufferOutput, tNormalize, tDenormalize, tIterateToFlow.
+- **The `tRunJob` family wraps internal job-call wiring whose payload looks like `REFERENCE:sendToMonitoringMOM`, `REFERENCE:Trigger_Next_Interface_92`, etc.** When this leaks through the suffix-stripping path it becomes a synthetic "REFERENCE:..." system that fans out across the entire view (one per called job). Always filter `system.startswith("REFERENCE")` defensively in the Talend branch of `_derive_systems_from_job_json` AND keep the tRunJob family in `_FALLBACK_INTERNAL_COMPONENTS`. Cap the fallback's per-job result at 6 systems (`sorted(systems)[:6]`) -- modern scans bypass this so the cap only floors heuristic noise on legacy scans.
+- **Symptoms when this gets out of hand**: scherpenhuizen-talend (legacy scan) was returning ~37 connection nodes and ~256 job-conn edges from a manifest that on disk had zero connection data; the resulting hub-shaped graph (Oracle 29 jobs, REFERENCE:sendToMonitoringMOM 27 jobs) made the topology view stutter on hover and on every direction/compact toggle. Round 3 of the topology perf pass (2026-04-10) cleaned this up.
 
 ## Environment
 

@@ -15,7 +15,7 @@ interface ConnectionNodeData {
 function ConnectionNodeComponent({ data }: { data: ConnectionNodeData }) {
   return (
     <div
-      className="topo-node topo-node-enter rounded-lg cursor-default"
+      className="topo-node rounded-lg cursor-default"
       style={{
         background: "linear-gradient(135deg, #faf5ff, white 80%)",
         border: "1.5px solid rgba(168, 85, 247, 0.3)",
@@ -25,7 +25,6 @@ function ConnectionNodeComponent({ data }: { data: ConnectionNodeData }) {
           : "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
         maxWidth: 160,
         padding: "6px 10px",
-        transition: "opacity 0.3s ease, box-shadow 0.3s ease",
       }}
     >
       <Handle type="target" position={Position.Top} className="!w-2 !h-2 !bg-purple-300 !border-2 !border-white" />

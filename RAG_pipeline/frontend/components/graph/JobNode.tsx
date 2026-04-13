@@ -30,7 +30,7 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
 
   return (
     <div
-      className="topo-node topo-node-enter rounded-lg cursor-pointer"
+      className="topo-node rounded-lg cursor-pointer"
       style={{
         background: `linear-gradient(135deg, ${data.color.bg}, white 80%)`,
         border: `1.5px solid ${data.color.border}50`,
@@ -40,7 +40,6 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
           : `0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)`,
         maxWidth: 200,
         padding: "6px 10px",
-        transition: "opacity 0.3s ease, box-shadow 0.3s ease",
       }}
     >
       <Handle type="target" position={Position.Top} className="!w-2 !h-2 !bg-slate-300 !border-2 !border-white" />

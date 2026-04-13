@@ -122,17 +122,13 @@
   to { opacity: 1; transform: scale(1); }
 }
 
-.react-flow .react-flow__edge-path[style*="dash"] {
-  animation: edge-flow 1s linear infinite;
-}
+/* Infinite edge animations removed: they kept the GPU painting every frame
+   even when idle, which dropped frame-rate on graphs with many edges. Dashed
+   edges are still visually dashed, just no longer animated. */
 
-.react-flow .react-flow__edge.animated path {
-  animation: edge-flow 0.8s linear infinite;
-}
-
-.topo-node-enter {
-  animation: node-enter 0.3s ease-out both;
-}
+/* .topo-node-enter removed: per-node mount animation re-fired for the entire
+   visible graph on every layout toggle (direction/compact/expand-collapse),
+   causing visible jank on large projects. */
 
 .topo-node {
   transition: transform 0.2s ease, box-shadow 0.2s ease;

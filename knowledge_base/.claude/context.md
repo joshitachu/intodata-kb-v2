@@ -1,8 +1,18 @@
 # Current State
 
-**Status**: Template Management & Scoring Pipeline implemented (Phases A-F complete). New Phase 2.6 scoring sub-agent, DB-backed template system with versioning/profiles, full dashboard UI (catalogue, editor, profiles, A/B comparison, document reference).
-**Last session**: 2026-03-30
-**Last completed**: Fix MissingGreenlet 500 error on `POST /mcp/templates/` -- async-safe relationship access in `_template_to_response()`.
+**Status**: Template Management & Scoring Pipeline implemented (Phases A-F complete). New Phase 2.6 scoring sub-agent, DB-backed template system with versioning/profiles, full dashboard UI (catalogue, editor, profiles, A/B comparison, document reference). Topology graph endpoint serving live in production. Topology job detail panel now sources job summaries and per-job doc sections from the structured `**Purpose**` lines in `02_ARCHITECTURE_INVENTORY.md` (no LLM calls).
+**Last session**: 2026-04-10
+**Last completed**:
+- Topology perf round 3 (backend half): cleaned up the runtime fallback in `mcp-server/src/mcp_server/api/routes/projects.py` so `/projects/{id}/graph` no longer synthesizes hub-shaped `REFERENCE:*` "external systems" for legacy scans missing `job_external_systems`. Extended `_FALLBACK_INTERNAL_COMPONENTS` (the set checked at the top of `_fallback_talend_system`) to include the tRunJob diagnostic family (`tLogCatcher`, `tStatCatcher`, `tFlowMeter`, `tFlowMeterCatcher`, `tChronometerStart`, `tChronometerStop`, `tAssert`, `tAssertCatcher`); added a defensive `and not system.startswith("REFERENCE")` filter to the Talend branch of `_derive_systems_from_job_json`; capped the per-job result at `sorted(systems)[:6]` so a single hub-job can't fan out across the entire view. Modern scans populate `job_external_systems` and bypass this path entirely, so projects like `esbmain` are unaffected. After this, scherpenhuizen-talend now uses the same code paths as the other Talend projects -- if a project ever needs the noisy hub edges back, regenerate the scan so `job_external_systems` is populated explicitly. **Requires `sudo systemctl restart mcp-server`** for the editable install to pick up. The matching frontend half is logged in `RAG_pipeline/.claude/PROGRESS_LOG.md` (Perf round 3).
+- Fixed `/topology` "Not Found" by reinstalling the systemd unit (was running 2+ weeks stale, predating the topology feature) and migrating `intodoc-output/` + `output/` from the old `intodata-kb/` checkout to `intodata-kb-v2/`. Also installed missing `ollama` Python dep.
+- Fixed the topology Job Detail panel: added `_extract_job_purpose_from_inventory` and `_extract_job_doc_sections` in `routes/projects.py`; rewrote `get_job_detail()` to use them and dropped the `SummaryService.load_summaries` call. The `**Purpose**:` line from `02_ARCHITECTURE_INVENTORY.md` is now the canonical job summary; "From the Docs" returns only sections whose heading exactly matches the job name (bounded by next sibling heading), instead of dragging in the entire inventory. `summary_service.py`, the `/generate-summaries` route, the `ollama_summary_model` config, and the `ollama` dep all stay in place as dormant code.
+
+## Important: Data Layout
+
+- `intodoc-output/` and `output/` live at `/home/intodata/intodata-kb-v2/knowledge_base/`. The old paths under `/home/intodata/intodata-kb/knowledge_base/` are symlinks back to v2.
+- The systemd `mcp-server` service uses `WorkingDirectory=/home/intodata/intodata-kb-v2/knowledge_base` and the venv at `/home/intodata/intodata-kb-v2/venv` (which is itself a symlink to `/home/intodata/intodata-kb/venv` -- the only venv with `mcp_server` editable-installed pointing at v2 source).
+- After ANY edit to `deploy/mcp-server.service`, re-copy to `/etc/systemd/system/`, `daemon-reload`, and `restart mcp-server`. Editing the repo file alone does nothing.
+- After adding a new dep to `mcp-server/pyproject.toml`, `pip install` it into `/home/intodata/intodata-kb/venv` (the real venv) -- editable installs do not auto-install new deps.
 
 ## What's Done
 

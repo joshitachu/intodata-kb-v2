@@ -22,7 +22,10 @@ export function middleware(request: NextRequest) {
   // Check for access_token cookie
   const token = request.cookies.get("access_token");
   if (!token) {
-    const loginUrl = new URL("/login", request.url);
+    // Use X-Forwarded headers to build the correct external URL
+    const proto = request.headers.get("x-forwarded-proto") || "https";
+    const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost";
+    const loginUrl = new URL("/login", `${proto}://${host}`);
     loginUrl.searchParams.set("redirect", pathname);
     return NextResponse.redirect(loginUrl);
   }

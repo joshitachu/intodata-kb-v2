@@ -62,7 +62,6 @@ const GroupBackgroundNode = memo(function GroupBackgroundNode({ data }: { data: 
         height: data.height,
         background: `linear-gradient(135deg, ${data.color.border}08, ${data.color.border}04)`,
         border: `1px dashed ${data.color.border}25`,
-        backdropFilter: "blur(1px)",
       }}
     >
       <span
@@ -97,10 +96,13 @@ function TopologyContent() {
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  // Always start in compact node rendering — full nodes are memory-heavy on large graphs.
   const [compactMode, setCompactMode] = useState(true);
 
-  // Collapsed mode state: null = auto-detect, true = overview, false = detail
-  const [collapsedMode, setCollapsedMode] = useState<boolean | null>(null);
+  // Always start in collapsed (group-summary) mode regardless of project size.
+  // The user can opt into the full expanded view via the toolbar. Rendering
+  // every job + connection on first load uses too much memory on big projects.
+  const [collapsedMode, setCollapsedMode] = useState<boolean | null>(true);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -109,6 +111,12 @@ function TopologyContent() {
 
   // Ref to store position context before expand/collapse for in-place layout
   const expandAnchorRef = useRef<ExpandAnchor | null>(null);
+
+  // Tracks the last "meaningful" layout identity that triggered a fitView.
+  // Prevents fitView animations from stacking when the layout effect re-runs
+  // for unrelated reasons (e.g. groupMembership rebuilding with the same shape).
+  // ReactFlow's fitView animation dominates frame time on heavy graphs.
+  const lastFitKeyRef = useRef<string | null>(null);
 
   // Determine effective collapsed mode (resolve auto)
   const isCollapsed = useMemo(() => {
@@ -208,9 +216,15 @@ function TopologyContent() {
     setHiddenGroups(new Set());
     setSearchQuery("");
     setHoveredNodeId(null);
-    setCompactMode(false);
-    setCollapsedMode(null); // auto-detect
+    // Force the lightweight starting view on every project switch:
+    //   compact nodes + collapsed (group-summary) mode.
+    // Never default to the full expanded graph — it blows up memory on
+    // projects with many jobs/connections.
+    setCompactMode(true);
+    setCollapsedMode(true);
     setExpandedGroups(new Set());
+    // Reset the fit-key so the new project always gets an initial fitView.
+    lastFitKeyRef.current = null;
 
     fetch(`/api/projects/${encodeURIComponent(selectedProject)}/graph`)
       .then(async (res) => {
@@ -291,7 +305,17 @@ function TopologyContent() {
       style: { zIndex: -1, width: box.width, height: box.height },
     }));
 
-    setNodes([...bgNodes, ...laid]);
+    // Initialize dimmed/highlighted on every laid-out node so the hover
+    // effect's same-reference fast path works on the FIRST hover after a
+    // layout. Without these defaults, n.data.dimmed is undefined and the
+    // strict-equality `=== false` check fails for every node, causing the
+    // entire graph to be rewritten on the first mouse-enter — exactly when
+    // the user notices stutter.
+    const laidWithDefaults = laid.map((n) => ({
+      ...n,
+      data: { ...n.data, dimmed: false, highlighted: false },
+    }));
+    setNodes([...bgNodes, ...laidWithDefaults]);
     setEdges(visibleEdges);
 
     // Smart zoom based on action
@@ -310,13 +334,20 @@ function TopologyContent() {
         }
       });
     } else if (!anchor) {
-      // Full layout: fit everything
-      requestAnimationFrame(() => {
-        fitView({ padding: 0.1, duration: 300 });
-      });
+      // Full layout: fit everything — but only when the meaningful layout
+      // identity changed. Otherwise the 300ms zoom animation re-fires every
+      // time groupMembership rebuilds with the same shape, stealing the
+      // viewport and dominating frame time on heavy graphs.
+      const fitKey = `${selectedProject}|${direction}|${compactMode}|${laid.length}`;
+      if (fitKey !== lastFitKeyRef.current) {
+        lastFitKeyRef.current = fitKey;
+        requestAnimationFrame(() => {
+          fitView({ padding: 0.1, duration: 300 });
+        });
+      }
     }
     // Collapse: no zoom change (keep current viewport)
-  }, [flowResult, visibleNodes, visibleEdges, direction, compactMode, groupMembership, setNodes, setEdges, fitView]);
+  }, [flowResult, visibleNodes, visibleEdges, direction, compactMode, groupMembership, selectedProject, setNodes, setEdges, fitView]);
 
   // Search matching — in collapsed mode, also match job names inside collapsed groups
   const searchMatchIds = useMemo<Set<string> | null>(() => {
@@ -348,7 +379,12 @@ function TopologyContent() {
   // Track previous searchMatchIds to avoid redundant updates
   const prevSearchRef = useRef<Set<string> | null>(null);
 
-  // Apply search dimming
+  // Apply search dimming.
+  // CRITICAL: returns same-reference nodes/edges when their state hasn't
+  // actually changed. ReactFlow's setNodes reconciles the entire graph and
+  // re-renders any node whose data reference changed; React.memo on the node
+  // components skips render only when the data ref is identical. Without this
+  // stability, every search keystroke rewrites all 80+ nodes.
   useEffect(() => {
     if (searchMatchIds === prevSearchRef.current) {
       return;
@@ -357,16 +393,18 @@ function TopologyContent() {
 
     if (searchMatchIds === null) {
       setNodes((nds) =>
-        nds.map((n) => ({
-          ...n,
-          data: { ...n.data, dimmed: false, highlighted: false },
-        })),
+        nds.map((n) => {
+          if (n.id.startsWith("group-bg:")) return n;
+          if (n.data.dimmed === false && n.data.highlighted === false) return n;
+          return { ...n, data: { ...n.data, dimmed: false, highlighted: false } };
+        }),
       );
       setEdges((eds) =>
-        eds.map((e) => ({
-          ...e,
-          style: { ...e.style, opacity: undefined },
-        })),
+        eds.map((e) => {
+          if (e.style?.opacity === undefined) return e;
+          const { opacity: _drop, ...restStyle } = e.style;
+          return { ...e, style: restStyle };
+        }),
       );
       return;
     }
@@ -375,6 +413,7 @@ function TopologyContent() {
       nds.map((n) => {
         if (n.id.startsWith("group-bg:")) return n;
         const isMatch = searchMatchIds.has(n.id);
+        if (n.data.dimmed === !isMatch && n.data.highlighted === isMatch) return n;
         return {
           ...n,
           data: { ...n.data, dimmed: !isMatch, highlighted: isMatch },
@@ -382,16 +421,23 @@ function TopologyContent() {
       }),
     );
     setEdges((eds) =>
-      eds.map((e) => ({
-        ...e,
-        style: {
-          ...e.style,
-          opacity: searchMatchIds.has(e.source) || searchMatchIds.has(e.target) ? undefined : 0.15,
-        },
-      })),
+      eds.map((e) => {
+        const visible = searchMatchIds.has(e.source) || searchMatchIds.has(e.target);
+        const newOpacity = visible ? undefined : 0.15;
+        if ((e.style?.opacity ?? undefined) === newOpacity) return e;
+        if (newOpacity === undefined) {
+          const { opacity: _drop, ...restStyle } = e.style ?? {};
+          return { ...e, style: restStyle };
+        }
+        return { ...e, style: { ...e.style, opacity: newOpacity } };
+      }),
     );
 
-    if (searchMatchIds.size > 0) {
+    // Only auto-zoom when the match set is small enough to be useful.
+    // Single-letter searches that match dozens of nodes shouldn't trigger
+    // a 400ms zoom-fit animation across the entire viewport on every
+    // keystroke — that animation dominates frame time on heavy graphs.
+    if (searchMatchIds.size > 0 && searchMatchIds.size <= 8) {
       requestAnimationFrame(() => {
         fitView({
           nodes: [...searchMatchIds].map((id) => ({ id })),
@@ -414,22 +460,34 @@ function TopologyContent() {
     return map;
   }, [visibleEdges]);
 
-  // Apply hover dimming
+  // Track previous hoveredNodeId to early-out when state hasn't changed.
+  // ReactFlow's setNodes reconciles the entire graph; without this guard
+  // every unrelated re-render would rewrite all node objects.
+  const prevHoverRef = useRef<string | null>(null);
+
+  // Apply hover dimming.
+  // Same reference-stability rule as the search effect: only return new node
+  // refs for nodes whose dimmed/highlighted state actually changed. This is
+  // the dominant perf path because hover events fire on every mouse-enter.
   useEffect(() => {
     if (searchMatchIds !== null) return;
+    if (hoveredNodeId === prevHoverRef.current) return;
+    prevHoverRef.current = hoveredNodeId;
 
     if (hoveredNodeId === null) {
       setNodes((nds) =>
-        nds.map((n) => ({
-          ...n,
-          data: { ...n.data, dimmed: false, highlighted: false },
-        })),
+        nds.map((n) => {
+          if (n.id.startsWith("group-bg:")) return n;
+          if (n.data.dimmed === false && n.data.highlighted === false) return n;
+          return { ...n, data: { ...n.data, dimmed: false, highlighted: false } };
+        }),
       );
       setEdges((eds) =>
-        eds.map((e) => ({
-          ...e,
-          style: { ...e.style, opacity: undefined },
-        })),
+        eds.map((e) => {
+          if (e.style?.opacity === undefined) return e;
+          const { opacity: _drop, ...restStyle } = e.style;
+          return { ...e, style: restStyle };
+        }),
       );
       return;
     }
@@ -441,20 +499,26 @@ function TopologyContent() {
       nds.map((n) => {
         if (n.id.startsWith("group-bg:")) return n;
         const isConnected = connectedSet.has(n.id);
+        const newDimmed = !isConnected;
+        const newHighlighted = n.id === hoveredNodeId;
+        if (n.data.dimmed === newDimmed && n.data.highlighted === newHighlighted) return n;
         return {
           ...n,
-          data: { ...n.data, dimmed: !isConnected, highlighted: n.id === hoveredNodeId },
+          data: { ...n.data, dimmed: newDimmed, highlighted: newHighlighted },
         };
       }),
     );
     setEdges((eds) =>
-      eds.map((e) => ({
-        ...e,
-        style: {
-          ...e.style,
-          opacity: connectedSet.has(e.source) && connectedSet.has(e.target) ? undefined : 0.15,
-        },
-      })),
+      eds.map((e) => {
+        const visible = connectedSet.has(e.source) && connectedSet.has(e.target);
+        const newOpacity = visible ? undefined : 0.15;
+        if ((e.style?.opacity ?? undefined) === newOpacity) return e;
+        if (newOpacity === undefined) {
+          const { opacity: _drop, ...restStyle } = e.style ?? {};
+          return { ...e, style: restStyle };
+        }
+        return { ...e, style: { ...e.style, opacity: newOpacity } };
+      }),
     );
   }, [hoveredNodeId, searchMatchIds, adjacencyMap, setNodes, setEdges]);
 
@@ -739,12 +803,14 @@ function TopologyContent() {
             showInteractive={false}
             className="!bg-card !border !shadow-sm [&>button]:!bg-background [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-muted"
           />
-          <MiniMap
-            nodeStrokeWidth={3}
-            className="!bg-card !border !shadow-sm"
-            maskColor="rgba(0,0,0,0.1)"
-            nodeColor={minimapNodeColor}
-          />
+          {(visibleNodes.length <= 150 || isCollapsed) && (
+            <MiniMap
+              nodeStrokeWidth={3}
+              className="!bg-card !border !shadow-sm"
+              maskColor="rgba(0,0,0,0.1)"
+              nodeColor={minimapNodeColor}
+            />
+          )}
           {flowResult && <GraphLegend groupColorMap={groupColorMap} collapsedMode={isCollapsed} />}
         </ReactFlow>
 

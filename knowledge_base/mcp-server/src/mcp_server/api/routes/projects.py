@@ -998,6 +998,12 @@ _FALLBACK_INTERNAL_COMPONENTS: frozenset[str] = frozenset({
     "tFileCopy", "tFileExist",
     "tMsgBox", "tWarn", "tDie", "tBufferInput", "tBufferOutput",
     "tNormalize", "tDenormalize", "tIterateToFlow",
+    # tRunJob family + diagnostics: these are internal Talend job-call wiring
+    # and logging, not external systems. Excluding them prevents the runtime
+    # fallback from synthesizing fake REFERENCE:* hub connections from legacy
+    # scans missing job_external_systems.
+    "tLogCatcher", "tStatCatcher", "tFlowMeter", "tFlowMeterCatcher",
+    "tChronometerStart", "tChronometerStop", "tAssert", "tAssertCatcher",
 })
 
 _FALLBACK_TALEND_MAP: dict[str, str] = {
@@ -1088,9 +1094,15 @@ def _derive_systems_from_job_json(job_data: dict, platform: str) -> list[str]:
         systems: set[str] = set()
         for comp in job_data.get("components", []):
             system = _fallback_talend_system(comp.get("component_type", ""))
-            if system:
+            # Belt-and-braces: drop any synthesized REFERENCE:* names that
+            # leak through the suffix-stripping path. They're internal Talend
+            # job-reference wiring, not real external systems.
+            if system and not system.startswith("REFERENCE"):
                 systems.add(system)
-        return sorted(systems)
+        # Cap fallback derivation at 6 systems per job: more than this means
+        # the heuristic is matching noise. Modern scans populate
+        # job_external_systems explicitly and bypass this path entirely.
+        return sorted(systems)[:6]
 
     if platform == "workato":
         providers: set[str] = set()
@@ -1215,6 +1227,116 @@ def _derive_job_summary(
         types = ", ".join(component_types[:4])
         return f"Processing job using {types}."
     return ""
+
+
+# Matches a "**Purpose**: ..." line and captures content up to the next blank
+# line or the next bold field (e.g. "**Component Count**:").
+_PURPOSE_LINE_RE = re.compile(
+    r"^\s*\*\*Purpose\*?\*?\s*:?\s*(.+?)(?=\n\s*\n|\n\s*\*\*|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _extract_job_purpose_from_inventory(
+    project_id: str, job_name: str
+) -> str | None:
+    """Return the verbatim ``**Purpose**`` line for a job from
+    ``02_ARCHITECTURE_INVENTORY.md``, or ``None`` if not found.
+
+    Per-job descriptions live in the inventory doc as
+    ``#### {job_name}`` followed by a ``**Purpose**: ...`` paragraph.
+    Substring-grepping paragraphs misses this because the Purpose line
+    does not repeat the job name. We must parse the heading boundary.
+    """
+    docs_dir = config.project_root / "output" / project_id / "docs"
+    if not docs_dir.exists():
+        docs_dir = config.project_root / "output" / project_id / "docs_staging"
+    inventory_path = docs_dir / "02_ARCHITECTURE_INVENTORY.md"
+    if not inventory_path.exists():
+        return None
+    try:
+        content = inventory_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    # Find the job's heading at any depth (####, ###, ##) and capture the
+    # content from the heading up to the next sibling-or-higher heading.
+    name_re = re.escape(job_name)
+    section_re = re.compile(
+        rf"^(#{{2,4}})\s*{name_re}\s*$(.*?)(?=^#{{1,4}}\s|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = section_re.search(content)
+    if not match:
+        return None
+    body = match.group(2)
+
+    purpose_match = _PURPOSE_LINE_RE.search(body)
+    if not purpose_match:
+        return None
+    purpose = purpose_match.group(1).strip()
+    purpose = re.sub(r"\s+", " ", purpose)
+    # Keep the first 2-3 sentences max for brevity
+    sentences = re.split(r"(?<=[.!?])\s+", purpose)
+    return " ".join(sentences[:3]).strip() or None
+
+
+def _extract_job_doc_sections(
+    project_id: str, job_name: str
+) -> list[JobDocSection]:
+    """Return doc sections whose heading matches the job name exactly,
+    bounded by the next sibling-or-higher heading.
+
+    Replaces the previous ``## ``-only split which dragged in the entire
+    inventory section for any job click.
+    """
+    docs_dir = config.project_root / "output" / project_id / "docs"
+    if not docs_dir.exists():
+        docs_dir = config.project_root / "output" / project_id / "docs_staging"
+    if not docs_dir.exists():
+        return []
+
+    name_re = re.escape(job_name)
+    # Match a heading whose line is the job name (allowing trailing junk)
+    section_re = re.compile(
+        rf"^(#{{2,4}})\s*{name_re}\b(.*)$",
+        re.MULTILINE,
+    )
+    any_heading_re = re.compile(r"^#{1,6}\s", re.MULTILINE)
+
+    sections: list[JobDocSection] = []
+    for md_path in sorted(docs_dir.glob("*.md")):
+        try:
+            content = md_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        for m in section_re.finditer(content):
+            depth = len(m.group(1))
+            heading_line = m.group(0).lstrip("#").strip()
+            # Find the end: next heading at same depth or shallower
+            tail = content[m.end():]
+            end = len(tail)
+            for h in any_heading_re.finditer(tail):
+                hash_count = 0
+                pos = h.start()
+                while pos < len(tail) and tail[pos] == "#":
+                    hash_count += 1
+                    pos += 1
+                if hash_count <= depth:
+                    end = h.start()
+                    break
+            body = tail[:end].strip()
+            if body:
+                doc_label = md_path.stem.replace("_", " ").lstrip("0123456789 ")
+                sections.append(
+                    JobDocSection(
+                        heading=f"{doc_label} - {heading_line}",
+                        content=body,
+                    )
+                )
+
+    return sections
 
 
 @router.get("/projects/{project_id}/graph", response_model=ProjectGraphResponse)
@@ -1388,28 +1510,8 @@ async def get_job_detail(project_id: str, job_name: str):
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Find relevant doc sections mentioning this job
-    doc_sections: list[JobDocSection] = []
-    docs_dir = config.project_root / "output" / project_id / "docs"
-    if not docs_dir.exists():
-        docs_dir = config.project_root / "output" / project_id / "docs_staging"
-
-    if docs_dir.exists():
-        for md_path in sorted(docs_dir.glob("*.md")):
-            try:
-                content = md_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-
-            # Split by ## headings and find sections mentioning the job
-            sections = re.split(r"(?=^## )", content, flags=re.MULTILINE)
-            for section in sections:
-                if job_name in section:
-                    lines = section.strip().split("\n", 1)
-                    heading = lines[0].lstrip("#").strip() if lines else ""
-                    body = lines[1].strip() if len(lines) > 1 else ""
-                    if heading and body:
-                        doc_sections.append(JobDocSection(heading=heading, content=body))
+    # Find doc sections whose heading matches this job exactly
+    doc_sections = _extract_job_doc_sections(project_id, job_name)
 
     # Derive direction and summary
     job_path_str = str(job_path) if job_path.exists() else ""
@@ -1424,10 +1526,12 @@ async def get_job_detail(project_id: str, job_name: str):
         s for c in scan_data.get("components", [])
         for s in ([c.get("external_system")] if c.get("external_system") else [])
     })
-    # Prefer AI summary, fall back to heuristic
-    ai_summaries = SummaryService.load_summaries(project_id)
-    summary = ai_summaries.get(job_name) or _derive_job_summary(
-        job_name, doc_sections, comp_types, ext_systems,
+    # Prefer the structured Purpose line from 02_ARCHITECTURE_INVENTORY.md.
+    # Fall back to the legacy heuristic for jobs missing from the inventory.
+    summary = (
+        _extract_job_purpose_from_inventory(project_id, job_name)
+        or _derive_job_summary(job_name, doc_sections, comp_types, ext_systems)
+        or ""
     )
 
     return JobDetailResponse(

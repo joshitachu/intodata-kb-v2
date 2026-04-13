@@ -18,7 +18,7 @@ function GroupSummaryNodeComponent({ data }: { data: GroupSummaryNodeData }) {
 
   return (
     <div
-      className="topo-node topo-node-enter rounded-xl overflow-hidden cursor-pointer"
+      className="topo-node rounded-xl overflow-hidden cursor-pointer"
       style={{
         width: 240,
         opacity: data.dimmed ? 0.15 : 1,
@@ -27,7 +27,6 @@ function GroupSummaryNodeComponent({ data }: { data: GroupSummaryNodeData }) {
           ? `0 0 20px 4px ${data.color.border}50, 0 4px 20px rgba(0,0,0,0.12)`
           : `0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.04)`,
         border: `1.5px solid ${data.color.border}40`,
-        transition: "opacity 0.3s ease, box-shadow 0.3s ease",
       }}
     >
       <Handle type="target" position={Position.Top} className="!w-2.5 !h-2.5 !bg-slate-300 !border-2 !border-white" />
