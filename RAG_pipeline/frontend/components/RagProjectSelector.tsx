@@ -1,24 +1,18 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUserProjects } from "@/hooks/useUserProjects";
+import { useChatContext } from "@/contexts/ChatContext";
 
-interface RagProjectSelectorProps {
-  selectedProject: string;
-  onProjectChange: (projectId: string) => void;
-}
-
-export function RagProjectSelector({
-  selectedProject,
-  onProjectChange,
-}: RagProjectSelectorProps) {
+export function RagProjectSelector() {
+  const { selectedProject, setSelectedProject } = useChatContext();
   const { data, isLoading, error } = useUserProjects();
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground px-2 py-1">
+        <Loader2 className="h-3 w-3 animate-spin" />
         <span>Projects...</span>
       </div>
     );
@@ -26,7 +20,7 @@ export function RagProjectSelector({
 
   if (error) {
     return (
-      <span className="text-xs text-destructive">Projects unavailable</span>
+      <span className="text-xs text-destructive px-2">Projects unavailable</span>
     );
   }
 
@@ -35,20 +29,26 @@ export function RagProjectSelector({
   }
 
   return (
-    <select
-      value={selectedProject}
-      onChange={(e) => onProjectChange(e.target.value)}
-      className={cn(
-        "rounded-lg border border-input bg-background px-3 py-1.5",
-        "text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-      )}
-    >
-      <option value="">All Projects</option>
-      {data.projects.map((project) => (
-        <option key={project.id} value={project.id}>
-          {project.display_name} ({project.platform})
-        </option>
-      ))}
-    </select>
+    <div className="relative">
+      <select
+        value={selectedProject}
+        onChange={(e) => setSelectedProject(e.target.value)}
+        className={cn(
+          "appearance-none cursor-pointer",
+          "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
+          "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
+          "focus:outline-none focus:ring-1 focus:ring-ring",
+          "transition-colors",
+        )}
+      >
+        <option value="">All Projects</option>
+        {data.projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {project.display_name}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+    </div>
   );
 }

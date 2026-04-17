@@ -100,6 +100,53 @@
   }
 }
 
+/* ── Chat message animations ───────────────────────────────── */
+
+@keyframes message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-message-enter {
+  animation: message-enter 0.2s ease-out;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.animate-cursor-blink {
+  animation: cursor-blink 0.8s step-end infinite;
+}
+
+/* Chat prose: tighter spacing for message content */
+.chat-prose .prose {
+  font-size: 0.875rem;
+  line-height: 1.625;
+}
+
+.chat-prose .prose :where(p):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.375em;
+  margin-bottom: 0.375em;
+}
+
+.chat-prose .prose :where(pre):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+  font-size: 0.8125rem;
+}
+
+.chat-prose .prose :where(code):not(:where(pre *)):not(:where([class~="not-prose"] *)) {
+  font-size: 0.8125rem;
+}
+
 /* ── Topology graph animations ──────────────────────────────── */
 
 @keyframes edge-flow {
@@ -121,14 +168,6 @@
   from { opacity: 0; transform: scale(0.92); }
   to { opacity: 1; transform: scale(1); }
 }
-
-/* Infinite edge animations removed: they kept the GPU painting every frame
-   even when idle, which dropped frame-rate on graphs with many edges. Dashed
-   edges are still visually dashed, just no longer animated. */
-
-/* .topo-node-enter removed: per-node mount animation re-fired for the entire
-   visible graph on every layout toggle (direction/compact/expand-collapse),
-   causing visible jank on large projects. */
 
 .topo-node {
   transition: transform 0.2s ease, box-shadow 0.2s ease;

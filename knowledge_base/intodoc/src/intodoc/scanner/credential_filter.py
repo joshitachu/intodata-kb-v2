@@ -25,6 +25,7 @@ class CredentialFilter:
         "w3.org", "omg.org", "eclipse.org", "xml.org", "xmlsoap.org",
         "apache.org", "sun.com", "java.com", "oracle.com", "microsoft.com",
         "xmlns.com", "talend.com", "schema.org", "purl.org",
+        "lobster-world.com",
     })
 
     # ── Known TLDs for FQDN matching ────────────────────────────────────
@@ -80,6 +81,14 @@ class CredentialFilter:
         ), "[URL_REDACTED]", RedactionLevel.STANDARD),
         # FQDNs -- matched against known TLDs, safe domains excluded at runtime
         # This is a placeholder; actual FQDN filtering uses _filter_fqdns()
+
+        # ── Lobster-specific patterns ────────────────────────────────
+        # OBF-encoded passwords (Lobster obfuscation format)
+        (re.compile(r"OBF:[a-zA-Z0-9+/=]+"),
+         "[OBF_PASSWORD_REDACTED]", RedactionLevel.STANDARD),
+        # Base64-encoded value tags (Lobster filter constants)
+        (re.compile(r"(<value>)([A-Za-z0-9+/]{8,}={0,2})(</value>)"),
+         r"\1[BASE64_REDACTED]\3", RedactionLevel.STRICT),
 
         # ── Strict-level patterns ───────────────────────────────────
         # Windows file paths (C:\..., D:\...)

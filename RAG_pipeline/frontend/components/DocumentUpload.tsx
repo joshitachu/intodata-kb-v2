@@ -1,23 +1,17 @@
 "use client";
 
 import { useCallback, useRef, useState, type DragEvent } from "react";
-import { Upload, Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import { Upload, Loader2, CheckCircle, AlertCircle, ChevronDown } from "lucide-react";
 import { useUploadDocument } from "@/hooks/useDocuments";
 import { useDocsProjects } from "@/hooks/useDocsProjects";
+import { useChatContext } from "@/contexts/ChatContext";
 import { cn } from "@/lib/utils";
-
-const ALLOWED_TYPES = [
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-];
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".xlsx"];
 
 export function DocumentUpload() {
+  const { selectedProject, setSelectedProject } = useChatContext();
   const [dragOver, setDragOver] = useState(false);
-  const [selectedProject, setSelectedProject] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const upload = useUploadDocument();
   const { data: projectsData, isLoading: projectsLoading } = useDocsProjects();
@@ -54,29 +48,38 @@ export function DocumentUpload() {
 
   return (
     <div className="space-y-3">
-      <div>
+      <div className="flex items-center gap-2">
         <label
           htmlFor="project-select"
-          className="block text-sm font-medium mb-1"
+          className="text-sm font-medium text-muted-foreground"
         >
           Project
         </label>
-        <select
-          id="project-select"
-          value={selectedProject}
-          onChange={(e) => setSelectedProject(e.target.value)}
-          disabled={projectsLoading}
-          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-        >
-          <option value="">
-            {projectsLoading ? "Loading projects..." : "Select a project"}
-          </option>
-          {projectsData?.projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.display_name} ({p.platform})
+        <div className="relative inline-block">
+          <select
+            id="project-select"
+            value={selectedProject}
+            onChange={(e) => setSelectedProject(e.target.value)}
+            disabled={projectsLoading}
+            className={cn(
+              "appearance-none cursor-pointer",
+              "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
+              "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
+              "focus:outline-none focus:ring-1 focus:ring-ring",
+              "transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+            )}
+          >
+            <option value="">
+              {projectsLoading ? "Loading..." : "Select a project"}
             </option>
-          ))}
-        </select>
+            {projectsData?.projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name} ({p.platform})
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+        </div>
       </div>
 
       <div

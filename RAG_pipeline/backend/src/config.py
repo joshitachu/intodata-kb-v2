@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     hindsight_recall_budget: str = "low"
     hindsight_recall_max_tokens: int = 1024
     hindsight_timeout: float = 120.0
+    hindsight_project_banks_enabled: bool = True
+    hindsight_distill_before_retain: bool = True
+    hindsight_max_project_memories: int = 5
 
     # Auth
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"

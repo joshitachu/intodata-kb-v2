@@ -483,8 +483,12 @@ class TalendParser:
                     params.append(ComponentParam(name=name, value=value, field_type=field))
 
             elif tag == "nodeData":
-                # tMap MapperData
-                xsi_type = child.get(f"{{{NS['xsi']}}}type", "")
+                # tMap MapperData — try multiple namespace patterns
+                xsi_type = (
+                    child.get(f"{{{NS['xsi']}}}type", "")
+                    or child.get(f"{{{NS['xmi']}}}type", "")
+                    or child.get("type", "")
+                )
                 if "MapperData" in xsi_type:
                     tmap = self._parse_mapper_data(child)
                     job.tmap_data.append(tmap)

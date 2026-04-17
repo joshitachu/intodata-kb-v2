@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<datawizardprofile name="Sync_Orders_FTP" dw_version="25.1" data_version="25.1.6">
+  <id>test-profile-001</id>
+  <path_of_group>Order Processing</path_of_group>
+  <client_id>-1</client_id>
+  <type>Cron:Ftp</type>
+  <description>Sync orders from partner FTP to internal system</description>
+  <valid_from>01.01.2025 00:00:00</valid_from>
+  <valid_until>01.01.2075 00:00:00</valid_until>
+  <is_one_request>false</is_one_request>
+  <skip_mapping>false</skip_mapping>
+  <suspended>false</suspended>
+  <created_at>15.01.2025</created_at>
+  <version>3</version>
+  <active>true</active>
+  <master>false</master>
+  <history_note>[Jan 20, 2025] ADMIN: Initial configuration</history_note>
+  <no_error_mail>false</no_error_mail>
+  <tags>orders,sync</tags>
+  <max_records>2147483647</max_records>
+  <exception_profile>Error_Notification_Handler</exception_profile>
+  <agent>
+    <type>1</type>
+    <dir>/data/partner/orders</dir>
+    <filename>*Order*.xml</filename>
+    <host></host>
+    <port>22</port>
+    <password>OBF:hendi4s6hw2fimx3h2tghraxhffui5jri6c0hcacj2ppilbti2crj532hsw3i364ix6ii72xhydu</password>
+    <schedule_type>0</schedule_type>
+    <interval>5</interval>
+    <ftp_client_type>1</ftp_client_type>
+    <file_handling>2</file_handling>
+    <rename_file>Archive/&lt;file-prefix&gt;_%yyyyMMdd_HHmmss%.xml</rename_file>
+    <profile_after_run>Confirm_Order_Receipt</profile_after_run>
+    <service>OftpService</service>
+    <com_channel>1234567890001</com_channel>
+    <comm_channel_partner>ACME Corp</comm_channel_partner>
+    <comm_channel_name>FTP</comm_channel_name>
+    <mime_type>text/xml</mime_type>
+    <agent_class>com.ebd.hub.datawizard.data.CronSettings</agent_class>
+  </agent>
+  <dataproperties>
+    <filetype>1</filetype>
+    <xml_recordtag>orders</xml_recordtag>
+    <file_encoding>UTF-8</file_encoding>
+    <use_xpath>true</use_xpath>
+    <ignore_namespace>true</ignore_namespace>
+    <max_records>2147483647</max_records>
+    <structuredefinition>
+      <fieldcounter_input>5</fieldcounter_input>
+      <fieldcounter_output>4</fieldcounter_output>
+      <inputtree>
+        <node name="order" description="" is_node="true" min="0" max="99999" mandatory="false" xpath="" deleted="false">
+          <note></note>
+          <field name="S-order_id" type="String" length="0" mandatory="true" template="">
+            <note></note>
+          </field>
+          <field name="S-customer_name" type="String" length="0" mandatory="false" template="">
+            <note></note>
+          </field>
+          <node name="items" description="" is_node="true" min="0" max="99999">
+            <node name="item" description="" is_node="false" min="0" max="99999">
+              <field name="S-item_code" type="String" length="0" mandatory="true" template="">
+                <note></note>
+              </field>
+              <field name="S-quantity" type="Integer" length="0" mandatory="true" template="">
+                <note></note>
+              </field>
+            </node>
+          </node>
+        </node>
+      </inputtree>
+      <outputtree>
+        <node name="OrderConfirmation" is_node="true" min="1" max="1" mandatory="true">
+          <field name="OrderID" type="String" length="0" mandatory="true">
+            <note>Maps from source order_id</note>
+            <filter id="2" description="copy(field/value/variable)">
+              <a type="field" fieldconstant="S-order_id" />
+            </filter>
+          </field>
+          <field name="CustomerName" type="String" length="0" mandatory="false">
+            <note></note>
+            <filter id="2" description="copy(field/value/variable)">
+              <a type="field" fieldconstant="S-customer_name" />
+            </filter>
+          </field>
+          <field name="ProcessedAt" type="String" length="0" mandatory="false">
+            <note>Current timestamp</note>
+            <filter id="134" description="save variable a(b) type-safe">
+              <a type="constant" fieldconstant="VAR_TIMESTAMP"><value>VkFSX1RJTUVTVEFNUA==</value></a>
+              <b type="variable" fieldconstant="VAR_SYS_CURRENT_TIME" />
+            </filter>
+          </field>
+          <node name="Items" is_node="true" min="0" max="99999">
+            <field name="ItemCode" type="String" length="0" mandatory="true">
+              <filter id="2" description="copy(field/value/variable)">
+                <a type="field" fieldconstant="S-item_code" />
+              </filter>
+            </field>
+            <field name="Quantity" type="Integer" length="0" mandatory="true">
+              <filter id="2" description="copy(field/value/variable)">
+                <a type="field" fieldconstant="S-quantity" />
+              </filter>
+            </field>
+            <field name="IsValid" type="String" length="0" mandatory="false">
+              <filter id="29" description="a equals b">
+                <a type="field" fieldconstant="S-item_code" />
+                <b type="constant" fieldconstant=""><value></value></b>
+              </filter>
+              <filter id="93" description="a == b ? c : d">
+                <a type="result" fieldconstant="1" />
+                <b type="constant" fieldconstant="false"><value>ZmFsc2U=</value></b>
+                <c type="constant" fieldconstant="true"><value>dHJ1ZQ==</value></c>
+                <d type="constant" fieldconstant="false"><value>ZmFsc2U=</value></d>
+              </filter>
+            </field>
+          </node>
+        </node>
+      </outputtree>
+      <variables>
+        <variable>
+          <key>VAR_SYS_CLIENTNAME</key>
+          <description>Name of this client</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+        <variable>
+          <key>VAR_SYS_FILE_PATH</key>
+          <description>contains the path of the file read by cron job</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+        <variable>
+          <key>VAR_FILENAME_SUFFIX</key>
+          <description>Suffix of orig. file name without .</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+        <variable>
+          <key>MSG_CALL_VAR_SYS_WF_LINK</key>
+          <description>Link of workflow</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+        <variable>
+          <key>VAR_ORDER_COUNT</key>
+          <description>Number of orders processed in this run</description>
+          <type>1</type>
+          <value>0</value>
+        </variable>
+        <variable>
+          <key>VAR_TIMESTAMP</key>
+          <description>Processing timestamp for audit</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+      </variables>
+      <mappinginformation></mappinginformation>
+    </structuredefinition>
+  </dataproperties>
+  <integrationsettings>
+    <encoding>UTF-8</encoding>
+  </integrationsettings>
+  <responsesettings>
+    <run_as_thread>false</run_as_thread>
+    <responseunits>
+      <unit_ftp>
+        <response_type>1</response_type>
+        <description>SFTP Upload to partner</description>
+        <label>SFTP Upload</label>
+        <active>true</active>
+        <host></host>
+        <port>22</port>
+        <dir>/data/partner/confirmations</dir>
+        <filename>Confirm_%yyyyMMdd_HHmmss%.xml</filename>
+        <comm_channel_id>1234567890001</comm_channel_id>
+        <comm_channel_partner>ACME Corp</comm_channel_partner>
+        <comm_channel_name>FTP</comm_channel_name>
+        <encoding>UTF-8</encoding>
+        <treat_as_global_error>true</treat_as_global_error>
+        <retries>3</retries>
+        <retry_interval>60</retry_interval>
+      </unit_ftp>
+    </responseunits>
+  </responsesettings>
+</datawizardprofile>

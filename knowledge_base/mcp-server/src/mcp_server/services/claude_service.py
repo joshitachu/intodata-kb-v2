@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 import traceback
 
 from pathlib import Path
@@ -78,8 +80,37 @@ class ClaudeService:
         return None
 
     @staticmethod
+    def _extract_source_hint(expression: str) -> str:
+        """Parse common tMap expression patterns to extract a source hint."""
+        if not expression:
+            return ""
+        expr = expression.strip()
+        # Direct field reference: row1.field, row2.field, etc.
+        if expr.startswith("row") and "." in expr and " " not in expr.split(".", 1)[0]:
+            return expr.split("(")[0] if "(" in expr else expr
+        # Var reference
+        if expr.startswith("Var."):
+            return expr.split("(")[0] if "(" in expr else expr
+        # Context variable
+        if expr.startswith("context."):
+            return expr
+        # Constant string or number
+        if expr.startswith('"') or expr.startswith("'"):
+            return "constant"
+        try:
+            float(expr)
+            return "constant"
+        except (ValueError, TypeError):
+            pass
+        # Ternary or complex expression
+        if "?" in expr and ":" in expr:
+            return "conditional"
+        return "expression"
+
+    @staticmethod
     def _format_chunk_markdown(
         scanner: ScannerService, output_dir: str, chunks: list[dict],
+        platform: str = "talend",
     ) -> tuple[list[str], int]:
         """Process chunks into markdown parts. Returns (parts, job_count)."""
         parts: list[str] = []
@@ -105,18 +136,87 @@ class ClaudeService:
                         cname = comp.get("unique_name", "?")
                         parts.append(f"\n#### {cname} ({ctype})\n")
 
-                        # Key params
+                        # Separate FILTER params from regular params (Lobster)
                         params = comp.get("params", [])
+                        regular_params: list[dict] = []
+                        filter_params: list[dict] = []
                         if isinstance(params, list):
                             for p in params:
-                                pname = p.get("name", "")
-                                pval = p.get("value", "")
-                                if not pval or pname in ("UNIQUE_NAME", "CODEGENERATION"):
-                                    continue
-                                if len(str(pval)) > 5000:
-                                    parts.append(f"- **{pname}**:\n```\n{pval}\n```\n")
+                                if p.get("field_type") == "FILTER":
+                                    filter_params.append(p)
                                 else:
-                                    parts.append(f"- **{pname}**: `{pval}`\n")
+                                    regular_params.append(p)
+
+                        # Render regular params
+                        for p in regular_params:
+                            pname = p.get("name", "")
+                            pval = p.get("value", "")
+                            if not pval or pname in ("UNIQUE_NAME", "CODEGENERATION"):
+                                continue
+                            if len(str(pval)) > 5000:
+                                parts.append(f"- **{pname}**:\n```\n{pval}\n```\n")
+                            else:
+                                parts.append(f"- **{pname}**: `{pval}`\n")
+
+                        # Render Lobster filter chains as structured table
+                        if filter_params and platform == "lobster":
+                            parts.append("\n**Filter Chain (Transformation Logic)**\n\n")
+                            parts.append("| Step | Filter ID | Expression |\n")
+                            parts.append("|------|-----------|------------|\n")
+                            for idx, fp in enumerate(filter_params, 1):
+                                fid = fp.get("name", "").replace("filter_", "")
+                                fexpr = fp.get("value", "")
+                                # Escape pipe chars for table
+                                fexpr_safe = fexpr.replace("|", "\\|")
+                                parts.append(f"| {idx} | {fid} | `{fexpr_safe}` |\n")
+                            parts.append("\n")
+
+                        # Render Workato datapill mappings as structured table
+                        if platform == "workato":
+                            datapill_re = re.compile(r"#\{_\('([^']+)'\)([^}]*)\}")
+                            # Check the 'steps' param (JSON array of recipe steps)
+                            steps_param = next(
+                                (p for p in regular_params if p.get("name") == "steps"),
+                                None,
+                            )
+                            # Also check 'input' params on individual action components
+                            input_param = next(
+                                (p for p in regular_params if p.get("name") == "input"),
+                                None,
+                            )
+                            dp_rows: list[tuple[str, str, str]] = []
+                            for src_param in [steps_param, input_param]:
+                                if not src_param:
+                                    continue
+                                raw = str(src_param.get("value", ""))
+                                for match in datapill_re.finditer(raw):
+                                    ref_path = match.group(1)       # data.step_alias.field
+                                    formula = match.group(2).strip() # .to_s, .round(2), etc.
+                                    parts_ref = ref_path.split(".")
+                                    if len(parts_ref) >= 3:
+                                        src_step = parts_ref[1]
+                                        src_field = ".".join(parts_ref[2:])
+                                    elif len(parts_ref) == 2:
+                                        src_step = parts_ref[0]
+                                        src_field = parts_ref[1]
+                                    else:
+                                        src_step = ""
+                                        src_field = ref_path
+                                    formula_str = formula if formula else ""
+                                    dp_rows.append((src_step, src_field, formula_str))
+                            if dp_rows:
+                                parts.append("\n**Datapill Mappings (Transformation Logic)**\n\n")
+                                parts.append("| Source Step | Source Field | Formula |\n")
+                                parts.append("|------------|-------------|----------|\n")
+                                seen: set[tuple[str, str, str]] = set()
+                                for row in dp_rows:
+                                    if row in seen:
+                                        continue
+                                    seen.add(row)
+                                    s_step, s_field, s_formula = row
+                                    s_formula_safe = s_formula.replace("|", "\\|") if s_formula else "--"
+                                    parts.append(f"| {s_step} | {s_field} | `{s_formula_safe}` |\n")
+                                parts.append("\n")
 
                         # Connections
                         for direction, key in [("Incoming", "incoming_connections"),
@@ -129,6 +229,54 @@ class ClaudeService:
                         ref = comp.get("metadata_connection_ref")
                         if ref:
                             parts.append(f"- Metadata connection: `{ref}`\n")
+
+                # --- Talend: Render tmap_data as structured tables ---
+                tmap_data = job.get("tmap_data", [])
+                if tmap_data and platform == "talend":
+                    parts.append("\n### Transformation Detail (tMap Data)\n")
+                    for tmap_idx, tmap in enumerate(tmap_data):
+                        input_tables = tmap.get("input_tables", [])
+                        output_tables = tmap.get("output_tables", [])
+                        var_entries = tmap.get("var_entries", [])
+                        entries = tmap.get("entries", [])
+
+                        parts.append(f"\n**tMap #{tmap_idx + 1}**")
+                        if input_tables:
+                            parts.append(f" | Inputs: {', '.join(input_tables)}")
+                        if output_tables:
+                            parts.append(f" | Outputs: {', '.join(output_tables)}")
+                        parts.append("\n")
+
+                        # Var table
+                        if var_entries:
+                            parts.append("\n**Var Table**\n\n")
+                            parts.append("| Variable | Expression | Source Hint |\n")
+                            parts.append("|----------|------------|-------------|\n")
+                            for ve in var_entries:
+                                col = ve.get("column_name", "")
+                                expr = ve.get("expression", "")
+                                hint = ClaudeService._extract_source_hint(expr)
+                                expr_safe = expr.replace("|", "\\|")
+                                parts.append(f"| {col} | `{expr_safe}` | {hint} |\n")
+                            parts.append("\n")
+
+                        # Per-output-table entries
+                        tables_seen: dict[str, list[dict]] = {}
+                        for entry in entries:
+                            tbl = entry.get("table_name", "output")
+                            tables_seen.setdefault(tbl, []).append(entry)
+
+                        for tbl_name, tbl_entries in tables_seen.items():
+                            parts.append(f"\n**Output: {tbl_name}**\n\n")
+                            parts.append("| Target Column | Expression | Source Hint |\n")
+                            parts.append("|---------------|------------|-------------|\n")
+                            for te in tbl_entries:
+                                col = te.get("column_name", "")
+                                expr = te.get("expression", "")
+                                hint = ClaudeService._extract_source_hint(expr)
+                                expr_safe = expr.replace("|", "\\|")
+                                parts.append(f"| {col} | `{expr_safe}` | {hint} |\n")
+                            parts.append("\n")
 
                 # Context variables
                 ctx_vars = job.get("context_variables", [])
@@ -188,12 +336,71 @@ class ClaudeService:
 
         return parts, job_count
 
+    @staticmethod
+    def _detect_resume_state(staging_dir: Path) -> dict | None:
+        """Inspect docs_staging/ for completed artifacts from a prior run.
+
+        Returns None (fresh run) or a dict describing what already exists:
+        - preprocess_exists: bool — _preprocess/ has group markdown files
+        - analysis_files: list[str] — non-bundle .md files in _analysis/
+        - scorecard_exists: bool — _assessment/scorecard.md exists
+        - bundles_exist: bool — _analysis/_bundle_*.md files exist
+        - completed_docs: list[str] — *.md files in staging root >500 bytes
+        """
+        if not staging_dir.exists():
+            return None
+
+        preprocess_dir = staging_dir / "_preprocess"
+        analysis_dir = staging_dir / "_analysis"
+        assessment_dir = staging_dir / "_assessment"
+
+        # Check for any usable artifacts
+        preprocess_files = (
+            sorted(f.name for f in preprocess_dir.glob("*.md") if not f.name.startswith("_"))
+            if preprocess_dir.exists() else []
+        )
+        analysis_files = (
+            sorted(
+                f.stem for f in analysis_dir.glob("*.md")
+                if not f.name.startswith("_bundle_")
+            )
+            if analysis_dir.exists() else []
+        )
+        bundle_files = (
+            list(analysis_dir.glob("_bundle_*.md"))
+            if analysis_dir.exists() else []
+        )
+        scorecard_path = assessment_dir / "scorecard.md"
+        scorecard_exists = scorecard_path.exists() and scorecard_path.stat().st_size > 100
+        completed_docs = (
+            sorted(
+                f.name for f in staging_dir.glob("*.md")
+                if f.stat().st_size > 500
+            )
+        )
+
+        # If nothing useful exists, treat as fresh
+        if not preprocess_files and not analysis_files and not completed_docs:
+            return None
+
+        state = {
+            "preprocess_exists": len(preprocess_files) > 0,
+            "preprocess_files": preprocess_files,
+            "analysis_files": analysis_files,
+            "scorecard_exists": scorecard_exists,
+            "bundles_exist": len(bundle_files) > 0,
+            "completed_docs": completed_docs,
+        }
+        logger.info("Resume state detected: %s", state)
+        return state
+
     async def _preprocess_scan_data(
         self,
         project_id: str,
         staging_dir: Path,
         platform: str = "talend",
         template_profile_id: int | None = None,
+        total_jobs: int = 0,
     ) -> tuple[list[str], dict[str, int]]:
         """Pre-process raw job JSONs into structured markdown summaries.
 
@@ -260,7 +467,7 @@ class ClaudeService:
                     f"Chunks: {len(slice_chunks)} | Jobs: {slice_jobs}\n"
                 )
                 body_parts, actual_jobs = self._format_chunk_markdown(
-                    scanner, output_dir, slice_chunks,
+                    scanner, output_dir, slice_chunks, platform=platform,
                 )
                 content = header + "".join(body_parts)
                 (preprocess_dir / f"{slice_name}.md").write_text(
@@ -355,8 +562,10 @@ class ClaudeService:
                     "04_BUSINESS_LOGIC", "05_OPERATIONS_RISK",
                     "06_ENVIRONMENT_EXTERNAL",
                 ],
-                "_ref_patterns_user": [
+                "_ref_patterns": [
                     "07_SECURITY_PERFORMANCE", "08_PATTERNS_STANDARDS",
+                ],
+                "_ref_user": [
                     "09_RUNBOOK", "10_ONBOARDING_FAQ",
                     "11_MIGRATION_ASSESSMENT",
                 ],
@@ -414,6 +623,14 @@ class ClaudeService:
             else:
                 logger.warning("Scoring template not found: %s", src_path)
 
+        # --- Copy analysis bundling script for Phase 2.8 ---
+        _bundle_script = Path(__file__).resolve().parent.parent / "scripts" / "bundle_analysis.py"
+        if _bundle_script.exists():
+            shutil.copy2(_bundle_script, preprocess_dir / "_bundle_analysis.py")
+            logger.info("Copied bundle_analysis.py to _preprocess/ (%d bytes)", _bundle_script.stat().st_size)
+        else:
+            logger.warning("bundle_analysis.py not found at %s", _bundle_script)
+
         # --- Override with DB templates if profile is set ---
         template_snapshot: dict[str, int] = {}
         if template_profile_id is not None:
@@ -468,9 +685,9 @@ class ClaudeService:
                                       "output/02_architecture_inventory", "output/03_data_flows_lineage"],
                         "_ref_business_ops": ["output/04_business_logic", "output/05_operations_risk",
                                               "output/06_environment_external"],
-                        "_ref_patterns_user": ["output/07_security_performance", "output/08_patterns_standards",
-                                               "output/09_runbook", "output/10_onboarding_faq",
-                                               "output/11_migration_assessment"],
+                        "_ref_patterns": ["output/07_security_performance", "output/08_patterns_standards"],
+                        "_ref_user": ["output/09_runbook", "output/10_onboarding_faq",
+                                      "output/11_migration_assessment"],
                     }
                     for bundle_name, slugs in ref_map.items():
                         entries = []
@@ -505,8 +722,12 @@ class ClaudeService:
         project_id: str,
         template_profile_id: int | None = None,
         model: str | None = None,
+        resume: bool = True,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
+
+        When resume=True (default), checks for existing docs_staging/ artifacts
+        and skips already-completed phases. Set resume=False for a clean run.
 
         Returns dict with success, cost_usd, duration_ms, input_tokens, etc.
         """
@@ -514,8 +735,16 @@ class ClaudeService:
 
         # Use a staging directory so old docs survive if generation fails
         staging_dir = output_dir / "docs_staging"
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        # Detect resume state before deciding whether to wipe staging
+        resume_state: dict | None = None
+        if resume and staging_dir.exists():
+            resume_state = self._detect_resume_state(staging_dir)
+
+        if resume_state is None:
+            # Fresh run — wipe any leftover staging
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
         for d in [
             staging_dir,
@@ -539,24 +768,97 @@ class ClaudeService:
             project = await registry.get_project(project_id)
             platform = project.platform if project else "talend"
 
-        # Pre-process scan data into structured markdown (saves ~15 min of agent parsing)
-        await self.log_manager.emit(
-            project_id, "Pre-processing scan data...", level="info",
+        # Compute project metrics early (needed for preprocessing decisions)
+        scanner = ScannerService()
+        scan_output_dir = str(config.intodoc_output_dir / project_id)
+        chunk_defs = scanner.get_chunk_definitions(scan_output_dir)
+        total_jobs = chunk_defs.get("total_jobs", 0)
+
+        # Step 7: Stale scan detection — compare scan mtime against manifest
+        manifest_path = staging_dir / "_manifest.json"
+        if resume_state is not None:
+            scan_dir = config.intodoc_output_dir / project_id / "scan"
+            scan_manifest = scan_dir / "manifest.json"
+            if scan_manifest.exists() and manifest_path.exists():
+                try:
+                    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    manifest_ts = manifest_data.get("scan_mtime", 0)
+                    current_scan_mtime = scan_manifest.stat().st_mtime
+                    if current_scan_mtime > manifest_ts:
+                        logger.info(
+                            "Scan data changed since staging was created "
+                            "(scan=%.0f > manifest=%.0f) — re-preprocessing",
+                            current_scan_mtime, manifest_ts,
+                        )
+                        await self.log_manager.emit(
+                            project_id,
+                            "Scan data changed since last run — re-preprocessing (keeping analysis if groups match)",
+                            level="warning",
+                        )
+                        # Invalidate preprocessing but keep analysis/docs
+                        preprocess_dir = staging_dir / "_preprocess"
+                        if preprocess_dir.exists():
+                            shutil.rmtree(preprocess_dir, ignore_errors=True)
+                        resume_state["preprocess_exists"] = False
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning("Could not check stale scan: %s", e)
+
+        # Pre-process scan data (skip if resuming with valid preprocess files)
+        skip_preprocess = (
+            resume_state is not None
+            and resume_state.get("preprocess_exists", False)
         )
-        preprocess_groups, template_snapshot = await self._preprocess_scan_data(
-            project_id, staging_dir, platform, template_profile_id,
-        )
+
+        if skip_preprocess:
+            await self.log_manager.emit(
+                project_id,
+                "RESUME: Skipping preprocessing (files already exist)",
+                level="info",
+            )
+            # Recover group names from existing preprocess files
+            preprocess_dir = staging_dir / "_preprocess"
+            preprocess_groups = sorted(
+                f.stem for f in preprocess_dir.glob("*.md")
+                if not f.name.startswith("_")
+            )
+            template_snapshot: dict[str, int] = {}
+            # Try to recover template_snapshot from manifest
+            if manifest_path.exists():
+                try:
+                    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    template_snapshot = manifest_data.get("template_snapshot", {})
+                except (json.JSONDecodeError, OSError):
+                    pass
+        else:
+            await self.log_manager.emit(
+                project_id, "Pre-processing scan data...", level="info",
+            )
+            preprocess_groups, template_snapshot = await self._preprocess_scan_data(
+                project_id, staging_dir, platform, template_profile_id,
+                total_jobs=total_jobs,
+            )
+
         await self.log_manager.emit(
             project_id,
             f"Pre-processed {len(preprocess_groups)} groups: {', '.join(preprocess_groups)}",
             level="info",
         )
 
-        # Compute project metrics for dynamic depth scaling
-        scanner = ScannerService()
-        scan_output_dir = str(config.intodoc_output_dir / project_id)
-        chunk_defs = scanner.get_chunk_definitions(scan_output_dir)
-        total_jobs = chunk_defs.get("total_jobs", 0)
+        # Write _manifest.json for stale scan detection and resume metadata
+        scan_dir = config.intodoc_output_dir / project_id / "scan"
+        scan_manifest_path = scan_dir / "manifest.json"
+        manifest_path.write_text(json.dumps({
+            "project_id": project_id,
+            "platform": platform,
+            "groups": preprocess_groups,
+            "total_jobs": total_jobs,
+            "model": model or config.doc_generation_model,
+            "template_profile_id": template_profile_id,
+            "template_snapshot": template_snapshot,
+            "scan_mtime": scan_manifest_path.stat().st_mtime if scan_manifest_path.exists() else 0,
+            "created_at": time.time(),
+        }, indent=2), encoding="utf-8")
+
         total_groups = len(preprocess_groups)
 
         # Compute scaled analysis target from preprocessed data size
@@ -569,6 +871,59 @@ class ClaudeService:
         logger.info(
             "Analysis target: %dKB (from %d bytes preprocessed data)",
             analysis_target_kb, total_preprocess_bytes,
+        )
+
+        # Depth tier scaling based on total jobs
+        _BASE_DEPTH = {
+            "00_EXEC": 300, "01_OVERVIEW": 400, "02_ARCH": 600, "03_DATA": 600,
+            "04_BIZ": 800, "05_OPS": 800, "06_ENV": 400, "07_SEC": 400,
+            "08_PAT": 500, "09_RUN": 500, "10_ONBOARD": 600, "11_MIG": 700,
+        }
+        if total_jobs < 50:
+            depth_multiplier, depth_tier = 0.6, "small"
+        elif total_jobs < config.large_project_threshold:
+            depth_multiplier, depth_tier = 1.0, "medium"
+        else:
+            depth_multiplier, depth_tier = 1.5, "large"
+
+        depth_table_rows = "\n".join(
+            f"   | {doc} | {int(base * depth_multiplier)} |"
+            for doc, base in _BASE_DEPTH.items()
+        )
+
+        # Dynamic Phase 3 agent configuration
+        is_large_project = total_jobs >= config.large_project_threshold
+        num_agents = 4 if is_large_project else 3
+
+        if is_large_project:
+            agent_table = (
+                "   The 4 doc-assembly agents (large project -- split for deeper output):\n"
+                "   | Agent          | Bundle                            | Reference bundle                     | Writes                                                                    |\n"
+                "   |----------------|-----------------------------------|--------------------------------------|---------------------------------------------------------------------------||\n"
+                "   | Core           | _analysis/_bundle_core.md         | _ref_core*.md                        | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE |\n"
+                "   | Business+Ops   | _analysis/_bundle_business_ops.md | _ref_business_ops*.md                | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL            |\n"
+                "   | Patterns       | _analysis/_bundle_patterns.md     | _ref_patterns*.md                    | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*                           |\n"
+                "   | User           | _analysis/_bundle_user.md         | _ref_user*.md                        | 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT                    |"
+            )
+            agent_retry_map = (
+                "Core, Business+Ops, Patterns, or User"
+            )
+        else:
+            agent_table = (
+                "   The 3 doc-assembly agents:\n"
+                "   | Agent          | Bundle                                 | Reference bundle                     | Writes                                                                    |\n"
+                "   |----------------|----------------------------------------|--------------------------------------|---------------------------------------------------------------------------||\n"
+                "   | Core           | _analysis/_bundle_core.md              | _ref_core*.md                        | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE |\n"
+                "   | Business+Ops   | _analysis/_bundle_business_ops.md      | _ref_business_ops*.md                | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL            |\n"
+                "   | Patterns+User  | _analysis/_bundle_patterns_user.md     | _ref_patterns*.md, _ref_user*.md     | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT |"
+            )
+            agent_retry_map = (
+                "Core, Business+Ops, or Patterns+User"
+            )
+
+        logger.info(
+            "Depth tier: %s (x%.1f), agents: %d, large_project: %s",
+            depth_tier, depth_multiplier, num_agents, is_large_project,
         )
 
         phase2_header = (
@@ -601,7 +956,56 @@ class ClaudeService:
                 "   - If errors occurred, call retain_process_lesson(lesson, 'error-lesson').\n"
             )
 
-        prompt = f"""Generate complete documentation for project '{project_id}'.
+        # Build resume block if resuming from checkpoint
+        resume_prompt_block = ""
+        if resume_state is not None:
+            analysis = resume_state.get("analysis_files", [])
+            scorecard = resume_state.get("scorecard_exists", False)
+            bundles = resume_state.get("bundles_exist", False)
+            completed = resume_state.get("completed_docs", [])
+
+            parts = ["RESUME MODE -- SKIP COMPLETED WORK:"]
+            parts.append("   This is a RESUMED generation. The following artifacts already exist:\n")
+
+            if analysis:
+                parts.append(
+                    f"   COMPLETED ANALYSIS ({len(analysis)} groups): {', '.join(analysis)}"
+                )
+                parts.append(
+                    f"   -> Skip Phase 2 entirely for these groups. "
+                    f"Analysis files are in {staging_abs}/_analysis/."
+                )
+            else:
+                parts.append("   COMPLETED ANALYSIS: None — run Phase 2 for all groups.")
+
+            parts.append(f"   COMPLETED SCORECARD: {'Yes' if scorecard else 'No'}")
+            if scorecard:
+                parts.append("   -> Skip Phase 2.6.")
+
+            parts.append(f"   COMPLETED BUNDLES: {'Yes' if bundles else 'No'}")
+            if bundles:
+                parts.append("   -> Skip Phase 2.8.")
+
+            if completed:
+                parts.append(f"   COMPLETED DOCS: {', '.join(completed)}")
+                parts.append(
+                    "   -> In Phase 3, only spawn agents whose assigned docs are MISSING."
+                    "\n     Do NOT re-spawn agents whose docs are already written."
+                )
+            else:
+                parts.append("   COMPLETED DOCS: None — run Phase 3 for all agents.")
+
+            parts.append("\n   PROCEED DIRECTLY TO the first incomplete phase.\n")
+
+            resume_prompt_block = "\n".join(parts) + "\n"
+            await self.log_manager.emit(
+                project_id,
+                f"RESUME: analysis={len(analysis)} groups, scorecard={'yes' if scorecard else 'no'}, "
+                f"bundles={'yes' if bundles else 'no'}, docs={len(completed)}",
+                level="info",
+            )
+
+        prompt = f"""{resume_prompt_block}Generate complete documentation for project '{project_id}'.
 
 PHASE 1 -- SETUP:
 {hindsight_phase1}   - All data is pre-processed and ready in {staging_abs}/_preprocess/.
@@ -621,7 +1025,7 @@ PHASE 1 -- SETUP:
    2. Reads {staging_abs}/_preprocess/{{group}}.md for ALL scan data.
       If the group is split ({{group}}_part1.md and {{group}}_part2.md exist), read BOTH parts.
    3. Analyzes the pre-processed data across ALL dimensions defined in the analysis guide.
-   4. Writes a RICH structured analysis file to {staging_abs}/_analysis/{{group}}.md (target: ~{analysis_target_kb}KB).
+   4. Writes a RICH structured analysis file to {staging_abs}/_analysis/{{group}}.md (MAXIMUM: {analysis_target_kb}KB -- prioritize depth over breadth when approaching the cap).
    5. Returns a ~2KB navigation summary to the orchestrator (group name, job count, key findings, section list).
 
    If a group is split into parts (e.g. USA_part1.md and USA_part2.md), spawn one sub-agent per part,
@@ -677,10 +1081,18 @@ PHASE 2.6 -- SCORE & ASSESS (one sub-agent, after Phase 2.5 gate passes):
    - Do NOT read files outside {staging_abs}/.
    - Do NOT use TodoWrite, mkdir, ls, or any MCP tools.
 
+PHASE 2.8 -- BUNDLE ANALYSIS (after Phase 2.6, before Phase 3):
+   Run this command to create per-agent analysis bundles:
+   Bash: python3 {staging_abs}/_preprocess/_bundle_analysis.py {staging_abs} {total_jobs} {config.large_project_threshold}
+   This creates {staging_abs}/_analysis/_bundle_{{agent}}.md files -- one per Phase 3 agent,
+   containing only the analysis sections relevant to that agent's docs.
+   Verify: Bash ls -la {staging_abs}/_analysis/_bundle_*.md
+
 PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
-   After Phase 2.6 completes, spawn 3 doc-assembly sub-agents in parallel using model: "{write_model}".
+   After Phase 2.8 completes, spawn {num_agents} doc-assembly sub-agents in parallel using model: "{write_model}".
    IMPORTANT: When spawning Phase 3 Task agents, pass model="{write_model}" to each Task tool call.
-   Each Phase 3 agent reads the FULL _analysis/{{group}}.md files directly (no condensation step).
+   Each Phase 3 agent reads its PRE-BUNDLED analysis file from {staging_abs}/_analysis/_bundle_{{agent}}.md.
+   Do NOT read individual _analysis/{{group}}.md files -- the bundles already contain the relevant sections.
    Each Phase 3 agent also reads {staging_abs}/_assessment/scorecard.md for quantitative grounding.
    Each doc agent also reads its REFERENCE DOC BUNDLE from _preprocess/ for format templates.
    Each Phase 3 agent also reads {staging_abs}/_preprocess/_phase3_guide.md for cross-group
@@ -688,24 +1100,16 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    migration assessment methodology).
    Each doc agent writes final .md files to {staging_abs}/.
 
-   AUTO-FALLBACK: If total analysis size exceeds 400KB (check with: Bash du -sh {staging_abs}/_analysis/),
-   each Phase 3 agent should read only the analysis sections relevant to its docs (use grep/head/tail).
-   For most projects (~10 groups, ~300KB analysis), agents read ALL analysis files in full.
-
-   The 3 doc-assembly agents:
-   | Agent          | Analysis Input                          | Reference bundle          | Writes                                                                    |
-   |----------------|-----------------------------------------|---------------------------|---------------------------------------------------------------------------|
-   | Core           | ALL _analysis/{{group}}.md files        | _ref_core*.md             | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE |
-   | Business+Ops   | ALL _analysis/{{group}}.md files        | _ref_business_ops*.md     | 04_BUSINESS_LOGIC, 05_OPERATIONS_RISK, 06_ENVIRONMENT_EXTERNAL            |
-   | Patterns+User  | ALL _analysis/{{group}}.md files        | _ref_patterns_user*.md    | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT |
+{agent_table}
    *08_PATTERNS_STANDARDS cross-region section only if 2+ groups exist.
 
    Each sub-agent prompt MUST include:
-   - "Read ALL files in {staging_abs}/_analysis/ for your analysis data."
+   - "Read {staging_abs}/_analysis/_bundle_{{your_agent}}.md for your pre-bundled analysis data."
    - "Read {staging_abs}/_assessment/scorecard.md for quantitative scores and evidence."
    - "Read ALL _ref_{{agent}}*.md files in {staging_abs}/_preprocess/ for format reference templates."
    - "Read {staging_abs}/_preprocess/_phase3_guide.md for cross-group synthesis guidance."
    - Do NOT call get_reference_docs() or get_analysis_prompts() -- use the pre-bundled files.
+   - Do NOT read individual _analysis/{{group}}.md files -- use ONLY your bundle file.
    SCORECARD INTEGRATION:
    - Reference specific scores from the scorecard in your documents.
    - Example: "Security: 2/5 (see Assessment Scorecard for details)"
@@ -715,7 +1119,12 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - Operations & Risk (doc 05) MUST reference error handling and operations scores.
 
    DEPTH GUIDANCE:
-   This project has {total_jobs} jobs across {total_groups} groups.
+   This project has {total_jobs} jobs across {total_groups} groups ({depth_tier} project, {depth_multiplier}x depth scaling).
+
+   MINIMUM line targets (these are MINIMUMS, not maximums -- larger projects MUST produce proportionally deeper docs):
+   | Doc | Min Lines |
+   |-----|-----------|
+{depth_table_rows}
 
    Scale document depth to match the actual content available:
    - Write as much as needed to cover every relevant finding. Do NOT pad.
@@ -762,7 +1171,7 @@ PHASE 3.5 -- DOC VALIDATION (before cleanup):
    3. Optional docs (generate if content warrants): 06_ENVIRONMENT_EXTERNAL, 07_SECURITY_PERFORMANCE,
       08_PATTERNS_STANDARDS.
    4. If any REQUIRED doc is missing or under 500 bytes:
-      - Identify which Phase 3 agent was responsible (Core, Business+Ops, or Patterns+User).
+      - Identify which Phase 3 agent was responsible ({agent_retry_map}).
       - Re-spawn ONLY that agent with the same instructions. Max 1 retry per agent.
    5. After retries, proceed to Phase 4 with whatever docs exist. Log any still-missing docs as WARNINGS.
 
@@ -827,10 +1236,11 @@ FILE READING GUIDANCE (prevents cascading failures):
         )
         logger.info(f"claude resolved path: {resolved_cmd}")
         logger.info(f"Spawning Claude Code: {cmd[0]} -p '...' --model {effective_model}  cwd={_subprocess_cwd}")
+        resume_label = "resume" if resume_state is not None else "fresh"
         await self.log_manager.emit(
             project_id,
             f"Model: {effective_model} | Write model: {write_model} | "
-            f"Groups: {total_groups} | Jobs: {total_jobs}",
+            f"Groups: {total_groups} | Jobs: {total_jobs} | Mode: {resume_label}",
             level="info",
         )
         await self.log_manager.emit(
@@ -843,6 +1253,7 @@ FILE READING GUIDANCE (prevents cascading failures):
             # Use subprocess.Popen instead of asyncio.create_subprocess_exec
             # to avoid ProactorEventLoop pipe issues on Windows + Python 3.14.
             env = {**os.environ, "PYTHONUTF8": "1"}
+            env.pop("CLAUDECODE", None)  # Allow nested Claude Code subprocess
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,

@@ -1,5 +1,110 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-04-15
+
+### [Feature]: Phase 5 — Memory Dashboard (OpenBrain Behavioral Architecture)
+
+- **Files changed**:
+  - `backend/src/memory/hindsight_client.py` (line 715) — Bug fix: `await client.acreate_mental_model(...)` changed to `await client.mental_models.create_mental_model(...)`. Added `get_bank_stats()` and `list_bank_memories()` helper functions.
+  - `backend/src/api/routes/memory.py` (full rewrite) — Added 4 GET endpoints: `GET /memory/banks` (list all banks with stats + abstraction funnel), `GET /memory/banks/{bank_id}/memories` (paginated memories), `GET /memory/banks/{bank_id}/reflect` (pattern analysis), `GET /memory/recent-captures` (cross-bank recent timeline). Shared `_build_candidate_banks()` helper derives bank IDs from User + ProjectAssignment DB tables.
+  - `frontend/components/Sidebar.tsx` (lines 16, 81) — Added `Brain` import from lucide-react, added `{ href: "/admin/hindsight", label: "Memory", icon: Brain, perm: "view_audit_logs" }` to `adminSubLinks` array.
+  - `frontend/app/api/admin/memory/banks/route.ts` (new) — BFF proxy for `/api/v1/memory/banks`
+  - `frontend/app/api/admin/memory/banks/[bankId]/memories/route.ts` (new) — BFF proxy with limit/offset/type query params
+  - `frontend/app/api/admin/memory/banks/[bankId]/reflect/route.ts` (new) — BFF proxy with query param
+  - `frontend/app/api/admin/memory/recent/route.ts` (new) — BFF proxy with limit param
+  - `frontend/app/admin/hindsight/page.tsx` (new) — Full dashboard with 3 tabs: Insight Pipeline (summary cards + abstraction funnel + recent captures timeline), Memory Banks (list → detail with accordion expand), Reflect (bank selector + pattern analysis)
+- **Problem**: Phases 1-4 built memory system with POST endpoints but no read endpoints for admin inspection. No UI to visualize the abstraction funnel or transparency layer.
+- **Root cause**: Dashboard was deferred to Phase 5.
+- **Change**: Added backend read endpoints and full frontend dashboard informed by OpenBrain Behavioral Architecture (transparency controls, abstraction funnel, information architecture for insight).
+- **Why this approach**: Three-tab layout matches OpenBrain's three knowledge tiers (Active Context / Accumulating Signals / Crystallized Knowledge). Reuses existing BFF proxy pattern, tab pattern from usage page, and AuditViewer permission guard.
+- **Verification**: Python AST syntax check passes. TypeScript `tsc --noEmit` passes with zero errors.
+
+## Session: 2026-04-14
+
+### [Feature]: Enhanced Hindsight Memory Integration (Phases 1-4)
+
+- **Files changed**:
+  - `backend/src/config.py` (line 69-71) — Added 3 new settings: `hindsight_project_banks_enabled`, `hindsight_distill_before_retain`, `hindsight_max_project_memories`
+  - `backend/src/memory/hindsight_client.py` (full rewrite) — Major rewrite adding project-scoped banks, tag system, intent-based retention gating, content distillation, topic/entity extraction, observation scopes, reflect endpoint, mental model CRUD
+  - `backend/src/generation/conversational_rag.py` (lines 24-34, 95-119, 342-350, 372-421, 500-698, 797-808, 949-958) — Updated imports, `_build_memory_context` for project memories, `RAGContext` dataclass with `analysis` field, parallel project bank ensure/recall in `_prepare_rag_context`, pass `action`/`query_type`/`project_ids` to `retain_interaction` in both streaming and non-streaming paths
+  - `backend/src/api/routes/memory.py` (new file) — Admin endpoints: `POST /memory/mental-models`, `POST /memory/reflect-patterns` with `AuditViewer` permission guard
+  - `backend/src/api/main.py` (lines 12, 133) — Imported and registered memory router
+- **Problem**: Hindsight integration was basic — raw Q&A pairs stored to 3 flat banks with no tags, no project scoping, no use of Hindsight's advanced features (observations, mental models, reflect, entities). Intent classifier output was ignored during retention.
+- **Root cause**: Initial Hindsight integration was a minimal proof-of-concept that stored everything regardless of value.
+- **Change**:
+  1. **Phase 1 — Project banks + tags**: Per-project banks (`project-{id}`), tag system (`project:X`, `intent:Y`, `topic:Z`), entity extraction from source filenames, tag-scoped recall with `tags_match` to prevent cross-project leakage
+  2. **Phase 2 — Gating + distillation**: `decide_retention()` gates by intent (SEARCH+results=FULL, SEARCH+0=quality-only, METADATA=quality-only, RESPOND/SUMMARY=skip, short answers=quality-only). `distill_interaction()` uses LLM to transform Q&A into reusable knowledge statements. Topic extraction from source filenames. All runs in existing fire-and-forget pattern.
+  3. **Phase 3 — Observations**: `observation_scopes="per_tag"` in project bank retention enables auto-consolidation. Recall requests `types=["observation", "world"]` for consolidated patterns first. `reflect_project_patterns()` for admin analytics.
+  4. **Phase 4 — Mental models + admin API**: `create_project_mental_model()` for pre-computed FAQ answers. Admin endpoints with `AuditViewer` permission.
+- **Why this approach**: Backward compatible (all new params have defaults), zero impact on response latency (entire retention pipeline runs fire-and-forget), leverages Hindsight's built-in features rather than reimplementing them.
+- **Verification**: All 5 modified files pass Python AST syntax check. Imports verified. Backward-compatible API signatures.
+
+## Session: 2026-04-13
+
+### [Feature]: Consolidated global project selector in sidebar
+
+- **Files changed**:
+  - `frontend/components/Sidebar.tsx` — Added `useUserProjects()` hook, project selector pill (expanded: `<select>` with "All Projects" default; collapsed: `FolderKanban` icon button that expands sidebar on click), `ChevronDown` import
+  - `frontend/components/ChatWindow.tsx` — Removed `ProjectSelector` and `RagProjectSelector` imports/usage from toolbar, removed `onProjectChange` prop, kept `selectedProject` prop (read-only from context), updated placeholder text to reference sidebar
+  - `frontend/components/ChatLayout.tsx` — Removed `setSelectedProject` destructure and `onProjectChange` prop pass-through
+  - `frontend/app/docs/page.tsx` — Replaced local `useState` + `DocsProjectSelector` with `useChatContext().selectedProject`, removed `mb-3` from header
+  - `frontend/app/topology/page.tsx` — Added `useChatContext()` for `globalProject`, syncs with scanned projects list (uses global if in scanned list, falls back to first scanned project), removed inline `<select>` from header, shows project name as text label
+  - `frontend/components/DocumentUpload.tsx` — Replaced local `useState` + `useDocsProjects` + project `<select>` with `useChatContext().selectedProject`, removed `ALLOWED_TYPES` dead code, updated placeholder to "Select a project in the sidebar first"
+  - Deleted `frontend/components/ProjectSelector.tsx` (deep dive selector)
+  - Deleted `frontend/components/DocsProjectSelector.tsx` (docs selector)
+  - Deleted `frontend/components/RagProjectSelector.tsx` (RAG chat selector)
+- **Problem**: 5 independent project selectors across the app (Chat, Deep Dive, Docs, Documents, Topology) each with isolated state. Switching pages lost project selection. Users could forget which project they're working in.
+- **Root cause**: Each page managed its own `selectedProject` state independently instead of using the shared `ChatContext`.
+- **Change**: Moved project selection to a single pill in the sidebar. All pages now read `selectedProject` from `ChatContext` (which already wraps all pages via `ChatProvider` in `Layout.tsx`). Deleted 3 redundant selector components.
+- **Why this approach**: `ChatContext` already wraps all pages and already had `selectedProject`/`setSelectedProject`. Adding the selector to the sidebar is the natural UX since it's always visible. Topology special case handled by syncing global project with scanned projects list.
+- **Verification**: `npm run build` passes with zero type errors. All pages compile successfully.
+
+### [Feature]: Sidebar + streaming status fix
+
+- **Files changed**:
+  - `frontend/components/Layout.tsx` — Wrapped all non-login pages with `ChatProvider` (single code path). Conditional `p-6` padding for non-chat pages only.
+  - `frontend/contexts/ChatContext.tsx` — Removed `sidebarExpanded` / `setSidebarExpanded` from interface and provider (sidebar now self-managed).
+  - `frontend/components/Sidebar.tsx` — Rewritten: localStorage-based expand/collapse (default collapsed), `w-56` expanded (was `w-48`), conversations visible on all pages (not just chat), clicking conversation from non-chat page navigates to `/` via `router.push`, `useChatContext` instead of `useChatContextSafe`, New Chat button + collapse toggle in same header row, divider between nav and conversations.
+  - `frontend/components/MessageBubble.tsx` — Added `hasSources` prop. Replaced blinking cursor (shown when `isStreaming && !content`) with status indicator: "Searching documents..." (no sources yet) or "Thinking..." (sources received, waiting for LLM) with CSS spinner.
+  - `frontend/components/MessageList.tsx` — Passes `hasSources={streamingMessage.sources.length > 0}` to streaming MessageBubble.
+- **Problem**: Sidebar was too narrow (`w-48`), conversations only visible on chat page, no fold/unfold on non-chat pages. During generation, user saw only a blinking cursor with no status feedback.
+- **Root cause**: `ChatProvider` only wrapped the chat page. Sidebar state was managed via `ChatContext` (unavailable on other pages). No streaming status messages existed.
+- **Change**: Made `ChatProvider` universal, moved sidebar expand state to `localStorage`, added streaming status messages.
+- **Why this approach**: Universal `ChatProvider` is the simplest way to share conversation state across all pages. `localStorage` for sidebar state persists across sessions and doesn't pollute chat context. CSS-only spinner avoids adding dependencies.
+- **Verification**: `npm run build` passes with zero type errors.
+
+### [Feature]: Remove search page, polish chat UI to Claude-level quality
+
+- **Files changed**:
+  - `frontend/app/page.tsx` — replaced search page with `<ChatLayout />`
+  - `frontend/app/chat/page.tsx` — replaced with `redirect("/")` so bookmarks still work
+  - `frontend/components/Layout.tsx` — added `FULL_BLEED_PATHS` for `/` (no `p-6` padding on chat)
+  - `frontend/components/Sidebar.tsx` — removed Search nav entry, made Chat point to `/`, icon-only mode (`w-12`) when `pathname === "/"`
+  - `frontend/components/ModeToggle.tsx` — removed `SearchMode` type and `variant="search"` branch, simplified to just `ChatMode`
+  - `frontend/components/ChatInput.tsx` — Claude-style floating centered input (`max-w-3xl mx-auto`, `rounded-2xl border`, shadow, `focus-within:ring-2`), circular ArrowUp send button, `toolbarContent` prop for mode toggle + project selector
+  - `frontend/components/ChatWindow.tsx` — moved ModeToggle + ProjectSelector from header to ChatInput toolbar row, removed header bar, added welcome screen (logo, subtitle, 4 suggestion cards), `onSuggestionClick` for cards, auto-create conversation on first message
+  - `frontend/components/MessageBubble.tsx` — both messages left-aligned in column, user messages `bg-muted/40 rounded-2xl`, assistant messages no background with `chat-prose` wrapper, small rounded-square avatars (24px), collapsible "N sources" accordion, `animate-message-enter` fade-in
+  - `frontend/components/MessageList.tsx` — centered `max-w-3xl mx-auto` column, scroll-to-bottom button when user scrolls up, empty state with suggestion pills, `onSuggestionClick` prop
+  - `frontend/components/ConversationList.tsx` — search/filter input, date-grouped sections (Today/Yesterday/Previous 7 days/Older), full-width "New Chat" button, collapse button at bottom, `transition-all duration-200`
+  - `frontend/components/ConversationItem.tsx` — active state left border accent stripe (`border-l-2 border-l-primary`), relative timestamps (e.g. "2h ago"), removed message count
+  - `frontend/components/ChatLayout.tsx` — cleaned up root div, auto-create conversation when sending first message without active conversation
+  - `frontend/app/globals.css` — added `@keyframes message-enter` (fade-in + translateY), `@keyframes cursor-blink` (blinking bar cursor), `.chat-prose` tighter spacing overrides
+  - `frontend/types/index.ts` — removed `QueryRequestSchema`, `QueryRequest`, `SourceSchema`, `Source`, `QueryResponseSchema`, `QueryResponse`, `QueryHistoryEntry`
+- **Files deleted**:
+  - `frontend/components/SearchBar.tsx`
+  - `frontend/components/ResponseDisplay.tsx`
+  - `frontend/components/LoadingMessages.tsx`
+  - `frontend/components/DeepDiveDisplay.tsx`
+  - `frontend/components/QueryHistory.tsx`
+  - `frontend/hooks/useSearch.ts`
+  - `frontend/hooks/useQueryHistory.ts`
+  - `frontend/app/api/query/route.ts`
+- **Problem**: Search page (`/`) gave shallow answers (top_k=3, stateless, simpler prompt) vs chat (top_k=10, stateful, [NEED_SEARCH] mechanism). Two interfaces with the chat being strictly superior.
+- **Root cause**: Historical — search page was the original MVP, chat was added later with better architecture
+- **Change**: Removed search entirely, made chat the default at `/`, polished all chat UI components to Claude-quality level
+- **Why this approach**: Chat is fundamentally better (stateful, more context, smarter retrieval). Eliminating the search page removes user confusion and allows full focus on the superior interface.
+- **Verification**: `npm run build` passes with zero type errors. All routes compile. `/chat` redirects to `/`. Other pages (documents, admin, topology) unaffected.
+
 ## Session: 2026-04-10
 
 ### [Perf]: Topology perf round 3 — root-cause for scherpenhuizen-talend

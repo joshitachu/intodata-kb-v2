@@ -140,12 +140,13 @@ export const api = {
       { method: "POST" }
     ),
 
-  generate: (projectId: string, templateProfileId?: number) =>
+  generate: (projectId: string, templateProfileId?: number, resume = true) =>
     request<import("../types").StatusResponse>("/mcp/generate", {
       method: "POST",
       body: JSON.stringify({
         project_id: projectId,
         template_profile_id: templateProfileId ?? null,
+        resume,
       }),
     }),
 

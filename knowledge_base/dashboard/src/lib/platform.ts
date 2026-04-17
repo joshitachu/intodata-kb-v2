@@ -21,6 +21,13 @@ const platforms: Record<string, PlatformConfig> = {
     badgeClasses: "platform-tag border-[#F97316] text-[#F97316]/80",
     accentColor: "border-l-[#F97316]",
   },
+  lobster: {
+    label: "Lobster",
+    term: "Profile",
+    termPlural: "Profiles",
+    badgeClasses: "platform-tag border-[#10B981] text-[#10B981]/80",
+    accentColor: "border-l-[#10B981]",
+  },
   generic: {
     label: "Generic",
     term: "Component",

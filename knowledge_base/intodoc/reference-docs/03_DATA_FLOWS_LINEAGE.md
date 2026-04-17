@@ -171,6 +171,60 @@ Brazil's disproportionate complexity (71 jobs, 1,448 transforms -- 31% of the pl
 
 ---
 
+## Per-Job Transformation Detail
+
+This section provides field-level transformation documentation for each job with mapping components. For brevity, only representative jobs are shown; a complete document includes every job.
+
+#### VJP_Clean_Build_Sales_Set Transformations
+
+**tMap_1 -- Sales Invoice Enrichment**
+
+Main input: `jpn_vjp_raw.salesInvoiceLines` | Lookups: `hash_FiscalPeriods`, `hash_CountryMaster`, `hash_ConversionRates`, `hash_SalesforceAccountMappings`
+
+**Var Table**
+
+| Variable | Expression | Source |
+|----------|-----------|--------|
+| parsedDate | `TalendDate.parseDate("MM/dd/yy", row1.postingDate)` | row1 |
+| fiscalPeriod | `hash_FiscalPeriods.get(Var.parsedDate)` | lookup |
+| convRate | `hash_ConversionRates.get("JPY")` | lookup |
+| amountEUR | `row1.amount == null ? null : row1.amount / Var.convRate` | row1 + Var |
+
+**Output: jpn_vjp_clean.Sales_Set**
+
+| Source | Expression | Target | Explanation |
+|--------|-----------|--------|-------------|
+| row1.documentNo | `"VJP-" + row1.documentNo` | Record_ID | Prefixed with entity code for global uniqueness |
+| row1.customerNo | `row1.customerNo` | Customer_Number | Direct pass-through |
+| (none) | `"Vaxxinova Japan"` | Entity | Hardcoded entity name |
+| (none) | `"VJP"` | Entity_Code | Hardcoded entity code |
+| (none) | `"JPY"` | Default_Currency | Hardcoded domestic currency |
+| Var.parsedDate | `Var.parsedDate` | Posting_Date | Parsed from raw date string |
+| Var.fiscalPeriod | `Var.fiscalPeriod` | Fiscal_Period | From fiscal calendar lookup |
+| Var.amountEUR | `Var.amountEUR` | Net_Sales_Amount_EUR | JPY converted to EUR via budget rate |
+| row1.amount | `row1.amount` | Net_Sales_Amount | Local currency amount unchanged |
+| lookup | `hash_SalesforceAccountMappings.get(row1.customerNo)` | Salesforce_Account_ID | CRM linkage via customer number |
+
+**Join Logic**: LEFT OUTER join from salesInvoiceLines to each lookup hash table. No-match produces null (handled by downstream null checks).
+
+**Filter/Reject**: No filter expression on main output. No reject link.
+
+#### DEU_VDA_BC_Clean_Invoice_Set_v3 Transformations
+
+**tMap_1 -- Invoice Line Transformation**
+
+Main input: `deu_vda_raw.salesInvoiceLines` | Lookups: `hash_FiscalPeriods`, `hash_CountryMaster`
+
+**Output: deu_vda_clean.Sales_Set**
+
+| Source | Expression | Target | Explanation |
+|--------|-----------|--------|-------------|
+| row1.currencyCode | `row1.currencyCode == null \|\| row1.currencyCode.isEmpty() ? "EUR" : row1.currencyCode` | Currency_Code | Default to EUR for domestic transactions |
+| row1.currencyFactor | `row1.currencyCode == null \|\| row1.currencyCode.isEmpty() ? 1 : row1.currencyFactor` | Conversion_Rate | Default rate 1 for EUR |
+| row1.lineAmount | `row1.lineAmount / Var.convRate` | Net_Sales_Amount_EUR | Convert to EUR |
+
+---
+
 ## Schema Dictionary
 
 The platform references **321 distinct tables** across its 257 jobs, spanning regional raw extraction datasets, cleaned analytical tables, global master data, and Salesforce CRM objects. These tables live primarily in Google BigQuery, organized into dataset namespaces by region and layer (e.g., `bra_vbr_raw`, `jpn_vjp_clean`, `Global_Master`, `Global_Clean`). However, only 50 of 321 tables (16%) have column-level metadata available from static analysis.

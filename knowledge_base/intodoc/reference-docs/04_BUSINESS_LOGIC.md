@@ -140,6 +140,50 @@ Structural ETL rules govern how data moves through the pipeline layers:
 
 - **Baseline year logic**: Budgeting v5 reads actual sales from FY 2023/2024 as a baseline for building the next-year budget, combining actuals with Budget FY 2025/2026 and Forecast FY 2024/2025 records. The fiscal year filter is hardcoded and must be manually updated for each budget cycle.
 
+### Function Chain Traces
+
+For the most complex business rules, full step-by-step traces show the transformation pipeline from input to output.
+
+#### Currency Conversion Chain (VJP_Clean_Build_Sales_Set, tMap_1)
+
+```
+Input: row1.Net_Sales_Amount (BigDecimal 150000.00), row1.Currency_Code ("JPY")
+-> Var.convRate: hash_ConversionRates.get("JPY") = 162.50
+   (lookup from Global_Budget.Budget_Current_Conversion_Rate where Currency_Code = "JPY")
+-> Var.amountEUR: row1.Net_Sales_Amount == null ? null : row1.Net_Sales_Amount / Var.convRate
+   = 150000.00 / 162.50 = 923.08
+-> output.Net_Sales_Amount_EUR: Var.amountEUR = 923.08
+```
+
+**Impact**: Budget exchange rates (not market rates) are used deliberately to isolate FX variances from operational performance. If `Budget_Current_Conversion_Rate` is stale, all regions convert at wrong rates. WIDE impact -- affects every Sales_Set and all downstream reporting.
+
+#### Fiscal Period Derivation Chain (DEU_VDA_BC_Clean_Invoice_Set_v3, tMap_1)
+
+```
+Input: row1.postingDate (String "2024-03-15")
+-> Var.parsedDate: TalendDate.parseDate("yyyy-MM-dd", row1.postingDate) = Date(2024-03-15)
+-> Var.fiscalYear: hash_FiscalPeriods.get(Var.parsedDate).Fiscal_Year = "FY2024"
+-> Var.fiscalPeriod: hash_FiscalPeriods.get(Var.parsedDate).Fiscal_Period_Name = "P09"
+-> output.Fiscal_Year: Var.fiscalYear = "FY2024"
+-> output.Fiscal_Period: Var.fiscalPeriod = "P09"
+```
+
+**Impact**: Vaxxinova uses a non-calendar fiscal year. If `Global_Master.Fiscal_Periods` is not populated for future dates, invoices after the last defined period produce null fiscal values. WIDE impact -- breaks all period-based aggregation and reporting.
+
+#### Country Resolution Fallback Chain (BIO_Clean_Invoice_Set_v5, tMap_2)
+
+```
+Input: row1.Invoice_Country (String "  BRAZIL  ")
+-> Var.trimmedCountry: TalendString.talendTrim(row1.Invoice_Country, 3, ' ') = "BRAZIL"
+-> Var.sfCountry: hash_SalesforceCountryMappings.get(Var.trimmedCountry) = "BR"
+   (LEFT OUTER lookup -- may return null if no Salesforce mapping exists)
+-> Var.resolvedCountry: Var.sfCountry != null ? Var.sfCountry : Var.trimmedCountry
+   = "BR" (Salesforce mapping took precedence)
+-> output.Country_Code: Var.resolvedCountry = "BR"
+```
+
+**Impact**: Salesforce mapping takes precedence over raw ERP values. If `Salesforce_Country_Mappings` has incorrect entries, country codes silently change. MODERATE impact -- affects geographic segmentation in reporting.
+
 ### Business Rules Migration Considerations
 
 Each business rule represents logic that must be faithfully replicated in the target platform:

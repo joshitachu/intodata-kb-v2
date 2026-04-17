@@ -58,6 +58,7 @@ class GenerateRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     template_profile_id: int | None = None
     model: str | None = Field(None, description="Model override for orchestrator")
+    resume: bool = Field(True, description="Resume from staging checkpoint if available")
 
 
 class PushToRagRequest(BaseModel):

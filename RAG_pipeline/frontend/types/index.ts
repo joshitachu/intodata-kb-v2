@@ -1,25 +1,6 @@
 import { z } from "zod";
 
-// --- Query ---
-
-export const QueryRequestSchema = z.object({
-  query: z.string().min(3),
-  top_k: z.number().int().min(1).max(50).optional().default(3),
-  threshold: z.number().min(0).max(1).optional().default(0.4),
-  project_id: z.string().optional(),
-});
-
-export type QueryRequest = z.input<typeof QueryRequestSchema>;
-
-export const SourceSchema = z.object({
-  document_id: z.number(),
-  filename: z.string(),
-  chunk_index: z.number(),
-  score: z.number(),
-  text: z.string(),
-});
-
-export type Source = z.infer<typeof SourceSchema>;
+// --- Sources ---
 
 export const DocumentSourceSchema = z.object({
   document_id: z.number(),
@@ -30,14 +11,6 @@ export const DocumentSourceSchema = z.object({
 });
 
 export type DocumentSource = z.infer<typeof DocumentSourceSchema>;
-
-export const QueryResponseSchema = z.object({
-  answer: z.string(),
-  sources: z.array(DocumentSourceSchema),
-  latency_ms: z.number(),
-});
-
-export type QueryResponse = z.infer<typeof QueryResponseSchema>;
 
 // --- Documents ---
 
@@ -73,22 +46,6 @@ export const IngestResponseSchema = z.object({
 
 export type IngestResponse = z.infer<typeof IngestResponseSchema>;
 
-// --- Health ---
-
-export const ServiceStatusSchema = z.object({
-  status: z.string(),
-  message: z.string().nullable(),
-});
-
-export const HealthResponseSchema = z.object({
-  status: z.string(),
-  database: ServiceStatusSchema,
-  qdrant: ServiceStatusSchema,
-  ollama: ServiceStatusSchema,
-});
-
-export type HealthResponse = z.infer<typeof HealthResponseSchema>;
-
 // --- Token Usage ---
 
 export const UsageStatsSchema = z.object({
@@ -102,18 +59,6 @@ export const UsageStatsSchema = z.object({
 
 export type UsageStats = z.infer<typeof UsageStatsSchema>;
 
-// --- Query History (client-side) ---
-
-export interface QueryHistoryEntry {
-  id: string;
-  query: string;
-  answer: string;
-  sources: DocumentSource[];
-  latency_ms: number;
-  usage?: UsageStats;
-  timestamp: Date;
-}
-
 // --- Conversations ---
 
 export const ConversationMessageRequestSchema = z.object({
@@ -121,6 +66,7 @@ export const ConversationMessageRequestSchema = z.object({
   top_k: z.number().int().min(1).max(50).optional().default(10),
   threshold: z.number().min(0).max(1).optional().default(0.5),
   project_id: z.string().optional(),
+  images: z.array(z.string()).optional(),
 });
 
 export type ConversationMessageRequest = z.input<
@@ -132,6 +78,7 @@ export const MessageResponseSchema = z.object({
   role: z.string(),
   content: z.string(),
   sources: z.array(DocumentSourceSchema).nullable(),
+  image_data: z.array(z.string()).nullable().optional(),
   latency_ms: z.number().nullable(),
   created_at: z.string(),
 });

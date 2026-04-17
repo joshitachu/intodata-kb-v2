@@ -75,12 +75,43 @@ async def cleanup_llm_clients():
 # ---------------------------------------------------------------------------
 
 
-async def _kimi_generate(messages: list[dict[str, str]]) -> tuple[str, UsageStats]:
+def _apply_images_kimi(messages: list[dict], images: list[str] | None) -> list[dict]:
+    """Convert the last user message to multimodal format for Kimi/OpenAI."""
+    if not images:
+        return messages
+    msgs = [m.copy() for m in messages]
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i]["role"] == "user":
+            text = msgs[i]["content"]
+            content: list[dict] = [{"type": "text", "text": text}]
+            for img in images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img}"},
+                })
+            msgs[i] = {**msgs[i], "content": content}
+            break
+    return msgs
+
+
+def _apply_images_ollama(messages: list[dict], images: list[str] | None) -> list[dict]:
+    """Add images to the last user message for Ollama."""
+    if not images:
+        return messages
+    msgs = [m.copy() for m in messages]
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i]["role"] == "user":
+            msgs[i] = {**msgs[i], "images": images}
+            break
+    return msgs
+
+
+async def _kimi_generate(messages: list[dict], images: list[str] | None = None) -> tuple[str, UsageStats]:
     client = await _get_kimi_client()
     t0 = time.perf_counter()
     response = await client.chat.completions.create(
         model=settings.kimi_llm_model,
-        messages=messages,
+        messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
         extra_body={"thinking": {"type": "disabled"}},
@@ -98,12 +129,12 @@ async def _kimi_generate(messages: list[dict[str, str]]) -> tuple[str, UsageStat
     return response.choices[0].message.content, usage
 
 
-async def _kimi_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str | UsageStats, None]:
+async def _kimi_stream(messages: list[dict], images: list[str] | None = None) -> AsyncGenerator[str | UsageStats, None]:
     client = await _get_kimi_client()
     t0 = time.perf_counter()
     stream = await client.chat.completions.create(
         model=settings.kimi_llm_model,
-        messages=messages,
+        messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
         stream=True,
@@ -122,12 +153,12 @@ async def _kimi_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str | U
     yield acc.finalize()
 
 
-async def _ollama_generate(messages: list[dict[str, str]]) -> tuple[str, UsageStats]:
+async def _ollama_generate(messages: list[dict], images: list[str] | None = None) -> tuple[str, UsageStats]:
     client = await _get_ollama_client()
     t0 = time.perf_counter()
     response = await client.chat(
         model=settings.ollama_llm_model,
-        messages=messages,
+        messages=_apply_images_ollama(messages, images),
         options={"num_ctx": 16384, "temperature": 0.45},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
@@ -141,12 +172,12 @@ async def _ollama_generate(messages: list[dict[str, str]]) -> tuple[str, UsageSt
     return response["message"]["content"], usage
 
 
-async def _ollama_stream(messages: list[dict[str, str]]) -> AsyncGenerator[str | UsageStats, None]:
+async def _ollama_stream(messages: list[dict], images: list[str] | None = None) -> AsyncGenerator[str | UsageStats, None]:
     client = await _get_ollama_client()
     t0 = time.perf_counter()
     stream = await client.chat(
         model=settings.ollama_llm_model,
-        messages=messages,
+        messages=_apply_images_ollama(messages, images),
         stream=True,
         options={"num_ctx": 16384, "temperature": 0.45},
     )
@@ -198,7 +229,8 @@ def get_last_usage() -> UsageStats | None:
 
 
 async def generate_answer(
-    messages: list[dict[str, str]],
+    messages: list[dict],
+    images: list[str] | None = None,
 ) -> str:
     """Try each provider in chain order. First success wins."""
     global _last_usage
@@ -207,7 +239,7 @@ async def generate_answer(
         gen_fn = _resolve(name, 0)
         try:
             t0 = time.perf_counter()
-            result, usage = await gen_fn(messages)
+            result, usage = await gen_fn(messages, images=images)
             elapsed = (time.perf_counter() - t0) * 1000
             logger.info("LLM response from %s (%.0fms, %d in / %d out tokens)",
                         name, elapsed, usage.input_tokens, usage.output_tokens)
@@ -222,7 +254,8 @@ async def generate_answer(
 
 
 async def generate_answer_stream(
-    messages: list[dict[str, str]],
+    messages: list[dict],
+    images: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Try each provider in chain order for streaming.
 
@@ -233,7 +266,7 @@ async def generate_answer_stream(
     for name in settings.llm_providers:
         stream_fn = _resolve(name, 1)
         try:
-            async for item in stream_fn(messages):
+            async for item in stream_fn(messages, images=images):
                 if isinstance(item, UsageStats):
                     _last_usage = item
                     logger.info("LLM streaming from %s (%dms, %d in / %d out tokens)",

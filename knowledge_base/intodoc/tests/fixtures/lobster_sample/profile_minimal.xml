@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<datawizardprofile name="Minimal_Test" dw_version="25.1" data_version="25.1.6">
+  <id>test-profile-003</id>
+  <path_of_group>Test</path_of_group>
+  <client_id>-1</client_id>
+  <type>Man. upload</type>
+  <description></description>
+  <valid_from>01.01.2025 00:00:00</valid_from>
+  <valid_until>01.01.2075 00:00:00</valid_until>
+  <is_one_request>false</is_one_request>
+  <skip_mapping>false</skip_mapping>
+  <suspended>false</suspended>
+  <created_at>01.01.2025</created_at>
+  <version>1</version>
+  <active>false</active>
+  <master>false</master>
+  <no_error_mail>false</no_error_mail>
+  <max_records>2147483647</max_records>
+  <agent>
+    <agent_class></agent_class>
+  </agent>
+  <dataproperties>
+    <filetype>0</filetype>
+    <file_encoding>8859_1</file_encoding>
+    <max_records>2147483647</max_records>
+    <structuredefinition>
+      <fieldcounter_input>1</fieldcounter_input>
+      <fieldcounter_output>1</fieldcounter_output>
+      <inputtree>
+        <node name="record" description="" is_node="false" min="0" max="1">
+          <field name="S-data" type="String" length="0" mandatory="false" template="">
+            <note></note>
+          </field>
+        </node>
+      </inputtree>
+      <outputtree>
+        <node name="output" is_node="false" min="1" max="1">
+          <field name="data" type="String" length="0" mandatory="false">
+            <filter id="2" description="copy(field/value/variable)">
+              <a type="field" fieldconstant="S-data" />
+            </filter>
+          </field>
+        </node>
+      </outputtree>
+      <variables>
+        <variable>
+          <key>VAR_SYS_CLIENTNAME</key>
+          <description>Name of this client</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+      </variables>
+      <mappinginformation></mappinginformation>
+    </structuredefinition>
+  </dataproperties>
+  <integrationsettings>
+    <encoding>8859_1</encoding>
+  </integrationsettings>
+  <responsesettings>
+    <run_as_thread>false</run_as_thread>
+  </responsesettings>
+</datawizardprofile>

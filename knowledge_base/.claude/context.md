@@ -1,11 +1,17 @@
 # Current State
 
-**Status**: Template Management & Scoring Pipeline implemented (Phases A-F complete). New Phase 2.6 scoring sub-agent, DB-backed template system with versioning/profiles, full dashboard UI (catalogue, editor, profiles, A/B comparison, document reference). Topology graph endpoint serving live in production. Topology job detail panel now sources job summaries and per-job doc sections from the structured `**Purpose**` lines in `02_ARCHITECTURE_INVENTORY.md` (no LLM calls).
-**Last session**: 2026-04-10
+**Status**: Transformation detail depth improvement COMPLETE for all 3 platforms (Talend, Lobster, Workato). `_format_chunk_markdown()` renders tmap_data as structured tables (Talend), filter chains as step tables (Lobster), and datapill mappings as source/field/formula tables (Workato). TRANSFORMATION_DETAIL analysis section added to all platform guides. Phase 3 guides require per-job transformation subsections. Reference docs include examples.
+**Last session**: 2026-04-16
 **Last completed**:
-- Topology perf round 3 (backend half): cleaned up the runtime fallback in `mcp-server/src/mcp_server/api/routes/projects.py` so `/projects/{id}/graph` no longer synthesizes hub-shaped `REFERENCE:*` "external systems" for legacy scans missing `job_external_systems`. Extended `_FALLBACK_INTERNAL_COMPONENTS` (the set checked at the top of `_fallback_talend_system`) to include the tRunJob diagnostic family (`tLogCatcher`, `tStatCatcher`, `tFlowMeter`, `tFlowMeterCatcher`, `tChronometerStart`, `tChronometerStop`, `tAssert`, `tAssertCatcher`); added a defensive `and not system.startswith("REFERENCE")` filter to the Talend branch of `_derive_systems_from_job_json`; capped the per-job result at `sorted(systems)[:6]` so a single hub-job can't fan out across the entire view. Modern scans populate `job_external_systems` and bypass this path entirely, so projects like `esbmain` are unaffected. After this, scherpenhuizen-talend now uses the same code paths as the other Talend projects -- if a project ever needs the noisy hub edges back, regenerate the scan so `job_external_systems` is populated explicitly. **Requires `sudo systemctl restart mcp-server`** for the editable install to pick up. The matching frontend half is logged in `RAG_pipeline/.claude/PROGRESS_LOG.md` (Perf round 3).
-- Fixed `/topology` "Not Found" by reinstalling the systemd unit (was running 2+ weeks stale, predating the topology feature) and migrating `intodoc-output/` + `output/` from the old `intodata-kb/` checkout to `intodata-kb-v2/`. Also installed missing `ollama` Python dep.
-- Fixed the topology Job Detail panel: added `_extract_job_purpose_from_inventory` and `_extract_job_doc_sections` in `routes/projects.py`; rewrote `get_job_detail()` to use them and dropped the `SummaryService.load_summaries` call. The `**Purpose**:` line from `02_ARCHITECTURE_INVENTORY.md` is now the canonical job summary; "From the Docs" returns only sections whose heading exactly matches the job name (bounded by next sibling heading), instead of dragging in the entire inventory. `summary_service.py`, the `/generate-summaries` route, the `ollama_summary_model` config, and the `ollama` dep all stay in place as dormant code.
+- Workato datapill rendering: regex-based `#{_(` detection in steps/input params, structured mapping table output, TRANSFORMATION_DETAIL section in Workato ANALYSIS_GUIDE.md.
+- Transformation detail depth (all platforms): platform-aware preprocessing, TRANSFORMATION_DETAIL analysis section, per-job transformation requirements in Phase 3, function chain traces, reference doc examples. Talend tmap_data parser robustness fix (needs re-scan to verify).
+- Previous: Resumable doc generation, analysis bundling, depth tier scaling, 4-agent Phase 3 split.
+
+**Next steps**:
+- Re-scan vaxxinova-talend to verify tmap_data parser fix produces populated data
+- Run full doc generation on a Lobster project to verify filter chain tables appear in preprocessed output
+- Run full doc generation on a Talend project to verify transformation detail sections appear in final docs
+- Run full doc generation on a Workato project with real export data to verify datapill mapping tables appear
 
 ## Important: Data Layout
 
@@ -17,7 +23,7 @@
 ## What's Done
 
 ### Scanner CLI (intodoc/)
-- Multi-platform architecture: Talend, Workato, Generic implemented
+- Multi-platform architecture: Talend, Workato, Lobster, Generic implemented
 - Platform-agnostic shared prompts (12 in `_shared/prompts/`) + platform overrides
 - BaseDistiller with platform-specific subclasses (TalendDistiller, WorkatoDistiller)
 - 22 Talend-specific prompt files (p01-p22) + 17 Workato overrides (5 shared fallbacks remain)
@@ -93,6 +99,11 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Next Steps
 
+- [ ] **Test resumable generation**: Kill generation mid-Phase 3, verify `docs_staging/` preserved. Re-trigger, verify RESUME MODE in logs. Test `resume=false` for fresh run. Test stale scan detection.
+- [ ] **Re-generate docs for vaxxinova-main**: expect >500KB total (was 406KB), 09_RUNBOOK >600 lines, 11_MIGRATION >700 lines. Verify bundle files in `_analysis/_bundle_*.md` and each <350KB. Verify Phase 3 log shows 4 agents reading bundles.
+- [ ] **Re-generate docs for esb-main**: verify quality doesn't regress (should stay >=523KB). Verify 3 agents used (below threshold).
+- [ ] Restart MCP server: `sudo systemctl restart mcp-server`
+- [ ] Verify enriched prompts: re-generate docs for esbmain, compare depth against previous run (09_RUNBOOK failure scenarios, 05_OPERATIONS_RISK error audit tables, 03_DATA_FLOWS column mappings, 11_MIGRATION scenario comparison)
 - [ ] Run Alembic migration: `cd mcp-server && alembic upgrade head`
 - [ ] Run seed script: `cd mcp-server && python scripts/seed_templates.py`
 - [ ] Restart MCP server: `sudo systemctl restart mcp-server`

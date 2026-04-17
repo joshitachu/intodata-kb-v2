@@ -1,16 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BookOpen } from "lucide-react";
 import { DocsProjectSelector } from "@/components/DocsProjectSelector";
 import { DocList } from "@/components/DocList";
 import { DocPreview } from "@/components/DocPreview";
 import { useProjectDocs } from "@/hooks/useProjectDocs";
+import { useChatContext } from "@/contexts/ChatContext";
 
 export default function DocsPage() {
-  const [projectId, setProjectId] = useState("");
+  const { selectedProject: projectId } = useChatContext();
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const { data } = useProjectDocs(projectId);
+
+  // Clear selected doc when project changes
+  useEffect(() => {
+    setSelectedDoc(null);
+  }, [projectId]);
 
   const selectedDocInfo = data?.docs.find((d) => d.name === selectedDoc);
 
@@ -22,13 +28,7 @@ export default function DocsPage() {
           <BookOpen className="h-5 w-5 text-primary" />
           <h1 className="text-lg font-semibold">Project Documentation</h1>
         </div>
-        <DocsProjectSelector
-          selectedProject={projectId}
-          onProjectChange={(id) => {
-            setProjectId(id);
-            setSelectedDoc(null);
-          }}
-        />
+        <DocsProjectSelector />
       </div>
 
       {/* Content area */}

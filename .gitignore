@@ -61,3 +61,7 @@ tmpclaude-*
 # Claude Code skills (auto-generated, not project code)
 .agents/
 .claude/skills/
+
+# Large binary files (not project code)
+OpenBrain_Behavioral_Architecture.pdf
+profiles.zip

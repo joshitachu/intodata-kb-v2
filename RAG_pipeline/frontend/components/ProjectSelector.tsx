@@ -1,61 +1,56 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
+import { ChevronDown, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDeepDiveProjects } from "@/hooks/useDeepDiveProjects";
+import { useChatContext } from "@/contexts/ChatContext";
 
-interface ProjectSelectorProps {
-  selectedProject: string;
-  onProjectChange: (projectId: string) => void;
-}
-
-export function ProjectSelector({
-  selectedProject,
-  onProjectChange,
-}: ProjectSelectorProps) {
+export function ProjectSelector() {
+  const { selectedProject, setSelectedProject } = useChatContext();
   const { data, isLoading, error } = useDeepDiveProjects();
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading projects...
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground px-2 py-1">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        <span>Projects...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <p className="text-sm text-destructive">
-        Failed to load projects: {error.message}
-      </p>
+      <span className="text-xs text-destructive px-2">Projects unavailable</span>
     );
   }
 
   if (!data || data.projects.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        No scanned projects available. Scan a project in the knowledge_base
-        platform first.
-      </p>
+      <span className="text-xs text-muted-foreground px-2">No scanned projects</span>
     );
   }
 
   return (
-    <select
-      value={selectedProject}
-      onChange={(e) => onProjectChange(e.target.value)}
-      className={cn(
-        "w-full max-w-md rounded-lg border border-input bg-background px-3 py-2",
-        "text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-      )}
-    >
-      <option value="">Select a project...</option>
-      {data.projects.map((project) => (
-        <option key={project.id} value={project.id}>
-          {project.display_name} ({project.job_count} jobs, {project.platform})
-        </option>
-      ))}
-    </select>
+    <div className="relative">
+      <select
+        value={selectedProject}
+        onChange={(e) => setSelectedProject(e.target.value)}
+        className={cn(
+          "appearance-none cursor-pointer",
+          "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
+          "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
+          "focus:outline-none focus:ring-1 focus:ring-ring",
+          "transition-colors",
+        )}
+      >
+        <option value="">Select a project...</option>
+        {data.projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {project.display_name} ({project.job_count} jobs)
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+    </div>
   );
 }

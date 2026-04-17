@@ -14,13 +14,14 @@ intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-outpu
 ```
 
 ## Current State (Mar 2026)
-- **Scanner**: Multi-platform -- Talend (XML/XMI), Workato (JSON recipes), Generic (any codebase)
-- **Platform plugins**: 3 implemented (Talend, Workato, Generic) via `PlatformPlugin` ABC
+- **Scanner**: Multi-platform -- Talend (XML/XMI), Workato (JSON recipes), Lobster (XML profiles), Generic (any codebase)
+- **Platform plugins**: 4 implemented (Talend, Workato, Lobster, Generic) via `PlatformPlugin` ABC
   - **Talend**: 22 Talend-specific prompts (p01-p22), TalendDistiller, 257 jobs/4528 components (Vaxxinova)
   - **Workato**: 14 asset types, recursive block walker, datapill extraction, 17 prompt overrides (5 shared fallbacks: p04, p10, p11, p14, p15)
+  - **Lobster**: XML profile parsing (DataWizard), agent type resolution, filter chain extraction, tree compaction, response unit parsing, LobsterDistiller
   - **Generic**: Universal fallback, extension-based classification, directory-based job grouping
 - **Shared prompts**: 12 platform-agnostic prompts in `_shared/prompts/`, overridable per platform
-- **BaseDistiller**: Common chunking logic (~30K token chunks), extended by TalendDistiller/WorkatoDistiller
+- **BaseDistiller**: Common chunking logic (~30K token chunks), extended by TalendDistiller/WorkatoDistiller/LobsterDistiller
 - **12 consolidated reference docs** (00-11): Define output format/depth for the documentation agent
 - **Doc generation**: Now handled by Claude Code agent via MCP server (not CLI analyzer)
 - **Legacy CLI path**: 21-pass LLM analyzer + 32 Jinja2 templates still exist but are not the primary workflow
@@ -33,9 +34,9 @@ intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-outpu
 - **Migration generators** -- auto-generate code for Lobster, Databricks, etc. (Phase 3)
 
 ## Key Architecture
-- **Platform-explicit**: user declares `--platform talend|workato|generic` -- loads platform-specific parser, prompts, best practices
+- **Platform-explicit**: user declares `--platform talend|workato|lobster|generic` -- loads platform-specific parser, prompts, best practices
 - **Platform plugins**: `src/intodoc/platforms/<name>/` -- each is self-contained (Talend, Workato, Generic)
-- **Inheritance**: `PlatformPlugin -> GenericPlugin -> WorkatoPlugin`, `BaseDistiller -> TalendDistiller/WorkatoDistiller`
+- **Inheritance**: `PlatformPlugin -> GenericPlugin -> WorkatoPlugin/LobsterPlugin`, `BaseDistiller -> TalendDistiller/WorkatoDistiller/LobsterDistiller`
 - **Prompt resolution**: Platform-specific prompts override `_shared/prompts/` fallback
 - **Dual doc generation**:
   - **Primary (MCP agent)**: Claude Code reads prompts + fetches chunks via MCP, writes .md docs directly

@@ -32,8 +32,9 @@ export function useStreamMessage(conversationId: number | null) {
   }, []);
 
   const sendMessage = useCallback(
-    async (request: ConversationMessageRequest) => {
-      if (conversationId === null) return;
+    async (request: ConversationMessageRequest, overrideConversationId?: number) => {
+      const targetId = overrideConversationId ?? conversationId;
+      if (targetId === null) return;
 
       // Abort any in-flight stream
       abortRef.current?.abort();
@@ -52,7 +53,7 @@ export function useStreamMessage(conversationId: number | null) {
 
       try {
         const res = await fetch(
-          `/api/conversations/${conversationId}/messages/stream`,
+          `/api/conversations/${targetId}/messages/stream`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -93,6 +93,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
             >
               <option value="talend">Talend</option>
               <option value="workato">Workato</option>
+              <option value="lobster">Lobster</option>
               <option value="generic">Generic</option>
             </select>
           </div>

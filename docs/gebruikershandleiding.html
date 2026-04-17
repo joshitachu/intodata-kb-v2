@@ -14,7 +14,7 @@
             line-height: 1.7;
         }
 
-        /* ── Sidebar navigation ── */
+        /* -- Sidebar navigation -- */
         .sidebar {
             position: fixed;
             top: 0;
@@ -69,13 +69,13 @@
             font-weight: 700;
         }
 
-        /* ── Main content ── */
+        /* -- Main content -- */
         .main {
             margin-left: 280px;
             min-height: 100vh;
         }
 
-        /* ── Hero header ── */
+        /* -- Hero header -- */
         .hero {
             background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
             color: white;
@@ -104,7 +104,7 @@
             font-weight: 600;
         }
 
-        /* ── Sections ── */
+        /* -- Sections -- */
         .content {
             max-width: 900px;
             padding: 40px 60px 80px;
@@ -144,7 +144,7 @@
 
         p { margin-bottom: 14px; color: #475569; }
 
-        /* ── Screenshots ── */
+        /* -- Screenshots -- */
         .screenshot-container {
             margin: 24px 0;
             border-radius: 12px;
@@ -167,21 +167,7 @@
             border-top: 1px solid #e2e8f0;
         }
 
-        /* placeholder for missing screenshots */
-        .screenshot-placeholder {
-            padding: 60px 24px;
-            text-align: center;
-            background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
-            color: #94a3b8;
-            font-size: 14px;
-        }
-        .screenshot-placeholder .icon {
-            font-size: 40px;
-            margin-bottom: 12px;
-            display: block;
-        }
-
-        /* ── Steps ── */
+        /* -- Steps -- */
         .steps {
             counter-reset: step;
             list-style: none;
@@ -218,7 +204,7 @@
         }
         .steps li p { margin: 0; font-size: 14px; }
 
-        /* ── Info boxes ── */
+        /* -- Info boxes -- */
         .info-box {
             padding: 16px 20px;
             border-radius: 8px;
@@ -242,7 +228,7 @@
         }
         .info-box strong { display: block; margin-bottom: 4px; }
 
-        /* ── Tables ── */
+        /* -- Tables -- */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -271,7 +257,7 @@
             font-family: 'SF Mono', 'Fira Code', monospace;
         }
 
-        /* ── Comparison card ── */
+        /* -- Comparison card -- */
         .comparison {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -292,7 +278,7 @@
         .comparison .card ul { padding-left: 20px; font-size: 14px; color: #475569; }
         .comparison .card ul li { margin-bottom: 6px; }
 
-        /* ── Feature grid ── */
+        /* -- Feature grid -- */
         .feature-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -317,7 +303,7 @@
         .feature-card h4 { margin: 0 0 6px; font-size: 15px; }
         .feature-card p { margin: 0; font-size: 13px; }
 
-        /* ── Architecture diagram ── */
+        /* -- Architecture diagram -- */
         .arch-diagram {
             background: #0f172a;
             border-radius: 12px;
@@ -337,7 +323,7 @@
         .arch-diagram .blue { color: #60a5fa; }
         .arch-diagram .green { color: #4ade80; }
 
-        /* ── Doc table ── */
+        /* -- Doc table -- */
         .doc-table { margin: 20px 0; }
         .doc-row {
             display: flex;
@@ -373,7 +359,7 @@
             margin: 0;
         }
 
-        /* ── Footer ── */
+        /* -- Footer -- */
         .footer {
             padding: 32px 60px;
             background: #0f172a;
@@ -382,7 +368,7 @@
             text-align: center;
         }
 
-        /* ── Print styles ── */
+        /* -- Print styles -- */
         @media print {
             .sidebar { display: none; }
             .main { margin-left: 0; }
@@ -391,7 +377,7 @@
             .screenshot-container { box-shadow: none; border: 1px solid #ccc; }
         }
 
-        /* ── Responsive ── */
+        /* -- Responsive -- */
         @media (max-width: 900px) {
             .sidebar { display: none; }
             .main { margin-left: 0; }
@@ -404,7 +390,7 @@
 </head>
 <body>
 
-<!-- ════════════════════════ SIDEBAR ════════════════════════ -->
+<!-- SIDEBAR -->
 <aside class="sidebar">
     <div class="sidebar-logo">
         <img src="screenshots/intodata-logo.png" alt="IntoData Logo">
@@ -417,33 +403,33 @@
         <a href="#navigatie">Navigatie &amp; Layout</a>
 
         <div class="section-label">Functionaliteiten</div>
-        <a href="#search">Search</a>
         <a href="#chat">Chat</a>
         <a href="#documents">Documents</a>
         <a href="#project-docs">Project Docs</a>
+        <a href="#topology">Topology</a>
 
         <div class="section-label">Overig</div>
-        <a href="#settings">Settings</a>
+        <a href="#settings">Settings &amp; Admin</a>
         <a href="#dashboard">Nexus Dashboard</a>
         <a href="#architectuur">Architectuur</a>
         <a href="#faq">FAQ</a>
     </nav>
 </aside>
 
-<!-- ════════════════════════ MAIN ════════════════════════ -->
+<!-- MAIN -->
 <div class="main">
 
     <!-- Hero -->
     <header class="hero">
         <img src="screenshots/intodata-logo.png" alt="IntoData" style="height:50px; margin-bottom:20px; filter: brightness(0) invert(1);">
         <h1>Nexus <span>Knowledge Base</span></h1>
-        <p>De complete handleiding voor het IntoData Nexus platform. Leer hoe je documenten uploadt, projecten doorzoekt met AI en documentatie genereert.</p>
-        <div class="badge">Versie 2.0 &mdash; April 2026</div>
+        <p>De complete handleiding voor het IntoData Nexus platform. Leer hoe je documenten uploadt, met AI chat over je projecten en documentatie genereert.</p>
+        <div class="badge">Versie 3.0 &mdash; April 2026</div>
     </header>
 
     <div class="content">
 
-        <!-- ══════════════ 1. INLOGGEN ══════════════ -->
+        <!-- 1. INLOGGEN -->
         <section id="inloggen">
             <h2><span class="number">01</span> Inloggen</h2>
             <p>Wanneer je Nexus opent in je browser, kom je op het inlogscherm. Hier voer je je gebruikersnaam en wachtwoord in.</p>
@@ -459,7 +445,7 @@
                 </li>
                 <li>
                     <strong>Klik op "Login"</strong>
-                    <p>Na succesvolle login word je doorgestuurd naar de Search-pagina.</p>
+                    <p>Na succesvolle login word je doorgestuurd naar de Chat-pagina.</p>
                 </li>
             </ol>
 
@@ -469,26 +455,21 @@
             </div>
         </section>
 
-        <!-- ══════════════ 2. NAVIGATIE ══════════════ -->
+        <!-- 2. NAVIGATIE -->
         <section id="navigatie">
             <h2><span class="number">02</span> Navigatie &amp; Layout</h2>
             <p>Aan de linkerkant van het scherm vind je de <strong>zijbalk</strong> (sidebar) waarmee je snel kunt navigeren tussen alle onderdelen van Nexus.</p>
 
             <div class="screenshot-container" style="max-width:300px;">
                 <img src="screenshots/sidebar.png" alt="Nexus Sidebar navigatie">
-                <div class="screenshot-caption">De zijbalk met alle navigatie-items: Search, Chat, Documents, Project Docs, Settings en Admin</div>
+                <div class="screenshot-caption">De zijbalk met alle navigatie-items: Chat, Documents, Project Docs, Topology, Settings en Admin</div>
             </div>
 
             <div class="feature-grid">
                 <div class="feature-card">
-                    <span class="icon">&#128269;</span>
-                    <h4>Search</h4>
-                    <p>Doorzoek al je documenten met AI-gestuurde zoekopdrachten</p>
-                </div>
-                <div class="feature-card">
                     <span class="icon">&#128172;</span>
                     <h4>Chat</h4>
-                    <p>Voer een gesprek over je documenten met context-geheugen</p>
+                    <p>Stel vragen in Chat- of Deep Dive-modus met gespreksgeheugen</p>
                 </div>
                 <div class="feature-card">
                     <span class="icon">&#128196;</span>
@@ -501,82 +482,57 @@
                     <p>Bekijk automatisch gegenereerde projectdocumentatie</p>
                 </div>
                 <div class="feature-card">
+                    <span class="icon">&#128740;</span>
+                    <h4>Topology</h4>
+                    <p>Interactieve visuele kaart van je projectstructuur en verbindingen</p>
+                </div>
+                <div class="feature-card">
                     <span class="icon">&#9881;</span>
-                    <h4>Settings</h4>
-                    <p>Bekijk de systeemstatus en gezondheidscontroles</p>
+                    <h4>Settings &amp; Admin</h4>
+                    <p>Systeemstatus, gebruiksdashboard, benchmarks, gebruikersbeheer</p>
                 </div>
             </div>
+
+            <p>De zijbalk kan worden <strong>ingeklapt</strong> met de knop bovenaan om meer schermruimte te krijgen. Onder de navigatie-items vind je je <strong>gespreksgeschiedenis</strong> &mdash; klik op een eerder gesprek om het te heropenen. Onderaan de zijbalk zie je je gebruikersnaam en een uitlogknop.</p>
         </section>
 
-        <!-- ══════════════ 3. SEARCH ══════════════ -->
-        <section id="search">
-            <h2><span class="number">03</span> Search</h2>
-            <p>De Search-pagina is het <strong>hart van Nexus</strong>. Hier stel je vragen over je documenten en krijg je AI-gegenereerde antwoorden met bronverwijzingen.</p>
+        <!-- 3. CHAT -->
+        <section id="chat">
+            <h2><span class="number">03</span> Chat</h2>
+            <p>De Chat-pagina is de <strong>startpagina</strong> van Nexus en biedt een uniforme ervaring voor het stellen van vragen over je documenten. Je kunt schakelen tussen <strong>Chat</strong>-modus (snelle RAG-zoekopdrachten) en <strong>Deep Dive</strong>-modus (diepgaande projectanalyse) direct vanuit de invoerbalk.</p>
 
             <div class="screenshot-container">
-                <img src="screenshots/search.png" alt="Nexus Search pagina">
-                <div class="screenshot-caption">De Search-pagina met zoekbalk, modus-keuze (Search / Deep Dive) en projectfilter</div>
+                <img src="screenshots/chat-welcome.png" alt="Nexus Chat welkomstscherm">
+                <div class="screenshot-caption">Het Chat-welkomstscherm met 4 suggestiekaarten en de invoerbalk met Chat/Deep Dive-schakelaar en projectfilter</div>
             </div>
 
-            <h3>Hoe gebruik je Search?</h3>
+            <h3>Hoe gebruik je Chat?</h3>
 
             <ol class="steps">
                 <li>
+                    <strong>Start een nieuw gesprek</strong>
+                    <p>Klik op <strong>"+ New Chat"</strong> in de zijbalk, of begin gewoon met typen in de invoerbalk op het welkomstscherm.</p>
+                </li>
+                <li>
                     <strong>Kies een modus</strong>
-                    <p>Bovenaan zie je twee knoppen: <strong>Search</strong> en <strong>Deep Dive</strong>.</p>
+                    <p>In de invoerbalk onderaan zie je twee knoppen: <strong>Chat</strong> en <strong>Deep Dive</strong>.</p>
                     <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
-                        <li><strong>Search</strong> &mdash; Snelle RAG-zoekopdracht. Het systeem vindt relevante stukken uit je documenten en genereert een antwoord.</li>
+                        <li><strong>Chat</strong> &mdash; Snelle RAG-zoekopdracht. Het systeem vindt relevante stukken uit je documenten en genereert een antwoord.</li>
                         <li><strong>Deep Dive</strong> &mdash; Diepgaande analyse van een specifiek project. Gebruikt meer context en geeft uitgebreidere antwoorden.</li>
                     </ul>
                 </li>
                 <li>
                     <strong>Filter op project (optioneel)</strong>
-                    <p>Klik op de dropdown <strong>"All Projects"</strong> en selecteer een specifiek project om alleen daarbinnen te zoeken. Of laat het op "All Projects" staan.</p>
+                    <p>Klik op de dropdown <strong>"All Projects"</strong> in de invoerbalk en selecteer een specifiek project om alleen daarbinnen te zoeken.</p>
                 </li>
                 <li>
                     <strong>Stel je vraag</strong>
-                    <p>Typ een vraag in het tekstveld en druk op Enter. Voorbeelden:</p>
+                    <p>Typ een vraag in het tekstveld en druk op Enter of klik op de verzendknop. Je kunt ook op een van de <strong>suggestiekaarten</strong> op het welkomstscherm klikken om snel te starten. Voorbeelden:</p>
                     <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
-                        <li><em>"Hoeveel jobs heeft dit project?"</em></li>
-                        <li><em>"Welke database connecties worden gebruikt?"</em></li>
+                        <li><em>"Welke projecten zijn beschikbaar?"</em></li>
+                        <li><em>"Hoe zijn de integraties verbonden?"</em></li>
                         <li><em>"Wat doet de job LoadCustomerData?"</em></li>
                     </ul>
-                </li>
-                <li>
-                    <strong>Bekijk het antwoord</strong>
-                    <p>Je krijgt een AI-gegenereerd antwoord met <strong>bronverwijzingen</strong> onderaan. De responstijd wordt getoond in milliseconden.</p>
-                </li>
-            </ol>
-
-            <div class="screenshot-container">
-                <img src="screenshots/search-result.png" alt="Zoekresultaat met bronverwijzingen">
-                <div class="screenshot-caption">De Chat-interface: links de gesprekkenlijst, rechts het AI-antwoord met bronverwijzingen en projectinformatie</div>
-            </div>
-
-            <div class="info-box tip">
-                <strong>Tips voor betere resultaten</strong>
-                Stel specifieke vragen voor de beste antwoorden. Gebruik projectfiltering als je veel projecten hebt. Gebruik Deep Dive voor complexe, projectbrede analyses.
-            </div>
-        </section>
-
-        <!-- ══════════════ 4. CHAT ══════════════ -->
-        <section id="chat">
-            <h2><span class="number">04</span> Chat</h2>
-            <p>De Chat-pagina biedt een <strong>conversatie-ervaring</strong>. In tegenstelling tot Search onthoudt Chat je eerdere berichten, zodat je vervolgvragen kunt stellen.</p>
-
-            <div class="screenshot-container">
-                <img src="screenshots/search-result.png" alt="Nexus Chat interface">
-                <div class="screenshot-caption">De Chat-interface: gesprekkenlijst links, berichten en AI-antwoorden rechts met bronverwijzingen</div>
-            </div>
-
-            <ol class="steps">
-                <li>
-                    <strong>Maak een nieuw gesprek</strong>
-                    <p>Klik op <strong>"+ New Chat"</strong> in de linkerzijbalk van de chatpagina.</p>
-                </li>
-                <li>
-                    <strong>Stel een vraag</strong>
-                    <p>Typ je vraag in het tekstveld onderaan en druk op Enter of klik op de verzendknop.</p>
                 </li>
                 <li>
                     <strong>Bekijk het live antwoord</strong>
@@ -588,38 +544,43 @@
                 </li>
                 <li>
                     <strong>Beheer je gesprekken</strong>
-                    <p>Klik op een eerder gesprek om het te heropenen. Hover en klik op het prullenbak-icoon om een gesprek te verwijderen.</p>
+                    <p>Je gespreksgeschiedenis verschijnt in de zijbalk onder de navigatie-items. Klik op een eerder gesprek om het te heropenen. Hover en klik op het prullenbak-icoon om een gesprek te verwijderen.</p>
                 </li>
             </ol>
 
-            <h3>Search vs. Chat &mdash; Wanneer gebruik je wat?</h3>
+            <h3>Chat vs. Deep Dive &mdash; Wanneer gebruik je wat?</h3>
 
             <div class="comparison">
                 <div class="card search">
-                    <h4>&#128269; Search</h4>
+                    <h4>&#128172; Chat</h4>
                     <ul>
-                        <li>Eenmalige, snelle vragen</li>
-                        <li>Geen context tussen vragen</li>
+                        <li>Snelle vragen over alle documenten</li>
+                        <li>Onthoudt conversatie-context</li>
                         <li>Snellere respons</li>
-                        <li>Ideaal voor opzoekvragen</li>
+                        <li>Ideaal voor opzoekvragen en algemene vragen</li>
                     </ul>
                 </div>
                 <div class="card chat">
-                    <h4>&#128172; Chat</h4>
+                    <h4>&#128269; Deep Dive</h4>
                     <ul>
-                        <li>Vervolgvragen mogelijk</li>
-                        <li>Onthoudt conversatie-context</li>
-                        <li>Meerdere gesprekken bewaren</li>
-                        <li>Ideaal voor diepgaande verkenning</li>
+                        <li>Diepgaande analyse van een specifiek project</li>
+                        <li>Gebruikt meer context voor gedetailleerde antwoorden</li>
+                        <li>Rijkere, uitgebreidere output</li>
+                        <li>Ideaal voor complexe, projectbrede analyses</li>
                     </ul>
                 </div>
             </div>
+
+            <div class="info-box tip">
+                <strong>Tips voor betere resultaten</strong>
+                Stel specifieke vragen voor de beste antwoorden. Gebruik projectfiltering als je veel projecten hebt. Gebruik Deep Dive voor complexe, projectbrede analyses. Klik op een suggestiekaart om snel te starten.
+            </div>
         </section>
 
-        <!-- ══════════════ 5. DOCUMENTS ══════════════ -->
+        <!-- 4. DOCUMENTS -->
         <section id="documents">
-            <h2><span class="number">05</span> Documents</h2>
-            <p>Op de Documents-pagina upload en beheer je de bestanden die doorzoekbaar worden in Search en Chat.</p>
+            <h2><span class="number">04</span> Documents</h2>
+            <p>Op de Documents-pagina upload en beheer je de bestanden die doorzoekbaar worden in Chat.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/documents.png" alt="Documents pagina met upload en bibliotheek">
@@ -667,28 +628,28 @@
             </div>
         </section>
 
-        <!-- ══════════════ 6. PROJECT DOCS ══════════════ -->
+        <!-- 5. PROJECT DOCS -->
         <section id="project-docs">
-            <h2><span class="number">06</span> Project Docs</h2>
+            <h2><span class="number">05</span> Project Docs</h2>
             <p>De Project Docs-pagina toont <strong>automatisch gegenereerde documentatie</strong> over je integratie-projecten. Deze documenten worden aangemaakt door het Nexus Dashboard.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/project-docs.png" alt="Project Documentation overzicht">
-                <div class="screenshot-caption">Project Docs: selecteer een project bovenaan, bekijk de 12 gegenereerde documenten links, en preview rechts</div>
+                <div class="screenshot-caption">Project Docs: selecteer een project bovenaan, bekijk de 12 gegenereerde documenten, en download of preview ze</div>
             </div>
 
             <ol class="steps">
                 <li>
                     <strong>Selecteer een project</strong>
-                    <p>Kies een project in de dropdown bovenaan. Je ziet het aantal docs en het platformtype (bijv. "12 docs, talend").</p>
+                    <p>Kies een project in de dropdown bovenaan. Je ziet het aantal docs (bijv. "12 docs").</p>
                 </li>
                 <li>
                     <strong>Bekijk de documentenlijst</strong>
-                    <p>Aan de linkerkant zie je alle gegenereerde documenten, genummerd van 00 tot 11.</p>
+                    <p>Je ziet alle gegenereerde documenten, genummerd van 00 tot 11, met hun bestandsgrootte.</p>
                 </li>
                 <li>
                     <strong>Preview een document</strong>
-                    <p>Klik op een document om het in het preview-paneel rechts te bekijken.</p>
+                    <p>Klik op het oog-icoon naast een document om het in het preview-paneel te bekijken.</p>
                 </li>
                 <li>
                     <strong>Download als PDF</strong>
@@ -786,10 +747,64 @@
             </div>
         </section>
 
-        <!-- ══════════════ 7. SETTINGS ══════════════ -->
+        <!-- 6. TOPOLOGY -->
+        <section id="topology">
+            <h2><span class="number">06</span> Topology</h2>
+            <p>De Topology-pagina biedt een <strong>interactieve visuele kaart</strong> van je projectstructuur. Het toont hoe jobs, connecties en groepen met elkaar samenhangen, waardoor je complexe integratie-projecten in een oogopslag kunt begrijpen.</p>
+
+            <div class="screenshot-container">
+                <img src="screenshots/topology.png" alt="Project Topology visualisatie">
+                <div class="screenshot-caption">De Topology-pagina: projectselector, weergavemodus-knoppen (Overview/Detail, Top-Down, Conn), groepfilter-chips, zoekbalk en interactieve grafiek met legenda</div>
+            </div>
+
+            <h3>Hoe gebruik je Topology?</h3>
+
+            <ol class="steps">
+                <li>
+                    <strong>Selecteer een project</strong>
+                    <p>Kies een project in de dropdown bovenaan. Je ziet het platformtype en het aantal jobs (bijv. "esb-main (talend, 21 jobs)").</p>
+                </li>
+                <li>
+                    <strong>Kies een weergavemodus</strong>
+                    <p>Gebruik de knoppen in de werkbalk om tussen weergaven te schakelen:</p>
+                    <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
+                        <li><strong>Overview</strong> &mdash; Overzichtsweergave met groepen samengevouwen tot samenvattingsknopen</li>
+                        <li><strong>Detail</strong> &mdash; Uitgevouwen weergave met individuele jobs binnen groepen</li>
+                        <li><strong>Top-Down</strong> &mdash; Hierarchische layout van boven naar beneden</li>
+                        <li><strong>Conn</strong> &mdash; Focus op connecties en hun relaties</li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>Filter op groep</strong>
+                    <p>Klik op de gekleurde <strong>groep-chips</strong> in de werkbalk om specifieke groepen te tonen of te verbergen. Klik op "Reset" om alle groepen te tonen.</p>
+                </li>
+                <li>
+                    <strong>Zoek naar nodes</strong>
+                    <p>Gebruik de <strong>zoekbalk</strong> in de werkbalk om specifieke jobs of connecties op naam te vinden.</p>
+                </li>
+                <li>
+                    <strong>Interactie met nodes</strong>
+                    <p>Klik op een groep-node om deze uit te vouwen en individuele jobs te zien. Hover over nodes en verbindingen voor extra informatie.</p>
+                </li>
+                <li>
+                    <strong>Navigeer door de grafiek</strong>
+                    <p>Gebruik <strong>scrollen om te zoomen</strong>, <strong>slepen om te pannen</strong>, en klik op de <strong>Fit</strong>-knop om de hele grafiek in beeld te brengen. Een <strong>minimap</strong> rechtsonder helpt je orienteren in grote grafieken.</p>
+                </li>
+            </ol>
+
+            <div class="info-box tip">
+                <strong>Tip</strong>
+                Begin in <strong>Overview</strong>-modus voor grote projecten om een overzicht te krijgen van groepen en hun verbindingen, schakel dan naar <strong>Detail</strong>-modus om in te zoomen op specifieke gebieden.
+            </div>
+        </section>
+
+        <!-- 7. SETTINGS & ADMIN -->
         <section id="settings">
-            <h2><span class="number">07</span> Settings</h2>
-            <p>De Settings-pagina toont de <strong>gezondheidsstatus</strong> van alle systeemcomponenten.</p>
+            <h2><span class="number">07</span> Settings &amp; Admin</h2>
+            <p>De Settings-pagina biedt <strong>systeemgezondheidsmonitoring</strong>, <strong>gebruiksanalyses</strong> en <strong>benchmarkresultaten</strong>. Het Admin-gedeelte (alleen voor admins) laat je gebruikers, rollen en projecten beheren.</p>
+
+            <h3>Systeemgezondheid</h3>
+            <p>De Settings-pagina toont de gezondheidsstatus van alle systeemcomponenten.</p>
 
             <table>
                 <thead>
@@ -803,13 +818,54 @@
                 </tbody>
             </table>
 
+            <h3>Gebruiksdashboard</h3>
+            <p>Het Gebruiksdashboard (onder Admin &gt; Usage) geeft een overzicht van platformgebruik en kosten.</p>
+
+            <div class="screenshot-container">
+                <img src="screenshots/settings-usage.png" alt="Gebruiksdashboard met statistieken en grafieken">
+                <div class="screenshot-caption">Het Gebruiksdashboard: totaal queries, tokens, kosten, actieve gebruikers, met dagelijkse grafieken en uitsplitsing per interface</div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr><th>Metriek</th><th>Beschrijving</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><strong>Total Queries</strong></td><td>Aantal verwerkte queries in de geselecteerde periode</td></tr>
+                    <tr><td><strong>Input / Output Tokens</strong></td><td>Tokengebruik over alle AI-interacties</td></tr>
+                    <tr><td><strong>Total Cost</strong></td><td>Geschatte kosten van AI-modelgebruik</td></tr>
+                    <tr><td><strong>Active Users</strong></td><td>Aantal unieke gebruikers in de periode</td></tr>
+                    <tr><td><strong>Overview / Per User</strong></td><td>Schakel tussen totaaloverzicht en uitsplitsing per gebruiker</td></tr>
+                </tbody>
+            </table>
+
+            <h3>Benchmarkresultaten</h3>
+            <p>De Benchmark-pagina (onder Admin &gt; Benchmark) toont de resultaten van RAG-kwaliteitsbenchmarks. Gebruik deze metrieken om je retrieval-pipeline te evalueren en af te stemmen.</p>
+
+            <div class="screenshot-container">
+                <img src="screenshots/settings-benchmark.png" alt="Benchmarkresultaten pagina">
+                <div class="screenshot-caption">Benchmarkresultaten: totaal runs, precision, relevance en latency met een gedetailleerde resultatentabel</div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr><th>Metriek</th><th>Beschrijving</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><strong>Precision@5</strong></td><td>Hoeveel van de top 5 opgehaalde chunks relevant zijn</td></tr>
+                    <tr><td><strong>Relevance</strong></td><td>Totale relevantiescore van opgehaalde resultaten</td></tr>
+                    <tr><td><strong>Avg Latency</strong></td><td>Gemiddelde responstijd voor queries</td></tr>
+                    <tr><td><strong>Cost</strong></td><td>Kosten per benchmark-run</td></tr>
+                </tbody>
+            </table>
+
             <div class="info-box important">
                 <strong>Voor beheerders</strong>
-                Als een component rood (offline) toont, controleer dan of de bijbehorende Docker container draait met <code>docker-compose ps</code>.
+                Het Admin-gedeelte (Users, Roles, Projects, Usage, Benchmark) is alleen zichtbaar voor gebruikers met een admin-rol. Als een systeemcomponent rood (offline) toont, controleer dan of de bijbehorende Docker container draait met <code>docker-compose ps</code>.
             </div>
         </section>
 
-        <!-- ══════════════ 8. NEXUS DASHBOARD ══════════════ -->
+        <!-- 8. NEXUS DASHBOARD -->
         <section id="dashboard">
             <h2><span class="number">08</span> Nexus Dashboard</h2>
             <p>Het Nexus Dashboard is een <strong>apart beheersysteem</strong> waar projecten worden gescand en documentatie automatisch wordt gegenereerd. Het draait op een andere URL dan de Knowledge Base.</p>
@@ -882,7 +938,7 @@
                     <tr>
                         <td><strong>RAG</strong></td>
                         <td>Naar Knowledge Base pushen</td>
-                        <td>Duwt de gegenereerde documenten naar de RAG-database, zodat ze doorzoekbaar worden via Search en Chat</td>
+                        <td>Duwt de gegenereerde documenten naar de RAG-database, zodat ze doorzoekbaar worden via Chat</td>
                     </tr>
                 </tbody>
             </table>
@@ -895,12 +951,12 @@
                     <li>Kies een <strong>profiel</strong> (of gebruik "Default")</li>
                     <li>Klik <strong>&#128196; Docs</strong> om documentatie te genereren</li>
                     <li>Klik <strong>RAG</strong> om de docs naar de Knowledge Base te pushen</li>
-                    <li>Ga naar de Knowledge Base en zoek in je nieuwe documenten!</li>
+                    <li>Ga naar de Knowledge Base en chat over je nieuwe documenten!</li>
                 </ol>
             </div>
         </section>
 
-        <!-- ══════════════ 10. ARCHITECTUUR ══════════════ -->
+        <!-- 9. ARCHITECTUUR -->
         <section id="architectuur">
             <h2><span class="number">09</span> Architectuur</h2>
             <p>Nexus bestaat uit twee onafhankelijke systemen die samenwerken:</p>
@@ -916,11 +972,10 @@
      | <span class="blue">Knowledge Base</span>    |     | <span class="blue">Nexus Dashboard</span>    |
      | Next.js           |     | React              |
      |                   |     |                    |
-     | - Search          |     | - Projects         |
-     | - Chat            |     | - Templates        |
-     | - Documents       |     | - Profiles         |
-     | - Project Docs    |     | - Doc Generatie    |
-     | - Admin           |     |                    |
+     | - Chat            |     | - Projects         |
+     | - Documents       |     | - Templates        |
+     | - Project Docs    |     | - Profiles         |
+     | - Topology        |     | - Doc Generatie    |
      +---------+---------+     +---------+----------+
                |                         |
                v                         v
@@ -945,7 +1000,7 @@
                     <tr><th>Component</th><th>Wat doet het?</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>De web-app die je als gebruiker ziet &mdash; Search, Chat, Documents, Admin</td></tr>
+                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>De web-app die je als gebruiker ziet &mdash; Chat, Documents, Project Docs, Topology</td></tr>
                     <tr><td><strong>Nexus Dashboard (React)</strong></td><td>Beheer van projecten, templates en documentatie-generatie</td></tr>
                     <tr><td><strong>Backend API (FastAPI)</strong></td><td>Verwerkt zoekopdrachten, document-ingestion, authenticatie en RBAC</td></tr>
                     <tr><td><strong>MCP Server</strong></td><td>Stuurt de AI-documentatiegeneratie aan met Claude Code</td></tr>
@@ -956,15 +1011,15 @@
             </table>
         </section>
 
-        <!-- ══════════════ 11. FAQ ══════════════ -->
+        <!-- 10. FAQ -->
         <section id="faq">
             <h2><span class="number">10</span> Veelgestelde vragen</h2>
 
             <h4>Hoe voeg ik een nieuw project toe?</h4>
             <p>Open het <strong>Nexus Dashboard</strong>, klik op <strong>"Add Repo"</strong>, vul de projectnaam en het pad naar de broncode in, selecteer het platformtype (Talend, Workato, etc.) en klik op opslaan.</p>
 
-            <h4>Waarom krijg ik geen resultaten bij het zoeken?</h4>
-            <p>Controleer of er documenten zijn geUpload voor het geselecteerde project. Probeer een andere formulering. Controleer of het juiste project is geselecteerd in de filter.</p>
+            <h4>Waarom krijg ik geen resultaten?</h4>
+            <p>Controleer of er documenten zijn geUpload voor het geselecteerde project. Probeer een andere formulering. Controleer of het juiste project is geselecteerd in de filter. Controleer of documenten zijn verwerkt (kijk op de Documents-pagina naar het aantal chunks).</p>
 
             <h4>Hoe maak ik documenten doorzoekbaar?</h4>
             <p>Er zijn twee manieren: (1) <strong>Handmatig</strong>: upload bestanden via de Documents-pagina, of (2) <strong>Automatisch</strong>: genereer documentatie via het Nexus Dashboard en klik op "RAG" om ze naar de Knowledge Base te pushen.</p>
@@ -972,8 +1027,11 @@
             <h4>Kan ik documenten verwijderen?</h4>
             <p>Ja. Ga naar de <strong>Documents</strong>-pagina en klik op het prullenbak-icoon naast het document. Het document wordt verwijderd uit zowel de database als de vectordatabase.</p>
 
-            <h4>Wat is het verschil tussen Search en Deep Dive?</h4>
-            <p><strong>Search</strong> zoekt snel door je documenten en geeft een beknopt antwoord. <strong>Deep Dive</strong> doet een uitgebreidere analyse en geeft een gedetailleerder antwoord, specifiek gericht op een project.</p>
+            <h4>Wat is het verschil tussen Chat en Deep Dive?</h4>
+            <p><strong>Chat</strong> zoekt snel door je documenten en geeft een beknopt antwoord. <strong>Deep Dive</strong> doet een uitgebreidere analyse en geeft een gedetailleerder antwoord, specifiek gericht op een project. Beide modi zijn beschikbaar vanuit de invoerbalk onderaan de Chat-pagina.</p>
+
+            <h4>Wat is de Topology-pagina?</h4>
+            <p>De Topology-pagina biedt een interactieve visuele kaart van je projectstructuur. Het toont jobs, connecties en groepen als nodes in een grafiek, met verbindingen die laten zien hoe ze met elkaar samenhangen. Je kunt schakelen tussen Overview, Detail, Top-Down en Connection-weergaven, filteren op groep en zoeken naar specifieke nodes.</p>
 
             <h4>Hoe reset ik mijn wachtwoord?</h4>
             <p>Neem contact op met een admin. Zij kunnen je wachtwoord resetten via <strong>Admin &gt; Users</strong>.</p>
@@ -987,7 +1045,7 @@
     <!-- Footer -->
     <footer class="footer">
         <p><strong>Nexus Knowledge Base</strong> &mdash; IntoData &copy; 2026</p>
-        <p style="margin-top:4px;">Handleiding versie 2.0 &mdash; April 2026</p>
+        <p style="margin-top:4px;">Handleiding versie 3.0 &mdash; April 2026</p>
     </footer>
 
 </div>

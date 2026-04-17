@@ -38,9 +38,13 @@ class ScannerService:
         out_dir = Path(output_dir) if output_dir else config.intodoc_output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resolve full path so .CMD/.BAT scripts work on Windows
-        # (subprocess.Popen without shell=True only finds .exe by bare name)
-        resolved_cmd = shutil.which(config.intodoc_command)
+        # Resolve full path: check the running Python env's bin/ first,
+        # then fall back to system PATH.
+        venv_candidate = Path(sys.prefix) / "bin" / config.intodoc_command
+        if venv_candidate.is_file():
+            resolved_cmd = str(venv_candidate)
+        else:
+            resolved_cmd = shutil.which(config.intodoc_command)
         if not resolved_cmd:
             msg = f"intodoc command not found on PATH: {config.intodoc_command}"
             logger.error(msg)

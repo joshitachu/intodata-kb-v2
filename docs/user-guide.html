@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nelexus Knowledge Base - User Guide</title>
+    <title>Nexus Knowledge Base - User Guide</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -14,7 +14,7 @@
             line-height: 1.7;
         }
 
-        /* ── Sidebar navigation ── */
+        /* -- Sidebar navigation -- */
         .sidebar {
             position: fixed;
             top: 0;
@@ -69,13 +69,13 @@
             font-weight: 700;
         }
 
-        /* ── Main content ── */
+        /* -- Main content -- */
         .main {
             margin-left: 280px;
             min-height: 100vh;
         }
 
-        /* ── Hero header ── */
+        /* -- Hero header -- */
         .hero {
             background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
             color: white;
@@ -104,7 +104,7 @@
             font-weight: 600;
         }
 
-        /* ── Sections ── */
+        /* -- Sections -- */
         .content {
             max-width: 900px;
             padding: 40px 60px 80px;
@@ -144,7 +144,7 @@
 
         p { margin-bottom: 14px; color: #475569; }
 
-        /* ── Screenshots ── */
+        /* -- Screenshots -- */
         .screenshot-container {
             margin: 24px 0;
             border-radius: 12px;
@@ -167,7 +167,7 @@
             border-top: 1px solid #e2e8f0;
         }
 
-        /* ── Steps ── */
+        /* -- Steps -- */
         .steps {
             counter-reset: step;
             list-style: none;
@@ -204,7 +204,7 @@
         }
         .steps li p { margin: 0; font-size: 14px; }
 
-        /* ── Info boxes ── */
+        /* -- Info boxes -- */
         .info-box {
             padding: 16px 20px;
             border-radius: 8px;
@@ -228,7 +228,7 @@
         }
         .info-box strong { display: block; margin-bottom: 4px; }
 
-        /* ── Tables ── */
+        /* -- Tables -- */
         table {
             width: 100%;
             border-collapse: collapse;
@@ -257,7 +257,7 @@
             font-family: 'SF Mono', 'Fira Code', monospace;
         }
 
-        /* ── Comparison card ── */
+        /* -- Comparison card -- */
         .comparison {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -278,7 +278,7 @@
         .comparison .card ul { padding-left: 20px; font-size: 14px; color: #475569; }
         .comparison .card ul li { margin-bottom: 6px; }
 
-        /* ── Feature grid ── */
+        /* -- Feature grid -- */
         .feature-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -303,7 +303,7 @@
         .feature-card h4 { margin: 0 0 6px; font-size: 15px; }
         .feature-card p { margin: 0; font-size: 13px; }
 
-        /* ── Architecture diagram ── */
+        /* -- Architecture diagram -- */
         .arch-diagram {
             background: #0f172a;
             border-radius: 12px;
@@ -323,7 +323,7 @@
         .arch-diagram .blue { color: #60a5fa; }
         .arch-diagram .green { color: #4ade80; }
 
-        /* ── Doc table ── */
+        /* -- Doc table -- */
         .doc-table { margin: 20px 0; }
         .doc-row {
             display: flex;
@@ -359,7 +359,7 @@
             margin: 0;
         }
 
-        /* ── Footer ── */
+        /* -- Footer -- */
         .footer {
             padding: 32px 60px;
             background: #0f172a;
@@ -368,7 +368,7 @@
             text-align: center;
         }
 
-        /* ── Print styles ── */
+        /* -- Print styles -- */
         @media print {
             .sidebar { display: none; }
             .main { margin-left: 0; }
@@ -377,7 +377,7 @@
             .screenshot-container { box-shadow: none; border: 1px solid #ccc; }
         }
 
-        /* ── Responsive ── */
+        /* -- Responsive -- */
         @media (max-width: 900px) {
             .sidebar { display: none; }
             .main { margin-left: 0; }
@@ -390,7 +390,7 @@
 </head>
 <body>
 
-<!-- ════════════════════════ SIDEBAR ════════════════════════ -->
+<!-- SIDEBAR -->
 <aside class="sidebar">
     <div class="sidebar-logo">
         <img src="screenshots/intodata-logo.png" alt="IntoData Logo">
@@ -403,33 +403,33 @@
         <a href="#navigation">Navigation &amp; Layout</a>
 
         <div class="section-label">Features</div>
-        <a href="#search">Search</a>
         <a href="#chat">Chat</a>
         <a href="#documents">Documents</a>
         <a href="#project-docs">Project Docs</a>
+        <a href="#topology">Topology</a>
 
         <div class="section-label">Other</div>
-        <a href="#settings">Settings</a>
+        <a href="#settings">Settings &amp; Admin</a>
         <a href="#dashboard">Nexus Dashboard</a>
         <a href="#architecture">Architecture</a>
         <a href="#faq">FAQ</a>
     </nav>
 </aside>
 
-<!-- ════════════════════════ MAIN ════════════════════════ -->
+<!-- MAIN -->
 <div class="main">
 
     <!-- Hero -->
     <header class="hero">
         <img src="screenshots/intodata-logo.png" alt="IntoData" style="height:50px; margin-bottom:20px; filter: brightness(0) invert(1);">
         <h1>Nexus <span>Knowledge Base</span></h1>
-        <p>The complete user guide for the IntoData Nexus platform. Learn how to upload documents, search projects with AI, and generate documentation.</p>
-        <div class="badge">Version 2.0 &mdash; April 2026</div>
+        <p>The complete user guide for the IntoData Nexus platform. Learn how to upload documents, chat with AI about your projects, and generate documentation.</p>
+        <div class="badge">Version 3.0 &mdash; April 2026</div>
     </header>
 
     <div class="content">
 
-        <!-- ══════════════ 1. LOGIN ══════════════ -->
+        <!-- 1. LOGIN -->
         <section id="login">
             <h2><span class="number">01</span> Login</h2>
             <p>When you open Nexus in your browser, you will see the login screen. Enter your username and password to get started.</p>
@@ -445,7 +445,7 @@
                 </li>
                 <li>
                     <strong>Click "Login"</strong>
-                    <p>After a successful login, you will be redirected to the Search page.</p>
+                    <p>After a successful login, you will be redirected to the Chat page.</p>
                 </li>
             </ol>
 
@@ -455,26 +455,21 @@
             </div>
         </section>
 
-        <!-- ══════════════ 2. NAVIGATION ══════════════ -->
+        <!-- 2. NAVIGATION -->
         <section id="navigation">
             <h2><span class="number">02</span> Navigation &amp; Layout</h2>
             <p>On the left side of the screen you will find the <strong>sidebar</strong>, which lets you quickly navigate between all sections of Nexus.</p>
 
             <div class="screenshot-container" style="max-width:300px;">
                 <img src="screenshots/sidebar.png" alt="Nexus Sidebar navigation">
-                <div class="screenshot-caption">The sidebar with all navigation items: Search, Chat, Documents, Project Docs, Settings and Admin</div>
+                <div class="screenshot-caption">The sidebar with all navigation items: Chat, Documents, Project Docs, Topology, Settings and Admin</div>
             </div>
 
             <div class="feature-grid">
                 <div class="feature-card">
-                    <span class="icon">&#128269;</span>
-                    <h4>Search</h4>
-                    <p>Search all your documents with AI-powered queries</p>
-                </div>
-                <div class="feature-card">
                     <span class="icon">&#128172;</span>
                     <h4>Chat</h4>
-                    <p>Have a conversation about your documents with context memory</p>
+                    <p>Ask questions in Chat or Deep Dive mode with conversation memory</p>
                 </div>
                 <div class="feature-card">
                     <span class="icon">&#128196;</span>
@@ -487,82 +482,57 @@
                     <p>View automatically generated project documentation</p>
                 </div>
                 <div class="feature-card">
+                    <span class="icon">&#128740;</span>
+                    <h4>Topology</h4>
+                    <p>Interactive visual map of your project structure and connections</p>
+                </div>
+                <div class="feature-card">
                     <span class="icon">&#9881;</span>
-                    <h4>Settings</h4>
-                    <p>View system status and health checks</p>
+                    <h4>Settings &amp; Admin</h4>
+                    <p>System health, usage dashboard, benchmarks, user management</p>
                 </div>
             </div>
+
+            <p>The sidebar can be <strong>collapsed</strong> using the button at the top to give you more screen space. Below the navigation items you will find your <strong>conversation history</strong> &mdash; click on any previous conversation to reopen it. At the bottom of the sidebar you will see your username and a logout button.</p>
         </section>
 
-        <!-- ══════════════ 3. SEARCH ══════════════ -->
-        <section id="search">
-            <h2><span class="number">03</span> Search</h2>
-            <p>The Search page is the <strong>heart of Nexus</strong>. Here you ask questions about your documents and receive AI-generated answers with source citations.</p>
+        <!-- 3. CHAT -->
+        <section id="chat">
+            <h2><span class="number">03</span> Chat</h2>
+            <p>The Chat page is the <strong>landing page</strong> of Nexus and provides a unified experience for asking questions about your documents. You can switch between <strong>Chat</strong> mode (quick RAG queries) and <strong>Deep Dive</strong> mode (in-depth project analysis) directly from the input bar.</p>
 
             <div class="screenshot-container">
-                <img src="screenshots/search.png" alt="Nexus Search page">
-                <div class="screenshot-caption">The Search page with search bar, mode selection (Search / Deep Dive) and project filter</div>
+                <img src="screenshots/chat-welcome.png" alt="Nexus Chat welcome screen">
+                <div class="screenshot-caption">The Chat welcome screen with 4 suggestion cards and the input bar with Chat/Deep Dive toggle and project filter</div>
             </div>
 
-            <h3>How to use Search</h3>
+            <h3>How to use Chat</h3>
 
             <ol class="steps">
                 <li>
+                    <strong>Start a new conversation</strong>
+                    <p>Click <strong>"+ New Chat"</strong> in the sidebar, or simply start typing in the input bar on the welcome screen.</p>
+                </li>
+                <li>
                     <strong>Choose a mode</strong>
-                    <p>At the top you will see two buttons: <strong>Search</strong> and <strong>Deep Dive</strong>.</p>
+                    <p>In the input bar at the bottom you will see two buttons: <strong>Chat</strong> and <strong>Deep Dive</strong>.</p>
                     <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
-                        <li><strong>Search</strong> &mdash; Quick RAG query. The system finds relevant sections from your documents and generates an answer.</li>
+                        <li><strong>Chat</strong> &mdash; Quick RAG query. The system finds relevant sections from your documents and generates an answer.</li>
                         <li><strong>Deep Dive</strong> &mdash; In-depth analysis of a specific project. Uses more context and provides more detailed answers.</li>
                     </ul>
                 </li>
                 <li>
                     <strong>Filter by project (optional)</strong>
-                    <p>Click the <strong>"All Projects"</strong> dropdown and select a specific project to search only within that project. Or leave it on "All Projects".</p>
+                    <p>Click the <strong>"All Projects"</strong> dropdown in the input bar and select a specific project to search only within that project.</p>
                 </li>
                 <li>
                     <strong>Ask your question</strong>
-                    <p>Type a question in the text field and press Enter. Examples:</p>
+                    <p>Type a question in the text field and press Enter or click the send button. You can also click one of the <strong>suggestion cards</strong> on the welcome screen to get started quickly. Examples:</p>
                     <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
-                        <li><em>"How many jobs does this project have?"</em></li>
-                        <li><em>"Which database connections are used?"</em></li>
+                        <li><em>"What projects are available?"</em></li>
+                        <li><em>"How do the integrations connect?"</em></li>
                         <li><em>"What does the job LoadCustomerData do?"</em></li>
                     </ul>
-                </li>
-                <li>
-                    <strong>View the answer</strong>
-                    <p>You will receive an AI-generated answer with <strong>source citations</strong> at the bottom. Response time is shown in milliseconds.</p>
-                </li>
-            </ol>
-
-            <div class="screenshot-container">
-                <img src="screenshots/search-result.png" alt="Search result with source citations">
-                <div class="screenshot-caption">The Chat interface: conversation list on the left, AI answer with source citations and project information on the right</div>
-            </div>
-
-            <div class="info-box tip">
-                <strong>Tips for better results</strong>
-                Ask specific questions for the best answers. Use project filtering when you have many projects. Use Deep Dive for complex, project-wide analyses.
-            </div>
-        </section>
-
-        <!-- ══════════════ 4. CHAT ══════════════ -->
-        <section id="chat">
-            <h2><span class="number">04</span> Chat</h2>
-            <p>The Chat page provides a <strong>conversational experience</strong>. Unlike Search, Chat remembers your previous messages, allowing you to ask follow-up questions.</p>
-
-            <div class="screenshot-container">
-                <img src="screenshots/search-result.png" alt="Nexus Chat interface">
-                <div class="screenshot-caption">The Chat interface: conversation list on the left, messages and AI answers on the right with source citations</div>
-            </div>
-
-            <ol class="steps">
-                <li>
-                    <strong>Create a new conversation</strong>
-                    <p>Click <strong>"+ New Chat"</strong> in the left sidebar of the chat page.</p>
-                </li>
-                <li>
-                    <strong>Ask a question</strong>
-                    <p>Type your question in the text field at the bottom and press Enter or click the send button.</p>
                 </li>
                 <li>
                     <strong>View the live answer</strong>
@@ -574,38 +544,43 @@
                 </li>
                 <li>
                     <strong>Manage your conversations</strong>
-                    <p>Click on a previous conversation to reopen it. Hover and click the trash icon to delete a conversation.</p>
+                    <p>Your conversation history appears in the sidebar below the navigation items. Click on a previous conversation to reopen it. Hover and click the trash icon to delete a conversation.</p>
                 </li>
             </ol>
 
-            <h3>Search vs. Chat &mdash; When to use which?</h3>
+            <h3>Chat vs. Deep Dive &mdash; When to use which?</h3>
 
             <div class="comparison">
                 <div class="card search">
-                    <h4>&#128269; Search</h4>
+                    <h4>&#128172; Chat</h4>
                     <ul>
-                        <li>One-off, quick questions</li>
-                        <li>No context between questions</li>
+                        <li>Quick questions across all documents</li>
+                        <li>Remembers conversation context</li>
                         <li>Faster response</li>
-                        <li>Ideal for lookups</li>
+                        <li>Ideal for lookups and general questions</li>
                     </ul>
                 </div>
                 <div class="card chat">
-                    <h4>&#128172; Chat</h4>
+                    <h4>&#128269; Deep Dive</h4>
                     <ul>
-                        <li>Follow-up questions possible</li>
-                        <li>Remembers conversation context</li>
-                        <li>Save multiple conversations</li>
-                        <li>Ideal for in-depth exploration</li>
+                        <li>In-depth analysis of a specific project</li>
+                        <li>Uses more context for detailed answers</li>
+                        <li>Richer, more comprehensive output</li>
+                        <li>Ideal for complex, project-wide analyses</li>
                     </ul>
                 </div>
             </div>
+
+            <div class="info-box tip">
+                <strong>Tips for better results</strong>
+                Ask specific questions for the best answers. Use project filtering when you have many projects. Use Deep Dive for complex, project-wide analyses. Click a suggestion card to get started quickly.
+            </div>
         </section>
 
-        <!-- ══════════════ 5. DOCUMENTS ══════════════ -->
+        <!-- 4. DOCUMENTS -->
         <section id="documents">
-            <h2><span class="number">05</span> Documents</h2>
-            <p>On the Documents page you upload and manage the files that become searchable in Search and Chat.</p>
+            <h2><span class="number">04</span> Documents</h2>
+            <p>On the Documents page you upload and manage the files that become searchable in Chat.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/documents.png" alt="Documents page with upload and library">
@@ -653,28 +628,28 @@
             </div>
         </section>
 
-        <!-- ══════════════ 6. PROJECT DOCS ══════════════ -->
+        <!-- 5. PROJECT DOCS -->
         <section id="project-docs">
-            <h2><span class="number">06</span> Project Docs</h2>
+            <h2><span class="number">05</span> Project Docs</h2>
             <p>The Project Docs page shows <strong>automatically generated documentation</strong> about your integration projects. These documents are created by the Nexus Dashboard.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/project-docs.png" alt="Project Documentation overview">
-                <div class="screenshot-caption">Project Docs: select a project at the top, browse the 12 generated documents on the left, and preview on the right</div>
+                <div class="screenshot-caption">Project Docs: select a project at the top, browse the 12 generated documents, and download or preview them</div>
             </div>
 
             <ol class="steps">
                 <li>
                     <strong>Select a project</strong>
-                    <p>Choose a project from the dropdown at the top. You will see the number of docs and platform type (e.g. "12 docs, talend").</p>
+                    <p>Choose a project from the dropdown at the top. You will see the number of docs (e.g. "12 docs").</p>
                 </li>
                 <li>
                     <strong>Browse the document list</strong>
-                    <p>On the left side you will see all generated documents, numbered from 00 to 11.</p>
+                    <p>You will see all generated documents, numbered from 00 to 11, with their file size.</p>
                 </li>
                 <li>
                     <strong>Preview a document</strong>
-                    <p>Click on a document to view it in the preview panel on the right.</p>
+                    <p>Click the eye icon next to a document to view it in the preview panel.</p>
                 </li>
                 <li>
                     <strong>Download as PDF</strong>
@@ -772,10 +747,64 @@
             </div>
         </section>
 
-        <!-- ══════════════ 7. SETTINGS ══════════════ -->
+        <!-- 6. TOPOLOGY -->
+        <section id="topology">
+            <h2><span class="number">06</span> Topology</h2>
+            <p>The Topology page provides an <strong>interactive visual map</strong> of your project structure. It shows how jobs, connections, and groups relate to each other, making it easy to understand complex integration projects at a glance.</p>
+
+            <div class="screenshot-container">
+                <img src="screenshots/topology.png" alt="Project Topology visualization">
+                <div class="screenshot-caption">The Topology page: project selector, view mode buttons (Overview/Detail, Top-Down, Conn), group filter chips, search bar, and interactive graph with legend</div>
+            </div>
+
+            <h3>How to use Topology</h3>
+
+            <ol class="steps">
+                <li>
+                    <strong>Select a project</strong>
+                    <p>Choose a project from the dropdown at the top. You will see the platform type and number of jobs (e.g. "esb-main (talend, 21 jobs)").</p>
+                </li>
+                <li>
+                    <strong>Choose a view mode</strong>
+                    <p>Use the buttons in the toolbar to switch between views:</p>
+                    <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
+                        <li><strong>Overview</strong> &mdash; High-level view with groups collapsed into summary nodes</li>
+                        <li><strong>Detail</strong> &mdash; Expanded view showing individual jobs within groups</li>
+                        <li><strong>Top-Down</strong> &mdash; Hierarchical layout from top to bottom</li>
+                        <li><strong>Conn</strong> &mdash; Focus on connections and their relationships</li>
+                    </ul>
+                </li>
+                <li>
+                    <strong>Filter by group</strong>
+                    <p>Click the coloured <strong>group chips</strong> in the toolbar to show or hide specific groups. Click "Reset" to show all groups.</p>
+                </li>
+                <li>
+                    <strong>Search for nodes</strong>
+                    <p>Use the <strong>search bar</strong> in the toolbar to find specific jobs or connections by name.</p>
+                </li>
+                <li>
+                    <strong>Interact with nodes</strong>
+                    <p>Click on a group node to expand it and see individual jobs. Hover over nodes and edges to see additional information.</p>
+                </li>
+                <li>
+                    <strong>Navigate the graph</strong>
+                    <p>Use <strong>scroll to zoom</strong>, <strong>drag to pan</strong>, and click the <strong>Fit</strong> button to fit the entire graph in view. A <strong>minimap</strong> in the bottom-right corner helps you orient yourself in large graphs.</p>
+                </li>
+            </ol>
+
+            <div class="info-box tip">
+                <strong>Tip</strong>
+                Start in <strong>Overview</strong> mode for large projects to get a high-level picture of groups and their connections, then switch to <strong>Detail</strong> mode to drill into specific areas.
+            </div>
+        </section>
+
+        <!-- 7. SETTINGS & ADMIN -->
         <section id="settings">
-            <h2><span class="number">07</span> Settings</h2>
-            <p>The Settings page shows the <strong>health status</strong> of all system components.</p>
+            <h2><span class="number">07</span> Settings &amp; Admin</h2>
+            <p>The Settings page provides <strong>system health monitoring</strong>, <strong>usage analytics</strong>, and <strong>benchmark results</strong>. The Admin section (admin-only) lets you manage users, roles, and projects.</p>
+
+            <h3>System Health</h3>
+            <p>The Settings page shows the health status of all system components.</p>
 
             <table>
                 <thead>
@@ -789,13 +818,54 @@
                 </tbody>
             </table>
 
+            <h3>Usage Dashboard</h3>
+            <p>The Usage Dashboard (under Admin &gt; Usage) provides an overview of platform usage and costs.</p>
+
+            <div class="screenshot-container">
+                <img src="screenshots/settings-usage.png" alt="Usage Dashboard with metrics and charts">
+                <div class="screenshot-caption">The Usage Dashboard: total queries, tokens, cost, active users, with daily charts and per-interface breakdown</div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr><th>Metric</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><strong>Total Queries</strong></td><td>Number of queries processed in the selected time period</td></tr>
+                    <tr><td><strong>Input / Output Tokens</strong></td><td>Token usage across all AI interactions</td></tr>
+                    <tr><td><strong>Total Cost</strong></td><td>Estimated cost of AI model usage</td></tr>
+                    <tr><td><strong>Active Users</strong></td><td>Number of unique users in the period</td></tr>
+                    <tr><td><strong>Overview / Per User</strong></td><td>Switch between aggregate view and per-user breakdown</td></tr>
+                </tbody>
+            </table>
+
+            <h3>Benchmark Results</h3>
+            <p>The Benchmark page (under Admin &gt; Benchmark) shows the results of RAG quality benchmarks. Use these metrics to evaluate and tune your retrieval pipeline.</p>
+
+            <div class="screenshot-container">
+                <img src="screenshots/settings-benchmark.png" alt="Benchmark Results page">
+                <div class="screenshot-caption">Benchmark Results: total runs, precision, relevance, and latency metrics with a detailed results table</div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr><th>Metric</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><strong>Precision@5</strong></td><td>How many of the top 5 retrieved chunks are relevant</td></tr>
+                    <tr><td><strong>Relevance</strong></td><td>Overall relevance score of retrieved results</td></tr>
+                    <tr><td><strong>Avg Latency</strong></td><td>Average response time for queries</td></tr>
+                    <tr><td><strong>Cost</strong></td><td>Cost per benchmark run</td></tr>
+                </tbody>
+            </table>
+
             <div class="info-box important">
                 <strong>For administrators</strong>
-                If a component shows red (offline), check whether the corresponding Docker container is running with <code>docker-compose ps</code>.
+                The Admin section (Users, Roles, Projects, Usage, Benchmark) is only visible to users with an admin role. If a system component shows red (offline), check whether the corresponding Docker container is running with <code>docker-compose ps</code>.
             </div>
         </section>
 
-        <!-- ══════════════ 8. NEXUS DASHBOARD ══════════════ -->
+        <!-- 8. NEXUS DASHBOARD -->
         <section id="dashboard">
             <h2><span class="number">08</span> Nexus Dashboard</h2>
             <p>The Nexus Dashboard is a <strong>separate management system</strong> where projects are scanned and documentation is automatically generated. It runs on a different URL than the Knowledge Base.</p>
@@ -868,7 +938,7 @@
                     <tr>
                         <td><strong>RAG</strong></td>
                         <td>Push to Knowledge Base</td>
-                        <td>Pushes the generated documents to the RAG database, making them searchable via Search and Chat</td>
+                        <td>Pushes the generated documents to the RAG database, making them searchable via Chat</td>
                     </tr>
                 </tbody>
             </table>
@@ -881,12 +951,12 @@
                     <li>Choose a <strong>profile</strong> (or use "Default")</li>
                     <li>Click <strong>&#128196; Docs</strong> to generate documentation</li>
                     <li>Click <strong>RAG</strong> to push the docs to the Knowledge Base</li>
-                    <li>Go to the Knowledge Base and search your new documents!</li>
+                    <li>Go to the Knowledge Base and chat about your new documents!</li>
                 </ol>
             </div>
         </section>
 
-        <!-- ══════════════ 9. ARCHITECTURE ══════════════ -->
+        <!-- 9. ARCHITECTURE -->
         <section id="architecture">
             <h2><span class="number">09</span> Architecture</h2>
             <p>Nexus consists of two independent systems that work together:</p>
@@ -902,10 +972,10 @@
      | <span class="blue">Knowledge Base</span>    |     | <span class="blue">Nexus Dashboard</span>    |
      | Next.js           |     | React              |
      |                   |     |                    |
-     | - Search          |     | - Projects         |
-     | - Chat            |     | - Templates        |
-     | - Documents       |     | - Profiles         |
-     | - Project Docs    |     | - Doc Generation   |
+     | - Chat            |     | - Projects         |
+     | - Documents       |     | - Templates        |
+     | - Project Docs    |     | - Profiles         |
+     | - Topology        |     | - Doc Generation   |
      +---------+---------+     +---------+----------+
                |                         |
                v                         v
@@ -930,7 +1000,7 @@
                     <tr><th>Component</th><th>What does it do?</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>The web app you see as a user &mdash; Search, Chat, Documents</td></tr>
+                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>The web app you see as a user &mdash; Chat, Documents, Project Docs, Topology</td></tr>
                     <tr><td><strong>Nexus Dashboard (React)</strong></td><td>Management of projects, templates and documentation generation</td></tr>
                     <tr><td><strong>Backend API (FastAPI)</strong></td><td>Processes search queries, document ingestion, authentication and access control</td></tr>
                     <tr><td><strong>MCP Server</strong></td><td>Orchestrates AI documentation generation with Claude Code</td></tr>
@@ -941,15 +1011,15 @@
             </table>
         </section>
 
-        <!-- ══════════════ 10. FAQ ══════════════ -->
+        <!-- 10. FAQ -->
         <section id="faq">
             <h2><span class="number">10</span> Frequently Asked Questions</h2>
 
             <h4>How do I add a new project?</h4>
             <p>Open the <strong>Nexus Dashboard</strong>, click <strong>"Add Repo"</strong>, enter the project name and path to the source code, select the platform type (Talend, Workato, etc.) and click save.</p>
 
-            <h4>Why am I not getting search results?</h4>
-            <p>Check whether documents have been uploaded for the selected project. Try a different phrasing. Check whether the correct project is selected in the filter.</p>
+            <h4>Why am I not getting results?</h4>
+            <p>Check whether documents have been uploaded for the selected project. Try a different phrasing. Check whether the correct project is selected in the filter. Make sure documents have been ingested (check the Documents page for chunk counts).</p>
 
             <h4>How do I make documents searchable?</h4>
             <p>There are two ways: (1) <strong>Manual</strong>: upload files via the Documents page, or (2) <strong>Automatic</strong>: generate documentation via the Nexus Dashboard and click "RAG" to push them to the Knowledge Base.</p>
@@ -957,8 +1027,11 @@
             <h4>Can I delete documents?</h4>
             <p>Yes. Go to the <strong>Documents</strong> page and click the trash icon next to the document. The document will be removed from both the database and the vector database.</p>
 
-            <h4>What is the difference between Search and Deep Dive?</h4>
-            <p><strong>Search</strong> quickly searches through your documents and gives a concise answer. <strong>Deep Dive</strong> performs a more extensive analysis and provides a more detailed answer, specifically focused on a project.</p>
+            <h4>What is the difference between Chat and Deep Dive?</h4>
+            <p><strong>Chat</strong> quickly searches through your documents and gives a concise answer. <strong>Deep Dive</strong> performs a more extensive analysis and provides a more detailed answer, specifically focused on a project. Both modes are available from the input bar at the bottom of the Chat page.</p>
+
+            <h4>What is the Topology page?</h4>
+            <p>The Topology page provides an interactive visual map of your project's structure. It shows jobs, connections, and groups as nodes in a graph, with edges showing how they relate to each other. You can switch between Overview, Detail, Top-Down, and Connection views, filter by group, and search for specific nodes.</p>
 
             <h4>How do I reset my password?</h4>
             <p>Contact an admin. They can reset your password via the Admin panel.</p>
@@ -972,7 +1045,7 @@
     <!-- Footer -->
     <footer class="footer">
         <p><strong>Nexus Knowledge Base</strong> &mdash; IntoData &copy; 2026</p>
-        <p style="margin-top:4px;">User Guide version 2.0 &mdash; April 2026</p>
+        <p style="margin-top:4px;">User Guide version 3.0 &mdash; April 2026</p>
     </footer>
 
 </div>

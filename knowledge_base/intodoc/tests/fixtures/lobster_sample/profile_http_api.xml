@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<datawizardprofile name="API_Products" dw_version="25.1" data_version="25.1.6">
+  <id>test-profile-002</id>
+  <path_of_group>Product API</path_of_group>
+  <client_id>-1</client_id>
+  <type>HTTP</type>
+  <description>REST API endpoint for product data queries</description>
+  <valid_from>01.02.2025 00:00:00</valid_from>
+  <valid_until>01.01.2075 00:00:00</valid_until>
+  <is_one_request>false</is_one_request>
+  <skip_mapping>false</skip_mapping>
+  <suspended>false</suspended>
+  <created_at>01.02.2025</created_at>
+  <version>2</version>
+  <active>true</active>
+  <master>false</master>
+  <history_note>[Feb 10, 2025] DEV: Added product lookup</history_note>
+  <no_error_mail>false</no_error_mail>
+  <tags>api,products</tags>
+  <max_records>1000</max_records>
+  <agent>
+    <url>v1/Products</url>
+    <mimetype>application/json</mimetype>
+    <accept_get>true</accept_get>
+    <accept_post>true</accept_post>
+    <accept_put>false</accept_put>
+    <accept_delete>false</accept_delete>
+    <accept_patch>false</accept_patch>
+    <accept_all_subURI>true</accept_all_subURI>
+    <rest_placeholder>{productId}</rest_placeholder>
+    <auth_type>3</auth_type>
+    <http_method>get</http_method>
+    <channels>
+      <channel_id>9876543210001</channel_id>
+    </channels>
+    <agent_class>com.ebd.hub.datawizard.data.HttpSettings</agent_class>
+  </agent>
+  <dataproperties>
+    <filetype>10</filetype>
+    <file_encoding>UTF-8</file_encoding>
+    <use_xpath>false</use_xpath>
+    <max_records>1000</max_records>
+    <structuredefinition>
+      <fieldcounter_input>3</fieldcounter_input>
+      <fieldcounter_output>3</fieldcounter_output>
+      <inputtree>
+        <node name="product" description="" is_node="false" min="0" max="1">
+          <field name="S-product_id" type="String" length="0" mandatory="true" template="">
+            <note></note>
+          </field>
+          <field name="S-product_name" type="String" length="0" mandatory="false" template="">
+            <note></note>
+          </field>
+          <field name="S-price" type="Decimal" length="0" mandatory="false" template="">
+            <note></note>
+          </field>
+        </node>
+      </inputtree>
+      <outputtree>
+        <node name="response" is_node="true" min="1" max="1" mandatory="true">
+          <field name="id" type="String" length="0" mandatory="true">
+            <filter id="2" description="copy(field/value/variable)">
+              <a type="field" fieldconstant="S-product_id" />
+            </filter>
+          </field>
+          <field name="name" type="String" length="0" mandatory="false">
+            <filter id="2" description="copy(field/value/variable)">
+              <a type="field" fieldconstant="S-product_name" />
+            </filter>
+          </field>
+          <field name="formatted_price" type="String" length="0" mandatory="false">
+            <filter id="2" description="copy(field/value/variable)">
+              <a type="field" fieldconstant="S-price" />
+            </filter>
+            <filter id="130" description="concat(a,b,c,d,e,f,g,h, [CR-support i])">
+              <a type="constant" fieldconstant="EUR "><value>RVVSIAo=</value></a>
+              <b type="result" fieldconstant="1" />
+              <c type="constant" fieldconstant=""><value></value></c>
+              <d type="constant" fieldconstant=""><value></value></d>
+              <e type="constant" fieldconstant=""><value></value></e>
+              <f type="constant" fieldconstant=""><value></value></f>
+              <g type="constant" fieldconstant=""><value></value></g>
+              <h type="constant" fieldconstant=""><value></value></h>
+            </filter>
+          </field>
+        </node>
+      </outputtree>
+      <variables>
+        <variable>
+          <key>VAR_SYS_CLIENTNAME</key>
+          <description>Name of this client</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+        <variable>
+          <key>VAR_SYS_MESSAGE</key>
+          <description>single content of failed data</description>
+          <type>0</type>
+          <value></value>
+        </variable>
+        <variable>
+          <key>VAR_API_VERSION</key>
+          <description>Current API version identifier</description>
+          <type>0</type>
+          <value>v1</value>
+        </variable>
+      </variables>
+      <mappinginformation></mappinginformation>
+    </structuredefinition>
+  </dataproperties>
+  <integrationsettings>
+    <encoding>UTF-8</encoding>
+  </integrationsettings>
+  <responsesettings>
+    <run_as_thread>false</run_as_thread>
+  </responsesettings>
+</datawizardprofile>

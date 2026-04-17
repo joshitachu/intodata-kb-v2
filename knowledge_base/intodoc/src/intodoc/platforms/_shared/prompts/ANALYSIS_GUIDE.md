@@ -39,6 +39,34 @@ Extract for each job/flow:
 - Null handling and default value patterns
 - Data validation checks (or lack thereof)
 
+### TRANSFORMATION_DETAIL
+
+For EVERY transformation component in each job/flow, produce a per-component breakdown:
+
+1. **Column mapping table** (ALL mapped columns):
+
+   | Source | Expression/Transform | Target | Explanation |
+   |--------|---------------------|--------|-------------|
+   | input.field_a | direct copy | output.field_a | Pass-through |
+   | input.field_b | trim + uppercase | output.field_b | String normalization |
+   | (none) | constant "DEFAULT" | output.status | Hardcoded default |
+
+2. **Join/lookup analysis**: For components joining multiple data sources:
+   - Main input
+   - Lookup/secondary inputs
+   - Join keys and join type
+   - What happens on no-match (null, default, reject)
+
+3. **Filter/routing analysis**: For components that split or filter data:
+   - Filter condition (full expression)
+   - Accepted rows destination
+   - Rejected/filtered rows destination (or silent discard)
+
+4. **Function chain traces**: For the most complex transformations (3+ chained operations):
+   - Step-by-step trace from source to target
+   - All intermediate variables or computations
+   - Include at least one trace per job with complex transformations
+
 ### BUSINESS_RULES
 
 Extract EVERY business rule:

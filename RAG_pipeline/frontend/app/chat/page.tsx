@@ -1,11 +1,5 @@
-"use client";
-
-import { ChatLayout } from "@/components/ChatLayout";
+import { redirect } from "next/navigation";
 
 export default function ChatPage() {
-  return (
-    <div className="h-full -m-6">
-      <ChatLayout />
-    </div>
-  );
+  redirect("/");
 }

@@ -40,6 +40,7 @@
 - [x] Dual mode: --mcp (stdio) and --serve (HTTP)
 - [x] Doc generation via Claude Code subprocess
 - [x] Staging directory pattern (docs_staging/ -> docs/)
+- [x] Resumable generation (preserve staging on failure, resume from checkpoint, stale scan detection)
 - [x] Server-side RAG push via RagBridge
 - [x] SSE log streaming
 - [x] JWT cookie validation
@@ -51,12 +52,19 @@
 - [x] PHASE_3_GUIDE.md for cross-group synthesis
 - [x] Dynamic depth scaling (replaces hard-coded line minimums)
 - [x] get_phase3_guide() method in scanner_service
+- [x] Phase 2.8 analysis bundling (deterministic per-agent bundle creation)
+- [x] Depth tier scaling with minimum line targets (small/medium/large)
+- [x] 4-agent Phase 3 split for large projects (>=200 jobs)
 - [x] Template management system (DB models, CRUD service, REST API, Alembic migration)
 - [x] Template resolver with cascade (profile -> project default -> platform default -> filesystem)
 - [x] Phase 2.6 scoring pipeline (rubric, anti-patterns, red flags, security checklist, pattern library)
 - [x] A/B run comparison endpoint
 - [x] Template snapshot recording on generate runs
 - [x] Seed script for filesystem -> DB migration
+- [x] Platform-aware preprocessing (Talend tmap_data tables, Lobster filter chain tables)
+- [x] TRANSFORMATION_DETAIL analysis section (all platforms)
+- [x] Per-job transformation detail requirements in Phase 3 guides
+- [x] Function chain trace examples in reference docs (03, 04)
 
 ## Dashboard
 

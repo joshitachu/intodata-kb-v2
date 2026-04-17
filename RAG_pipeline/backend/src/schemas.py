@@ -132,6 +132,10 @@ class ConversationMessageRequest(BaseModel):
         default=None,
         description="Optional: restrict search to a specific project",
     )
+    images: list[str] | None = Field(
+        default=None,
+        description="Base64-encoded images for vision",
+    )
 
 
 class MessageResponse(BaseModel):
@@ -141,6 +145,7 @@ class MessageResponse(BaseModel):
     role: str  # "user" | "assistant"
     content: str
     sources: list[DocumentSource] | None = None
+    image_data: list[str] | None = None
     latency_ms: int | None = None
     created_at: datetime.datetime
 

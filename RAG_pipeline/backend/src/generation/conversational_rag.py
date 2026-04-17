@@ -13,7 +13,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, QueryUsage
-from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
+from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
 from src.generation.prompt_builder import build_conversation_summary_messages
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
@@ -23,10 +23,12 @@ from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledg
 from src.config import settings
 from src.memory.hindsight_client import (
     ensure_corrections_bank,
+    ensure_project_bank,
     ensure_quality_bank,
     ensure_user_bank,
     is_likely_correction,
     recall_corrections,
+    recall_project_memory,
     recall_quality_insights,
     recall_user_memory,
     retain_correction,
@@ -96,12 +98,17 @@ def _build_memory_context(
     user_memories: list[str],
     quality_insights: list[str],
     corrections: list[str] | None = None,
+    project_memories: list[str] | None = None,
 ) -> str | None:
     """Format recalled memories as a system message section.
 
     Returns None if no memories are available.
     """
     parts: list[str] = []
+    if project_memories:
+        parts.append("## Project knowledge")
+        for mem in project_memories:
+            parts.append(f"- {mem}")
     if user_memories:
         parts.append("## What I remember about you")
         for mem in user_memories:
@@ -346,6 +353,8 @@ class RAGContext:
     document_sources: list[DocumentSource]
     precomputed_answer: str | None
     """Non-None when the answer was already computed (RESPOND / SUMMARY / context-first hit)."""
+    analysis: QueryAnalysis | None = None
+    """Intent classifier output, passed through to retention for gating decisions."""
 
 
 async def _prepare_rag_context(
@@ -373,19 +382,43 @@ async def _prepare_rag_context(
     user_memories: list[str] = []
     quality_insights: list[str] = []
     corrections: list[str] = []
+    project_memories: list[str] = []
     if user_id:
-        await ensure_user_bank(user_id)
-        await ensure_quality_bank()
-        await ensure_corrections_bank()
-        user_memories, quality_insights, corrections = await asyncio.gather(
-            recall_user_memory(user_id, query),
+        # Ensure banks exist (idempotent)
+        bank_tasks = [ensure_user_bank(user_id), ensure_quality_bank(), ensure_corrections_bank()]
+        if project_ids and settings.hindsight_project_banks_enabled:
+            for pid in project_ids:
+                bank_tasks.append(ensure_project_bank(pid))
+        await asyncio.gather(*bank_tasks, return_exceptions=True)
+
+        # Recall from all banks in parallel
+        recall_tasks: list = [
+            recall_user_memory(user_id, query, project_ids=project_ids),
             recall_quality_insights(query),
-            recall_corrections(query),
-        )
-    memory_context = _build_memory_context(user_memories, quality_insights, corrections)
+            recall_corrections(query, project_ids=project_ids),
+        ]
+        if project_ids and settings.hindsight_project_banks_enabled:
+            for pid in project_ids:
+                recall_tasks.append(recall_project_memory(pid, query))
+
+        results = await asyncio.gather(*recall_tasks, return_exceptions=True)
+        # Unpack: first 3 are user, quality, corrections; rest are project memories
+        user_memories = results[0] if not isinstance(results[0], Exception) else []
+        quality_insights = results[1] if not isinstance(results[1], Exception) else []
+        corrections = results[2] if not isinstance(results[2], Exception) else []
+        for r in results[3:]:
+            if not isinstance(r, Exception) and r:
+                project_memories.extend(r)
+
+    memory_context = _build_memory_context(
+        user_memories, quality_insights, corrections,
+        project_memories=project_memories,
+    )
     if memory_context:
-        logger.info("Injecting %d user memories + %d quality insights + %d corrections",
-                     len(user_memories), len(quality_insights), len(corrections))
+        logger.info(
+            "Injecting %d user memories + %d quality insights + %d corrections + %d project memories",
+            len(user_memories), len(quality_insights), len(corrections), len(project_memories),
+        )
 
     # 1. Route query via LLM classifier
     conv_ctx = (
@@ -468,6 +501,7 @@ async def _prepare_rag_context(
             llm_messages=messages,
             document_sources=document_sources,
             precomputed_answer=answer,
+            analysis=analysis,
         )
 
     if analysis.action == Action.RESPOND:
@@ -482,6 +516,7 @@ async def _prepare_rag_context(
             llm_messages=messages,
             document_sources=[],
             precomputed_answer=answer,
+            analysis=analysis,
         )
 
     if analysis.action == Action.CONVERSATION_SUMMARY:
@@ -498,6 +533,7 @@ async def _prepare_rag_context(
             llm_messages=messages,
             document_sources=[],
             precomputed_answer=answer,
+            analysis=analysis,
         )
 
     if analysis.query_type == QueryType.SUMMARY:
@@ -511,6 +547,7 @@ async def _prepare_rag_context(
                 llm_messages=[],
                 document_sources=[doc_source],
                 precomputed_answer=answer,
+                analysis=analysis,
             )
         elif has_history:
             logger.info("Document not found for summary — falling back to conversation summary")
@@ -525,6 +562,7 @@ async def _prepare_rag_context(
                 llm_messages=messages,
                 document_sources=[],
                 precomputed_answer=answer,
+                analysis=analysis,
             )
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
@@ -537,6 +575,7 @@ async def _prepare_rag_context(
                 llm_messages=messages,
                 document_sources=[],
                 precomputed_answer=answer,
+                analysis=analysis,
             )
 
     # QA — try context-first, search only if needed
@@ -559,6 +598,7 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
+                analysis=analysis,
             )
         else:
             # LLM needs more info — fall through to search
@@ -578,6 +618,7 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
+                analysis=analysis,
             )
         else:
             logger.info("[NEED_SEARCH] detected in streaming — running search")
@@ -649,6 +690,7 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=document_sources,
                 precomputed_answer=None,
+                analysis=analysis,
             )
         else:
             # No results — let LLM respond helpfully
@@ -662,6 +704,7 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=[],
                 precomputed_answer=answer,
+                analysis=analysis,
             )
 
 
@@ -713,6 +756,7 @@ async def run_conversational_rag(
     threshold: float = settings.default_threshold,
     user_id: str | None = None,
     project_ids: list[str] | None = None,
+    images: list[str] | None = None,
 ) -> MessageResponse:
     """Run the conversational RAG pipeline with context-first search.
 
@@ -734,7 +778,7 @@ async def run_conversational_rag(
     if ctx.precomputed_answer is not None:
         answer = ctx.precomputed_answer
     else:
-        answer = await generate_answer(ctx.llm_messages)
+        answer = await generate_answer(ctx.llm_messages, images=images)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
@@ -768,6 +812,7 @@ async def run_conversational_rag(
         conversation_id=conversation.id,
         role="user",
         content=query,
+        image_data=images,
     )
     db.add(user_msg)
 
@@ -803,6 +848,9 @@ async def run_conversational_rag(
             search_result_count=len(document_sources),
             latency_ms=latency_ms,
             intent="qa",
+            action=ctx.analysis.action.value if ctx.analysis else "search",
+            query_type=ctx.analysis.query_type.value if ctx.analysis else "qa",
+            project_ids=project_ids,
         ))
         # Detect and store corrections (fire-and-forget)
         asyncio.create_task(_detect_and_store_correction(
@@ -838,6 +886,7 @@ async def run_conversational_rag_stream(
     threshold: float = settings.default_threshold,
     user_id: str | None = None,
     project_ids: list[str] | None = None,
+    images: list[str] | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """Streaming version of conversational RAG.
 
@@ -855,6 +904,7 @@ async def run_conversational_rag_stream(
         conversation_id=conversation.id,
         role="user",
         content=query,
+        image_data=images,
     )
     db.add(user_msg)
     await db.flush()
@@ -884,7 +934,7 @@ async def run_conversational_rag_stream(
         accumulated = token
         yield ("token", json.dumps(token))
     else:
-        async for token in generate_answer_stream(ctx.llm_messages):
+        async for token in generate_answer_stream(ctx.llm_messages, images=images):
             accumulated += token
             yield ("token", json.dumps(token))
 
@@ -951,6 +1001,9 @@ async def run_conversational_rag_stream(
             search_result_count=len(ctx.document_sources),
             latency_ms=latency_ms,
             intent="qa",
+            action=ctx.analysis.action.value if ctx.analysis else "search",
+            query_type=ctx.analysis.query_type.value if ctx.analysis else "qa",
+            project_ids=project_ids,
         ))
         # Detect and store corrections (fire-and-forget)
         asyncio.create_task(_detect_and_store_correction(

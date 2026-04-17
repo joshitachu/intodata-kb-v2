@@ -1,6 +1,8 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
+import { useChatContext } from "@/contexts/ChatContext";
 import {
   ReactFlow,
   MiniMap,
@@ -82,8 +84,9 @@ const nodeTypes = {
 };
 
 function TopologyContent() {
+  const { selectedProject: globalProject, setSelectedProject: setGlobalProject } = useChatContext();
   const [projects, setProjects] = useState<ProjectOption[]>([]);
-  const [selectedProject, setSelectedProject] = useState("");
+  const [selectedProject, setSelectedProjectLocal] = useState("");
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [flowResult, setFlowResult] = useState<FlowResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -108,6 +111,12 @@ function TopologyContent() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView, getNodes } = useReactFlow();
+
+  // Write to both local and global state when user picks a project
+  const setSelectedProject = useCallback((id: string) => {
+    setSelectedProjectLocal(id);
+    setGlobalProject(id);
+  }, [setGlobalProject]);
 
   // Ref to store position context before expand/collapse for in-place layout
   const expandAnchorRef = useRef<ExpandAnchor | null>(null);
@@ -199,13 +208,20 @@ function TopologyContent() {
       .then((data) => {
         if (data.projects) {
           setProjects(data.projects);
-          if (data.projects.length > 0 && !selectedProject) {
-            setSelectedProject(data.projects[0].id);
-          }
         }
       })
       .catch(() => setError("Failed to load projects"));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync with global project selection, fall back to first scanned project
+  useEffect(() => {
+    if (projects.length === 0) return;
+    if (globalProject && projects.some((p) => p.id === globalProject)) {
+      setSelectedProjectLocal(globalProject);
+    } else if (!selectedProject) {
+      setSelectedProjectLocal(projects[0].id);
+    }
+  }, [globalProject, projects]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset state on project change
   useEffect(() => {
@@ -708,20 +724,23 @@ function TopologyContent() {
       {/* Header */}
       <div className="flex items-center gap-4 px-4 py-3 border-b">
         <h1 className="text-lg font-semibold">Project Topology</h1>
-        <select
-          value={selectedProject}
-          onChange={(e) => setSelectedProject(e.target.value)}
-          className="px-3 py-1.5 text-sm border rounded-md bg-background"
-        >
-          {projects.length === 0 && (
-            <option value="">No scanned projects</option>
-          )}
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.display_name} ({p.platform}, {p.job_count} jobs)
-            </option>
-          ))}
-        </select>
+        <div className="relative inline-block">
+          <select
+            value={selectedProject}
+            onChange={(e) => setSelectedProject(e.target.value)}
+            className="appearance-none cursor-pointer rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+          >
+            {projects.length === 0 && (
+              <option value="">No scanned projects</option>
+            )}
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name} ({p.platform}, {p.job_count} jobs)
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+        </div>
       </div>
 
       {/* Toolbar */}

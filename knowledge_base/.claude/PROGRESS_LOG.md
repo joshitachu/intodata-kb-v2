@@ -3,6 +3,144 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-04-16
+
+### [Feature]: Deepen documentation to agent-level quality — transformation detail
+
+- **Files changed**:
+  - `intodoc/src/intodoc/platforms/talend/parser.py` (line 487) — Made tmap_data namespace matching more robust: tries `xsi:type`, `xmi:type`, and bare `type` attribute
+  - `mcp-server/src/mcp_server/services/claude_service.py` (lines 82-210) — Added `_extract_source_hint()` helper; refactored `_format_chunk_markdown()` to accept `platform` parameter; added structured table rendering for Talend tmap_data (var tables, per-output column mappings with source hints) and Lobster filter chains (step/ID/expression tables); passed platform from `_preprocess_scan_data()` call site
+  - `mcp-server/src/mcp_server/scripts/bundle_analysis.py` (lines 17-36) — Added `TRANSFORMATION_DETAIL` to `ALL_SECTIONS` (now 15 sections); added to `core.high` and `business_ops.high` relevance sets
+  - `intodoc/src/intodoc/platforms/talend/prompts/ANALYSIS_GUIDE.md` — Added TRANSFORMATION_DETAIL section between DATA_FLOWS and BUSINESS_RULES with per-tMap column mapping tables, var table traces, join analysis, filter/reject analysis, function chain traces
+  - `intodoc/src/intodoc/platforms/lobster/prompts/ANALYSIS_GUIDE.md` — Added TRANSFORMATION_DETAIL section with per-profile field mapping tables, step-by-step filter chain traces, variable flow diagrams, conditional logic maps, calculation node architecture
+  - `intodoc/src/intodoc/platforms/_shared/prompts/ANALYSIS_GUIDE.md` — Added generic TRANSFORMATION_DETAIL section for any platform
+  - `intodoc/src/intodoc/platforms/_shared/prompts/PHASE_3_GUIDE.md` — Section 03: added item 5 "Per-Job Transformation Detail (MANDATORY)" with column mapping table requirements; Section 04: added item 3 "Function Chain Traces" with step-by-step trace format and example
+  - `intodoc/src/intodoc/platforms/talend/prompts/PHASE_3_GUIDE.md` — Same additions as shared guide with Talend-specific examples (tMap var tables, row references, currency conversion and fiscal period trace examples)
+  - `intodoc/reference-docs/03_DATA_FLOWS_LINEAGE.md` — Added "Per-Job Transformation Detail" section with two example jobs (VJP_Clean_Build_Sales_Set, DEU_VDA_BC_Clean_Invoice_Set_v3) showing full column mapping tables, var tables, join logic
+  - `intodoc/reference-docs/04_BUSINESS_LOGIC.md` — Added "Function Chain Traces" section with three examples (currency conversion chain, fiscal period derivation chain, country resolution fallback chain) with step-by-step traces and impact assessments
+- **Problem**: Generated docs achieve ~70-80% depth but lack field-level transformation detail. Users can't ask "what does column X do in job Y?" and get a satisfying answer from docs alone.
+- **Root cause**: Data presentation gap — scan cache contains full transformation data (tmap_data, filter chains) but `_format_chunk_markdown()` rendered everything as flat key-value params. Analysis agents can't extract what they can't read.
+- **Change**: Three-layer improvement: (1) Data layer: platform-aware preprocessing renders tmap_data as structured tables and Lobster filters as step tables; (2) Analysis layer: new TRANSFORMATION_DETAIL section in all analysis guides directs Phase 2 agents to extract per-component mappings; (3) Synthesis layer: Phase 3 guides require per-job transformation subsections and function chain traces, with reference docs providing concrete examples.
+- **Why this approach**: Purely additive — existing doc quality won't regress. Changes flow through the existing 4-phase pipeline without architectural changes. Token cost is minimal (~1-2KB per job with transformations).
+- **Verification**: All modified Python files pass syntax validation. Talend tmap_data parser fix requires re-scan to verify (vaxxinova-talend source not available locally). Full verification requires running doc generation on a project with tmap_data populated.
+- **Note**: The Talend tmap_data parser fix (trying xmi:type in addition to xsi:type) needs verification with actual Talend XML files. A re-scan of vaxxinova-talend should be run after deploying this change.
+
+### [Feature]: Workato datapill rendering for transformation detail
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/services/claude_service.py` (lines 174-210) — Added `import re`; added Workato datapill mapping table rendering in `_format_chunk_markdown()` that detects `#{_('data.step.field')}` patterns in `steps` and `input` params, deduplicates, and renders as Source Step | Source Field | Formula table
+  - `intodoc/src/intodoc/platforms/workato/prompts/ANALYSIS_GUIDE.md` — Added TRANSFORMATION_DETAIL section between DATA_FLOWS and BUSINESS_RULES with per-step datapill mapping tables, formula chain traces, conditional mapping analysis, cross-step data lineage, and lookup table mappings
+- **Problem**: Workato platform was missing from the transformation detail implementation — plan explicitly called for datapill rendering but it was skipped in the first pass.
+- **Root cause**: Implementation focused on Talend and Lobster first and missed completing the Workato platform.
+- **Change**: (1) `_format_chunk_markdown()` now detects `#{_(` datapill references in Workato step/input params via regex, parses the step alias and field path, extracts formula chains (`.to_s`, `.round(2)`, etc.), deduplicates, and renders as a structured markdown table; (2) Workato ANALYSIS_GUIDE.md now has a comprehensive TRANSFORMATION_DETAIL section directing Phase 2 agents to extract per-step mapping tables, trace complex formula chains, analyze conditional mappings, map cross-step data lineage, and document lookup table usage.
+- **Why this approach**: Consistent with Talend/Lobster pattern — same additive approach. Regex-based datapill detection (`#\{_\('([^']+)'\)([^}]*)\}`) is robust for Workato's standard syntax. Deduplication prevents duplicate rows from repeated datapill references.
+- **Verification**: Python syntax validation passes. Requires real Workato export data for E2E verification (test data is synthetic with no datapill references).
+
+## Session: 2026-04-15
+
+### [Feature]: Add Lobster Data platform to intodoc scanner
+
+- **Files changed**:
+  - `intodoc/src/intodoc/scanner/credential_filter.py` (lines 83-90) -- Added OBF password and base64 value tag patterns, added lobster-world.com to safe domains
+  - `intodoc/src/intodoc/platforms/registry.py` (line 16) -- Registered lobster platform plugin
+  - `intodoc/src/intodoc/platforms/lobster/__init__.py` (new, 67 lines) -- LobsterPlugin class extending GenericPlugin
+  - `intodoc/src/intodoc/platforms/lobster/parser.py` (new, ~460 lines) -- XML parser for DataWizard profiles: agent extraction, data properties, input/output tree compaction, filter chain extraction, variable parsing, response units, cross-profile refs, manifest building
+  - `intodoc/src/intodoc/platforms/lobster/distiller.py` (new, ~50 lines) -- Strips system variables and default-valued params
+  - `intodoc/src/intodoc/platforms/lobster/best_practices.yaml` (new, ~300 lines) -- Lobster platform concepts, component types, anti-patterns (LAP-001 to LAP-010), connection types, error handling patterns, performance guidelines
+  - `intodoc/src/intodoc/platforms/lobster/prompts/ANALYSIS_GUIDE.md` (new, ~250 lines) -- Phase 2 sub-agent analysis guide for Lobster profiles
+  - `tests/test_platforms/test_lobster.py` (new, ~250 lines) -- 44 tests covering plugin, parser, distiller, credential filter, best practices
+  - `tests/fixtures/lobster_sample/*.xml` (new, 3 files) -- Test fixtures: cron FTP, HTTP API, minimal manual upload profiles
+  - `intodoc/CLAUDE.md` -- Updated platform list from 3 to 4, added Lobster references
+- **Problem**: No support for scanning Lobster Data integration projects
+- **Root cause**: Lobster was a new platform not yet supported by the scanner
+- **Change**: Full platform plugin implementation following Workato pattern: plugin class, XML parser, distiller, best practices, analysis guide, and comprehensive tests. Parser handles all profile sections: agent (7 types), data properties (8 file types), input/output trees with compact representation, filter chain extraction, system/user variable separation, response units, cross-profile references (profile_after_run, exception_profile, forward_profile), and manifest building. Credential filter catches OBF passwords and base64-encoded values.
+- **Why this approach**: Followed established Workato plugin pattern for consistency. Parser does selective extraction (only meaningful attributes) rather than raw XML passthrough, since ~34% of Lobster XML is structural noise (system variables, boolean defaults, empty elements). This means most noise elimination happens in the parser, with the distiller handling the remaining system variable groups and default params.
+- **Verification**: 44 Lobster-specific tests pass. 313 total tests pass (0 failures, 8 skipped). Real-world test: parsed 27 production Lobster profiles successfully with correct component types, no credential leaks (OBF passwords redacted).
+
+### [Feature]: Add Lobster platform to dashboard frontend
+
+- **Files changed**:
+  - `dashboard/src/lib/platform.ts` -- Added lobster config entry (label "Lobster", term "Profile", green #10B981 accent)
+  - `dashboard/src/components/AddRepoDialog.tsx` (line 97) -- Added `<option value="lobster">Lobster</option>` to platform dropdown
+  - `dashboard/src/components/ProjectSettings.tsx` (line 10) -- Added "lobster" to PLATFORMS array
+  - `dashboard/src/components/templates/NewTemplateModal.tsx` (line 204) -- Added lobster option to platform select
+  - `dashboard/src/components/templates/ProfileManager.tsx` (line 78) -- Added lobster option to platform select
+  - `dashboard/src/components/templates/TemplateCatalogue.tsx` (line 99) -- Added lobster option to platform filter
+- **Problem**: Dashboard had hardcoded platform lists (talend, workato, generic) with no Lobster option
+- **Root cause**: New platform not yet added to frontend
+- **Change**: Added "lobster" to all 6 files with platform dropdowns/selects. Platform config uses green (#10B981) to differentiate from Talend (blue), Workato (orange), and Generic (slate).
+- **Why this approach**: Consistent with how other platforms are registered -- every dropdown that lists platforms needs the new entry.
+- **Verification**: All 6 files edited. No build needed for verification (runtime change).
+
+### [Feature]: Resumable doc generation — preserve staging on failure + resume from checkpoint
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/services/claude_service.py`: Added `_detect_resume_state()` static method (inspects `docs_staging/` for preprocess, analysis, scorecard, bundle, and completed doc artifacts). Modified `generate_docs()` signature to accept `resume: bool = True`. Added resume detection logic (skip preprocessing when files exist, recover group names from filesystem). Added `_manifest.json` writing (tracks scan mtime, groups, model, template snapshot). Added stale scan detection (compares scan manifest mtime against stored value, invalidates preprocessing if scan is newer). Added resume prompt block injection (tells Claude Code which phases to skip). Added `import time` for manifest timestamps.
+  - `mcp-server/src/mcp_server/api/routes/projects.py`: Changed failure handler (lines 409-419) from `shutil.rmtree(staging_dir)` to preserving staging with log message + SSE notification. Added `resume` parameter pass-through: `generate_docs` endpoint -> `_run_generate_background` -> `claude.generate_docs()`.
+  - `mcp-server/src/mcp_server/schemas.py`: Added `resume: bool = Field(True)` to `GenerateRequest`.
+  - `dashboard/src/api/client.ts`: Added `resume` parameter (default `true`) to `generate()` function.
+  - `dashboard/src/hooks/useProjects.ts`: Added `resume` to `useGenerate` mutation function type.
+- **Problem**: When Anthropic 5-hour rate limit hits during Phase 3, Claude Code exits with code 1. The failure handler deleted `docs_staging/` entirely, destroying ~30 minutes of completed work (Phase 2 analysis, scoring, bundles, and any finished Phase 3 docs).
+- **Root cause**: `_run_generate_background` unconditionally called `shutil.rmtree(staging_dir)` on any failure. No mechanism existed to detect or reuse partially-completed artifacts.
+- **Change**: 7-step implementation: (1) Preserve staging on failure with log message. (2) `_detect_resume_state()` inspects staging for usable artifacts. (3) `generate_docs()` conditionally skips preprocessing when resuming. (4) Resume prompt block injected at top of mega-prompt telling Claude Code which phases to skip. (5) `resume` field added to API schema and passed through route chain. (6) Frontend passes `resume` parameter (defaults to true). (7) Stale scan detection via `_manifest.json` mtime comparison — invalidates preprocessing if scan data changed but preserves analysis.
+- **Why this approach**: The existing Phase 2.5 gate validation already checks for analysis files, and Phase 3.5 validates docs. The resume prompt leverages these existing gates — it simply tells Claude Code to skip to the first incomplete phase. The `_manifest.json` provides metadata for stale detection without changing the scan pipeline. Staging preservation is safe because old `docs/` remains untouched (the swap only happens on success).
+- **Verification**: Not yet tested end-to-end. Needs: (1) Kill generation mid-Phase 3, verify staging preserved. (2) Re-trigger generate, verify resume mode logs and Phase 2 skip. (3) Call with `resume=false`, verify fresh run. (4) Re-scan between runs, verify stale detection re-preprocesses.
+
+## Session: 2026-04-14
+
+### [Feature]: Fix shallow doc generation for large projects -- analysis bundling + depth scaling + agent split
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/scripts/__init__.py` (NEW): Empty package init
+  - `mcp-server/src/mcp_server/scripts/bundle_analysis.py` (NEW, ~165 lines): Standalone Python script that reads `_analysis/*.md` files, parses them into 14 canonical sections (matching ANALYSIS_GUIDE.md), and writes per-agent bundle files (`_bundle_core.md`, `_bundle_business_ops.md`, `_bundle_patterns_user.md`, and for large projects `_bundle_patterns.md` + `_bundle_user.md`). Progressive truncation: if bundle >350KB, first truncate MEDIUM-relevance sections to 30 lines per group; if still over, drop MEDIUM entirely and keep only HIGH-relevance sections. Section-to-agent relevance map assigns COMPONENTS/EXECUTION_FLOW/DATA_FLOWS/SCHEMA_DICTIONARY/SOURCE_SQL as HIGH for Core agent, BUSINESS_RULES/CUSTOM_CODE/ERROR_HANDLING/RISK_FLAGS as HIGH for Business+Ops, etc. `patterns_user` agent gets ALL sections (broad context for synthesis docs 07-11).
+  - `mcp-server/src/mcp_server/config.py` (line 54): Added `large_project_threshold: int = 200` setting with env prefix MCP_LARGE_PROJECT_THRESHOLD
+  - `mcp-server/src/mcp_server/services/claude_service.py` (multiple sections):
+    - `_preprocess_scan_data()` signature: added `total_jobs: int = 0` parameter
+    - Reference doc bundle map: split `_ref_patterns_user` into `_ref_patterns` (docs 07-08) and `_ref_user` (docs 09-11) -- both filesystem and DB override paths
+    - Added bundling script copy: copies `scripts/bundle_analysis.py` to `_preprocess/` during preprocessing
+    - `generate_docs()`: moved `total_jobs` computation before preprocessing call; added depth tier computation (small/medium/large with 0.6x/1.0x/1.5x multipliers); added dynamic agent table (3 agents for <200 jobs, 4 agents for >=200 jobs); added Phase 2.8 bundling step in prompt; replaced AUTO-FALLBACK with bundle reading instructions; added MINIMUM line targets table; changed analysis target wording from "target" to "MAXIMUM"; updated Phase 3.5 validation agent list to be dynamic
+- **Problem**: vaxxinova-main (252 jobs, 9 groups) produced only 406KB of docs vs esb-main (21 jobs, 4 groups) at 523KB. Large projects got shallower docs because the AUTO-FALLBACK clause told agents to use grep/head/tail when analysis exceeded 400KB, which was unreliable. 1.6MB of analysis physically can't fit in a 200K context window, so the fallback was necessary but its implementation (agent doing grep) was non-deterministic.
+- **Root cause**: The AUTO-FALLBACK instruction at line 691 of claude_service.py told Phase 3 agents to "use grep/head/tail" to read only relevant sections when total analysis >400KB. This produced cherry-picked, shallow output. Additionally, no depth minimums existed for larger projects, and the Patterns+User agent was responsible for 5 docs (07-11), leaving each doc with less output headroom.
+- **Change**: Five-part fix:
+  1. **Phase 2.8 bundling**: New deterministic Python script creates per-agent analysis bundles between Phase 2.6 and Phase 3. Each agent reads ONE pre-filtered bundle file instead of grepping through N group files. Script handles progressive truncation (MEDIUM sections -> 30 lines, then HIGH-only) to stay under 350KB budget.
+  2. **AUTO-FALLBACK removed**: Replaced unreliable agent-side grep/head/tail with server-side Python preprocessing. Even for small projects, bundles are created (containing everything).
+  3. **Depth minimums**: Added tier-based minimum line targets (small <50 jobs: 0.6x, medium 50-199: 1.0x, large 200+: 1.5x) injected as a table into the prompt.
+  4. **4-agent split for large projects**: Projects with >=200 jobs spawn 4 Phase 3 agents instead of 3 (Core, Business+Ops, Patterns, User). Each agent writes fewer docs with more output headroom.
+  5. **Analysis cap strengthened**: Changed "target: ~XKB" to "MAXIMUM: XKB -- prioritize depth over breadth" to reduce oversized analysis that triggered the old fallback.
+- **Why this approach**: The fundamental issue was that 1.6MB of analysis cannot fit in 200K context. Rather than asking the LLM to select what's relevant (unreliable), we do it deterministically in Python. Section-to-agent mapping is based on which analysis sections are most relevant to which docs (e.g., Core agent writes architecture/data docs and needs COMPONENTS, DATA_FLOWS, SCHEMA_DICTIONARY most). Progressive truncation ensures every agent stays within token budget while preserving the most important data. The 4-agent split gives each agent ~3 docs instead of ~4-5, with proportionally more output tokens per doc.
+- **Verification**: All 3 modified Python files pass `py_compile`. Pending: re-run doc generation for vaxxinova-main (expect >500KB total, 09_RUNBOOK >600 lines, 11_MIGRATION >700 lines), verify esb-main doesn't regress, check bundle files created in `_analysis/` and each <350KB.
+
+## Session: 2026-04-13
+
+### [Feature]: Disable Ollama auto-summaries + mandate per-job inventory in Phase 3
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/config.py` (line 59): Changed `auto_generate_summaries: bool = True` to `False`
+  - `mcp-server/src/mcp_server/api/routes/projects.py` (lines 267-282): Removed the `if config.auto_generate_summaries:` block that called `svc.generate_project_summaries()` after scan
+  - `intodoc/src/intodoc/platforms/_shared/prompts/PHASE_3_GUIDE.md` (section 02, item 6): Replaced weak instruction with mandatory language requiring a `#### {JobName}` entry for every job
+  - `intodoc/src/intodoc/platforms/talend/prompts/PHASE_3_GUIDE.md` (section 02, item 6): Same mandatory language, mirrored from shared guide
+  - `intodoc/reference-docs/02_ARCHITECTURE_INVENTORY.md`: Added "Per-Job Architecture Detail" section with 5 example entries showing the expected format
+- **Problem**: (1) Ollama ran ~45 LLM calls after every scan to generate job summaries, heating up the laptop and blocking scan completion. (2) Phase 3 guide item 6 was too weak -- Claude skipped per-job entries, leaving RAG with no authoritative per-job descriptions.
+- **Root cause**: (1) `auto_generate_summaries` defaulted to True. (2) The instruction said "for each job, provide..." but lacked MANDATORY language, format examples, or explanation of downstream consequences (topology UI, RAG search).
+- **Change**: Disabled auto-summaries by default (manual endpoint still works). Strengthened Phase 3 guide with MANDATORY callout, exact format template, and explanation that topology UI and RAG depend on these entries. Added 5 reference examples to the architecture inventory reference doc.
+- **Why this approach**: Per-job descriptions are better generated by Claude during doc generation (has full Phase 2 analysis context) than by Ollama post-scan (only sees raw component data). Disabling auto-summaries saves GPU time; the manual `/generate-summaries` endpoint remains for users who want Ollama summaries independently.
+- **Verification**: Pending -- run scan and confirm no Ollama calls. Run doc generation and check `02_ARCHITECTURE_INVENTORY.md` for per-job entries.
+
+### [Feature]: Enrich doc generation prompts for operational depth -- Phase 3 guide expansion
+
+- **Files changed**:
+  - `intodoc/src/intodoc/platforms/talend/prompts/PHASE_3_GUIDE.md` (87 -> 271 lines, 4.3KB -> 25KB): Expanded with per-chapter writing instructions for all 12 docs. Added 8 missing chapters (01-07, 09) and enhanced 3 existing chapters (00, 08, 11).
+  - `intodoc/src/intodoc/platforms/talend/prompts/ANALYSIS_GUIDE.md` (333 -> 335 lines): Added per-component DIE_ON_ERROR extraction to ERROR_HANDLING section and tContextLoad structure documentation to ENVIRONMENT_CONFIG section.
+  - `intodoc/src/intodoc/platforms/_shared/prompts/PHASE_3_GUIDE.md` (54 -> 247 lines, ~20KB): Mirrored Talend guide structure with platform-agnostic terminology (tMap -> transformation component, tRunJob -> job orchestration component, SUBJOB_OK/SUBJOB_ERROR -> success/error triggers, context variables -> environment parameters, DIE_ON_CHILD_ERROR -> child error propagation setting).
+- **Problem**: New consolidated doc generation system produced shallower operational content than the old 22-prompt system. PHASE_3_GUIDE.md only had instructions for 4 of 12 doc chapters (00, 08, 10, 11). The other 8 chapters got zero guidance -- Phase 3 agents improvised based on reference doc examples alone, resulting in thin docs for 09_RUNBOOK, 05_OPERATIONS_RISK, 03_DATA_FLOWS, etc.
+- **Root cause**: When PHASE_3_GUIDE.md was created during the consolidated guide work (2026-03-20), only cross-cutting chapters were included. Per-chapter writing instructions for the remaining docs were never added.
+- **Change**: Three files modified:
+  1. Talend PHASE_3_GUIDE.md: Added instructions for chapters 01 (project overview), 02 (architecture inventory), 03 (data flows), 04 (business logic), 05 (operations/risk), 06 (environment/external), 07 (security/performance), 09 (runbook). Enhanced chapters 00 (added scorecard integration), 08 (added naming compliance, reusability, tech debt, remediation roadmap), 11 (added readiness score, platform comparison, scenario comparison, pre/post-migration checklists, tech debt for migration, architectural decisions, quick wins). Each instruction references Phase 2 analysis sections by name and uses conditional framing.
+  2. Talend ANALYSIS_GUIDE.md: Added per-component DIE_ON_ERROR extraction (supports the new per-component error audit in doc 05) and tContextLoad structure documentation (supports runtime environment resolution in doc 06).
+  3. Shared PHASE_3_GUIDE.md: Full mirror of Talend guide with all platform-specific terms replaced by generic equivalents.
+- **Why this approach**: Instructions say HOW to synthesize Phase 2 data, not WHAT to extract (that's ANALYSIS_GUIDE's job). Conditional framing ("if REST sources exist", "for critical orchestration jobs") adapts to project complexity. Cross-chapter deduplication ensures each topic has one deep-dive chapter. Generic rule + Talend example pattern in the Talend guide. Token impact: ~8KB increase per Phase 3 agent (~9% overhead, well within 200K context window).
+- **Verification**: Pending -- re-generate docs for esbmain test project and compare output depth against previous generation. Key checks: 09_RUNBOOK structured failure scenarios, 05_OPERATIONS_RISK per-component error audit, 03_DATA_FLOWS column mapping tables, 04_BUSINESS_LOGIC pattern-based organization, 11_MIGRATION scenario comparison and readiness score.
+
 ## Session: 2026-04-10
 
 ### [Perf]: Topology graph endpoint -- stop synthesizing REFERENCE:* hub edges in legacy-scan fallback

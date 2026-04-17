@@ -96,6 +96,7 @@ export default function TemplateCatalogue({ onSelect, selectedSlug, defaultPlatf
           <option value="">All Platforms</option>
           <option value="talend">Talend</option>
           <option value="workato">Workato</option>
+          <option value="lobster">Lobster</option>
         </select>
         <select
           value={tierFilter}

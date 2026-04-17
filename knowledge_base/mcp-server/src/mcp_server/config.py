@@ -51,12 +51,13 @@ class MCPServerConfig(BaseSettings):
     # Doc generation
     doc_generation_model: str = "claude-sonnet-4-6"
     doc_generation_write_model: str = "claude-opus-4-6"
+    large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
 
     # Ollama (for AI job summaries)
     ollama_base_url: str = "http://localhost:11434"
     ollama_summary_model: str = "gemma3:12b"
     ollama_summary_concurrency: int = 4
-    auto_generate_summaries: bool = True
+    auto_generate_summaries: bool = False
 
     # App
     log_level: str = "INFO"

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useScan, useGenerate, usePushToRag, useResetStatus } from "../hooks/useProjects";
+import { useScan, useGenerate, usePushToRag, useResetStatus, useDeleteProject } from "../hooks/useProjects";
 import { useProfiles } from "../hooks/useTemplates";
 
 interface Props {
@@ -14,6 +14,7 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
   const generate = useGenerate();
   const push = usePushToRag();
   const resetStatus = useResetStatus();
+  const deleteProject = useDeleteProject();
   const { data: profilesData } = useProfiles({ platform: platform || undefined });
 
   const [selectedProfileId, setSelectedProfileId] = useState<number | undefined>(undefined);
@@ -80,6 +81,25 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
       >
         RAG
       </button>
+
+      {/* Delete */}
+      {!busy && (
+        <button
+          className="btn-icon-danger"
+          disabled={deleteProject.isPending}
+          title="Delete project"
+          onClick={() => {
+            if (window.confirm(`Permanently delete project '${projectId}'? This removes all scan data, docs, and RAG entries.`)) {
+              deleteProject.mutate(projectId);
+            }
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+        </button>
+      )}
 
       {/* Reset (only when busy) */}
       {busy && (

@@ -44,14 +44,14 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         samesite="lax",
         secure=settings.cookie_secure,
         max_age=settings.refresh_token_expire_days * 86400,
-        path="/api/v1/auth/refresh",
+        path="/",
         domain=_cookie_domain(),
     )
 
 
 def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie("access_token", path="/", domain=_cookie_domain())
-    response.delete_cookie("refresh_token", path="/api/v1/auth/refresh", domain=_cookie_domain())
+    response.delete_cookie("refresh_token", path="/", domain=_cookie_domain())
 
 
 class LoginRequest(BaseModel):

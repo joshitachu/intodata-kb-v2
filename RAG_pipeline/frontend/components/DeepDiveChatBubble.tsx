@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import {
-  Bot,
   Loader2,
   Terminal,
   AlertCircle,
@@ -33,13 +32,8 @@ export function DeepDiveChatBubble({
   }
 
   return (
-    <div className="flex gap-3 flex-row">
-      {/* Bot avatar */}
-      <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-muted">
-        <Bot className="h-4 w-4" />
-      </div>
-
-      <div className="flex flex-col gap-2 items-start max-w-[80%]">
+    <div className="flex flex-row">
+      <div className="flex flex-col gap-2 items-start max-w-[85%]">
         {/* Thinking section (collapsible) */}
         {thinking && (
           <button

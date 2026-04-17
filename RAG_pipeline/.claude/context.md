@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Topology perf round 3 landed (2026-04-10). Needs `sudo docker compose up -d --build frontend` (frontend) AND `sudo systemctl restart mcp-server` (backend, editable install picks up the Python change). After this, `scherpenhuizen-talend` uses the same code paths as the other Talend projects -- the runtime fallback no longer synthesizes `REFERENCE:*` hub edges from `tRunJob` payloads, and the layout effect no longer defeats the round-2 same-reference fast path on first hover. If a project ever needs the noisy hub edges back, regenerate the scan so `job_external_systems` is populated explicitly.
-**Last session**: 2026-04-10
-**Last completed**: Topology perf round 3 -- root cause for scherpenhuizen-talend. Backend (`knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`) was synthesizing 37 hub-shaped connection nodes / 256 edges via the runtime fallback (`_derive_systems_from_job_json` -> `_fallback_talend_system`) for legacy scans missing `job_external_systems`; many were `REFERENCE:*` noise from `tRunJob`-family payloads leaking through the suffix-stripping heuristic. Extended `_FALLBACK_INTERNAL_COMPONENTS` to cover the tRunJob diagnostic family (tLogCatcher, tStatCatcher, tFlowMeter*, tChronometer*, tAssert*) and added a defensive `not system.startswith("REFERENCE")` filter + `[:6]` per-job cap in the Talend branch. Frontend (`RAG_pipeline/frontend/app/topology/page.tsx`): initialized `data.dimmed: false, data.highlighted: false` on every laid-out node so the round-2 same-reference fast path takes effect on the FIRST hover after a layout (was failing because `undefined !== false`); gated layout-effect `fitView` behind `lastFitKeyRef` keyed on `${selectedProject}|${direction}|${compactMode}|${nodeCount}` to stop fitView animations from stacking; capped search-effect `fitView` to `<= 8` matches so single-letter searches don't auto-zoom. No new components, no new dependencies. Earlier today: round 2 (same-reference dimming) + round 1 (CSS / animations / minimap gating) -- both still in effect.
+**Status**: Phase 5 Memory Dashboard complete (2026-04-15). Admin dashboard at `/admin/hindsight` with 3 tabs informed by OpenBrain Behavioral Architecture. Backend GET endpoints + frontend BFF proxies + full dashboard UI.
+**Last session**: 2026-04-15
+**Last completed**: Phase 5 Memory Dashboard — 4 backend GET endpoints (`/memory/banks`, `/memory/banks/{id}/memories`, `/memory/banks/{id}/reflect`, `/memory/recent-captures`), 4 BFF proxy routes, Sidebar "Memory" link with Brain icon, full dashboard page with Insight Pipeline (summary cards + abstraction funnel + recent captures), Memory Banks (list → detail with accordion), Reflect (pattern analysis). Bug fix: `acreate_mental_model` → `client.mental_models.create_mental_model`.
 
 ## What's Done
 
@@ -35,7 +35,7 @@
 - Tailwind + lucide-react for styling
 - **Markdown rendering**: `react-markdown` + `remark-gfm` for rich answer display
 - **Clickable citations**: `[N]` in answers scroll to `#source-N` anchors
-- Pages: / (search), /chat (conversations), /documents (upload/list/delete), /settings (health)
+- Pages: / (chat — main interface), /chat (redirects to /), /documents (upload/list/delete), /settings (health)
 
 ## To Run
 
@@ -47,6 +47,8 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Recent Changes
 
+- **Phase 5 Memory Dashboard** (2026-04-15): Admin dashboard at `/admin/hindsight` with Insight Pipeline, Memory Banks, and Reflect tabs. Backend: 4 GET endpoints + `get_bank_stats()` / `list_bank_memories()` helpers. Frontend: 4 BFF proxy routes, Sidebar Brain icon link, full dashboard page. Bug fix: `acreate_mental_model`. Files: `hindsight_client.py`, `memory.py`, `Sidebar.tsx`, 4 new route.ts, `hindsight/page.tsx`.
+- **Enhanced Hindsight Memory Integration** (2026-04-14): Project-scoped banks, tags, intent-based gating, LLM distillation, observations, reflect, mental models. Admin API at `/memory/mental-models` and `/memory/reflect-patterns`. Files: `hindsight_client.py` (full rewrite), `conversational_rag.py`, `config.py`, `memory.py` (new), `main.py`.
 - **Admin sidebar visibility & role separation** (2026-04-09): Login sets auth state instantly (no refresh needed), admin role restricted to read-only dashboard (usage/audit/benchmark), superadmin-only for user/role/project management. Migration 012 + frontend guards + backend AuditViewer dependency.
 - **Post-stress-test improvements** (2026-04-03): 5 fixes — targeted enrichment query for project_detail (overview docs), reranker for metadata enrichment, document_sources init bug, METADATA_SYSTEM_PROMPT rewrite (doc content primary), classifier prompt refinement (content vs metadata). Files: `conversational_rag.py`, `prompt_builder.py`, `intent_classifier.py`.
 - **RAG follow-up robustness** (2026-04-03): Streaming context-first enabled, `needs_new_search()` safety net, metadata enrichment for all content intents, cross-project source filter, prompt improvements (partial info + no retraction), temperatures lowered (kimi 0.45, ollama 0.45, classifier 0.0), reranker_min_score 0.05→0.15. Files: `conversational_rag.py`, `prompt_builder.py`, `config.py`, `llm_client.py`, `intent_classifier.py`.

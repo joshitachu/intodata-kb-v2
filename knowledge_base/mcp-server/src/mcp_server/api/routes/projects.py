@@ -264,22 +264,6 @@ async def _run_scan_background(
                 run_id, status="completed", job_count=result["job_count"]
             )
 
-            # Auto-generate AI summaries after successful scan
-            if config.auto_generate_summaries:
-                try:
-                    svc = SummaryService()
-                    summary_result = await svc.generate_project_summaries(
-                        project_id, platform,
-                    )
-                    logger.info(
-                        "Auto-generated %d summaries for %s",
-                        summary_result["summary_count"], project_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Auto-summary generation failed for %s: %s",
-                        project_id, e,
-                    )
         else:
             await registry.update_status(
                 project_id, "error", error_message=result.get("error")
@@ -308,6 +292,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         _run_generate_background, req.project_id, run_id, log_mgr,
         template_profile_id=req.template_profile_id,
         model=req.model,
+        resume=req.resume,
     )
     return StatusResponse(
         status="generation_triggered",
@@ -322,6 +307,7 @@ async def _run_generate_background(
     *,
     template_profile_id: int | None = None,
     model: str | None = None,
+    resume: bool = True,
 ):
     """Background task: spawn Claude Code for doc generation.
 
@@ -332,6 +318,7 @@ async def _run_generate_background(
     log_mgr.reset_log_file(project_id)
     result = await claude.generate_docs(
         project_id, template_profile_id=template_profile_id, model=model,
+        resume=resume,
     )
 
     success = result.get("success", False)
@@ -420,9 +407,16 @@ async def _run_generate_background(
             )
             await db.commit()
     else:
-        # Generation failed — clean staging, preserve old docs
+        # Generation failed — preserve staging for resume (old docs/ remains intact)
         if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            logger.info(
+                "Generation failed — staging preserved for resume: %s", staging_dir,
+            )
+            await log_mgr.emit(
+                project_id,
+                "Generation failed but staging is preserved. Click Generate again to resume from checkpoint.",
+                level="warning",
+            )
 
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)

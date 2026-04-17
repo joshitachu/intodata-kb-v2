@@ -9,6 +9,7 @@
 | MCP over CLI | Claude Code + MCP replaces CLI-based LLM analyzer | No API keys needed, better quality, parallel sub-agents | 2026-02 |
 | Doc generation | 4-phase MCP workflow (Setup, Group Analysis, Write Docs, Publish) | Parallel sub-agents per group for throughput | 2026-02 |
 | Staging directory | Claude writes to `docs_staging/`, server swaps to `docs/` on success | Protects existing docs from failed runs | 2026-02 |
+| Resumable generation | On failure, staging is preserved; on resume, `_detect_resume_state()` inspects artifacts and `_manifest.json` tracks scan mtime for stale detection | Prevents loss of ~30 min work on rate limit failures | 2026-04 |
 | RAG push server-side | `_run_generate_background` calls `RagBridge.push_docs()` | Claude prompt should NOT call `insert_to_rag` -- server handles it | 2026-02 |
 | SSE streaming | Real-time log streaming from MCP server to dashboard | Dashboard shows live operation progress | 2026-02 |
 | JWT auth | Shared JWT_SECRET_KEY across RAG backend, MCP server, dashboard | Stateless auth, works across all services | 2026-03 |
@@ -24,6 +25,7 @@
 | Workato generic extraction | All field reads use `or` fallback chains (e.g. `provider or application`); param extractors iterate all keys instead of hardcoded lists | Handles 3 known export formats (A=code blocks, B=flat, C=manifest/package) plus unknown future variations | 2026-03 |
 | Bundle splitting | Prompt bundles split at 200KB, ref doc bundles at 80KB; glob patterns in orchestrator prompt | Prevents exceeding Claude's 256KB file-read limit and 25K token limit as platforms add more prompts | 2026-03 |
 | Consolidated analysis guide | Single ANALYSIS_GUIDE.md per platform replaces 22 bundled .txt prompts; PHASE_3_GUIDE.md for cross-group synthesis | 94% token reduction (222KB->12KB), eliminates conflicting instructions, coherent single-document format; original .txt files kept for backward compat | 2026-03 |
+| Transformation detail depth | Platform-aware preprocessing renders tmap_data/filter chains as structured tables; TRANSFORMATION_DETAIL section in analysis guides; per-job transformation subsections mandatory in Phase 3 | Closes the field-level documentation gap: users can now ask "what does column X do in job Y?" and get an answer from docs alone | 2026-04 |
 | Dynamic depth scaling | Inject project metrics (total_jobs, total_groups) into prompt instead of hard-coded line minimums | Small projects don't pad, large projects don't truncate; depth driven by content not arbitrary targets | 2026-03 |
 | Template DB storage | Templates, versions, profiles in PostgreSQL with Alembic migrations | Enables admin visibility, versioning with commit messages, A/B testing via profiles | 2026-03 |
 | Template resolution cascade | Explicit profile -> project-scoped default -> platform default -> filesystem fallback | Flexible selection with permanent backward compat; filesystem always works as safety net | 2026-03 |
@@ -31,6 +33,9 @@
 | Per-platform template sets | Templates have optional `platform` field; profiles scoped to platform | Talend and Workato templates are independent; prevents cross-contamination | 2026-03 |
 | Phase 2.6 scoring | New scoring sub-agent between Phase 2.5 gate and Phase 3 doc writing | Quantitative grounding for docs; enables comparison across runs; scorecard included in final output | 2026-03 |
 | Template snapshots on runs | `template_snapshot` JSONB on GenerateRun records `{slug: version_id}` | Exact reproducibility; enables meaningful A/B comparison between runs using different profiles | 2026-03 |
+| Phase 2.8 analysis bundling | Deterministic Python script bundles analysis per Phase 3 agent; replaces agent-side grep/head/tail | Large projects (>400KB analysis) can't fit in 200K context; server-side section selection is reliable, agent-side grep is not | 2026-04 |
+| Depth tier scaling | small (<50 jobs, 0.6x), medium (50-199, 1.0x), large (200+, 1.5x) minimum line targets | Large projects need proportionally deeper docs; prevents the paradox of more jobs producing less content | 2026-04 |
+| 4-agent Phase 3 split | Projects >=200 jobs use 4 agents (Core, Business+Ops, Patterns, User) instead of 3 | Fewer docs per agent = more output headroom per doc; Patterns+User was overloaded with 5 docs at large scale | 2026-04 |
 
 ## Code Patterns
 

@@ -162,6 +162,59 @@ Cross-recipe data flows:
 - Default/fallback values: `.presence || default` patterns
 - Missing validations: which data flows lack ANY validation
 
+### TRANSFORMATION_DETAIL
+
+For EVERY action step that maps data (datapill references in input fields), extract a per-step transformation summary:
+
+**Per-Step Datapill Mapping Table (MANDATORY for every action with input mappings):**
+
+| Target Field | Source Datapill | Formula Chain | Explanation |
+|-------------|----------------|---------------|-------------|
+| billing_city | `#{_('data.netsuite_1.billing_address.city')}` | -- | City from NetSuite billing address |
+| annual_revenue | `#{_('data.salesforce_1.annual_revenue')}` | `.to_f.round(2)` | Revenue converted to decimal, rounded to 2 places |
+| email | `#{_('data.netsuite_1.email')}` | `.present? ? ... : 'no-email@placeholder.com'` | Email with fallback default |
+
+Include ALL mapped fields, not just notable ones. For each:
+- The full datapill expression (never truncate)
+- The formula chain (`.to_s`, `.strip`, `.gsub()`, `.to_f.round(2)`, etc.)
+- A human-readable explanation of what the mapping does
+
+**Formula Chain Traces (for complex datapill formulas with 3+ chained methods):**
+
+Trace the full evaluation path step by step:
+```
+Step 1: #{_('data.salesforce_1.billing_address')}  -> nested address object
+Step 2: .city                                       -> extract city string
+Step 3: .strip                                      -> remove whitespace
+Step 4: .presence || 'UNKNOWN'                      -> default if blank
+Result: Cleaned city name or 'UNKNOWN' fallback
+```
+
+Include at least one trace per recipe that has complex formulas.
+
+**Conditional Mapping Analysis:**
+
+For every conditional datapill expression (ternary `? :`, `.present?`, `.blank?`):
+- The condition being tested
+- The true-path value
+- The false-path/fallback value
+- Business rationale (why this conditional exists)
+
+**Cross-Step Data Lineage:**
+
+For each action that consumes datapills from multiple prior steps:
+- Which steps contribute data (list step aliases)
+- How fields from different sources are combined (merged into one object? concatenated? conditional selection?)
+- Whether any step's output is used by multiple downstream steps (fan-out pattern)
+
+**Lookup Table Mappings:**
+
+For every lookup table reference:
+- Table name and lookup key field
+- Which column is returned
+- How the result is used downstream
+- Fallback behavior if lookup finds no match
+
 ### BUSINESS_RULES
 
 Extract EVERY business rule with this format:

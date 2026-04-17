@@ -13,6 +13,7 @@ _PLATFORM_MAP: dict[str, tuple[str, str]] = {
     "talend": ("intodoc.platforms.talend", "TalendPlugin"),
     "generic": ("intodoc.platforms.generic", "GenericPlugin"),
     "workato": ("intodoc.platforms.workato", "WorkatoPlugin"),
+    "lobster": ("intodoc.platforms.lobster", "LobsterPlugin"),
 }
 
 

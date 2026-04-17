@@ -201,6 +201,7 @@ export default function NewTemplateModal({ open, onClose, onCreated }: Props) {
               <option value="">Any</option>
               <option value="talend">Talend</option>
               <option value="workato">Workato</option>
+              <option value="lobster">Lobster</option>
             </select>
           </div>
         </div>

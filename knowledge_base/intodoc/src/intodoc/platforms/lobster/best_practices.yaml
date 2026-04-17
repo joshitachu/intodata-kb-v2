@@ -1,0 +1,370 @@
+# Lobster Data platform best practices and knowledge for LLM context
+# Injected into prompts so the LLM understands Lobster/DataWizard conventions
+
+platform_name: "Lobster Data"
+
+# -- Key Concepts ---------------------------------------------------------------
+
+concepts:
+  profiles:
+    description: >
+      The unit of integration in Lobster, analogous to a Talend job or Workato recipe.
+      A profile is a self-contained XML file (<datawizardprofile>) that defines a complete
+      data integration flow: how data enters (agent), how it is parsed (data properties),
+      how input maps to output (input/output trees with filter chains), and where results
+      are sent (response units). Profiles can chain to each other via profile_after_run,
+      exception_profile, and forward_profile references.
+    risk: "Profiles without descriptions or in flat group structures become unmaintainable at scale."
+
+  agents:
+    description: >
+      The entry point of a profile -- defines how data arrives. Agent types include:
+      CronSettings (scheduled FTP/File/DB/HTTP polling), HttpSettings (REST API endpoint),
+      MessageSettings (SMTP/messaging), PortalAgentSettings (web portal upload), and
+      manual upload (user-initiated via web UI). The agent determines the profile's
+      execution model -- cron agents poll on schedules, HTTP agents respond to requests,
+      message agents listen for incoming messages.
+    risk: "Cron agents with short intervals on large directories cause excessive file system scanning."
+
+  data_properties:
+    description: >
+      Configuration for parsing incoming data. Defines the file type (XML, JSON, CSV,
+      Fixed, EDI/EDIFACT, Excel, IDoc, Swift), encoding (UTF-8, ISO-8859-1), delimiters,
+      record boundaries, and XML-specific settings (record tag, namespace handling, XPath).
+      Also contains the structure definition with input/output trees and variables.
+    risk: "Wrong encoding settings silently corrupt multi-byte characters in production data."
+
+  input_tree:
+    description: >
+      Hierarchical schema defining the structure of incoming data. Each node represents
+      a data element (XML element, JSON object, CSV column group). Nodes can be containers
+      (is_node=true) or leaf elements with fields. Fields have names (prefixed with S-
+      for source), types (String, Integer, BigInteger, Decimal, Date, Boolean), and
+      optional XPath expressions. The input tree is the source side of all mappings.
+    risk: "Overly deep input trees (>5 levels) with many optional nodes slow parsing and increase memory usage."
+
+  output_tree:
+    description: >
+      Hierarchical schema defining the structure of output data. Output nodes mirror the
+      target format structure. Fields contain filter chains that define transformations
+      and mappings from input fields to output values. Calculation nodes (no_output=true)
+      hold intermediate computations used by other fields. The output tree is where all
+      business logic lives -- filter chains implement transformations, lookups, conditionals,
+      and API calls.
+    risk: "Complex filter chains on output fields without documentation make maintenance extremely difficult."
+
+  filter_chains:
+    description: >
+      Lobster's primary data transformation mechanism, analogous to Talend tMap expressions
+      or Workato datapills. Each field in the output tree can have one or more filter
+      elements defining a chain of operations. Filters have typed parameters (a-o) that
+      can reference input fields (type=field), constants (type=constant, often base64),
+      previous filter results (type=result), destination fields (type=destination), or
+      variables (type=variable). Common filter operations include copy, substring,
+      find-substring, concat, equals, logical-and/or, conditional (a==b?c:d),
+      save-variable, http-json-lookup, and many more.
+    risk: "Long filter chains (>10 filters) on a single field are hard to debug and create fragile transformation logic."
+
+  mappings:
+    description: >
+      Data mappings are defined implicitly through filter chains in the output tree.
+      A field with a filter of type 'copy(field/value/variable)' with parameter
+      type=field references an input field directly. More complex mappings use
+      multi-filter chains combining lookups, conditionals, and string operations.
+      There is no separate mapping table -- all mapping logic lives in the output tree.
+    risk: "Implicit mappings through filter chains are harder to trace than explicit mapping tables."
+
+  response_units:
+    description: >
+      Output destinations for processed data. Each profile can have multiple response
+      units that send data to different targets. Types include: FTP (SFTP upload),
+      HTTP (REST API call), File (local/network file write), Mail (email with attachment),
+      Database (direct DB write), and more. Response units have their own communication
+      channel configuration (partner, channel name) and can be conditionally active.
+    risk: "Multiple response units without error handling can leave data partially delivered."
+
+  communication_channels:
+    description: >
+      Named connections to external systems, identified by partner name and channel name.
+      Communication channels are configured at the system level and referenced by profiles
+      via comm_channel_partner and comm_channel_name. A channel encapsulates host, port,
+      credentials, and protocol settings (FTP, SFTP, OFTP, AS2, HTTP). Multiple profiles
+      can share the same channel.
+    risk: "Channel credential changes require restarting all profiles using that channel."
+
+  variables:
+    description: >
+      Profile-scoped variables used for intermediate storage, configuration, and
+      cross-filter communication. System variables (VAR_SYS_*, VAR_FILENAME_*,
+      VAR_ORIGINATOR_*) are auto-populated by the runtime. User variables are defined
+      per-profile and can be read/written by filter chains via 'save variable' and
+      'variable' type references. Variables persist within a single profile execution.
+    risk: "Overuse of variables for inter-filter communication creates hidden data flow that is hard to trace."
+
+  profile_chaining:
+    description: >
+      Profiles can trigger other profiles after completion. profile_after_run specifies
+      the next profile in a success chain. exception_profile handles error scenarios.
+      forward_profile passes data to another profile. This creates execution pipelines
+      analogous to Talend's tRunJob chains or Workato's callable recipes.
+    risk: "Long profile chains (>5 links) create debugging nightmares when failures occur mid-chain."
+
+  path_of_group:
+    description: >
+      Logical grouping of profiles into folders/categories. Groups organize profiles
+      by business domain, partner, or process (e.g., 'Oracle JD Edwards', 'Daily Fresh Food').
+      Groups are purely organizational -- they do not affect execution behavior.
+    risk: "Flat group structure with all profiles in one group makes navigation impossible at scale."
+
+# -- Component Types -----------------------------------------------------------
+
+component_types:
+  LobsterInputAgent_HTTP: "REST API endpoint -- receives HTTP requests (GET, POST, PUT, DELETE)"
+  LobsterInputAgent_FTP_Cron: "Scheduled FTP/SFTP file pickup -- polls remote directory on interval"
+  LobsterInputAgent_DB_Cron: "Scheduled database query -- polls database on interval"
+  LobsterInputAgent_File_Cron: "Scheduled local/network file pickup -- polls directory on interval"
+  LobsterInputAgent_HTTP_Cron: "Scheduled HTTP request -- polls remote URL on interval"
+  LobsterInputAgent_Message: "Message/SMTP listener -- receives email or messaging events"
+  LobsterInputAgent_Portal: "Web portal upload -- manual data entry via Lobster web UI"
+  LobsterInputAgent_Manual: "Manual upload -- user-initiated file upload via web UI"
+  LobsterParser_XML: "XML parser -- parses incoming XML documents with optional XPath"
+  LobsterParser_JSON: "JSON parser -- parses incoming JSON documents"
+  LobsterParser_CSV: "CSV/delimited parser -- parses delimited text files"
+  LobsterParser_Fixed: "Fixed-width parser -- parses fixed-column-width text files"
+  LobsterParser_EDI: "EDI/EDIFACT parser -- parses electronic data interchange messages"
+  LobsterParser_Excel: "Excel parser -- parses XLS/XLSX spreadsheets"
+  LobsterParser_IDoc: "SAP IDoc parser -- parses SAP Intermediate Documents"
+  LobsterParser_Swift: "SWIFT message parser -- parses financial messaging format"
+  LobsterSourceSchema: "Input tree -- hierarchical source data structure with field definitions"
+  LobsterMapping: "Output tree -- target structure with filter chain transformations and mappings"
+  LobsterOutputFormat: "Integration settings -- output encoding, XML formatting, declaration options"
+  LobsterResponse_FTP: "FTP/SFTP response -- uploads output file to remote FTP server"
+  LobsterResponse_HTTP: "HTTP response -- sends output via HTTP request or returns API response"
+  LobsterResponse_FILE: "File response -- writes output to local or network file system"
+  LobsterResponse_MAIL: "Email response -- sends output as email attachment"
+  LobsterResponse_DB: "Database response -- writes output directly to database"
+  LobsterResponse_AS2: "AS2 response -- sends output via AS2 protocol (EDI B2B)"
+  LobsterResponse_OFTP: "OFTP response -- sends output via OFTP/OFTP2 protocol"
+
+# -- Anti-Patterns ---------------------------------------------------------------
+
+anti_patterns:
+  - id: "LAP-001"
+    name: "No Error Handling (Missing exception_profile)"
+    description: >
+      Profiles without an exception_profile reference have no automated error recovery.
+      When the profile fails, the error is logged but no corrective action is taken.
+      Unlike Workato's monitor/catch or Talend's SUBJOB_ERROR, Lobster error handling
+      requires explicit exception_profile configuration. Without it, failures go
+      unnoticed until someone checks the job log manually.
+    fix: "Configure an exception_profile that sends error notifications (email/ticket) and optionally retries or archives the failed input data."
+    severity: "critical"
+
+  - id: "LAP-002"
+    name: "Hardcoded Credentials in Filter Constants"
+    description: >
+      API keys, passwords, or tokens embedded as base64-encoded constants in filter
+      chains (e.g., http-json-lookup with hardcoded access_key). These constants are
+      only obfuscated (base64), not encrypted, and are visible to anyone with profile
+      export access. Credential rotation requires editing every profile that contains them.
+    fix: "Move credentials to Lobster system properties or communication channel settings. Reference them via variables, not filter constants."
+    severity: "critical"
+
+  - id: "LAP-003"
+    name: "Missing Profile Description"
+    description: >
+      Profiles without a meaningful description field leave maintainers guessing about
+      the profile's purpose. The profile name alone is often insufficient to understand
+      the data flow, business context, and expected behavior. This is especially
+      problematic in large installations with 100+ profiles.
+    fix: "Add a clear description covering: data source, target system, business purpose, expected schedule, and any special handling."
+    severity: "medium"
+
+  - id: "LAP-004"
+    name: "Unbounded max_records"
+    description: >
+      Profiles with max_records set to 2147483647 (MAX_INT, the default) process
+      unlimited records per execution. For file-based inputs or database queries
+      returning large result sets, this can cause memory exhaustion, long execution
+      times, and downstream system overload.
+    fix: "Set max_records to a reasonable limit based on expected data volumes. Implement pagination or batching for large datasets."
+    severity: "high"
+
+  - id: "LAP-005"
+    name: "Manual Upload Profile in Production"
+    description: >
+      Profiles configured for manual upload (Man. upload) that are active in production
+      indicate a process that depends on human intervention. Manual uploads are error-prone,
+      cannot be scheduled, and have no audit trail beyond the job log.
+    fix: "Replace manual upload with automated agents (Cron FTP, HTTP API, database polling) wherever possible. If manual upload is required, add validation filters and audit logging."
+    severity: "medium"
+
+  - id: "LAP-006"
+    name: "Long Filter Chain Without Documentation"
+    description: >
+      Output fields with more than 8 chained filters that lack description text or
+      aiDocumentation. Complex filter chains implement critical business logic but
+      become impenetrable without inline documentation. New team members cannot
+      understand, modify, or debug these chains.
+    fix: "Add aiDocumentation to complex output fields. Break long chains into calculation nodes with descriptive names. Add note elements explaining the business logic."
+    severity: "medium"
+
+  - id: "LAP-007"
+    name: "No Response Unit Error Handling"
+    description: >
+      Response units without retry configuration (retries=-1, treat_as_global_error=false)
+      silently fail when the target system is unavailable. The profile completes
+      successfully but the output data is lost.
+    fix: "Enable treat_as_global_error on critical response units. Configure retries with appropriate retry_interval. Add an exception_profile for notification."
+    severity: "high"
+
+  - id: "LAP-008"
+    name: "Profile Chain Without Shared Variables"
+    description: >
+      Profile chains (profile_after_run) that pass data only via file system (write
+      file, next profile reads file) instead of using MSG_CALL variables or forward_profile.
+      File-based handoff is fragile (file locking, naming conflicts) and slow.
+    fix: "Use forward_profile for direct data passing between profiles. Use MSG_CALL variables for metadata sharing."
+    severity: "medium"
+
+  - id: "LAP-009"
+    name: "Inconsistent Encoding Across Profile Chain"
+    description: >
+      Profile chains where the output encoding of one profile (integrationsettings/encoding)
+      does not match the expected input encoding (dataproperties/file_encoding) of the
+      next profile. This causes character corruption in multi-byte text.
+    fix: "Standardize on UTF-8 across all profiles in a chain. Explicitly set both input and output encoding."
+    severity: "high"
+
+  - id: "LAP-010"
+    name: "Inactive Profile With Active Callers"
+    description: >
+      Profiles referenced by profile_after_run or exception_profile that have
+      active=false. When the calling profile completes, the chain breaks silently
+      because the target profile is suspended.
+    fix: "Ensure all profiles in a chain are active. Add monitoring for chain completion. Log warnings when referencing inactive profiles."
+    severity: "high"
+
+# -- Connection Types -----------------------------------------------------------
+
+connection_types:
+  FTP:
+    description: "FTP/SFTP file transfer via communication channel"
+    detection: "agent_class=CronSettings with type=Cron:Ftp, or response unit_ftp"
+    behavior: "Polls remote directory for files matching filename pattern, processes each file, optionally archives/renames"
+
+  HTTP:
+    description: "REST API endpoint or HTTP client"
+    detection: "agent_class=HttpSettings, or response unit_http"
+    behavior: "Receives HTTP requests (agent) or sends HTTP requests (response unit/filter chain http-json-lookup)"
+
+  DATABASE:
+    description: "Direct database connection via SQL"
+    detection: "agent_class=CronSettings with type=Cron:DB, or response unit_db"
+    behavior: "Executes SQL queries (agent polls) or writes to database (response unit)"
+
+  FILE:
+    description: "Local or network file system"
+    detection: "agent_class=CronSettings with type=Cron:File, or response unit_file"
+    behavior: "Reads from local/mounted directory (agent) or writes to file system (response unit)"
+
+  OFTP:
+    description: "OFTP/OFTP2 protocol (automotive industry standard)"
+    detection: "service=OftpService in agent, or response unit_oftp"
+    behavior: "Secure file transfer using OFTP2 protocol with certificate-based authentication"
+
+  AS2:
+    description: "AS2 protocol (EDI B2B standard)"
+    detection: "Communication channel type AS2"
+    behavior: "Encrypted, signed EDI message exchange with MDN receipt"
+
+  MESSAGE:
+    description: "Email/SMTP messaging"
+    detection: "agent_class=MessageSettings, or response unit_mail"
+    behavior: "Receives email (agent) or sends email with attachments (response unit)"
+
+# -- Error Handling Patterns ---------------------------------------------------
+
+error_handling_patterns:
+  exception_profile:
+    when_to_use: "Every production profile should have an exception_profile configured"
+    behavior: >
+      When a profile execution fails, Lobster can automatically trigger the configured
+      exception_profile. The exception profile receives error details via system variables
+      (VAR_SYS_MESSAGE, VAR_SYS_FILE_PATH) and can send notifications, archive failed
+      data, or attempt corrective actions.
+    best_practice: >
+      Create a shared error notification profile that sends email/Slack alerts with
+      the failed profile name, error message, and input file details. Reference it
+      from all production profiles via exception_profile.
+
+  response_unit_retry:
+    when_to_use: "Response units targeting unreliable external systems"
+    behavior: >
+      Response units support retry configuration (retries count + retry_interval).
+      When delivery fails, the unit retries the specified number of times with the
+      configured interval. treat_as_global_error determines whether a response unit
+      failure triggers the profile's exception_profile.
+    best_practice: >
+      Set retries=3 and retry_interval=60 for network-dependent response units.
+      Enable treat_as_global_error for critical outputs.
+
+  error_variables:
+    when_to_use: "Inside exception profiles to access failure context"
+    behavior: >
+      System variables populated on error: VAR_SYS_MESSAGE (error text),
+      VAR_SYS_FILE_PATH (source file that caused the error), VAR_JOBNR (job reference),
+      VAR_FILENAME_PREFIX/SUFFIX (original file name components).
+    best_practice: >
+      Include all error variables in notification templates. Archive the original
+      input data for manual reprocessing.
+
+# -- Performance Best Practices ------------------------------------------------
+
+performance:
+  file_processing:
+    rule: "Process files in reasonable batches, not unlimited"
+    strategies:
+      - "Set max_records to limit per-execution processing"
+      - "Use file_age setting to avoid processing files still being written"
+      - "Configure archive/rename patterns to prevent reprocessing"
+    risk: "Unlimited max_records with large files causes memory exhaustion"
+
+  filter_chain_optimization:
+    rule: "Minimize filter chain depth and avoid redundant operations"
+    strategies:
+      - "Use calculation nodes for intermediate results referenced by multiple fields"
+      - "Avoid repeated http-json-lookup calls -- cache results in variables"
+      - "Use save-variable for values needed across multiple output fields"
+    risk: "Redundant filter operations multiply processing time linearly with record count"
+
+  response_unit_ordering:
+    rule: "Order response units by criticality and dependency"
+    strategies:
+      - "Place primary output (database, partner file) before notifications"
+      - "Use dependency_type to sequence response units when order matters"
+      - "Disable non-critical response units on test systems (not_on_test flag)"
+    risk: "Parallel response units competing for the same target can cause deadlocks"
+
+  scheduling:
+    short: "1-5 minutes -- real-time or near-real-time file/message processing"
+    standard: "15-30 minutes -- regular batch synchronization"
+    long: "60+ minutes or daily -- reporting, archival, non-urgent transfers"
+    risk: "Short polling intervals with slow processing create execution overlap"
+
+# -- Analysis Focus -----------------------------------------------------------
+
+analysis_focus:
+  - "Profile type distribution -- cron/HTTP/manual/message agent mix"
+  - "Filter chain complexity -- flag fields with >8 chained filters"
+  - "Profile chaining topology -- map profile_after_run/exception_profile/forward_profile graphs"
+  - "Communication channel usage -- which channels are shared across profiles"
+  - "Variable usage patterns -- system vs user variables, cross-filter communication"
+  - "Error handling coverage -- which profiles have exception_profile, response unit retries"
+  - "Encoding consistency -- input vs output encoding across profile chains"
+  - "EDI/EDIFACT complexity -- EDIFACT message parsing and generation patterns"
+  - "API security -- HTTP agent authentication types, credential storage patterns"
+  - "Group organization -- profile distribution across path_of_group categories"
+  - "Response unit fan-out -- profiles with multiple output destinations"
+  - "Calculation node patterns -- intermediate computation architecture"
+  - "Cross-profile data flows -- file-based vs variable-based handoff patterns"

@@ -333,6 +333,52 @@ Concentrated in the Global region (15+ jobs) with regional variants in BRA, ITA,
 
 ---
 
+## Per-Job Architecture Detail
+
+This section provides a dedicated entry for every job in the project. Each entry includes a Purpose line, component count, connections used, and architectural notes. The topology UI reads the **Purpose** lines from this section.
+
+#### Global_Clean_Sales_Set
+
+**Purpose**: Master orchestrator that assembles the consolidated global sales dataset by calling 10 regional child jobs via tRunJob.
+
+**Component Count**: 12 | **Connections**: BigQuery | **Group**: Global
+
+Only orchestration job in the platform. Calls BIO_Clean_Sales_Set, VIT_Clean_Sales_Set, VDD_Clean_Sales_Set, VJP_Clean_Sales_Set, VUS_Clean_Sales_Set, NPL_Clean_Sales_Set, VDA_Clean_Sales_Set, Legacy_Clean_Sales_Set, Forecast_Sales_Set, and Raw_Sales_Set.
+
+#### BRA_VBR_RAW
+
+**Purpose**: Extracts raw transactional data (invoices, credit memos, customers, items, GL entries) from the Brazil MSSQL ERP and lands it in BigQuery raw-layer tables.
+
+**Component Count**: 38 | **Connections**: connection_BRA_VBR_MSSQL, BigQuery | **Group**: BRA
+
+Multi-stream extraction job with 5 sequential entity extractions chained via SUBJOB_OK.
+
+#### VIT_Clean_Sales_Set
+
+**Purpose**: Transforms Italian raw invoice data into the regional clean Sales_Set by enriching with fiscal periods, country master, and Salesforce account mappings.
+
+**Component Count**: 11 | **Connections**: BigQuery | **Group**: ITA
+
+Simple linear SUBJOB_OK chain: delete-then-insert pattern with tMap enrichment from 3 reference tables.
+
+#### GEN_BC_SalesInvoices
+
+**Purpose**: Extracts sales invoice data from Microsoft Business Central cloud via OData REST API with OAuth2 authentication and pagination handling.
+
+**Component Count**: 14 | **Connections**: REST API, BigQuery | **Group**: GENERIC
+
+Uses RUN_IF conditional branching for API pagination. OAuth2 token acquired in tPrejob phase via Azure AD.
+
+#### Salesforce_Budget_v8
+
+**Purpose**: Pushes consolidated budget figures from BigQuery to Salesforce CRM for commercial reporting and forecasting.
+
+**Component Count**: 8 | **Connections**: BigQuery, Salesforce | **Group**: Global
+
+Outbound CRM sync using tSalesforceOutput upsert. Part of the Phase E CRM synchronization tier.
+
+---
+
 ## Most Complex Jobs
 
 Seven jobs stand out for their structural complexity, measured by component count and control flow sophistication:

@@ -35,6 +35,7 @@ class ConversationMessage(Base):
     role: Mapped[str] = mapped_column(String(20))  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text)
     sources: Mapped[dict | None] = mapped_column(JSON)  # For assistant messages
+    image_data: Mapped[list | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE")

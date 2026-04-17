@@ -136,6 +136,7 @@ async def get_conversation(
                 role=m.role,
                 content=m.content,
                 sources=_deserialize_sources(m.sources) if m.sources else None,
+                image_data=m.image_data,
                 latency_ms=m.latency_ms,
                 created_at=m.created_at,
             )
@@ -230,6 +231,10 @@ async def send_message(
             raise HTTPException(403, "No access to this project")
         project_ids = [request.project_id]
 
+    # Auto-title from first user message if conversation has no title yet
+    if not conversation.title and not conversation.messages:
+        conversation.title = request.query[:80].strip()
+
     # Run conversational RAG pipeline
     response = await run_conversational_rag(
         conversation=conversation,
@@ -241,6 +246,7 @@ async def send_message(
         threshold=request.threshold,
         user_id=str(user.id),
         project_ids=project_ids,
+        images=request.images,
     )
 
     return response
@@ -283,6 +289,11 @@ async def send_message_stream(
             raise HTTPException(403, "No access to this project")
         project_ids = [request.project_id]
 
+    # Auto-title from first user message if conversation has no title yet
+    if not conversation.title and not conversation.messages:
+        conversation.title = request.query[:80].strip()
+        await db.flush()
+
     async def event_generator():
         try:
             async for event_type, data in run_conversational_rag_stream(
@@ -295,6 +306,7 @@ async def send_message_stream(
                 threshold=request.threshold,
                 user_id=str(user.id),
                 project_ids=project_ids,
+                images=request.images,
             ):
                 yield f"event: {event_type}\ndata: {data}\n\n"
         except Exception as e:

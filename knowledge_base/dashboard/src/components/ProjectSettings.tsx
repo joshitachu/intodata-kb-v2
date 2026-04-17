@@ -7,7 +7,7 @@ interface Props {
   onDeleted?: () => void;
 }
 
-const PLATFORMS = ["talend", "workato", "generic"];
+const PLATFORMS = ["talend", "workato", "lobster", "generic"];
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

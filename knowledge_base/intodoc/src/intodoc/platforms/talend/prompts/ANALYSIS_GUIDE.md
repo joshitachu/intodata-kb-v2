@@ -99,6 +99,46 @@ Also extract:
 - Schema enforcement: explicit type casting, length constraints
 - Missing validations: which data flows lack ANY validation
 
+### TRANSFORMATION_DETAIL
+
+For EVERY tMap component, produce a per-job transformation breakdown:
+
+1. **Column mapping table** (ALL columns, not just notable ones):
+
+   | Source | Expression | Target | Explanation |
+   |--------|-----------|--------|-------------|
+   | row1.customer_id | `row1.customer_id` | output.cust_id | Direct pass-through |
+   | Var.fiscalYear | `Var.fiscalYear` | output.fiscal_year | From var table lookup |
+   | (none) | `"EUR"` | output.currency | Hardcoded constant |
+
+2. **Var table trace**: For each Var table entry, document:
+   - Variable name
+   - Full expression
+   - Which input tables/rows it references
+   - Which output columns consume it (trace the chain: input -> Var -> output)
+
+3. **Join analysis**: For each tMap with multiple input tables:
+   - Main input table (first input)
+   - Lookup tables (subsequent inputs)
+   - Join type: INNER / LEFT OUTER / UNIQUE
+   - Join key columns (main.column = lookup.column)
+   - Lookup model: first match / last match / all matches
+
+4. **Filter/reject analysis**: For each output table with a filter expression:
+   - Filter expression (FULL)
+   - What rows are accepted vs rejected
+   - Whether a reject link exists and where rejected rows go
+
+5. **Function chain traces**: For complex expressions (3+ chained operations):
+   - Step-by-step trace from input to output
+   - Example: `row1.date -> Var.parsedDate (TalendDate.parseDate("MM/dd/yy", row1.date)) -> output.posting_date (Var.parsedDate)`
+   - Include all intermediate Var table entries in the chain
+
+For non-tMap transformations:
+- tJavaRow: document input fields, transformation logic, output fields
+- tFilterRow: document filter condition and which rows pass/fail
+- tAggregateRow: document group-by keys and aggregation functions
+
 ### BUSINESS_RULES
 
 Extract EVERY business rule with this format:
@@ -183,6 +223,7 @@ For each job, document:
 - tLogCatcher/tStatCatcher presence and what they capture
 - SUBJOB_ERROR connections: which subjobs have them, where errors route to
 - DIE_ON_CHILD_ERROR settings on tRunJob components
+- Per-component DIE_ON_ERROR settings: for each component in critical paths, document whether component-level failures propagate (true) or are silently swallowed (false/unset). Flag dangerous false settings on data-writing and API-calling components.
 - Try/catch patterns in tJava/tJavaRow code
 - Silent failures: subjobs with no error connection where failure would be invisible
 - tWarn/tDie usage: explicit error/warning raising
@@ -223,6 +264,7 @@ Also document:
 - File paths and directory patterns
 - Feature flags or environment-conditional behavior
 - tContextLoad usage: jobs that load context variables dynamically
+- For tContextLoad components: document the context source (file path, database table, or API endpoint), the file format (properties, CSV, XML), the column/key mapping, and whether the context source varies between environments.
 
 ### SCHEDULING
 

@@ -52,6 +52,7 @@
 | LLM for routing/expansion | **Routing removed** (heuristic); expansion disabled by default | Intent classifier eliminated (0 LLM calls). Query expansion `False` by default — re-enable via `.env` if quality > speed | 2026-02-23 |
 | Intent routing (v2) | LLM classifier with `summary` + `conversation_summary` actions | LLM naturally handles typos, rephrasing, multilingual. Conversation context ("N previous messages") is the key signal. Regex kept as fallback only when LLM unavailable | 2026-03-18 |
 | Qdrant named vectors | Always pass `using="dense"` to `query_points` | Collection has named vectors (dense + sparse); omitting `using` causes Qdrant 400 error | 2026-03-18 |
+| Hindsight memory | Project-scoped banks + tags + gating + distillation | Was flat Q&A storage; now intent-gated (skip chitchat/metadata), LLM-distilled (knowledge statements not raw Q&A), project-scoped with tags, observation consolidation. Zero response latency impact (all fire-and-forget) | 2026-04-14 |
 
 ## Code Patterns
 
