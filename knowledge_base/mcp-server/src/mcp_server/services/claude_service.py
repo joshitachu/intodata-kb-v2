@@ -867,7 +867,7 @@ class ClaudeService:
             for f in (staging_dir / "_preprocess").glob("*.md")
             if not f.name.startswith("_")  # exclude guide/ref bundles
         )
-        analysis_target_kb = max(5, min(40, total_preprocess_bytes // 2048))
+        analysis_target_kb = max(15, min(60, total_preprocess_bytes // 1024))
         logger.info(
             "Analysis target: %dKB (from %d bytes preprocessed data)",
             analysis_target_kb, total_preprocess_bytes,
@@ -875,12 +875,12 @@ class ClaudeService:
 
         # Depth tier scaling based on total jobs
         _BASE_DEPTH = {
-            "00_EXEC": 300, "01_OVERVIEW": 400, "02_ARCH": 600, "03_DATA": 600,
-            "04_BIZ": 800, "05_OPS": 800, "06_ENV": 400, "07_SEC": 400,
-            "08_PAT": 500, "09_RUN": 500, "10_ONBOARD": 600, "11_MIG": 700,
+            "00_EXEC": 600, "01_OVERVIEW": 800, "02_ARCH": 1400, "03_DATA": 1800,
+            "04_BIZ": 1600, "05_OPS": 1600, "06_ENV": 1000, "07_SEC": 1000,
+            "08_PAT": 1000, "09_RUN": 1000, "10_ONBOARD": 1000, "11_MIG": 1200,
         }
         if total_jobs < 50:
-            depth_multiplier, depth_tier = 0.6, "small"
+            depth_multiplier, depth_tier = 1.0, "small"
         elif total_jobs < config.large_project_threshold:
             depth_multiplier, depth_tier = 1.0, "medium"
         else:

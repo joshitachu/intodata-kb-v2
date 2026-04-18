@@ -3,6 +3,22 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-04-17
+
+### [Fix]: Remove depth regression — restore old 26-doc output volume in 12-doc structure
+
+- **Files changed**: `mcp-server/src/mcp_server/services/claude_service.py` (lines 870, 877-881, 883)
+- **Problem**: Docs generated recently are much shallower than ~1 month ago. Old system produced ~15,700 lines across 26 docs with no artificial depth constraints. New system added 0.6x multiplier for small projects, 5KB analysis floor, and low base depth targets (6,600 total) that act as ceilings.
+- **Root cause**: Over-constraining the pipeline: (1) 0.6x depth_multiplier for <50 job projects told Claude to write 40% less, (2) 5KB analysis_target floor starved Phase 2 agents, (3) base depth targets summed to only 42% of old output volume.
+- **Change**: Three fixes in `claude_service.py`:
+  1. Small-project depth_multiplier: 0.6 → 1.0 (line 883)
+  2. Analysis target: `max(5, min(40, bytes // 2048))` → `max(15, min(60, bytes // 1024))` (line 870)
+  3. _BASE_DEPTH totals: 6,600 → ~14,000 lines — each doc target calibrated to absorb the old docs merged into it (line 877-881)
+- **Why this approach**: The old system let Claude write naturally without caps. The 12-doc consolidation is good, but depth targets must match the combined volume of the old docs each new doc absorbed. Raising floor/ceiling/divisor ensures Phase 2 always has room.
+- **Verification**: Pending — re-generate docs for a small project and compare file sizes/line counts.
+
+---
+
 ## Session: 2026-04-16
 
 ### [Feature]: Deepen documentation to agent-level quality — transformation detail

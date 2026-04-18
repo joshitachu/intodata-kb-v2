@@ -1,5 +1,22 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-04-17
+
+### [Fix]: Hindsight memory — user & project banks not populating
+
+- **Files changed**:
+  - `backend/src/memory/hindsight_client.py` — Fixed `decide_retention()` logic, removed `intent` param
+  - `backend/src/generation/rag_chain.py` (line 257) — Pass `action`, `query_type`, `project_ids` to retain call
+  - `backend/src/api/routes/query.py` (line 318) — Pass `action`, `query_type`, `project_ids` to retain call
+  - `backend/src/generation/conversational_rag.py` (lines 850, 1003) — Removed unused `intent="qa"` kwarg
+  - `backend/src/config.py` — Changed `hindsight_distill_before_retain` default to `False`
+  - `docker-compose.yml` — Increased `HINDSIGHT_API_LLM_TIMEOUT` from 180 to 300
+- **Problem**: User and project memory banks always empty (0 nodes). Every query classified as metadata and routed to QUALITY_ONLY. Non-conversational paths missing `action`/`query_type`/`project_ids` params. Quality bank writes timing out due to slow distillation LLM.
+- **Root cause**: (1) `decide_retention()` unconditionally returned QUALITY_ONLY for action=="metadata" even when search results existed. (2) `rag_chain.py` and `query.py` only passed `intent=` (unused) but not `action`/`query_type`/`project_ids`. (3) Distillation via gemma3:4b was slow and caused timeouts.
+- **Change**: (1) Changed `decide_retention()` so metadata queries WITH search results get FULL retention. (2) Fixed all 4 retain call sites to pass correct params. (3) Removed unused `intent` param from `retain_interaction` and `_retain_quality_bank`. (4) Disabled distillation (uses structured fallback instead). (5) Increased Hindsight timeout to 300s.
+- **Why this approach**: The LLM classifier over-classifies queries as metadata/hybrid, but many of these queries DO get real document results via hybrid enrichment. Rather than fixing the classifier, we fix the retention gate to consider actual results. Disabling distillation eliminates the main source of timeouts.
+- **Verification**: Rebuild backend container and test end-to-end (check logs for "full" retention, check bank stats via curl)
+
 ## Session: 2026-04-15
 
 ### [Feature]: Phase 5 — Memory Dashboard (OpenBrain Behavioral Architecture)

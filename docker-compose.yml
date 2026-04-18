@@ -38,13 +38,13 @@ services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:latest
     ports:
-      - "127.0.0.1:8888:8888"
-      - "127.0.0.1:9999:9999"
+      - "0.0.0.0:8888:8888"
+      - "0.0.0.0:9999:9999"
     environment:
       HINDSIGHT_API_LLM_PROVIDER: ollama
       HINDSIGHT_API_LLM_BASE_URL: http://host.docker.internal:11434/v1
       HINDSIGHT_API_LLM_MODEL: gemma3:4b
-      HINDSIGHT_API_LLM_TIMEOUT: "180"
+      HINDSIGHT_API_LLM_TIMEOUT: "300"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

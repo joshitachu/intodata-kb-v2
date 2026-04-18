@@ -261,7 +261,9 @@ async def run_rag_query(
         sources_used=source_names,
         search_result_count=len(document_sources),
         latency_ms=latency_ms,
-        intent=analysis.action.value,
+        action=analysis.action.value,
+        query_type=analysis.query_type.value,
+        project_ids=project_ids,
     ))
 
     # 3. Log the query

@@ -847,7 +847,7 @@ async def run_conversational_rag(
             conversation_id=conversation.id,
             search_result_count=len(document_sources),
             latency_ms=latency_ms,
-            intent="qa",
+
             action=ctx.analysis.action.value if ctx.analysis else "search",
             query_type=ctx.analysis.query_type.value if ctx.analysis else "qa",
             project_ids=project_ids,
@@ -1000,7 +1000,7 @@ async def run_conversational_rag_stream(
             conversation_id=conversation.id,
             search_result_count=len(ctx.document_sources),
             latency_ms=latency_ms,
-            intent="qa",
+
             action=ctx.analysis.action.value if ctx.analysis else "search",
             query_type=ctx.analysis.query_type.value if ctx.analysis else "qa",
             project_ids=project_ids,

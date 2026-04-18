@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Phase 5 Memory Dashboard complete (2026-04-15). Admin dashboard at `/admin/hindsight` with 3 tabs informed by OpenBrain Behavioral Architecture. Backend GET endpoints + frontend BFF proxies + full dashboard UI.
-**Last session**: 2026-04-15
-**Last completed**: Phase 5 Memory Dashboard — 4 backend GET endpoints (`/memory/banks`, `/memory/banks/{id}/memories`, `/memory/banks/{id}/reflect`, `/memory/recent-captures`), 4 BFF proxy routes, Sidebar "Memory" link with Brain icon, full dashboard page with Insight Pipeline (summary cards + abstraction funnel + recent captures), Memory Banks (list → detail with accordion), Reflect (pattern analysis). Bug fix: `acreate_mental_model` → `client.mental_models.create_mental_model`.
+**Status**: Hindsight memory retention fix deployed (2026-04-17). User & project banks should now populate. Needs rebuild + verification.
+**Last session**: 2026-04-17
+**Last completed**: Fixed Hindsight memory retention — `decide_retention()` now allows FULL retention for metadata queries with search results, all retain call sites pass `action`/`query_type`/`project_ids`, distillation disabled (structured fallback), Hindsight timeout increased to 300s.
 
 ## What's Done
 
