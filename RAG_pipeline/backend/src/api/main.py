@@ -12,6 +12,8 @@ from src.config import settings
 from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
+from src.api.routes import onboarding as onboarding_routes
+from src.api.routes import notifications as notifications_routes
 
 logger = logging.getLogger(__name__)
 
@@ -131,3 +133,5 @@ app.include_router(benchmark.router, prefix="/api/v1")
 app.include_router(usage.router, prefix="/api/v1")
 app.include_router(projects_api.router, prefix="/api/v1")
 app.include_router(memory.router, prefix="/api/v1")
+app.include_router(onboarding_routes.router, prefix="/api/v1")
+app.include_router(notifications_routes.router, prefix="/api/v1")

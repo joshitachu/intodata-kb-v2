@@ -118,7 +118,7 @@ export function ChatInput({
   const canSend = message.trim().length > 0 && !isLoading && !disabled;
 
   return (
-    <div className="px-6 pb-5 pt-2 w-full">
+    <div className="px-6 pb-5 pt-2 w-full" data-tour="chat-input">
       <form onSubmit={handleSubmit}>
         <div
           className={cn(

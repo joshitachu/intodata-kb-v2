@@ -9,10 +9,13 @@ from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from sqlalchemy import select
+
 from src.api.dependencies import CurrentUser, DBSession
 from src.auth.security import decode_token
 from src.auth.service import AuthService
 from src.config import settings
+from src.db.models import UserOnboarding
 from src.rbac.permissions import get_user_permissions
 from src.services.audit_service import AuditService
 
@@ -67,6 +70,19 @@ class UserResponse(BaseModel):
     is_superadmin: bool
     roles: list[str]
     permissions: list[str] = []
+    onboarding_completed: bool = True
+    tour_completed: bool = True
+
+
+async def _onboarding_flags(db, user_id: int) -> tuple[bool, bool]:
+    """Return (wizard_completed, tour_completed). Missing row = completed."""
+    result = await db.execute(
+        select(UserOnboarding).where(UserOnboarding.user_id == user_id)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return True, True
+    return row.wizard_completed, row.tour_completed
 
 
 @router.post("/login")
@@ -89,6 +105,8 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
         ip_address=request.client.host if request.client else None,
     )
 
+    onboarding_completed, tour_completed = await _onboarding_flags(db, user.id)
+
     return {
         "message": "Login successful",
         "user": UserResponse(
@@ -99,6 +117,8 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
             is_superadmin=user.is_superadmin,
             roles=[r.name for r in user.roles],
             permissions=sorted(get_user_permissions(user)),
+            onboarding_completed=onboarding_completed,
+            tour_completed=tour_completed,
         ),
     }
 
@@ -132,7 +152,8 @@ async def refresh(request: Request, db: DBSession, response: Response):
 
 
 @router.get("/me")
-async def me(user: CurrentUser):
+async def me(user: CurrentUser, db: DBSession):
+    onboarding_completed, tour_completed = await _onboarding_flags(db, user.id)
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -141,4 +162,6 @@ async def me(user: CurrentUser):
         is_superadmin=user.is_superadmin,
         roles=[r.name for r in user.roles],
         permissions=sorted(get_user_permissions(user)),
+        onboarding_completed=onboarding_completed,
+        tour_completed=tour_completed,
     )

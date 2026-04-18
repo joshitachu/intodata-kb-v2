@@ -15,7 +15,7 @@ from src.api.dependencies import AdminUser, AuditViewer, DBSession, ManagerUser,
 from src.api.routes.auth import limiter
 from src.auth.security import hash_password
 from src.auth.service import AuthService
-from src.db.models import AuditLog, Permission, ProjectAssignment, QueryUsage, Role, User
+from src.db.models import AuditLog, Permission, ProjectAssignment, QueryUsage, Role, User, UserOnboarding
 from src.services.audit_service import AuditService
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,10 @@ async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
         user.roles = []
 
     db.add(user)
+    await db.flush()
+
+    # Create onboarding row so the wizard shows on first login
+    db.add(UserOnboarding(user_id=user.id))
     await db.flush()
 
     return UserResponse(

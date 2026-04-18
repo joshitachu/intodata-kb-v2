@@ -12,7 +12,7 @@ interface ModeToggleProps {
 
 export function ModeToggle({ mode, onModeChange }: ModeToggleProps) {
   return (
-    <div className="inline-flex rounded-lg border border-input bg-background p-0.5">
+    <div className="inline-flex rounded-lg border border-input bg-background p-0.5" data-tour="mode-toggle">
       <button
         type="button"
         onClick={() => onModeChange("chat")}

@@ -14,6 +14,7 @@ from src.db.models.ingestion_job import IngestionJob
 from src.db.models.conversation import Conversation, ConversationMessage
 from src.db.models.query_usage import QueryUsage
 from src.db.models.benchmark import BenchmarkRun
+from src.db.models.onboarding import UserOnboarding, Notification
 
 __all__ = [
     "User",
@@ -31,4 +32,6 @@ __all__ = [
     "ConversationMessage",
     "QueryUsage",
     "BenchmarkRun",
+    "UserOnboarding",
+    "Notification",
 ]

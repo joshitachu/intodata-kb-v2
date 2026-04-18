@@ -21,7 +21,7 @@ export default function DocsPage() {
   const selectedDocInfo = data?.docs.find((d) => d.name === selectedDoc);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-tour="project-docs-page">
       {/* Page header */}
       <div className="p-4 border-b">
         <div className="flex items-center gap-2 mb-3">

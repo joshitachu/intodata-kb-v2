@@ -15,6 +15,8 @@ interface AuthUser {
   is_superadmin: boolean;
   roles: string[];
   permissions: string[];
+  onboarding_completed: boolean;
+  tour_completed: boolean;
 }
 
 interface AuthContextValue {

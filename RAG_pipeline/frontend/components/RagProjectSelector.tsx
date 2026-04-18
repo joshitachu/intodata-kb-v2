@@ -29,7 +29,7 @@ export function RagProjectSelector() {
   }
 
   return (
-    <div className="relative">
+    <div className="relative" data-tour="project-selector">
       <select
         value={selectedProject}
         onChange={(e) => setSelectedProject(e.target.value)}

@@ -720,7 +720,7 @@ function TopologyContent() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-tour="topology-page">
       {/* Header */}
       <div className="flex items-center gap-4 px-4 py-3 border-b">
         <h1 className="text-lg font-semibold">Project Topology</h1>

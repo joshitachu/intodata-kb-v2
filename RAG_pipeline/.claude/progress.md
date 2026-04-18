@@ -137,7 +137,38 @@
 - [x] Docker: JWT_SECRET_KEY + ADMIN_DEFAULT_PASSWORD env vars in docker-compose.yml
 - [x] Default admin creds: admin/admin (set via ADMIN_DEFAULT_PASSWORD env var)
 
-## Phase 6 — Future
+## Phase 6.1 — Azure-style Provisioning + Data-Driven Config (COMPLETE — 2026-04-17)
+
+- [x] Dropped Tenant schema — switched to one-VPS-per-client model
+- [x] Added workspace_name to UserOnboarding + migration 014 rewritten
+- [x] New GET /onboarding/config with status=available|coming_soon
+- [x] New PUT /onboarding/step/workspace endpoint
+- [x] Frontend: WorkspaceStep component (step 2 of 6)
+- [x] Frontend: Platform + Tool selects fetch from config API with badges
+- [x] Frontend: ProvisioningStep replaces SetupLoadingStep (staged animation + summary card)
+- [x] Tour copy updated for empty states
+- [x] FALLBACK_CONFIG in types for graceful degradation
+
+## Phase 6 — Enterprise Onboarding & Product Tour (COMPLETE — 2026-04-17)
+
+- [x] SQLAlchemy models: UserOnboarding, Notification, Tenant (schema-only)
+- [x] Alembic migration 014 (user_onboarding, notifications, tenants, users.tenant_id)
+- [x] Backend API: onboarding routes (status, step saves, complete, setup-status, tour, reset)
+- [x] Backend API: notifications routes (list, unread-count, read, read-all)
+- [x] /auth/me + /auth/login extended with onboarding_completed + tour_completed
+- [x] Admin user creation seeds UserOnboarding row
+- [x] Frontend: OnboardingContext + useOnboarding / useNotifications hooks + zod types
+- [x] Frontend: 5-step wizard (Welcome, Platforms, Tools, Source, Loading)
+- [x] Frontend: OnboardingGuard mounted in Layout
+- [x] Frontend: driver.js ProductTour with multi-page router navigation
+- [x] Frontend: NotificationBell + dropdown in Sidebar (expanded + collapsed)
+- [x] Frontend: Replay Tour button in Sidebar
+- [x] data-tour attributes on ChatInput, ModeToggle, RagProjectSelector, pages
+- [ ] Wire real ZIP upload for SourceUploadStep (currently records filename only)
+- [ ] Replace `run_background_setup` stub with real ingest pipeline
+- [ ] Wire Tenant / subdomain routing into request flow
+
+## Phase 7 — Future
 
 - [ ] Integration Agent (Slack, SharePoint, etc.) — deferred until company tooling known
 - [ ] E2E testing with real Docker services

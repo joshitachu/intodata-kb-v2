@@ -21,6 +21,7 @@ import {
   FlaskConical,
   Brain,
   HelpCircle,
+  PlayCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -28,6 +29,8 @@ import { usePermissions } from "@/hooks/usePermissions";
 import { useChatContext } from "@/contexts/ChatContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { UserGuideDialog } from "@/components/UserGuideDialog";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import type { ConversationResponse } from "@/types";
 
 const SIDEBAR_KEY = "sidebar-expanded";
@@ -93,6 +96,7 @@ export function Sidebar() {
   const [expanded, setExpanded] = useLocalExpand();
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  const { startTour } = useOnboardingContext();
 
   const isChatPage = pathname === "/";
 
@@ -185,16 +189,19 @@ export function Sidebar() {
           </button>
         </nav>
 
-        {/* Logout */}
-        <div className="p-2 border-t flex flex-col items-center">
+        {/* Bottom: bell + logout */}
+        <div className="p-2 border-t flex flex-col items-center gap-1">
           {user && (
-            <button
-              onClick={logout}
-              className="p-1.5 text-muted-foreground hover:text-foreground"
-              title="Sign out"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </button>
+            <>
+              <NotificationBell />
+              <button
+                onClick={logout}
+                className="p-1.5 text-muted-foreground hover:text-foreground"
+                title="Sign out"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
+            </>
           )}
         </div>
 
@@ -218,7 +225,7 @@ export function Sidebar() {
       </div>
 
       {/* Nav items */}
-      <nav className="px-2 py-1 space-y-0.5">
+      <nav className="px-2 py-1 space-y-0.5" data-tour="sidebar-nav">
         <button
           onClick={handleNewChat}
           className={cn(
@@ -289,6 +296,13 @@ export function Sidebar() {
           <HelpCircle className="h-4 w-4" />
           User Guide
         </button>
+        <button
+          onClick={() => startTour()}
+          className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <PlayCircle className="h-4 w-4" />
+          Replay Tour
+        </button>
       </nav>
 
       <div className="mx-3 my-2 border-t" />
@@ -319,10 +333,11 @@ export function Sidebar() {
       {/* Footer: user info + logout */}
       <div className="p-2 border-t">
         {user && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground truncate">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground truncate flex-1">
               {user.username}
             </span>
+            <NotificationBell />
             <button
               onClick={logout}
               className="p-1 text-muted-foreground hover:text-foreground"

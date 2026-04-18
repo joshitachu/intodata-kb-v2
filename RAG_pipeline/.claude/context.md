@@ -1,8 +1,8 @@
 # Current State
 
-**Status**: Phase 5 Memory Dashboard complete (2026-04-15). Admin dashboard at `/admin/hindsight` with 3 tabs informed by OpenBrain Behavioral Architecture. Backend GET endpoints + frontend BFF proxies + full dashboard UI.
-**Last session**: 2026-04-15
-**Last completed**: Phase 5 Memory Dashboard — 4 backend GET endpoints (`/memory/banks`, `/memory/banks/{id}/memories`, `/memory/banks/{id}/reflect`, `/memory/recent-captures`), 4 BFF proxy routes, Sidebar "Memory" link with Brain icon, full dashboard page with Insight Pipeline (summary cards + abstraction funnel + recent captures), Memory Banks (list → detail with accordion), Reflect (pattern analysis). Bug fix: `acreate_mental_model` → `client.mental_models.create_mental_model`.
+**Status**: Phase 6.1 Azure-style provisioning + data-driven wizard config (2026-04-17). Wizard is now 6 steps with workspace naming and a staged provisioning animation; platform/tool options are data-driven via `GET /onboarding/config` and coming-soon tools render with badges. Tenant table dropped — switched to one-VPS-per-client deployment model.
+**Last session**: 2026-04-17
+**Last completed**: Phase 6.1 refactor — migration 014 rewritten to drop tenants + add `workspace_name`. New `GET /onboarding/config` endpoint + `PUT /onboarding/step/workspace` endpoint. Frontend: new `WorkspaceStep`, new `ProvisioningStep` (replaces `SetupLoadingStep`) with staged checklist + summary card, Platform/Tool steps now fetch options from backend config, coming-soon items show "COMING SOON" badge. Background setup flow is still stubbed (3s sleep + notification) — real ingest pipeline integration is TODO.
 
 ## What's Done
 
@@ -96,10 +96,14 @@ cd frontend && npm run dev    # http://localhost:3000
 
 - [x] RBAC: Project-scoped document access (2026-03-12)
 - [x] Metadata-aware RAG: "Ask Anything" mode (2026-03-12)
-- [ ] Deploy: `docker compose up -d --build backend frontend` + `alembic upgrade head`
+- [ ] Deploy onboarding: `docker compose up -d --build backend frontend` then `docker exec intodata-kb-v2-backend-1 alembic upgrade head` (applies 014 — creates user_onboarding + notifications tables)
+- [ ] Wire `run_background_setup` in `onboarding_service.py` to the real ingest pipeline (currently stubbed with 3s sleep)
+- [ ] Wire real file upload for wizard SourceUploadStep (`source_filename` is recorded but ZIP bytes are not yet uploaded)
+- [ ] Flip coming-soon tools to `"available"` in `_TOOL_CATEGORIES` (api/routes/onboarding.py) as each integration lands
+- [ ] Render workspace_name in the app chrome (sidebar header / page title) once onboarding ships
+- [ ] Per-deployment env vars for tenant branding (subdomain, logo, color) — one VPS per client
 - [ ] Run Qdrant migration: `python scripts/migrate_qdrant_remove_public.py --apply`
-- [ ] Verify: metadata queries return project/doc data from PostgreSQL
-- [ ] Verify: non-admin user sees only their project docs, admin sees all
+- [ ] Verify: new user login → wizard → tour; existing user → no wizard
 - [ ] Phase 2: Workato scanner plugin
 - [ ] Frontend: document selector for chat-with-doc
 

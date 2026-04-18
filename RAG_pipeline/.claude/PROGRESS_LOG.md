@@ -1,5 +1,81 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-04-17
+
+### [Refactor]: Phase 6.1 — Azure-style provisioning + data-driven wizard config
+
+- **Problem**: The wizard felt lightweight for an enterprise sale. Wanted an Azure portal-style environment provisioning experience — workspace naming, staged progress animation with summary card, all integration options visible (some marked "Coming soon"). Also: platform/tool options were hardcoded in both the backend validator and frontend `PLATFORM_OPTIONS` / `COMM_TOOL_OPTIONS` arrays, making it painful to add new options for non-integration teams (data, DevOps) as the product expands. Tenant table was shipped schema-only last session but we've since decided on one-VPS-per-client (tenant config → env vars), so the table is dead weight.
+- **Changes (backend)**:
+  - `db/models/onboarding.py` — added `workspace_name: String(200)` to `UserOnboarding`. Removed `Tenant` class. Updated module docstring to document the one-VPS-per-client model
+  - `db/models/user.py` — reverted `users.tenant_id` column
+  - `db/models/__init__.py` — dropped `Tenant` export
+  - `alembic/versions/014_add_onboarding_and_notifications.py` — rewrote to create only `user_onboarding` + `notifications` (with `workspace_name` column). Dropped all tenants/tenant_id DDL. Kept revision ID `014`
+  - `services/onboarding_service.py` — added `"workspace"` to `VALID_STEPS`; new `workspace` branch in `save_step()` trims + length-checks name, sets `wizard_current_step=1`. Shifted other step indices: platforms→2, comm_tools→3, source→4. `complete_wizard` sets `wizard_current_step=5`. Removed hard whitelist on `comm_tools` ids (now comes from data-driven config)
+  - `api/routes/onboarding.py` — new `GET /onboarding/config` returns `OnboardingConfigResponse` (platforms + tool_categories with `status: "available" | "coming_soon"`). New `PUT /onboarding/step/workspace` endpoint. `OnboardingStatusResponse` gained `workspace_name`. `_PLATFORM_OPTIONS` + `_TOOL_CATEGORIES` module-level constants — adding an option is now one code edit, not two
+- **Changes (frontend)**:
+  - `types/onboarding.ts` — `Platform` / `CommTool` are plain `string` types now (not zod enums) so new options shipped via config don't need a client redeploy. New `OptionItemSchema`, `ToolCategorySchema`, `OnboardingConfigSchema`, `FALLBACK_CONFIG` (kept in sync with backend constants — graceful degradation if `/onboarding/config` fails mid-wizard). Removed `PLATFORM_OPTIONS` + `COMM_TOOL_OPTIONS` arrays (no longer referenced)
+  - `hooks/useOnboarding.ts` — new `useOnboardingConfig()` with `staleTime: Infinity` + `initialData: FALLBACK_CONFIG`. New `useSaveWorkspace()` mutation
+  - `app/api/onboarding/config/route.ts` — new BFF proxy
+  - `components/onboarding/steps/WorkspaceStep.tsx` — new step 2 component (workspace name input with autofocus, suggested default = username)
+  - `components/onboarding/steps/ProvisioningStep.tsx` — new (replaces `SetupLoadingStep.tsx` which was deleted). Azure-style: staged checklist animation (Creating workspace → Configuring KB → Setting up integrations → Preparing environment), optional "Ingesting your source" row driven by `useSetupStatusPolling`, summary card with workspace/platforms/tools labels, "Take the tour" button revealed after animation completes. Minimum perceived effort ≈ 5s even when source upload is skipped
+  - `components/onboarding/steps/PlatformSelectStep.tsx` + `CommToolSelectStep.tsx` — rewrote to consume `useOnboardingConfig()`. Options with `status: "coming_soon"` render with reduced opacity + an inline "COMING SOON" badge but remain selectable (preference is saved to backend). Comm-tool step now renders category headings ("Communication", "Ticketing & Docs")
+  - `components/onboarding/OnboardingWizard.tsx` — 6 steps (was 5). Added Workspace at index 1, shifted others. Passes `workspaceName` + selected IDs into `ProvisioningStep` for the summary card
+  - `components/onboarding/steps/WelcomeStep.tsx` — added "Name your workspace" bullet to the list of things to expect
+  - `components/tour/tourSteps.ts` — reworded documents/docs/topology tour steps to handle empty states gracefully ("will appear here" / "once your codebase is scanned")
+- **Verification**: `tsc --noEmit` exit 0. Backend `from src.api.main import app` clean — 69 routes, 15 onboarding/notification. `/api/v1/onboarding/config` + `/api/v1/onboarding/step/workspace` present. Tenant removed from exports.
+- **Notes**:
+  - Migration 014 has NOT been applied yet (local backend container image is stale). Rebuild with `docker compose up -d --build backend && docker exec intodata-kb-v2-backend-1 alembic upgrade head`
+  - The "Coming soon" statuses currently mark every comm tool (slack/teams/jira/confluence). When integration wiring lands, flip them to `"available"` one at a time in `_TOOL_CATEGORIES`
+  - Adding a new platform: (1) add to `_PLATFORM_OPTIONS` in `src/api/routes/onboarding.py`, (2) add id to `VALID_PLATFORMS` in `src/services/onboarding_service.py`, (3) add to `FALLBACK_CONFIG.platforms` in `types/onboarding.ts`. No frontend component changes needed.
+  - Adding a new tool category: extend `_TOOL_CATEGORIES` — comm_tools validation no longer rejects unknown ids
+
+### [Feature]: Phase 6 — Enterprise Onboarding Wizard + Product Tour + Notifications
+
+- **Problem**: Platform needed a polished first-login experience to productize as a sellable enterprise SaaS. New users dropped into an empty app with no guidance. No way for the app to signal async events (e.g. "your source has been ingested") back to the user.
+- **Files added (backend)**:
+  - `backend/src/db/models/onboarding.py` — `UserOnboarding`, `Notification`, `Tenant` SQLAlchemy models
+  - `backend/alembic/versions/014_add_onboarding_and_notifications.py` — creates `user_onboarding`, `notifications`, `tenants`; adds nullable `users.tenant_id` FK
+  - `backend/src/services/onboarding_service.py` — step validation, lazy row creation, `run_background_setup` stub (marks complete + emits notification after 3s sleep — real ingest wiring is TODO)
+  - `backend/src/services/notification_service.py` — create / list / unread-count / mark-read / mark-all-read
+  - `backend/src/api/routes/onboarding.py` — 9 endpoints (status, 3 step saves, complete, setup-status, tour/complete, tour/step, reset)
+  - `backend/src/api/routes/notifications.py` — 4 endpoints (list, unread-count, read, read-all)
+- **Files changed (backend)**:
+  - `backend/src/db/models/__init__.py` — export new models
+  - `backend/src/db/models/user.py` — added `tenant_id: Mapped[int | None]` nullable FK to tenants
+  - `backend/src/api/main.py` — registered `onboarding_routes` and `notifications_routes` under `/api/v1`
+  - `backend/src/api/routes/auth.py` — `UserResponse` gained `onboarding_completed: bool` and `tour_completed: bool`; `/auth/me` and `/auth/login` populate both from `user_onboarding` via `_onboarding_flags()` helper (no row = true/true, grandfathering existing users)
+  - `backend/src/api/routes/admin.py` — `POST /admin/users` now also creates a `UserOnboarding` row so the wizard shows for newly-provisioned users
+- **Files added (frontend)**:
+  - `frontend/types/onboarding.ts` — zod schemas + `PLATFORM_OPTIONS` / `COMM_TOOL_OPTIONS` metadata
+  - `frontend/contexts/OnboardingContext.tsx` — wraps `useOnboardingStatus` and exposes `tourActive` + `startTour()` / `stopTour()` for the replay button
+  - `frontend/hooks/useOnboarding.ts` — react-query wrappers (status, step saves, complete, setup-status polling, tour complete/step)
+  - `frontend/hooks/useNotifications.ts` — react-query wrappers (list, unread-count with 30s refetch, mark-read, mark-all-read)
+  - `frontend/components/onboarding/{OnboardingWizard,OnboardingGuard,WizardProgress}.tsx`
+  - `frontend/components/onboarding/steps/{WelcomeStep,PlatformSelectStep,CommToolSelectStep,SourceUploadStep,SetupLoadingStep}.tsx`
+  - `frontend/components/tour/{ProductTour.tsx,tourSteps.ts}` — driver.js wrapper with multi-page router.push() navigation between steps
+  - `frontend/components/notifications/{NotificationBell,NotificationDropdown}.tsx`
+  - 9 Next.js BFF proxy routes under `frontend/app/api/onboarding/*` and `frontend/app/api/notifications/*`
+- **Files changed (frontend)**:
+  - `frontend/package.json` — added `driver.js` dependency (5KB gzipped)
+  - `frontend/app/providers.tsx` — wrap `AuthProvider` children with `OnboardingProvider`
+  - `frontend/components/Layout.tsx` — wrap app with `<OnboardingGuard>`, mount `<ProductTour />` alongside
+  - `frontend/components/Sidebar.tsx` — added `data-tour="sidebar-nav"` on nav, `NotificationBell` in footer (both expanded + collapsed), "Replay Tour" button
+  - `frontend/components/AuthProvider.tsx`, `frontend/hooks/useAuth.ts` — `AuthUser` extended with `onboarding_completed` + `tour_completed`
+  - `data-tour` attributes added to: `ChatInput`, `ModeToggle`, `RagProjectSelector`, `app/documents/page.tsx`, `app/docs/page.tsx`, `app/topology/page.tsx`
+- **Why this approach**:
+  - Lazy row creation for existing users: `GET /onboarding/status` returns `wizard_completed=true` when no row exists, so existing users never see the wizard. Admin `POST /admin/users` creates a row up-front so new users do see it. Admin `POST /onboarding/reset` wipes a row to force-show the wizard again.
+  - driver.js (vs react-joyride) for the tour — 5KB vs 35KB, clean TS API, works with Next.js App Router DOM targeting. `onNextClick` / `onPrevClick` hooks handle `router.push()` → `setTimeout(d.moveNext, 350)` to let the next page mount before the spotlight advances.
+  - `Tenant` model + `users.tenant_id` shipped as schema-only foundation — wiring into request flow is deferred until multi-tenant subdomain routing is needed.
+  - Background setup uses FastAPI `BackgroundTasks` + `async_session_factory` to get a fresh session outside the request scope. Current implementation is a stub (`asyncio.sleep(3)`); real ingest pipeline wiring is tracked in `context.md` next-steps.
+- **Verification**:
+  - `.venv/bin/python -c "from src.api.main import app"` — imports clean, 67 routes registered (13 new for onboarding + notifications)
+  - `./node_modules/.bin/tsc --noEmit` — exit 0, no TS errors
+  - Migration not yet applied — running backend container image is stale (has through 013). Rebuild with `docker compose up -d --build backend` then `docker exec intodata-kb-v2-backend-1 alembic upgrade head`.
+- **Gotchas / open items**:
+  - SourceUploadStep records `source_filename` but doesn't actually upload the ZIP bytes — needs file-upload endpoint wiring.
+  - `run_background_setup` is a stub — real scanner + ingest must replace the `asyncio.sleep(3)`.
+  - Tour targets elements by `data-tour` attribute — if a target isn't mounted (e.g. sidebar collapsed and nav hidden), driver.js falls back to showing the popover centered.
+
 ## Session: 2026-04-15
 
 ### [Feature]: Phase 5 — Memory Dashboard (OpenBrain Behavioral Architecture)

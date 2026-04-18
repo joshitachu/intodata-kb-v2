@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface AuthUser {
   id: number;
@@ -11,6 +12,8 @@ interface AuthUser {
   is_superadmin: boolean;
   roles: string[];
   permissions: string[];
+  onboarding_completed: boolean;
+  tour_completed: boolean;
 }
 
 interface UseAuthReturn {
@@ -28,6 +31,7 @@ export function useAuth(): UseAuthReturn {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const fetchUser = useCallback(async () => {
     try {
@@ -45,17 +49,24 @@ export function useAuth(): UseAuthReturn {
     }
   }, []);
 
-  const loginAs = useCallback((u: AuthUser) => {
-    setUser(u);
-    setIsLoading(false);
-  }, []);
+  const loginAs = useCallback(
+    (u: AuthUser) => {
+      // Drop any cache belonging to the previous session so onboarding status,
+      // notifications, conversations etc. refetch against the new user.
+      queryClient.clear();
+      setUser(u);
+      setIsLoading(false);
+    },
+    [queryClient],
+  );
 
   const logout = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
+    queryClient.clear();
     router.push("/login");
     router.refresh();
-  }, [router]);
+  }, [router, queryClient]);
 
   // Fetch user on mount
   useEffect(() => {

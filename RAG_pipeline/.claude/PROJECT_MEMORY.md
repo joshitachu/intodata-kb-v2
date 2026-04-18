@@ -53,6 +53,13 @@
 | Intent routing (v2) | LLM classifier with `summary` + `conversation_summary` actions | LLM naturally handles typos, rephrasing, multilingual. Conversation context ("N previous messages") is the key signal. Regex kept as fallback only when LLM unavailable | 2026-03-18 |
 | Qdrant named vectors | Always pass `using="dense"` to `query_points` | Collection has named vectors (dense + sparse); omitting `using` causes Qdrant 400 error | 2026-03-18 |
 | Hindsight memory | Project-scoped banks + tags + gating + distillation | Was flat Q&A storage; now intent-gated (skip chitchat/metadata), LLM-distilled (knowledge statements not raw Q&A), project-scoped with tags, observation consolidation. Zero response latency impact (all fire-and-forget) | 2026-04-14 |
+| Onboarding row strategy | Lazy-create only for net-new users (via `POST /admin/users`), grandfather existing users | Existing users shouldn't see a wizard on their next login. The alternative — lazy creation on first `/onboarding/status` — can't distinguish new from existing. Admin creation seeds the row so the wizard shows; admin `POST /onboarding/reset` wipes it to re-show | 2026-04-17 |
+| Product tour library | driver.js (not react-joyride) | 5KB gzipped vs 35KB. Clean TS API, framework-agnostic. Multi-page navigation via `onNextClick` → `router.push()` → `setTimeout(d.moveNext, 350)` lets the next page mount before the spotlight advances | 2026-04-17 |
+| Tenant multi-tenancy | One VPS per client — tenant config in env vars per deployment | Dropped the earlier Tenant DB table (schema-only). Deploying one VPS per client keeps tenants fully isolated; branding/subdomain/feature-flags live in env vars per deployment. No shared tenants table needed | 2026-04-17 |
+| Wizard options | Data-driven via `GET /onboarding/config` (not hardcoded) | Integration teams are market #1 but platform expands to data/DevOps teams. Options as config lets us add new platforms/tools without touching React. Backend serves list with `status: available \| coming_soon`; coming-soon items are greyed but selectable as preference | 2026-04-17 |
+| Wizard structure | 6-step Azure-style provisioning (Welcome → Workspace → Platforms → Tools → Source → Provisioning) | Needed enterprise-sellable feel — workspace naming up front, staged progress animation with summary card ("Creating workspace... Configuring KB... Setting up integrations... Preparing environment"), ~5s min perceived effort even when source is skipped | 2026-04-17 |
+| Wizard graceful degradation | `FALLBACK_CONFIG` in `types/onboarding.ts` mirrors backend constants | If `/onboarding/config` fails mid-wizard the user still sees a working option list. Keep in sync with `_PLATFORM_OPTIONS` + `_TOOL_CATEGORIES` in `api/routes/onboarding.py` | 2026-04-17 |
+| Notification architecture | Server-side `notifications` table, 30s client polling for unread count | WebSocket infra would be overkill for the current notification volume (setup-complete, future: invites, role changes). Polling unread-count is lightweight; full list is fetched on dropdown open | 2026-04-17 |
 
 ## Code Patterns
 
@@ -65,6 +72,8 @@
 
 | Task | Date | Notes |
 |------|------|-------|
+| Enterprise Onboarding Wizard + Product Tour + Notifications | 2026-04-17 | Migration 014 (user_onboarding + notifications). 15 new API routes. Lazy-row strategy (only net-new users see wizard). driver.js multi-page tour. NotificationBell with unread polling. Background source-ingest is a 3s stub — real pipeline wiring is TODO |
+| Azure-style Provisioning + Data-Driven Wizard Config | 2026-04-17 | 6-step wizard (added Workspace step), `/onboarding/config` endpoint with status=available\|coming_soon, ProvisioningStep with staged checklist + summary card. Dropped Tenant schema (one-VPS-per-client). FALLBACK_CONFIG in types for graceful degradation |
 | Project scaffolding | 2026-02-05 | All dirs, placeholders, configs created |
 | Database Agent | 2026-02-05 | Config, models, session, Alembic, 11 tests passing |
 | Backend Agent | 2026-02-05 | Full RAG pipeline, all API routes, RBAC, 48 tests passing |
