@@ -65,9 +65,9 @@ class Settings(BaseSettings):
     hindsight_url: str = "http://localhost:8888"
     hindsight_recall_budget: str = "low"
     hindsight_recall_max_tokens: int = 1024
-    hindsight_timeout: float = 120.0
+    hindsight_timeout: float = 300.0
     hindsight_project_banks_enabled: bool = True
-    hindsight_distill_before_retain: bool = True
+    hindsight_distill_before_retain: bool = False
     hindsight_max_project_memories: int = 5
 
     # Auth

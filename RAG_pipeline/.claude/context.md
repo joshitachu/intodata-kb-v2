@@ -3,6 +3,7 @@
 **Status**: Phase 6.1 Azure-style provisioning + data-driven wizard config (2026-04-17). Wizard is now 6 steps with workspace naming and a staged provisioning animation; platform/tool options are data-driven via `GET /onboarding/config` and coming-soon tools render with badges. Tenant table dropped — switched to one-VPS-per-client deployment model.
 **Last session**: 2026-04-17
 **Last completed**: Phase 6.1 refactor — migration 014 rewritten to drop tenants + add `workspace_name`. New `GET /onboarding/config` endpoint + `PUT /onboarding/step/workspace` endpoint. Frontend: new `WorkspaceStep`, new `ProvisioningStep` (replaces `SetupLoadingStep`) with staged checklist + summary card, Platform/Tool steps now fetch options from backend config, coming-soon items show "COMING SOON" badge. Background setup flow is still stubbed (3s sleep + notification) — real ingest pipeline integration is TODO.
+**Also this session (earlier from dev-B)**: Hindsight memory retention fix deployed. `decide_retention()` now allows FULL retention for metadata queries with search results, all retain call sites pass `action`/`query_type`/`project_ids`, distillation disabled (structured fallback), Hindsight timeout increased to 300s.
 
 ## What's Done
 

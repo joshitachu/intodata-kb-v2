@@ -1,17 +1,16 @@
 # Current State
 
-**Status**: Transformation detail depth improvement COMPLETE for all 3 platforms (Talend, Lobster, Workato). `_format_chunk_markdown()` renders tmap_data as structured tables (Talend), filter chains as step tables (Lobster), and datapill mappings as source/field/formula tables (Workato). TRANSFORMATION_DETAIL analysis section added to all platform guides. Phase 3 guides require per-job transformation subsections. Reference docs include examples.
-**Last session**: 2026-04-16
+**Status**: Depth regression fix applied. Removed small-project penalty (0.6x → 1.0x), raised analysis target floor (5→15KB, ceiling 40→60KB), and doubled base depth targets (~14,000 total lines at 1.0x) to match old 26-doc output volume in the 12-doc structure.
+**Last session**: 2026-04-17
 **Last completed**:
-- Workato datapill rendering: regex-based `#{_(` detection in steps/input params, structured mapping table output, TRANSFORMATION_DETAIL section in Workato ANALYSIS_GUIDE.md.
-- Transformation detail depth (all platforms): platform-aware preprocessing, TRANSFORMATION_DETAIL analysis section, per-job transformation requirements in Phase 3, function chain traces, reference doc examples. Talend tmap_data parser robustness fix (needs re-scan to verify).
-- Previous: Resumable doc generation, analysis bundling, depth tier scaling, 4-agent Phase 3 split.
+- Depth regression fix: 3 changes in `claude_service.py` to remove artificial depth constraints that were suppressing doc quality.
+- Previous: Transformation detail depth (all platforms), Workato datapill rendering, resumable doc generation, analysis bundling.
 
 **Next steps**:
+- Re-generate docs for a small project (esbmain or scherpenhuizen-talend) to verify depth improvement
+- Compare file sizes and line counts against previous generation
+- Spot-check 03_DATA_FLOWS and 04_BUSINESS_LOGIC for detail level
 - Re-scan vaxxinova-talend to verify tmap_data parser fix produces populated data
-- Run full doc generation on a Lobster project to verify filter chain tables appear in preprocessed output
-- Run full doc generation on a Talend project to verify transformation detail sections appear in final docs
-- Run full doc generation on a Workato project with real export data to verify datapill mapping tables appear
 
 ## Important: Data Layout
 

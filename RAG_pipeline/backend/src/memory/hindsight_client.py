@@ -88,25 +88,27 @@ def decide_retention(
 ) -> RetentionDecision:
     """Decide what to retain based on intent classifier output.
 
-    - SEARCH + results -> FULL (meaningful knowledge exchange)
-    - SEARCH + zero results -> QUALITY_ONLY (coverage gap signal)
-    - METADATA -> QUALITY_ONLY (structural, not knowledge)
     - RESPOND / CONVERSATION_SUMMARY -> SKIP (chitchat/recap)
-    - Short answers (<50 chars) -> QUALITY_ONLY (probably not substantive)
+    - METADATA with no search results -> QUALITY_ONLY (structural only)
+    - Zero search results -> QUALITY_ONLY (coverage gap signal)
+    - Short answers (<50 chars) -> QUALITY_ONLY (not substantive)
+    - Everything else (including metadata+results) -> FULL
     """
     if action in ("respond", "conversation_summary"):
         return RetentionDecision(level=RetentionLevel.SKIP, reason=f"action={action}")
 
-    if action == "metadata":
-        return RetentionDecision(level=RetentionLevel.QUALITY_ONLY, reason="metadata query")
+    # Metadata with no search results → quality only (pure structural query)
+    if action == "metadata" and search_result_count == 0:
+        return RetentionDecision(level=RetentionLevel.QUALITY_ONLY, reason="metadata query (no search results)")
 
-    # SEARCH path
+    # Zero search results → quality only (coverage gap signal)
     if search_result_count == 0:
         return RetentionDecision(level=RetentionLevel.QUALITY_ONLY, reason="zero search results")
 
     if answer_length < 50:
         return RetentionDecision(level=RetentionLevel.QUALITY_ONLY, reason="short answer")
 
+    # Everything else with results (including metadata/hybrid) → FULL
     return RetentionDecision(level=RetentionLevel.FULL, reason="substantive search interaction")
 
 
@@ -158,27 +160,28 @@ def extract_topic_tag(query: str, sources: list[str]) -> str | None:
     return None
 
 
-def extract_entities_from_sources(sources: list[str]) -> list[str]:
+def extract_entities_from_sources(sources: list[str]) -> list[dict[str, str]]:
     """Extract project names and document names as entities for Hindsight.
 
     Source filenames are in format 'project_id/filename.ext'.
+    Returns dicts with 'text' and 'type' keys as required by hindsight_client.
     """
-    entities: list[str] = []
+    entities: list[dict[str, str]] = []
     seen: set[str] = set()
     for source in sources:
         if "/" in source:
             project, filename = source.split("/", 1)
             if project not in seen:
-                entities.append(project)
+                entities.append({"text": project, "type": "project"})
                 seen.add(project)
             doc_name = re.sub(r"\.\w+$", "", filename)
             if doc_name not in seen:
-                entities.append(doc_name)
+                entities.append({"text": doc_name, "type": "document"})
                 seen.add(doc_name)
         else:
             doc_name = re.sub(r"\.\w+$", "", source)
             if doc_name not in seen:
-                entities.append(doc_name)
+                entities.append({"text": doc_name, "type": "document"})
                 seen.add(doc_name)
     return entities[:10]  # cap at 10 entities
 
@@ -477,7 +480,7 @@ async def _retain_user_bank(
 async def _retain_quality_bank(
     query: str,
     sources_used: list[str],
-    intent: str,
+    action: str,
     search_result_count: int,
     latency_ms: int,
     ts: str,
@@ -489,7 +492,7 @@ async def _retain_quality_bank(
         client = _get_client()
         quality_content = (
             f"Query: {query}\n"
-            f"Intent: {intent}\n"
+            f"Action: {action}\n"
             f"Search results: {search_result_count}\n"
             f"Sources cited: {', '.join(sources_used) if sources_used else 'none'}\n"
             f"Latency: {latency_ms}ms"
@@ -550,7 +553,6 @@ async def retain_interaction(
     conversation_id: int | str | None = None,
     search_result_count: int = 0,
     latency_ms: int = 0,
-    intent: str = "qa",
     action: str = "search",
     query_type: str = "qa",
     project_ids: list[str] | None = None,
@@ -592,7 +594,7 @@ async def retain_interaction(
 
         tasks: list = [
             _retain_user_bank(user_id, distilled, ts, doc_id, tags=tags, entities=entities),
-            _retain_quality_bank(query, sources_used, intent, search_result_count, latency_ms, ts, doc_id, tags=tags),
+            _retain_quality_bank(query, sources_used, action, search_result_count, latency_ms, ts, doc_id, tags=tags),
         ]
 
         # Retain to each project bank
@@ -608,7 +610,7 @@ async def retain_interaction(
     elif decision.level == RetentionLevel.QUALITY_ONLY:
         # 4. Quality signal only
         await _retain_quality_bank(
-            query, sources_used, intent, search_result_count,
+            query, sources_used, action, search_result_count,
             latency_ms, ts, doc_id, tags=tags,
         )
 
