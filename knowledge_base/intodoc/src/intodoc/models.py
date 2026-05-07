@@ -151,6 +151,17 @@ class ProjectManifest(BaseModel):
 # ── Scan Result ──────────────────────────────────────────────────────
 
 
+class ScanWarning(BaseModel):
+    """Non-fatal issue captured during scanning (e.g. a single malformed
+    file that was dropped from the scan). Surfaces silently-swallowed
+    parser errors so the dashboard can show "X files failed to parse"
+    instead of just a lower job count."""
+    kind: str  # "parse_error" | "missing_file" | "unknown"
+    file: str = ""  # relative path of the offending file, when known
+    message: str
+    phase: str = ""  # e.g. "metadata_index" | "job_id_index" | "context" | "job" | "recipe" | "function" | "profile" | "connection"
+
+
 class ScanResult(BaseModel):
     platform: str
     repo_root: str
@@ -162,6 +173,7 @@ class ScanResult(BaseModel):
     routines: list[Routine] = Field(default_factory=list)
     manifest: ProjectManifest = Field(default_factory=ProjectManifest)
     stats: dict = Field(default_factory=dict)
+    warnings: list[ScanWarning] = Field(default_factory=list)
 
     @field_validator("routines", mode="before")
     @classmethod

@@ -196,6 +196,8 @@ Source locations: tMSSqlInput/tMySqlInput query params, tMap output schemas, tBi
 
 ### SOURCE_SQL
 
+If no SQL queries exist in this group, write exactly: `None`
+
 Extract EVERY SQL query in FULL (never truncate). For each:
 - Which component and job contains it
 - Whether it is a source query (SELECT), lookup query, DML (INSERT/UPDATE/DELETE), or DDL
@@ -229,6 +231,8 @@ For each job, document:
 - tWarn/tDie usage: explicit error/warning raising
 
 ### CUSTOM_CODE
+
+If no tJava/tJavaRow/tJavaFlex components exist in this group, write exactly: `None`
 
 For ALL tJava, tJavaRow, tJavaFlex components:
 - The FULL code block (begin, main, end for tJavaFlex)

@@ -132,6 +132,40 @@ async def delete_project_documents(
     return {"deleted_documents": len(docs), "project_id": project_id}
 
 
+@router.delete(
+    "/ingest/by-project/{project_id}/document/{filename}",
+    dependencies=[Depends(verify_ingest_api_key)],
+)
+async def delete_project_document(
+    project_id: str,
+    filename: str,
+    db: DBSession,
+    qdrant: QdrantClient,
+) -> dict:
+    """Delete one generated document and its vectors for a project."""
+    scoped_filename = f"{project_id}/{filename}"
+    result = await db.execute(
+        select(Document).where(
+            Document.project_id == project_id,
+            Document.filename == scoped_filename,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        return {"deleted": False, "project_id": project_id, "filename": filename}
+
+    try:
+        await delete_document_points(qdrant, doc.id)
+    except Exception as e:
+        logger.warning("Failed to delete Qdrant points for document %d: %s", doc.id, e)
+
+    await db.delete(doc)
+    await db.commit()
+
+    logger.info("Deleted document %s for project %s", scoped_filename, project_id)
+    return {"deleted": True, "project_id": project_id, "filename": filename}
+
+
 @router.post("/ingest/md", response_model=IngestResponse, dependencies=[Depends(verify_ingest_api_key)])
 async def ingest_markdown(
     request: MarkdownIngestRequest,

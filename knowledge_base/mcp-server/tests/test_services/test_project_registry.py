@@ -155,3 +155,44 @@ async def test_list_generate_runs(db_session):
 
     runs = await registry.list_generate_runs("runs")
     assert len(runs) == 2
+
+
+async def test_backfill_generate_run_costs(db_session, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(
+        config,
+        "model_pricing_json",
+        '{"deepseek-v4-pro":{"input":0.28,"output":0.88}}',
+    )
+    registry = ProjectRegistry(db_session)
+    await registry.add_project("priced", "/tmp/priced")
+    await db_session.commit()
+
+    known = await registry.create_generate_run("priced", triggered_by="api")
+    unknown = await registry.create_generate_run("priced", triggered_by="api")
+    await db_session.commit()
+
+    await registry.complete_generate_run(
+        known.id,
+        status="completed",
+        model_name="openai/deepseek-v4-pro",
+        input_tokens=1_200_000,
+        output_tokens=157_800,
+    )
+    await registry.complete_generate_run(
+        unknown.id,
+        status="completed",
+        model_name="unknown-model",
+        input_tokens=1_000,
+        output_tokens=1_000,
+    )
+    await db_session.commit()
+
+    updated = await registry.backfill_generate_run_costs("priced")
+    await db_session.commit()
+
+    assert updated == 1
+    runs = {run.id: run for run in await registry.list_generate_runs("priced")}
+    assert runs[known.id].cost_usd == 0.474864
+    assert runs[unknown.id].cost_usd is None

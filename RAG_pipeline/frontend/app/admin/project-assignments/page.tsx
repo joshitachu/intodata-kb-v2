@@ -18,6 +18,12 @@ interface UserOption {
   username: string;
 }
 
+interface ProjectOption {
+  id: string;
+  display_name: string;
+  platform: string;
+}
+
 interface AssignForm {
   user_id: string;
   project_id: string;
@@ -28,6 +34,7 @@ export default function AdminProjectAssignmentsPage() {
   const router = useRouter();
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAssign, setShowAssign] = useState(false);
   const [assignForm, setAssignForm] = useState<AssignForm>({
@@ -68,11 +75,23 @@ export default function AdminProjectAssignmentsPage() {
     }
   }, []);
 
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch("/api/projects");
+      if (res.ok) {
+        const data: { projects: ProjectOption[] } = await res.json();
+        setProjects(data.projects);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
-    Promise.all([fetchAssignments(), fetchUsers()]).then(() =>
+    Promise.all([fetchAssignments(), fetchUsers(), fetchProjects()]).then(() =>
       setLoading(false),
     );
-  }, [fetchAssignments, fetchUsers]);
+  }, [fetchAssignments, fetchUsers, fetchProjects]);
 
   async function handleAssign(e: React.FormEvent) {
     e.preventDefault();
@@ -124,10 +143,9 @@ export default function AdminProjectAssignmentsPage() {
     }
   }
 
-  // Get unique project IDs for the filter dropdown
-  const uniqueProjects = Array.from(
-    new Set(assignments.map((a) => a.project_id)),
-  ).sort();
+  // Map of project_id -> display_name for rendering assignments with human-readable names.
+  // Falls back to the raw ID so rows for deleted/empty projects still render.
+  const projectNameById = new Map(projects.map((p) => [p.id, p.display_name]));
 
   // Superadmin-only guard
   useEffect(() => {
@@ -191,16 +209,21 @@ export default function AdminProjectAssignmentsPage() {
                 </option>
               ))}
             </select>
-            <input
-              type="text"
-              placeholder="Project ID"
+            <select
               value={assignForm.project_id}
               onChange={(e) =>
                 setAssignForm({ ...assignForm, project_id: e.target.value })
               }
               className="px-3 py-2 border rounded-md text-sm"
               required
-            />
+            >
+              <option value="">Select project...</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.display_name}
+                </option>
+              ))}
+            </select>
           </div>
           <button
             type="submit"
@@ -231,9 +254,9 @@ export default function AdminProjectAssignmentsPage() {
           className="px-3 py-2 border rounded-md text-sm"
         >
           <option value="">All projects</option>
-          {uniqueProjects.map((pid) => (
-            <option key={pid} value={pid}>
-              {pid}
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.display_name}
             </option>
           ))}
         </select>
@@ -286,7 +309,7 @@ export default function AdminProjectAssignmentsPage() {
                 </td>
                 <td className="px-4 py-3">
                   <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">
-                    {a.project_id}
+                    {projectNameById.get(a.project_id) ?? a.project_id}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-gray-500">

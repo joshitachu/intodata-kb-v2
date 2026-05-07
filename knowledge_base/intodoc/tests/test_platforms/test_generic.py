@@ -38,18 +38,20 @@ class TestClassifyFile:
     def plugin(self):
         return GenericPlugin()
 
-    @pytest.mark.parametrize("ext,expected", [
-        (".py", FileType.ROUTINE),
-        (".java", FileType.ROUTINE),
-        (".js", FileType.ROUTINE),
-        (".ts", FileType.ROUTINE),
-        (".go", FileType.ROUTINE),
-        (".rb", FileType.ROUTINE),
-        (".sh", FileType.ROUTINE),
-        (".groovy", FileType.ROUTINE),
+    @pytest.mark.parametrize("ext", [
+        ".py", ".java", ".js", ".ts", ".go", ".rb", ".sh", ".groovy",
+        ".cs", ".php", ".cpp", ".swift", ".rs",
     ])
-    def test_code_files(self, plugin, ext, expected):
-        assert plugin.classify_file(Path(f"src/main{ext}")) == expected
+    def test_code_files_are_routine(self, plugin, tmp_path, ext):
+        f = tmp_path / f"main{ext}"
+        f.write_text("hello world\n")
+        assert plugin.classify_file(f) == FileType.ROUTINE
+
+    def test_unknown_text_extension_is_routine(self, plugin, tmp_path):
+        """Any readable text file with an unknown extension is scanned as ROUTINE."""
+        f = tmp_path / "source.zig"
+        f.write_text("const std = @import(\"std\");\n")
+        assert plugin.classify_file(f) == FileType.ROUTINE
 
     @pytest.mark.parametrize("ext,expected", [
         (".sql", FileType.SQL_PATTERN),
@@ -96,16 +98,15 @@ class TestClassifyFile:
     @pytest.mark.parametrize("ext", [
         ".pyc", ".class", ".jar", ".exe", ".dll", ".png", ".jpg", ".zip",
     ])
-    def test_skip_binary(self, plugin, ext):
-        assert plugin.classify_file(Path(f"bin/file{ext}")) == FileType.UNKNOWN
+    def test_skip_binary(self, plugin, tmp_path, ext):
+        f = tmp_path / f"file{ext}"
+        f.write_bytes(b"\x00\x01\x02\x03binary content here")
+        assert plugin.classify_file(f) == FileType.UNKNOWN
 
     def test_skip_dirs(self, plugin):
         assert plugin.classify_file(Path("node_modules/pkg/index.js")) == FileType.UNKNOWN
         assert plugin.classify_file(Path("__pycache__/mod.py")) == FileType.UNKNOWN
         assert plugin.classify_file(Path(".venv/lib/site.py")) == FileType.UNKNOWN
-
-    def test_unknown_extension(self, plugin):
-        assert plugin.classify_file(Path("file.xyz")) == FileType.UNKNOWN
 
 
 # ── Parsing ──────────────────────────────────────────────────────────
@@ -168,6 +169,25 @@ class TestGenericParser:
         # database.json has host/port/database keys
         assert len(result.metadata_connections) > 0
 
+    def test_parse_detects_config_xml_connections(self, cred_filter, tmp_path):
+        """Web.config/App.config style files should be treated as XML connection sources."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hello')\n")
+        (tmp_path / "Web.config").write_text(
+            """<configuration>
+  <connectionStrings>
+    <add name="MainDb" connectionString="Server=sql01;Database=Main;Password=[INLINE_CREDENTIAL]" providerName="System.Data.SqlClient" />
+  </connectionStrings>
+</configuration>
+""",
+            encoding="utf-8",
+        )
+
+        plugin = GenericPlugin()
+        result = plugin.parse_project(tmp_path, cred_filter)
+
+        assert any(conn.name == "MainDb" and conn.connection_type == "SQL Server" for conn in result.metadata_connections)
+
     def test_parse_extracts_routines(self, cred_filter):
         """Code files should be extracted as routines."""
         if not FIXTURES_DIR.exists():
@@ -187,6 +207,61 @@ class TestGenericParser:
         result = plugin.parse_project(FIXTURES_DIR, cred_filter)
 
         assert len(result.manifest.job_groups) > 0
+
+
+# ── Universal extraction unit tests ─────────────────────────────────
+
+
+def test_go_block_imports_extracted():
+    """Block-style Go imports should be extracted by the two-pass importer."""
+    from intodoc.platforms.generic.parser import GenericParser
+
+    go_content = '''\
+package main
+
+import (
+\t"fmt"
+\t"database/sql"
+\t_ "github.com/lib/pq"
+\talias "net/http"
+)
+
+func main() {}
+'''
+    imports = GenericParser._extract_imports_universal(go_content)
+    pkg_paths = [i.replace('import "', '').rstrip('"') for i in imports if i.startswith('import "')]
+    assert "fmt" in pkg_paths
+    assert "database/sql" in pkg_paths
+    assert "github.com/lib/pq" in pkg_paths
+    assert "net/http" in pkg_paths
+
+
+def test_c_function_names_extracted():
+    """C-style functions (no keyword prefix) should be found by the brace fallback."""
+    from intodoc.platforms.generic.parser import GenericParser
+
+    c_content = '''\
+#include <stdio.h>
+
+int processPayment(int amount) {
+    return amount * 2;
+}
+
+void handleError(const char* msg) {
+    printf("%s\\n", msg);
+}
+
+static bool validateInput(int x) {
+    return x > 0;
+}
+'''
+    funcs = GenericParser._extract_function_names_universal(c_content)
+    assert "processPayment" in funcs
+    assert "handleError" in funcs
+    assert "validateInput" in funcs
+    # Control-flow keywords must not appear
+    assert "if" not in funcs
+    assert "for" not in funcs
 
 
 # ── Best Practices ───────────────────────────────────────────────────

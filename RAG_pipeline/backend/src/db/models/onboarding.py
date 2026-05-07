@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,8 +46,12 @@ class UserOnboarding(Base):
     )
 
     # Wizard selections (JSONB arrays)
-    selected_platforms: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    selected_comm_tools: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    selected_platforms: Mapped[list | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    selected_comm_tools: Mapped[list | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
 
     # Source upload (optional step)
     source_type: Mapped[str | None] = mapped_column(String(20), nullable=True)  # github | zip
@@ -89,6 +93,8 @@ class Notification(Base):
     is_read: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False, index=True
     )
-    meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
 
     user: Mapped["User"] = relationship(foreign_keys=[user_id])

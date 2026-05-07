@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -37,6 +37,7 @@ class Project(Base):
     repo_url: Mapped[str | None] = mapped_column(String(500))
     local_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     platform: Mapped[str] = mapped_column(String(50), default="talend")
+    doc_generation_provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
     source_type: Mapped[str] = mapped_column(String(20), default="local")  # local | git | zip
     status: Mapped[str] = mapped_column(
         String(20), default="registered", index=True
@@ -49,6 +50,14 @@ class Project(Base):
     job_count: Mapped[int] = mapped_column(Integer, default=0)
     doc_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
+    last_ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    auto_reingest_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    auto_reingest_last_checked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    auto_reingest_error: Mapped[str | None] = mapped_column(Text)
+    git_update_summary: Mapped[dict | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=True,
+    )
 
     # Relationships
     scan_runs: Mapped[list[ScanRun]] = relationship(
@@ -114,6 +123,8 @@ class GenerateRun(Base):
 
     doc_count: Mapped[int] = mapped_column(Integer, default=0)
     model_name: Mapped[str | None] = mapped_column(String(100))
+    write_model_name: Mapped[str | None] = mapped_column(String(100))
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text)
     log_file: Mapped[str | None] = mapped_column(String(500))
 
@@ -123,7 +134,10 @@ class GenerateRun(Base):
         ForeignKey("template_profiles.id", ondelete="SET NULL"),
         nullable=True,
     )
-    template_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    template_snapshot: Mapped[dict | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=True,
+    )
 
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")

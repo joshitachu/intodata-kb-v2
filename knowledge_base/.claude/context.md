@@ -1,16 +1,64 @@
 # Current State
 
-**Status**: Depth regression fix applied. Removed small-project penalty (0.6x → 1.0x), raised analysis target floor (5→15KB, ceiling 40→60KB), and doubled base depth targets (~14,000 total lines at 1.0x) to match old 26-doc output volume in the 12-doc structure.
-**Last session**: 2026-04-17
+**Status**: EP-000 US-101 through US-106 complete (2026-05-05). Per-phase model routing, perf regression tests, doc quality comparison, human review API, and instruction pack loader all done. EP-000 is fully implemented.
+**Last session**: 2026-05-05
 **Last completed**:
-- Depth regression fix: 3 changes in `claude_service.py` to remove artificial depth constraints that were suppressing doc quality.
-- Previous: Transformation detail depth (all platforms), Workato datapill rendering, resumable doc generation, analysis bundling.
+- 10-step doc gen reliability overhaul (2026-04-29): zero-doc=success fix, RAG push retry+propagate, 5 silent failure fixes (chunk defs, template resolution, quick scan, quality scoring, assessment), config centralization (11 new fields), SUPPORTED_PLATFORMS constant, platform validators in schemas+routes, concurrency guard (set-based), Phase 2 resume skip, RAG _read_md_files top-level-only filter, phase3_max_tokens raised to 32000, quality scorer scaled to unit_count, _JOB_RE extended for Workato.
+- Doc gen cleanup: deleted `orchestrator.py` + `tools.py` (dead code), removed `_adapt_legacy_text()` stripping from `prompt_packs.py`, slimmed `DocGenContext` (removed 8 cli-only fields), deleted `InvestigatorLoop`, simplified provider selection in `claude_service.py`. 46 provider+service tests pass (2026-04-28).
+- Custom investigator loop for `MCP_DOC_GENERATION_PROVIDER=custom`: JSON actions (`read_file`, `search_text`, `list_dir`, `finish`), staging-only tools, validated `_investigation/` artifacts, Phase 2/3 evidence threading, and critic/expander pass (2026-04-25).
+- Token explosion + quality fix (5 changes): pre-load context for API Phase 2/3, noise filter in preprocess, scorecard skip on failures, split patterns_user (2026-04-24).
+- N-pass section-by-section Phase 2 analysis: `_PHASE2_SECTIONS` (5 sections) + `_run_section_series()` — one LLM call per section, 400-500 lines/group expected (2026-04-24).
+- N-pass section-by-section Phase 3 doc writing: `_DOC_SECTIONS` per doc + `_phase3_section_prompt()` (2026-04-24).
+- Tailscale Ollama integration: `MCP_OLLAMA_BASE_URL`, `ChatOpenAI` with `/v1` endpoint, per-provider URL routing (2026-04-24).
+- Dashboard write model selector: `ProjectSettings.tsx` + localStorage persistence (2026-04-24).
+- Fixed `<<<FILE:>>>` delimiter failures for single-file writes (raw response mode) (2026-04-24).
+- Fixed Kimi k2.6 400 error (disable thinking via `extra_body`) (2026-04-22).
+- Gap 1 — retry logic for Phase 2 group analysis and Phase 3 doc writing (once each) (2026-04-22).
+- Gap 2 — `write_model` wiring: Phase 3 uses `MCP_DOC_GENERATION_WRITE_MODEL` if set (2026-04-22).
+- Gap 3 — Ollama 1-doc-per-call batching to prevent context overflow (2026-04-22).
+- Day 3 — scan completeness warnings across all 4 parsers (Talend / Workato / Lobster / Generic) + job-count delta + dashboard surface. 12 new pytest `tmp_path` tests green. No DB migration. (2026-04-20).
+- Day 2 — atomic docs swap + startup recovery + staging GC. 12 unit tests green.
+- Day 1 — thumbs feedback persistence.
+- RBAC fix for Topology + chat Deep Dive picker (2026-04-20).
+- Depth regression fix: 3 changes in `claude_service.py` to remove artificial depth constraints (2026-04-17).
 
-**Next steps**:
-- Re-generate docs for a small project (esbmain or scherpenhuizen-talend) to verify depth improvement
-- Compare file sizes and line counts against previous generation
-- Spot-check 03_DATA_FLOWS and 04_BUSINESS_LOGIC for detail level
-- Re-scan vaxxinova-talend to verify tmap_data parser fix produces populated data
+**Next steps** (Generic scanner):
+- **PRIORITY**: Run a real scan with `--platform generic` on any zip/repo and trigger doc generation. Verify Phase 2 `_analysis/*.md` has deep narrative content (500+ lines per group, CONNECTIONS / EXTERNAL_SYSTEMS / BUSINESS_RULES populated).
+- For C# projects: check `scan_result.json` has `manifest.job_external_systems` with "Application Insights" or similar, and `metadata_connections` from Web.config if present.
+
+**Next steps** (RAG pipeline):
+- **PRIORITY — Runtime test Phase B**: Trigger doc generation with `MCP_DOC_GENERATION_MODEL=openai/deepseek-v4-pro`. Watch logs for tool call activity (`list_artifacts`, `read_artifact`). Confirm `context_bytes=0` in Phase 2 logs (no pre-loaded files). Verify `_analysis/{group}.md` written with correct content. Then test with `anthropic/claude-sonnet-4-6`.
+- **PRIORITY**: Runtime-test the harness provider end-to-end — confirm `_analysis_prompt_pack.md` contains full unstripped analysis guide content (check for lines that used to be filtered, e.g. "Spawn one sub-agent per group").
+- **PRIORITY**: Runtime-test the new custom investigator loop on a real scanned project.
+  - Configure `MCP_DOC_GENERATION_PROVIDER=custom`.
+  - Configure an API model, e.g. `MCP_DOC_GENERATION_MODEL=moonshot/kimi-k2.6` or another supported `provider/model`.
+  - Trigger doc generation for a small project first.
+  - Watch logs for `[custom] Investigation complete` and `[custom] Investigation coverage gate passed`.
+  - While staging exists, inspect `output/{project_id}/docs_staging/_investigation/`:
+    - `{group}.json` and `{group}.md` should exist for each group.
+    - Evidence items must include exact canonical unit name, category, source file, line range or chunk ref, snippet, and concrete observation.
+  - After success, confirm `provider_calls.json` includes phase `investigation`, final docs mention every canonical unit, and `_investigation/` remains for audit while `_preprocess/` and `_analysis/` are cleaned.
+- **Focused automated tests for custom investigator/provider**:
+  ```bash
+  cd knowledge_base/mcp-server
+  PYTHONDONTWRITEBYTECODE=1 pytest tests/test_providers/test_custom_provider.py
+  ruff check src/mcp_server/providers/custom tests/test_providers/test_custom_provider.py
+  ```
+  Expected: provider tests pass (`32 passed`) and ruff passes.
+- **Known blocker for full `mcp-server` pytest**: DB/API tests fail before provider code because SQLite cannot render PostgreSQL `JSONB` for `generate_runs.template_snapshot`. Fix the model/test dialect compatibility before treating full-suite failures as related to the investigator work.
+- **PRIORITY**: Re-run doc generation for `localESBKIMI` (kimi-k2.6) to verify token fix. Expected: total tokens < 4M (was 22.6M), all 4 groups analyzed, 21 jobs in executive summary, score ≥ 3.5/5.
+  - Check logs: no `read_file` calls for preprocess/bundle files in Phase 2 or 3
+  - Verify `_analysis/Item.md` and `_analysis/SalesOrder.md` created (were always missing before)
+  - Check `run_metrics_*.json`: `input_tokens < 4_000_000`, `doc_quality.overall >= 3.5`
+- Restart mcp-server (`python3 -m mcp_server --serve --port 8002`) and re-run doc generation for localESBCHECK with `ollama/qwen2.5-coder:7b` or `ollama/gemma3:12b`.
+- Verify: Phase 2 analysis is 20-40KB per group (`wc -l output/localESBCHECK/docs_staging/_analysis/*.md`), overall quality score 2.5-3.5+.
+- Consider switching to `gemma3:12b` (general model, better sustained writing than qwen2.5-coder:7b) via Settings write model selector.
+- Manual e2e for Day 3: (1) run a real scan on `vaxxinova-talend`, grep `warnings` in `scan_result.json` (expect `[]` on a clean project); (2) drop a malformed `.item` under `process/`, re-scan, check `GET /mcp/status/{project_id}` returns `warnings_count > 0`; (3) delete a handful of jobs, re-scan, confirm `job_delta < 0`; (4) open the dashboard and verify the `! N` chip + signed delta render on the latest Scan History row.
+- Day 11 (Gap 17) — plug-in prompt repos, replaces template CMS. Audit the 4 `templates*` tables first (`SELECT COUNT(*)` + list profile names/creators) before deletion.
+- Gaps 15 & 16 — business decision on multi-model / doc-gen quality claims (not a code task yet).
+- Runtime-verify the earlier RBAC fix: superadmin still sees all scanned projects; a user assigned to only one project sees just that project on Topology + chat Deep Dive; direct `GET /projects/{unassigned_id}/graph` returns 403.
+- Re-generate docs for a small project to verify the earlier depth-regression fix.
+- Re-scan vaxxinova-talend to verify the earlier tmap_data parser fix produces populated data.
 
 ## Important: Data Layout
 
@@ -70,6 +118,7 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Recent Changes
 
+- **EP-001 Deployment Foundation realignment** (2026-05-05): EP-001 is now generic deployment foundation rather than customer-specific rollout. nginx/certbot is canonical; Caddy is legacy/deferred. Added root `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`. `deploy/deploy-client.sh` now emits MCP systemd env vars for generated deployments. EP-001 is not accepted until a clean reference VPS passes runbook + smoke test.
 - **Fix template creation 500** (2026-03-30): Fixed `MissingGreenlet` in `_template_to_response()` by using `sa_inspect(t).dict` to check if `versions` relationship is loaded before accessing it.
 - **Template Management & Scoring Pipeline** (2026-03-24): Full Transparency Layer feature. Phase 2.6 scoring sub-agent (8-dimension rubric, anti-patterns, red flags, security checklist). DB-backed template system (4 new tables, Alembic migration, TemplateResolver with cascade). Dashboard: template catalogue/editor, version timeline with diff, profile management, A/B run comparison, document catalogue. Profile dropdown on Generate button for template swapping.
 - **Gate validation between phases** (2026-03-20): Phase 2.5 validates analysis files (>1KB) before Phase 3. Phase 3.5 validates 9 required docs (>500 bytes) before cleanup. Both gates retry failed agents once (max 1 retry). Prompt-only change.
@@ -98,6 +147,8 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 
 ## Next Steps
 
+- [ ] Start EP-002 analysis after reading the cleaned EP-002 backlog and current auth/security implementation.
+- [ ] Validate EP-001 runbook on a clean reference VPS when server access is available.
 - [ ] **Test resumable generation**: Kill generation mid-Phase 3, verify `docs_staging/` preserved. Re-trigger, verify RESUME MODE in logs. Test `resume=false` for fresh run. Test stale scan detection.
 - [ ] **Re-generate docs for vaxxinova-main**: expect >500KB total (was 406KB), 09_RUNBOOK >600 lines, 11_MIGRATION >700 lines. Verify bundle files in `_analysis/_bundle_*.md` and each <350KB. Verify Phase 3 log shows 4 agents reading bundles.
 - [ ] **Re-generate docs for esb-main**: verify quality doesn't regress (should stay >=523KB). Verify 3 agents used (below threshold).

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Qdrant
     qdrant_api_key: str = ""
     qdrant_url: str = "http://localhost:6333"
+    qdrant_collection: str = "documents"
 
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://admin:@localhost:5432/intodata_kb"
@@ -80,12 +81,37 @@ class Settings(BaseSettings):
     cookie_domain: str = ""
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
 
+    # Deployment-local email/invite settings. Empty SMTP config is allowed in
+    # development, where invite links are logged instead of sent.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_address: str = ""
+    smtp_from_name: str = "IntoData Nexus"
+    smtp_use_tls: bool = True
+    public_app_url: str = "http://localhost:3000"
+
     # MCP ingestion auth
     mcp_ingest_api_key: str = ""
+
+    # Network hardening — comma-separated IPv4/IPv6 addresses or CIDRs. Empty = disabled.
+    # ALLOWED_IPS is enforced by ip_allowlist middleware; TRUSTED_PROXIES is passed to
+    # uvicorn's forwarded_allow_ips so slowapi / request.client.host see the real client IP
+    # behind the reverse proxy.
+    allowed_ips: str = ""
+    trusted_proxies: str = "127.0.0.1"
 
     # App
     app_env: str = "development"
     log_level: str = "INFO"
+
+    # Tenant identity — surfaced by GET /api/v1/tenant/config. One-VPS-per-client
+    # model means these are set per deployment in .env; the frontend reads them
+    # once at boot and threads them through the sidebar / login / wizard chrome.
+    tenant_name: str = "IntoData"
+    tenant_slug: str = "intodata"
+    tenant_environment: str = "development"  # development | staging | production
 
     @property
     def is_dev(self) -> bool:
@@ -99,6 +125,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CRITICAL: JWT_SECRET_KEY is still the default value. "
                 "Set a strong random secret in production."
+            )
+        if self.admin_default_password == "admin":
+            raise ValueError(
+                "CRITICAL: ADMIN_DEFAULT_PASSWORD is still 'admin'. "
+                "Set a strong password in production."
+            )
+        if not self.mcp_ingest_api_key:
+            raise ValueError(
+                "CRITICAL: MCP_INGEST_API_KEY is empty. "
+                "Set a strong random key in production (used by MCP server to push docs)."
+            )
+        if "localhost" in self.public_app_url or "127.0.0.1" in self.public_app_url:
+            raise ValueError(
+                "CRITICAL: PUBLIC_APP_URL must be a real HTTPS app URL in production."
             )
 
 

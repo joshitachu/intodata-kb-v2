@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.security import (
@@ -20,18 +20,30 @@ from src.db.models import RefreshToken, User
 logger = logging.getLogger(__name__)
 
 
+class PasswordlessAccountError(Exception):
+    """Raised when password auth is attempted for an account without a password."""
+
+
 class AuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def authenticate_user(self, username: str, password: str) -> User | None:
-        """Verify username + password. Returns User or None."""
-        result = await self.db.execute(select(User).where(User.username == username))
+    async def authenticate_user(self, identifier: str, password: str) -> User | None:
+        """Verify username/email + password. Returns User or None."""
+        identifier = identifier.strip()
+        result = await self.db.execute(
+            select(User).where(
+                (User.username == identifier)
+                | (func.lower(User.email) == identifier.lower())
+            )
+        )
         user = result.scalar_one_or_none()
-        if user is None or user.password_hash is None:
+        if user is None:
             return None
         if not user.is_active:
             return None
+        if user.password_hash is None:
+            raise PasswordlessAccountError
         if not verify_password(password, user.password_hash):
             return None
         # Update last_login_at

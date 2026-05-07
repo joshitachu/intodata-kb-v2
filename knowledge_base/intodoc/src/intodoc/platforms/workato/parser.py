@@ -27,6 +27,7 @@ from intodoc.models import (
     ProjectManifest,
     Routine,
     ScanResult,
+    ScanWarning,
     TRunJobRef,
 )
 from intodoc.scanner.walker import walk_repo
@@ -99,6 +100,19 @@ class WorkatoParser:
         self._recipe_id_index: dict[str, str] = {}
         self._asset_registry: dict[str, list[Path]] = {}
         self._parsed_recipe_data: dict[str, dict] = {}  # job_name -> cleaned recipe dict
+        # Non-fatal parse failures collected for the final ScanResult.
+        self._warnings: list[ScanWarning] = []
+        self._warn_root: Path | None = None
+
+    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
+        """Record a non-fatal scan warning alongside the usual console output."""
+        try:
+            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
+        except ValueError:
+            rel = str(file)
+        self._warnings.append(
+            ScanWarning(kind=kind, file=rel, message=message, phase=phase)
+        )
 
     # ── Content-Based Asset Classification ─────────────────────────
 
@@ -284,6 +298,10 @@ class WorkatoParser:
         """Main entry point -- orchestrates all parsing phases."""
         from intodoc.platforms.workato import WorkatoPlugin
 
+        # Reset warning collection for this scan.
+        self._warnings = []
+        self._warn_root = repo_root
+
         workato_root = self._find_workato_root(repo_root)
 
         # Phase 1: Walk and classify all files
@@ -345,6 +363,8 @@ class WorkatoParser:
             f"{len(routines)} custom adapters"
         )
 
+        stats["total_warnings"] = len(self._warnings)
+
         return ScanResult(
             platform="workato",
             repo_root=str(repo_root),
@@ -355,6 +375,7 @@ class WorkatoParser:
             routines=routines,
             manifest=project_manifest,
             stats=stats,
+            warnings=list(self._warnings),
         )
 
     # ── Phase 1: Find Workato root ──────────────────────────────────
@@ -567,6 +588,7 @@ class WorkatoParser:
                     jobs.append(job)
             except (json.JSONDecodeError, OSError) as e:
                 console.print(f"  [yellow]Warning: Failed to parse {recipe_path}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=recipe_path, message=str(e), phase="recipe")
                 continue
         return jobs
 
@@ -605,6 +627,7 @@ class WorkatoParser:
                 ))
             except (json.JSONDecodeError, OSError) as e:
                 console.print(f"  [yellow]Warning: Failed to parse {func_path}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=func_path, message=str(e), phase="function")
                 continue
         return jobs
 

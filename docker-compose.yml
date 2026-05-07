@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-intodata_kb}
       POSTGRES_USER: ${POSTGRES_USER:-admin}
@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d intodata_kb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-intodata_kb}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,8 +21,8 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -38,8 +38,8 @@ services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:latest
     ports:
-      - "0.0.0.0:8888:8888"
-      - "0.0.0.0:9999:9999"
+      - "127.0.0.1:${HINDSIGHT_API_PORT:-8888}:8888"
+      - "127.0.0.1:${HINDSIGHT_INTERNAL_PORT:-9999}:9999"
     environment:
       HINDSIGHT_API_LLM_PROVIDER: ollama
       HINDSIGHT_API_LLM_BASE_URL: http://host.docker.internal:11434/v1
@@ -64,12 +64,13 @@ services:
       context: ./RAG_pipeline/backend
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-intodata_kb}
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
       QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-documents}
       HINDSIGHT_URL: http://hindsight:8888
       HINDSIGHT_ENABLED: "true"
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
@@ -77,10 +78,20 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8001}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-IntoData Nexus}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
       APP_ENV: ${APP_ENV:-production}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
       MCP_INGEST_API_KEY: ${MCP_INGEST_API_KEY:-}
+      ALLOWED_IPS: ${ALLOWED_IPS:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -102,11 +113,13 @@ services:
     build:
       context: ./RAG_pipeline/frontend
       dockerfile: Dockerfile
+      args:
+        KB_API_URL: ${KB_API_URL:-http://host.docker.internal:8002}
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     environment:
       FASTAPI_URL: http://backend:8000
-      KB_API_URL: http://host.docker.internal:8002
+      KB_API_URL: ${KB_API_URL:-http://host.docker.internal:8002}
       HOSTNAME: 0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -128,7 +141,7 @@ services:
       context: ./knowledge_base/dashboard
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:8001:8001"
+      - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:
       MCP_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
       MCP_ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8001}

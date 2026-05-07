@@ -38,8 +38,19 @@ export function useScan() {
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, templateProfileId, resume = true }: { projectId: string; templateProfileId?: number; resume?: boolean }) =>
-      api.generate(projectId, templateProfileId, resume),
+    mutationFn: ({
+      projectId,
+      templateProfileId,
+      resume = true,
+      model,
+      writeModel,
+    }: {
+      projectId: string;
+      templateProfileId?: number;
+      resume?: boolean;
+      model?: string | null;
+      writeModel?: string | null;
+    }) => api.generate(projectId, templateProfileId, resume, model, writeModel),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }
@@ -56,6 +67,14 @@ export function useResetStatus() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (projectId: string) => api.resetStatus(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useRepairLatestGitUpdate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.repairLatestGitUpdate(projectId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }
@@ -95,6 +114,15 @@ export function useScanRuns(projectId: string | null) {
   });
 }
 
+export function useScanStatus(projectId: string | null) {
+  return useQuery({
+    queryKey: ["scan-status", projectId],
+    queryFn: () => api.getStatus(projectId!),
+    enabled: !!projectId,
+    refetchInterval: 10_000,
+  });
+}
+
 export function useDocs(projectId: string | null) {
   return useQuery({
     queryKey: ["docs", projectId],
@@ -106,7 +134,7 @@ export function useDocs(projectId: string | null) {
 export function useUpdateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, data }: { projectId: string; data: { display_name?: string; platform?: string } }) =>
+    mutationFn: ({ projectId, data }: { projectId: string; data: { display_name?: string; platform?: string; doc_generation_provider?: string | null } }) =>
       api.updateProject(projectId, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
@@ -117,5 +145,53 @@ export function useProjectUsage(projectId: string | null) {
     queryKey: ["project-usage", projectId],
     queryFn: () => api.getProjectUsage(projectId!),
     enabled: !!projectId,
+  });
+}
+
+export function useQualityHistory(projectId: string | null) {
+  return useQuery({
+    queryKey: ["quality-history", projectId],
+    queryFn: () => api.getQualityHistory(projectId!),
+    enabled: !!projectId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useQuestionnaire(projectId: string | null, runId: number | null) {
+  return useQuery({
+    queryKey: ["questionnaire", projectId, runId],
+    queryFn: () => api.getQuestionnaire(projectId!, runId!),
+    enabled: !!projectId && runId != null,
+  });
+}
+
+export function useReviews(projectId: string | null, runId?: number | null) {
+  return useQuery({
+    queryKey: ["reviews", projectId, runId ?? null],
+    queryFn: () => api.getReviews(projectId!, runId),
+    enabled: !!projectId,
+  });
+}
+
+export function useSubmitReview() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      data,
+    }: {
+      projectId: string;
+      data: Parameters<typeof api.submitReview>[1];
+    }) => api.submitReview(projectId, data),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ["reviews", variables.projectId] });
+    },
+  });
+}
+
+export function useInstructionPack() {
+  return useQuery({
+    queryKey: ["instruction-pack"],
+    queryFn: api.getInstructionPack,
   });
 }

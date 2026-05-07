@@ -77,11 +77,13 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
               <tr className="border-b border-white/[0.04] text-left font-mono text-xs text-slate-600 uppercase tracking-wider">
                 <th className="px-4 py-2.5 font-medium">Date</th>
                 <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-4 py-2.5 font-medium">Model</th>
                 <th className="px-4 py-2.5 font-medium">Profile</th>
                 <th className="px-4 py-2.5 font-medium">Duration</th>
                 <th className="px-4 py-2.5 font-medium">Tokens In</th>
                 <th className="px-4 py-2.5 font-medium">Tokens Out</th>
                 <th className="px-4 py-2.5 font-medium">Cost</th>
+                <th className="px-4 py-2.5 font-medium">Quality</th>
                 <th className="px-4 py-2.5 font-medium">Docs</th>
                 <th className="px-4 py-2.5 font-medium">Actions</th>
               </tr>
@@ -100,6 +102,20 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
                     >
                       {run.status.toUpperCase()}
                     </span>
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs font-mono">
+                    {run.model_name ? (
+                      <span className="flex flex-col gap-0.5">
+                        <span className="text-slate-400" title="Analysis model">{run.model_name.split("/")[1] ?? run.model_name}</span>
+                        {run.write_model_name && (
+                          <span className="text-accent-primary/60" title="Write model (Phase 3)">
+                            ✎ {run.write_model_name.split("/")[1] ?? run.write_model_name}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-xs">
                     {run.template_profile_id ? (
@@ -125,6 +141,24 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap font-mono text-slate-400">
                     {formatCost(run.cost_usd)}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap font-mono">
+                    {run.quality_score != null ? (
+                      <span
+                        className={
+                          run.quality_score >= 4.0
+                            ? "text-[#a0e06f]"
+                            : run.quality_score >= 3.0
+                              ? "text-amber-400"
+                              : "text-red-400"
+                        }
+                        title={`Quality score: ${run.quality_score.toFixed(2)}/5.0`}
+                      >
+                        {run.quality_score.toFixed(1)}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-slate-400 font-mono">{run.doc_count}</td>
                   <td className="px-4 py-2.5">

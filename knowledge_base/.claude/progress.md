@@ -95,6 +95,10 @@
 - [x] nginx config for dashboard
 - [x] systemd service for mcp-server
 - [x] JWT_SECRET_KEY shared across services
+- [x] EP-001 backlog realigned to generic deployment foundation
+- [x] Canonical nginx/certbot runbook documented in `deploy/RUNBOOK.md`
+- [x] Deployment smoke test documented in `deploy/SMOKE-TEST.md`
+- [ ] EP-001 runbook validated on clean reference VPS
 - [ ] Production hardening (rate limiting, CORS lockdown)
 - [ ] CI/CD pipeline
 

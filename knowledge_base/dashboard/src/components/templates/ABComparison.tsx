@@ -1,20 +1,32 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useGenerateRuns } from "../../hooks/useProjects";
-
-const BASE = "";
-
-async function fetchComparison(projectId: string, a: number, b: number) {
-  const res = await fetch(
-    `${BASE}/mcp/generate-runs/${projectId}/compare?a=${a}&b=${b}`,
-    { credentials: "include" }
-  );
-  if (!res.ok) throw new Error(`Compare failed: ${res.status}`);
-  return res.json();
-}
+import { api } from "../../api/client";
+import type { RunComparisonRun } from "../../types";
 
 interface Props {
   projectId: string;
+}
+
+function formatValue(value: unknown, suffix = "") {
+  if (value == null) return "-";
+  if (typeof value === "number") {
+    return `${Number.isInteger(value) ? value : value.toFixed(3)}${suffix}`;
+  }
+  return String(value);
+}
+
+function formatDelta(value: number | null | undefined, suffix = "") {
+  if (value == null) return "-";
+  const formatted = `${Number.isInteger(value) ? value : value.toFixed(3)}${suffix}`;
+  return value > 0 ? `+${formatted}` : formatted;
+}
+
+function qualityBreakdown(run: RunComparisonRun) {
+  const details = run.doc_quality ?? {};
+  return Object.entries(details)
+    .filter(([key, value]) => key !== "overall" && typeof value === "number")
+    .map(([key, value]) => ({ key, value: value as number }));
 }
 
 export default function ABComparison({ projectId }: Props) {
@@ -26,7 +38,7 @@ export default function ABComparison({ projectId }: Props) {
 
   const { data: comparison, isLoading } = useQuery({
     queryKey: ["run-comparison", projectId, runA, runB],
-    queryFn: () => fetchComparison(projectId, runA!, runB!),
+    queryFn: () => api.compareGenerateRuns(projectId, runA!, runB!),
     enabled: runA != null && runB != null && runA !== runB,
   });
 
@@ -85,9 +97,46 @@ export default function ABComparison({ projectId }: Props) {
       {comparison && (
         <div className="card-dark">
           <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t">
-            <h3 className="text-sm font-mono text-slate-400">
-              Run #{comparison.run_a.id} vs #{comparison.run_b.id}
-            </h3>
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-mono text-slate-400">
+                Run #{comparison.run_a.id} vs #{comparison.run_b.id}
+              </h3>
+              <span className={`px-2 py-1 rounded text-xs font-mono ${
+                comparison.verdict === "PASS"
+                  ? "bg-[#a0e06f]/10 text-[#a0e06f]"
+                  : "bg-red-500/10 text-red-400"
+              }`}>
+                {comparison.verdict}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-4 border-b border-white/[0.05]">
+            {[comparison.run_a, comparison.run_b].map((run) => (
+              <div key={run.id} className="bg-white/[0.02] rounded p-3 border border-white/[0.06]">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-mono text-xs text-slate-500">Run #{run.id}</span>
+                  <span className={`text-xs font-mono ${
+                    run.quality_pass ? "text-[#a0e06f]" : "text-amber-400"
+                  }`}>
+                    {run.quality == null ? "NO SCORE" : run.quality_pass ? "QUALITY PASS" : "QUALITY FAIL"}
+                  </span>
+                </div>
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-600">Analysis</span>
+                    <span className="font-mono text-slate-400 truncate">{run.analysis_model ?? "-"}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-600">Writing</span>
+                    <span className="font-mono text-slate-400 truncate">{run.write_model ?? "-"}</span>
+                  </div>
+                  {!run.metrics_found && (
+                    <div className="text-amber-400 pt-1">Metrics file missing; showing database fields only.</div>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Metrics comparison */}
@@ -102,28 +151,31 @@ export default function ABComparison({ projectId }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {[
+                {([
                   { label: "Doc Count", key: "doc_count" },
+                  { label: "Quality", key: "quality" },
                   { label: "Duration (ms)", key: "duration_ms" },
                   { label: "Input Tokens", key: "input_tokens" },
                   { label: "Output Tokens", key: "output_tokens" },
                   { label: "Cost (USD)", key: "cost_usd" },
-                ].map(({ label, key }) => {
+                ] as Array<{ label: string; key: keyof RunComparisonRun }>).map(({ label, key }) => {
                   const va = comparison.run_a[key];
                   const vb = comparison.run_b[key];
-                  const diff = va != null && vb != null ? vb - va : null;
+                  const diff = comparison.delta[String(key)];
+                  const pct = comparison.delta_pct[String(key)];
                   return (
                     <tr key={key} className="border-b border-white/[0.04]">
                       <td className="px-4 py-2 text-slate-400">{label}</td>
-                      <td className="px-4 py-2 font-mono text-slate-400">{va ?? "-"}</td>
-                      <td className="px-4 py-2 font-mono text-slate-400">{vb ?? "-"}</td>
+                      <td className="px-4 py-2 font-mono text-slate-400">{formatValue(va)}</td>
+                      <td className="px-4 py-2 font-mono text-slate-400">{formatValue(vb)}</td>
                       <td className={`px-4 py-2 font-mono ${
                         diff == null ? "text-slate-600" :
                         diff > 0 ? "text-amber-400" :
                         diff < 0 ? "text-[#a0e06f]" :
                         "text-slate-600"
                       }`}>
-                        {diff == null ? "-" : diff > 0 ? `+${diff}` : String(diff)}
+                        {formatDelta(diff)}
+                        {pct != null && <span className="ml-1 text-slate-600">({formatDelta(pct, "%")})</span>}
                       </td>
                     </tr>
                   );
@@ -144,6 +196,34 @@ export default function ABComparison({ projectId }: Props) {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <div className="px-4 pb-4">
+            <h4 className="text-xs font-mono text-slate-500 uppercase mb-2">
+              Quality Detail Breakdown
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {[comparison.run_a, comparison.run_b].map((run) => {
+                const breakdown = qualityBreakdown(run);
+                return (
+                  <div key={run.id} className="bg-white/[0.02] rounded p-3 border border-white/[0.06]">
+                    <div className="font-mono text-xs text-slate-500 mb-2">Run #{run.id}</div>
+                    {breakdown.length === 0 ? (
+                      <p className="text-xs text-slate-600">No per-category scores available.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {breakdown.map(({ key, value }) => (
+                          <div key={key} className="flex justify-between text-xs">
+                            <span className="text-slate-500">{key.replace(/_/g, " ")}</span>
+                            <span className="font-mono text-slate-400">{formatValue(value)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {/* Template diffs */}

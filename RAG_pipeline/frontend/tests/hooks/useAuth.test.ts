@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import React, { type ReactNode } from "react";
 
 // Mock next/navigation before any imports that use it
 const mockPush = vi.fn();
@@ -8,7 +9,34 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { renderHook, waitFor, act } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/useAuth";
+
+function createWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return React.createElement(QueryClientProvider, { client: queryClient }, children);
+  };
+}
+
+function mockUser(overrides = {}) {
+  return {
+    id: 1,
+    username: "admin",
+    email: "admin@test.com",
+    is_active: true,
+    is_superadmin: true,
+    roles: ["admin"],
+    permissions: ["manage_users"],
+    onboarding_completed: true,
+    tour_completed: true,
+    mfa_enabled: true,
+    ...overrides,
+  };
+}
 
 describe("useAuth", () => {
   beforeEach(() => {
@@ -20,34 +48,24 @@ describe("useAuth", () => {
   });
 
   it("starts in loading state", () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce(
-      new Response(null, { status: 401 })
+    vi.spyOn(global, "fetch").mockImplementationOnce(
+      () => new Promise<Response>(() => {})
     );
 
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
     expect(result.current.isLoading).toBe(true);
     expect(result.current.user).toBeNull();
   });
 
   it("sets user on successful auth", async () => {
-    const mockUser = {
-      id: 1,
-      username: "admin",
-      email: "admin@test.com",
-      is_active: true,
-      is_superadmin: true,
-      roles: ["admin"],
-      permissions: ["manage_users"],
-    };
-
     vi.spyOn(global, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify(mockUser), {
+      new Response(JSON.stringify(mockUser()), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       })
     );
 
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(result.current.isLoading).toBe(false);
@@ -62,7 +80,7 @@ describe("useAuth", () => {
       new Response(null, { status: 401 })
     );
 
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(result.current.isLoading).toBe(false);
@@ -73,26 +91,16 @@ describe("useAuth", () => {
   });
 
   it("logout clears user and redirects to login", async () => {
-    const mockUser = {
-      id: 1,
-      username: "admin",
-      email: "admin@test.com",
-      is_active: true,
-      is_superadmin: true,
-      roles: [],
-      permissions: [],
-    };
-
     vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(
-        new Response(JSON.stringify(mockUser), {
+        new Response(JSON.stringify(mockUser({ roles: [], permissions: [] })), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         })
       )
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
 
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(result.current.isAuthenticated).toBe(true);

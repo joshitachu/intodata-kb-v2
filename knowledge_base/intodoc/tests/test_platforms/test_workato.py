@@ -73,9 +73,11 @@ class TestClassifyFile:
         """Non-Workato JSON files should fall through to Generic (CONFIG)."""
         assert plugin.classify_file(Path("random.json")) == FileType.CONFIG
 
-    def test_classify_code_fallback(self, plugin):
-        """Non-Workato files should fall through to Generic classification."""
-        assert plugin.classify_file(Path("script.py")) == FileType.ROUTINE
+    def test_classify_code_fallback(self, plugin, tmp_path):
+        """Non-Workato text files should fall through to Generic classification."""
+        py = tmp_path / "script.py"
+        py.write_text("print('hello')\n")
+        assert plugin.classify_file(py) == FileType.ROUTINE
         assert plugin.classify_file(Path("query.sql")) == FileType.SQL_PATTERN
 
 

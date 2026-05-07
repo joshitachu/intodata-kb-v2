@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
   useState,
   type ReactNode,
@@ -18,6 +19,13 @@ interface OnboardingContextValue {
   tourActive: boolean;
   startTour: () => void;
   stopTour: () => void;
+  // Wizard-local ZIP queue: File objects cannot be persisted via the onboarding
+  // DB row (they don't JSON-serialize) so we stash them in memory keyed by
+  // platform id. Lost on refresh — user is expected to re-select if they
+  // abandon the wizard mid-upload.
+  zipFiles: Record<string, File>;
+  setZipFile: (platformId: string, file: File | null) => void;
+  clearZipFiles: () => void;
 }
 
 const OnboardingContext = createContext<OnboardingContextValue>({
@@ -28,11 +36,26 @@ const OnboardingContext = createContext<OnboardingContextValue>({
   tourActive: false,
   startTour: () => {},
   stopTour: () => {},
+  zipFiles: {},
+  setZipFile: () => {},
+  clearZipFiles: () => {},
 });
 
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const { data, isLoading, isError, refetch } = useOnboardingStatus();
   const [tourActive, setTourActive] = useState(false);
+  const [zipFiles, setZipFiles] = useState<Record<string, File>>({});
+
+  const setZipFile = useCallback((platformId: string, file: File | null) => {
+    setZipFiles((prev) => {
+      const next = { ...prev };
+      if (file) next[platformId] = file;
+      else delete next[platformId];
+      return next;
+    });
+  }, []);
+
+  const clearZipFiles = useCallback(() => setZipFiles({}), []);
 
   return (
     <OnboardingContext.Provider
@@ -44,6 +67,9 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         tourActive,
         startTour: () => setTourActive(true),
         stopTour: () => setTourActive(false),
+        zipFiles,
+        setZipFile,
+        clearZipFiles,
       }}
     >
       {children}

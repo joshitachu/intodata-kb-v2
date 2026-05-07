@@ -8,7 +8,8 @@
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
-    --primary: 217 100% 15%;
+    /* Deep indigo — premium, saturated enough to feel branded, dark enough to read enterprise */
+    --primary: 225 72% 30%;
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96.1%;
     --secondary-foreground: 222.2 47.4% 11.2%;
@@ -20,8 +21,20 @@
     --destructive-foreground: 210 40% 98%;
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 26 99% 63%;
+    --ring: 225 72% 45%;
     --radius: 0.5rem;
+
+    /* Elevation scale — soft, low-spread shadows for Linear/Vercel-style depth */
+    --elevation-xs: 0 1px 2px 0 hsl(224 20% 12% / 0.04);
+    --elevation-sm:
+      0 1px 2px 0 hsl(224 20% 12% / 0.05),
+      0 1px 3px 0 hsl(224 20% 12% / 0.04);
+    --elevation-md:
+      0 2px 4px -1px hsl(224 20% 12% / 0.06),
+      0 4px 8px -2px hsl(224 20% 12% / 0.06);
+    --elevation-lg:
+      0 4px 6px -2px hsl(224 20% 12% / 0.05),
+      0 10px 20px -4px hsl(224 20% 12% / 0.08);
   }
 
   .dark {
@@ -29,7 +42,7 @@
     --foreground: 210 40% 98%;
     --card: 222.2 84% 4.9%;
     --card-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
+    --primary: 231 92% 72%;
     --primary-foreground: 222.2 47.4% 11.2%;
     --secondary: 217.2 32.6% 17.5%;
     --secondary-foreground: 210 40% 98%;
@@ -41,7 +54,18 @@
     --destructive-foreground: 210 40% 98%;
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --ring: 231 92% 72%;
+
+    --elevation-xs: 0 1px 2px 0 hsl(0 0% 0% / 0.3);
+    --elevation-sm:
+      0 1px 2px 0 hsl(0 0% 0% / 0.35),
+      0 1px 3px 0 hsl(0 0% 0% / 0.3);
+    --elevation-md:
+      0 2px 4px -1px hsl(0 0% 0% / 0.4),
+      0 4px 8px -2px hsl(0 0% 0% / 0.4);
+    --elevation-lg:
+      0 4px 6px -2px hsl(0 0% 0% / 0.5),
+      0 10px 20px -4px hsl(0 0% 0% / 0.5);
   }
 }
 
@@ -117,6 +141,22 @@
   animation: message-enter 0.2s ease-out;
 }
 
+/* Celebration entrance — used by the onboarding Ready step */
+@keyframes step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-step-enter {
+  animation: step-enter 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
@@ -145,6 +185,109 @@
 
 .chat-prose .prose :where(code):not(:where(pre *)):not(:where([class~="not-prose"] *)) {
   font-size: 0.8125rem;
+}
+
+/* ── Product tour (driver.js) brand overrides ───────────────── */
+
+.driver-popover.intodata-tour {
+  background-color: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  box-shadow: var(--elevation-lg);
+  padding: 20px 20px 16px;
+  max-width: 340px;
+}
+
+.driver-popover.intodata-tour .driver-popover-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: hsl(var(--foreground));
+  margin-bottom: 6px;
+  padding: 0;
+}
+
+.driver-popover.intodata-tour .driver-popover-description {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: hsl(var(--muted-foreground));
+  margin-bottom: 14px;
+  padding: 0;
+}
+
+.driver-popover.intodata-tour .driver-popover-progress-text {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  letter-spacing: 0.02em;
+  padding: 0;
+}
+
+.driver-popover.intodata-tour .driver-popover-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+  margin-top: 4px;
+}
+
+.driver-popover.intodata-tour .driver-popover-navigation-btns {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.driver-popover.intodata-tour .driver-popover-prev-btn,
+.driver-popover.intodata-tour .driver-popover-next-btn {
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  border-radius: 6px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 150ms, color 150ms, border-color 150ms;
+  text-shadow: none;
+}
+
+.driver-popover.intodata-tour .driver-popover-prev-btn {
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  border-color: hsl(var(--border));
+}
+
+.driver-popover.intodata-tour .driver-popover-prev-btn:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted) / 0.6);
+}
+
+.driver-popover.intodata-tour .driver-popover-next-btn {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  box-shadow: var(--elevation-xs);
+}
+
+.driver-popover.intodata-tour .driver-popover-next-btn:hover {
+  background: hsl(var(--primary) / 0.92);
+}
+
+.driver-popover.intodata-tour .driver-popover-close-btn {
+  top: 10px;
+  right: 10px;
+  color: hsl(var(--muted-foreground));
+  transition: color 150ms;
+}
+
+.driver-popover.intodata-tour .driver-popover-close-btn:hover {
+  color: hsl(var(--foreground));
+}
+
+.driver-popover.intodata-tour .driver-popover-arrow-side-top.driver-popover-arrow,
+.driver-popover.intodata-tour .driver-popover-arrow-side-bottom.driver-popover-arrow,
+.driver-popover.intodata-tour .driver-popover-arrow-side-left.driver-popover-arrow,
+.driver-popover.intodata-tour .driver-popover-arrow-side-right.driver-popover-arrow {
+  border-color: hsl(var(--card));
 }
 
 /* ── Topology graph animations ──────────────────────────────── */

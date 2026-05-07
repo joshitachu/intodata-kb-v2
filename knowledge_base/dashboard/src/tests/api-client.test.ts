@@ -41,6 +41,66 @@ describe("API client", () => {
     );
   });
 
+  it("listPlatforms calls discovery endpoint", async () => {
+    const mockData = {
+      platforms: [
+        {
+          id: "talend",
+          label: "Talend",
+          unit_label: "Job",
+          unit_label_plural: "Jobs",
+          badge_color: "#4285F4",
+          accent_color: "#4285F4",
+        },
+      ],
+    };
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mockData), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const result = await api.listPlatforms();
+    expect(result.platforms[0].id).toBe("talend");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/mcp/platforms",
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
+
+  it("listModels calls discovery endpoint", async () => {
+    const mockData = {
+      models: [
+        {
+          id: "moonshot/kimi-k2.6",
+          provider: "moonshot",
+          label: "Kimi k2.6",
+          supports_analysis: true,
+          supports_writing: true,
+          is_default_analysis: true,
+          is_default_writing: true,
+          is_local: false,
+        },
+      ],
+    };
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mockData), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const result = await api.listModels();
+    expect(result.models[0].id).toBe("moonshot/kimi-k2.6");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/mcp/models",
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
+
   it("throws on non-OK response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("Server Error", { status: 500 })

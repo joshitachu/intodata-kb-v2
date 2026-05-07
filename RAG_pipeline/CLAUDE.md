@@ -207,6 +207,14 @@ pytest                               # Backend tests
 npm test                             # Frontend tests
 ```
 
+## Deployment Foundation Notes (EP-001)
+
+- Canonical deployment now uses nginx/certbot from root `deploy/deploy-client.sh`; Caddy is legacy/deferred.
+- RAG backend/frontend are two of the six Docker services validated by `deploy/SMOKE-TEST.md`.
+- Ollama remains host-level and must be reachable from containers at `host.docker.internal:11434`.
+- Backend `/health` is part of EP-001 acceptance and should verify database, Qdrant, Ollama, and Hindsight state.
+- EP-001 remains open until the generic runbook is executed on a clean reference VPS.
+
 ## Environment
 ```bash
 # backend/.env

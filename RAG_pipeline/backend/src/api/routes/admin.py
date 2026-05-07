@@ -3,20 +3,40 @@
 from __future__ import annotations
 
 import logging
+import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from sqlalchemy import func as sa_func
 
 from src.api.dependencies import AdminUser, AuditViewer, DBSession, ManagerUser, ProjectManager
 from src.api.routes.auth import limiter
-from src.auth.security import hash_password
+from src.auth.security import hash_password, hash_token
 from src.auth.service import AuthService
-from src.db.models import AuditLog, Permission, ProjectAssignment, QueryUsage, Role, User, UserOnboarding
+from src.config import settings
+from src.db.models import (
+    AccessRequest,
+    AuditLog,
+    Permission,
+    ProjectAssignment,
+    QueryUsage,
+    Role,
+    User,
+    UserInvite,
+    UserOnboarding,
+)
 from src.services.audit_service import AuditService
+from src.services.email_service import (
+    EmailSendError,
+    send_invite_email,
+    send_rejection_email,
+    send_test_email,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +75,14 @@ class UpdateRoleRequest(BaseModel):
     permission_ids: list[int] | None = None
 
 
+class RejectAccessRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class TestEmailRequest(BaseModel):
+    to: str = Field(..., min_length=3, max_length=255)
+
+
 class UserResponse(BaseModel):
     id: int
     username: str
@@ -76,6 +104,206 @@ class RoleResponse(BaseModel):
     name: str
     description: str | None
     permissions: list[PermissionResponse] = Field(default_factory=list)
+
+
+def _invite_payload(invite: UserInvite | None) -> dict | None:
+    if invite is None:
+        return None
+    return {
+        "id": invite.id,
+        "email": invite.email,
+        "status": invite.status,
+        "expires_at": invite.expires_at.isoformat(),
+        "accepted_user_id": invite.accepted_user_id,
+        "accepted_at": invite.accepted_at.isoformat() if invite.accepted_at else None,
+        "created_at": invite.created_at.isoformat(),
+    }
+
+
+def _access_request_payload(row: AccessRequest) -> dict:
+    return {
+        "id": row.id,
+        "email": row.email,
+        "full_name": row.full_name,
+        "status": row.status,
+        "reviewed_by": row.reviewed_by,
+        "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+        "rejection_reason": row.rejection_reason,
+        "created_at": row.created_at.isoformat(),
+        "invite": _invite_payload(row.invite),
+    }
+
+
+def _new_invite_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+
+# --- Access requests / invites ---
+
+@router.get("/access-requests")
+async def list_access_requests(
+    admin: AdminUser,
+    db: DBSession,
+    status: str | None = Query(default="pending"),
+):
+    stmt = (
+        select(AccessRequest)
+        .options(selectinload(AccessRequest.invite))
+        .order_by(AccessRequest.created_at.desc())
+    )
+    if status:
+        stmt = stmt.where(AccessRequest.status == status)
+    rows = (await db.execute(stmt)).scalars().all()
+
+    invites = (
+        await db.execute(
+            select(UserInvite)
+            .where(UserInvite.status.in_(["pending", "sent"]))
+            .order_by(UserInvite.created_at.desc())
+        )
+    ).scalars().all()
+    request_invite_ids = {r.invite_id for r in rows if r.invite_id}
+    standalone_invites = [i for i in invites if i.id not in request_invite_ids]
+
+    return {
+        "requests": [_access_request_payload(row) for row in rows],
+        "invites": [_invite_payload(invite) for invite in standalone_invites],
+    }
+
+
+@router.post("/access-requests/{request_id}/approve")
+async def approve_access_request(
+    request: Request, request_id: int, admin: AdminUser, db: DBSession
+):
+    row = (
+        await db.execute(select(AccessRequest).where(AccessRequest.id == request_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Access request not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="Access request is already reviewed")
+
+    existing_user = (
+        await db.execute(select(User).where(User.email == row.email))
+    ).scalar_one_or_none()
+    if existing_user is not None:
+        raise HTTPException(status_code=409, detail="A user with this email already exists")
+
+    token = _new_invite_token()
+    invite = UserInvite(
+        email=row.email,
+        token_hash=hash_token(token),
+        status="pending",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=48),
+        created_by=admin.id,
+        full_name=row.full_name,
+    )
+    db.add(invite)
+    await db.flush()
+
+    try:
+        setup_url = send_invite_email(row.email, token)
+    except EmailSendError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    row.status = "approved"
+    row.reviewed_by = admin.id
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.invite_id = invite.id
+    row.invite = invite
+    await db.commit()
+
+    return {
+        "message": "Invite sent",
+        "request": _access_request_payload(row),
+        "setup_url": setup_url if settings.app_env != "production" else None,
+    }
+
+
+@router.post("/access-requests/{request_id}/reject")
+async def reject_access_request(
+    request_id: int,
+    body: RejectAccessRequest,
+    admin: AdminUser,
+    db: DBSession,
+):
+    row = (
+        await db.execute(select(AccessRequest).where(AccessRequest.id == request_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Access request not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="Access request is already reviewed")
+
+    row.status = "rejected"
+    row.reviewed_by = admin.id
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.rejection_reason = body.reason
+    await db.commit()
+
+    try:
+        send_rejection_email(row.email, body.reason)
+    except EmailSendError:
+        logger.warning("Failed to send rejection email to %s", row.email)
+
+    return {"message": "Access request rejected", "request": _access_request_payload(row)}
+
+
+@router.post("/invites/{invite_id}/resend")
+async def resend_invite(request: Request, invite_id: int, admin: AdminUser, db: DBSession):
+    invite = (
+        await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
+    ).scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if invite.status not in {"pending", "sent"}:
+        raise HTTPException(status_code=409, detail="Invite cannot be resent")
+
+    token = _new_invite_token()
+    invite.token_hash = hash_token(token)
+    invite.expires_at = datetime.now(timezone.utc) + timedelta(hours=48)
+    invite.status = "pending"
+    invite.created_by = admin.id
+    await db.flush()
+
+    try:
+        setup_url = send_invite_email(invite.email, token)
+    except EmailSendError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    await db.commit()
+    return {
+        "message": "Invite resent",
+        "invite": _invite_payload(invite),
+        "setup_url": setup_url if settings.app_env != "production" else None,
+    }
+
+
+@router.post("/invites/{invite_id}/revoke")
+async def revoke_invite(invite_id: int, admin: AdminUser, db: DBSession):
+    invite = (
+        await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
+    ).scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if invite.status in {"accepted", "revoked"}:
+        raise HTTPException(status_code=409, detail="Invite cannot be revoked")
+
+    invite.status = "revoked"
+    await db.commit()
+    return {"message": "Invite revoked", "invite": _invite_payload(invite)}
+
+
+@router.post("/email/test")
+async def test_email(body: TestEmailRequest, admin: AdminUser, db: DBSession):
+    try:
+        send_test_email(body.to.strip().lower())
+    except EmailSendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"message": "Test email sent"}
 
 
 # --- User management ---

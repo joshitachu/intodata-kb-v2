@@ -1,8 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Building2, Loader2 } from "lucide-react";
+import { Building2 } from "lucide-react";
 import { useSaveWorkspace } from "@/hooks/useOnboarding";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
 
 interface Props {
   initial: string | null | undefined;
@@ -32,58 +36,59 @@ export function WorkspaceStep({ initial, suggested, onBack, onNext }: Props) {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-10">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
-          <Building2 className="h-5 w-5 text-primary" />
-        </div>
-        <div>
-          <h2 className="text-2xl font-semibold">Name your workspace</h2>
-          <p className="text-sm text-muted-foreground">
-            This is the company or team this environment belongs to — we&rsquo;ll use
-            it throughout the app.
+    <div className="w-full max-w-xl mx-auto px-6">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Building2 className="h-5 w-5" aria-hidden />
+            </span>
+            <div>
+              <h2 className="text-xl font-semibold text-foreground">
+                Name your workspace
+              </h2>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                The company or team this environment belongs to.
+              </p>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardBody className="space-y-2">
+          <Label htmlFor="workspace-name">Workspace name</Label>
+          <Input
+            id="workspace-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={200}
+            placeholder="Acme Corp"
+            autoFocus
+            hasError={Boolean(error)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !save.isPending) handleNext();
+            }}
+          />
+          <p className="text-xs text-muted-foreground">
+            You can change this later in settings.
           </p>
-        </div>
-      </div>
+          {error && (
+            <p className="text-sm text-destructive mt-1">{error}</p>
+          )}
+        </CardBody>
 
-      <label
-        htmlFor="workspace-name"
-        className="block text-sm font-medium mb-1.5"
-      >
-        Workspace name
-      </label>
-      <input
-        id="workspace-name"
-        type="text"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        maxLength={200}
-        placeholder="Acme Corp"
-        autoFocus
-        className="w-full px-3 py-2.5 border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-      />
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        You can change this later in settings.
-      </p>
-
-      {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
-
-      <div className="flex justify-between items-center mt-10">
-        <button
-          onClick={onBack}
-          className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          Back
-        </button>
-        <button
-          onClick={handleNext}
-          disabled={save.isPending}
-          className="px-6 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
-        >
-          {save.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Continue
-        </button>
-      </div>
+        <CardFooter>
+          <Button variant="ghost" size="md" onClick={onBack}>
+            Back
+          </Button>
+          <Button
+            size="md"
+            onClick={handleNext}
+            isLoading={save.isPending}
+          >
+            Continue
+          </Button>
+        </CardFooter>
+      </Card>
     </div>
   );
 }

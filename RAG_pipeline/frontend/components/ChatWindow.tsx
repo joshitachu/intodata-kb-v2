@@ -1,11 +1,12 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import { FolderOpen, Sparkles } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
 import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
+import { useUserProjects } from "@/hooks/useUserProjects";
 import type { ChatMode } from "./ModeToggle";
 import type {
   ConversationDetailResponse,
@@ -51,6 +52,20 @@ export function ChatWindow({
   const isDeepDive = mode === "deep-dive";
   const inputDisabled = isDeepDive && !selectedProject;
 
+  const { data: userProjectsData } = useUserProjects();
+  const selectedProjectName = !isDeepDive
+    ? userProjectsData?.projects.find((p) => p.id === selectedProject)?.display_name
+    : undefined;
+
+  // Deep dive content exists independently of whether a conversation record loaded
+  const hasDeepDiveContent =
+    isDeepDive &&
+    deepDiveState &&
+    (deepDiveState.isStreaming ||
+      deepDiveState.content ||
+      deepDiveState.thinking ||
+      deepDiveState.error);
+
   function handleSend(message: string, images?: string[]) {
     onSendMessage({ query: message, project_id: selectedProject || undefined, images });
   }
@@ -66,10 +81,18 @@ export function ChatWindow({
     </>
   );
 
-  // Welcome screen - no conversation selected
-  if (!conversation && !isLoading) {
+  // Welcome screen - no conversation selected, and no active deep dive to show
+  if (!conversation && !isLoading && !hasDeepDiveContent) {
     return (
-      <div className="flex-1 flex flex-col h-full">
+      <div className="flex-1 flex flex-col h-full relative">
+        {selectedProjectName && (
+          <div className="absolute top-3 right-4 z-10 pointer-events-none">
+            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border bg-background/80 backdrop-blur-sm shadow-sm text-sm text-muted-foreground whitespace-nowrap">
+              <FolderOpen className="h-3.5 w-3.5 text-primary/70 shrink-0" />
+              <span>{selectedProjectName}</span>
+            </div>
+          </div>
+        )}
         <div className="flex-1 flex flex-col items-center justify-center px-4">
           <div className="max-w-md text-center space-y-4">
             <div>
@@ -108,13 +131,16 @@ export function ChatWindow({
                 : "Ask about your documents..."
             }
           />
+          <p className="text-xs text-muted-foreground text-center pb-2">
+            AI can make mistakes. Always review responses before acting on them.
+          </p>
         </div>
       </div>
     );
   }
 
-  // Loading state
-  if (isLoading || !conversation) {
+  // Loading state - but not when deep dive content should be shown
+  if ((isLoading || !conversation) && !hasDeepDiveContent) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="h-6 w-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
@@ -123,10 +149,19 @@ export function ChatWindow({
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden h-full">
+    <div className="flex-1 flex flex-col overflow-hidden h-full relative">
+      {selectedProjectName && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border bg-background/80 backdrop-blur-sm shadow-sm text-xs text-muted-foreground whitespace-nowrap">
+            <FolderOpen className="h-3 w-3 text-primary/70 shrink-0" />
+            <span>{selectedProjectName}</span>
+          </div>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto">
         <MessageList
-          messages={conversation.messages}
+          messages={conversation?.messages ?? []}
+          conversationId={conversation?.id ?? null}
           streamingMessage={isDeepDive ? null : streamingMessage}
           pendingUserMessage={pendingUserMessage}
           deepDiveState={isDeepDive ? deepDiveState : null}
@@ -150,6 +185,9 @@ export function ChatWindow({
               : "Ask a follow-up..."
           }
         />
+        <p className="text-xs text-muted-foreground text-center pb-2">
+          AI can make mistakes. Always review responses before acting on them.
+        </p>
       </div>
     </div>
   );

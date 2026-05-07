@@ -5,6 +5,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+ARG KB_API_URL=http://host.docker.internal:8002
+ENV KB_API_URL=$KB_API_URL
 RUN npm run build
 
 FROM node:18-alpine AS runner

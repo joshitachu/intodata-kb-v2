@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { usePlatforms } from "../../hooks/useDiscovery";
 import { useCreateTemplate, useCreateVersion } from "../../hooks/useTemplates";
 
 // Only non-policy categories are available for manual creation.
@@ -39,6 +40,8 @@ export default function NewTemplateModal({ open, onClose, onCreated }: Props) {
 
   const createTemplate = useCreateTemplate();
   const createVersion = useCreateVersion();
+  const { data: platformsData } = usePlatforms();
+  const platforms = platformsData?.platforms ?? [];
   const isPending = createTemplate.isPending || createVersion.isPending;
 
   function reset() {
@@ -199,9 +202,14 @@ export default function NewTemplateModal({ open, onClose, onCreated }: Props) {
               className="input-dark w-full"
             >
               <option value="">Any</option>
-              <option value="talend">Talend</option>
-              <option value="workato">Workato</option>
-              <option value="lobster">Lobster</option>
+              {platforms.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+              {platform && !platforms.some((p) => p.id === platform) && (
+                <option value={platform}>{platform}</option>
+              )}
             </select>
           </div>
         </div>

@@ -13,6 +13,8 @@
 | RAG push server-side | `_run_generate_background` calls `RagBridge.push_docs()` | Claude prompt should NOT call `insert_to_rag` -- server handles it | 2026-02 |
 | SSE streaming | Real-time log streaming from MCP server to dashboard | Dashboard shows live operation progress | 2026-02 |
 | JWT auth | Shared JWT_SECRET_KEY across RAG backend, MCP server, dashboard | Stateless auth, works across all services | 2026-03 |
+| Webhook auth | GitHub webhook uses HMAC-SHA256 (`X-GitHub-Signature-256`), NOT JWT | GitHub cannot send cookies; webhook router is registered without `require_auth` | 2026-04 |
+| Analysis cache | After every successful generation, `docs/_analysis/` is copied to `output/{project_id}/analysis_cache/` | Enables incremental webhook regen: unchanged groups skip Phase 2 by restoring cached summaries into `docs_staging/_analysis/` before generation with `resume=True` | 2026-04 |
 | Deploy user | Dedicated `intodoc` user on VPS | Security isolation for production deployment | 2026-03 |
 | .agent folder pattern | AI Jason pattern: CLAUDE.md (rules) + .agent/ (system, SOPs, decisions, tasks) | CLAUDE.md stays concise (~100 lines), detailed docs are discoverable via README.md index | 2026-02 |
 | Dual server mode | `--mcp` (stdio) and `--serve` (HTTP) in same codebase | Share business logic between Claude Code and dashboard | 2026-02 |
@@ -36,6 +38,18 @@
 | Phase 2.8 analysis bundling | Deterministic Python script bundles analysis per Phase 3 agent; replaces agent-side grep/head/tail | Large projects (>400KB analysis) can't fit in 200K context; server-side section selection is reliable, agent-side grep is not | 2026-04 |
 | Depth tier scaling | small (<50 jobs, 0.6x), medium (50-199, 1.0x), large (200+, 1.5x) minimum line targets | Large projects need proportionally deeper docs; prevents the paradox of more jobs producing less content | 2026-04 |
 | 4-agent Phase 3 split | Projects >=200 jobs use 4 agents (Core, Business+Ops, Patterns, User) instead of 3 | Fewer docs per agent = more output headroom per doc; Patterns+User was overloaded with 5 docs at large scale | 2026-04 |
+| Custom provider investigator loop | API-model custom harness now runs a Python-owned JSON action loop before Phase 2 | Gets Claude-Code-like investigation without Claude CLI or LangChain in production path; model can request read/search/list, but Python controls permissions, validation, artifact writes, and phase gates | 2026-04 |
+| Two-provider doc gen design | Only `claude-cli` and `custom harness` providers; orchestrator.py + tools.py deleted | CLI prompt IS orchestration; harness uses per-call focused prompts. They share the same `ANALYSIS_GUIDE.md` content (not the same prompts). `DocGenContext` holds only shared fields; cli-only computations live in `_build_prompt()`. | 2026-04 |
+| Analysis guide not stripped for harness | `_adapt_legacy_text()` removed from `prompt_packs.py`; guide content passes through unmodified | The guide is about semantic extraction targets, not orchestration — stripping it degraded harness output quality silently. Full guide now reaches harness model calls via `_analysis_prompt_pack.md`. | 2026-04 |
+| Config-driven generation constants | All bundle limits, QS thresholds, token caps, and RAG timeouts are Pydantic Settings fields (MCP_ prefix) | Eliminates magic numbers scattered across 4 files; operator can tune via env vars without code changes | 2026-04 |
+| RAG push filter: top-level NN_*.md only | `_read_md_files` uses `glob("*.md")` + digit-prefix filter, not `rglob("**/*.md")` | `_assessment/`, `_analysis/`, `_investigation/` subdirs contain system prompts and debug output that must not appear in user query results | 2026-04 |
+| Doc quality scorer scales with unit_count | `_scaled_min_lines(doc_key, unit_count)` applies sqrt(unit_count/50) clamped [0.3x, 2.0x] | Static thresholds calibrated for 500-job Talend project incorrectly graded 17-recipe Workato project as failing; scoring must be relative to project size | 2026-04 |
+| phase3_max_tokens = 32000 | deepseek-v4-pro (and kimi-k2.6) support 32K output tokens; config default raised from 10000 | Old 10000 cap truncated docs mid-sentence — root cause of quality score 2.38/5.0 on plsss | 2026-04 |
+| context_max_tokens pre-flight guard | Estimate tokens before every API call; raise at 900K, warn at 85% | Prevents silent context overflows that waste the full API cost and produce no output; configurable via MCP_CONTEXT_MAX_TOKENS | 2026-04 |
+| DATA_FLOWS CSV-only (no JSON base) | 03_DATA_FLOWS_LINEAGE overrides base names list to CSV versions only | entity_index + usage_index were loaded twice (JSON base + CSV extra = ~925 KB duplicate); CSVs are more readable for LLMs and cover the same data | 2026-04 |
+| Phase B: native tool-use loop | list_artifacts/read_artifact tools on OpenAICompatibleProvider + AnthropicProvider; Ollama keeps single-shot fallback; supports_tools flag routes call sites in harness.py | Model pulls context on demand instead of Python front-loading; recovers from non-standard filenames; context_bytes=0 for tool-use paths eliminates context overflow risk | 2026-04 |
+| DeepSeek multi-turn reasoning_content | complete_with_tools() echoes reasoning_content back in assistant messages when present | DeepSeek thinking mode returns reasoning_content in every response; multi-turn loops must include it in history or API returns 400. Single-shot complete() unaffected. No-op for non-thinking models. | 2026-04 |
+| Platform-agnostic provider requirement | No Claude CLI dependency; all features must work with deepseek/kimi/Anthropic/Ollama swappable at runtime | Anthropic partnership (token resale) requires Claude support but architecture must not be Claude-only; tool-use implementation uses OpenAI function-calling format which all three cloud providers support | 2026-04 |
 
 ## Code Patterns
 
@@ -70,6 +84,7 @@
 | Doc generation pipeline | 2026-02 | 4-phase workflow, parallel sub-agents, staging dir |
 | Template management system | 2026-03-24 | DB-backed templates, versioning, profiles, A/B comparison, dashboard UI |
 | Scoring pipeline (Phase 2.6) | 2026-03-24 | 8-dimension rubric, anti-patterns, red flags, security checklist, scorecard output |
+| Custom investigator loop | 2026-04-25 | `providers/custom/investigator.py`; JSON actions (`read_file`, `search_text`, `list_dir`, `finish`), validated `_investigation/` artifacts, Phase 2/3 evidence threading, critic/expander pass |
 | Documentation restructuring | 2026-02-19 | .agent pattern, SOPs, system docs |
 | Fix stuck status | 2026-03-03 | Reset endpoint, polling fallback, reset button |
 | JWT auth integration | 2026-03-04 | Shared JWT across all services |
@@ -96,9 +111,29 @@
 - Background sub-agents may return empty output files. Use `TaskOutput` or `resume` to retrieve results. Plan for fallback.
 - Doc generation uses staging dir (`docs_staging/`). Server swaps to `docs/` on success, pushes to RAG automatically.
 - Do NOT add `insert_to_rag` to the Claude Code prompt -- RAG push is server-side.
+- Custom API provider has its own investigator loop now. The model never writes files directly in that phase. It returns JSON actions only; Python executes read-only tools inside `docs_staging/`, validates evidence, and writes `_investigation/{group}.json` + `.md`. If investigation coverage fails, Phase 2 must not start.
 - Very large docs (e.g. 17_DATA_QUALITY.md with 1,102 embedded rules) may fail RAG ingestion with 500 errors. Consider splitting.
 - SSE-only UI updates are fragile -- always pair with polling as a fallback.
 - Stuck states need an explicit user escape hatch (reset button) since disabling all actions locks the user out.
+
+### Custom Provider Testing
+- Focused regression command for the custom provider:
+  ```bash
+  cd knowledge_base/mcp-server
+  PYTHONDONTWRITEBYTECODE=1 pytest tests/test_providers/test_custom_provider.py
+  ```
+- Lint command for the touched custom provider code:
+  ```bash
+  cd knowledge_base/mcp-server
+  ruff check src/mcp_server/providers/custom tests/test_providers/test_custom_provider.py
+  ```
+- Runtime smoke test for the investigator feature:
+  1. Configure `MCP_DOC_GENERATION_PROVIDER=custom` and a real API model (`moonshot/kimi-k2.6`, `openai/<model>`, or another supported `provider/model` string).
+  2. Generate docs for a small scanned project.
+  3. Watch logs for `[custom] Investigation complete` and `[custom] Investigation coverage gate passed`.
+  4. During staging, inspect `_investigation/*.json` and `_investigation/*.md` for exact canonical unit names, source files, snippets, and categories.
+  5. After success, confirm `provider_calls.json` includes phase `investigation` entries. `_preprocess/` and `_analysis/` are cleaned; `_investigation/` is kept as audit evidence.
+- Full `pytest` in `mcp-server` currently has an unrelated SQLite fixture blocker: PostgreSQL `JSONB` column `generate_runs.template_snapshot` cannot compile under SQLite. The provider test file passes independently.
 
 ### Scanner
 - Workato file discovery uses content-based classification (`_classify_json_content`), NOT filename patterns
@@ -115,6 +150,11 @@
 - Connection matching uses REPOSITORY_PROPERTY_TYPE refs, not name heuristics
 
 ### Deployment / Systemd
+
+- **EP-001 canonical deployment path is nginx/certbot, not Caddy.** As of 2026-05-05, EP-001 is generic Deployment Foundation. Use `deploy/deploy-client.sh`, `deploy/nginx/nexus-client.conf.template`, `deploy/mcp-server@.service`, `deploy/RUNBOOK.md`, and `deploy/SMOKE-TEST.md` for new deployment work. Caddy files remain legacy/deferred and should not be used as EP-001 acceptance unless a future story explicitly revives them.
+- **Six Docker services plus host MCP API are the deployment health boundary.** Docker Compose covers `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, and `dashboard`. MCP API is required but runs via systemd (`mcp-server@<client>.service`), so runbooks and smoke tests must verify both `docker compose ps` and `/mcp/health`.
+- **EP-001 is not accepted by docs alone.** Backlog/docs are aligned, but final acceptance requires executing `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md` on a clean reference VPS, including HTTPS/security headers, login/logout, ingest, streaming query, dashboard, Ollama container access, and IP allowlisting.
+
 - **Editing `deploy/mcp-server.service` in the repo does NOT update the installed unit.** The systemd unit at `/etc/systemd/system/mcp-server.service` must be re-copied + `systemctl daemon-reload` + `systemctl restart mcp-server` whenever the repo file changes (working directory, venv path, env file, etc.). On 2026-04-10 this caused the v2 checkout's MCP server to keep running stale code from a Mar-24 process for 2+ weeks; the topology endpoint `/mcp/projects/{id}/graph` returned FastAPI's default 404 because the route did not exist in the in-memory binary.
 - **After adding a new Python dependency to `mcp-server/pyproject.toml`, you MUST `pip install`** it into the venv that systemd uses. Editable installs do NOT auto-install new deps -- they only re-link source files. The `ollama` package was added to v2 deps but never installed, crash-looping the service with `ModuleNotFoundError: No module named 'ollama'` after the unit was finally re-installed.
 - **Canonical data location is now under `intodata-kb-v2/`**: `intodoc-output/` and `output/` live at `/home/intodata/intodata-kb-v2/knowledge_base/{intodoc-output,output}`. The old paths under `/home/intodata/intodata-kb/knowledge_base/` are now symlinks pointing at v2 as a temporary safety net.
@@ -124,6 +164,11 @@
 - **`/projects/{id}/graph` synthesizes `job_connections_used` / `connection_used_by` at request time when the manifest is missing `job_external_systems`.** This is the legacy-scan fallback path in `_derive_systems_from_job_json` -> `_fallback_talend_system` (`mcp-server/src/mcp_server/api/routes/projects.py`). Modern scans populate `job_external_systems` explicitly and bypass this path entirely. The Talend heuristic strips a leading `t` and trailing `Input/Output/Connection/...` suffixes from the component type to guess a system name -- so it MUST exclude every internal Talend component type that carries non-system payloads, otherwise it produces hub-shaped fake-system noise that wrecks topology rendering performance for legacy scans. Internal components to exclude: tMap, tRunJob, tPrejob, tPostjob, tWarn, tDie, tLog* (tLogRow, tLogCatcher), tStatCatcher, tFlowMeter, tFlowMeterCatcher, tChronometerStart, tChronometerStop, tAssert, tAssertCatcher, tJava*, tJavaRow, tJavaFlex, tFixedFlowInput, tFlowToIterate, tSetGlobalVar, tContextLoad, tRoute*, tUnite, tReplicate, tSortRow, tFilterRow, tAggregateRow, tFile* (Input/Output Delimited/Excel, List, Delete, Copy, Exist), tWriteJSONField, tExtract*Field, tSchemaComplianceCheck, tSleep, tLoop, tMsgBox, tBufferInput, tBufferOutput, tNormalize, tDenormalize, tIterateToFlow.
 - **The `tRunJob` family wraps internal job-call wiring whose payload looks like `REFERENCE:sendToMonitoringMOM`, `REFERENCE:Trigger_Next_Interface_92`, etc.** When this leaks through the suffix-stripping path it becomes a synthetic "REFERENCE:..." system that fans out across the entire view (one per called job). Always filter `system.startswith("REFERENCE")` defensively in the Talend branch of `_derive_systems_from_job_json` AND keep the tRunJob family in `_FALLBACK_INTERNAL_COMPONENTS`. Cap the fallback's per-job result at 6 systems (`sorted(systems)[:6]`) -- modern scans bypass this so the cap only floors heuristic noise on legacy scans.
 - **Symptoms when this gets out of hand**: scherpenhuizen-talend (legacy scan) was returning ~37 connection nodes and ~256 job-conn edges from a manifest that on disk had zero connection data; the resulting hub-shaped graph (Oracle 29 jobs, REFERENCE:sendToMonitoringMOM 27 jobs) made the topology view stutter on hover and on every direction/compact toggle. Round 3 of the topology perf pass (2026-04-10) cleaned this up.
+
+### RBAC is duplicated across MCP server and RAG backend
+
+- **The MCP server and the RAG backend each have their own RBAC code path against the same PostgreSQL tables (`users`, `user_roles`, `role_permissions`, `permissions`, `project_assignments`).** RAG backend uses SQLAlchemy via `get_user_project_ids()` in `RAG_pipeline/backend/src/rbac/permissions.py`; MCP server uses raw-SQL helpers in `mcp-server/src/mcp_server/api/routes/projects.py` (`_get_user_is_superadmin`, `_get_user_permission_codenames`, `_get_assigned_project_ids`) plus `require_project_access()` in `mcp-server/src/mcp_server/api/permissions.py`. **Any change to the permission model (new codename, new role, change to assignment semantics) must be made in BOTH services or the two surfaces will disagree.**
+- **Routes that need RBAC on the MCP side are easy to miss.** Router-level `dependencies=[Depends(require_auth)]` only guarantees the user is authenticated, not that they can see the `project_id`. Every new route under `/projects/{project_id}/...` must either call `await require_project_access(request, project_id)` explicitly, or filter its output by user assignment. On 2026-04-20 three routes were found missing this: `/deep-dive/projects` returned every project, and `/projects/{id}/graph` + `/projects/{id}/jobs/{job_name}/detail` accepted any project_id from any authenticated user. Fixed by mirroring the `list_projects()` pattern for the list route and adding `require_project_access` to the two detail routes.
 
 ## Environment
 

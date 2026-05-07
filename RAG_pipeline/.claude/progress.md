@@ -137,6 +137,19 @@
 - [x] Docker: JWT_SECRET_KEY + ADMIN_DEFAULT_PASSWORD env vars in docker-compose.yml
 - [x] Default admin creds: admin/admin (set via ADMIN_DEFAULT_PASSWORD env var)
 
+## EP-002 — Secure Existing/Admin-Created Accounts (COMPLETE — 2026-05-05)
+
+- [x] Backend: MFA-enabled login returns password-step challenge (`mfa_required`, short-lived `mfa_token`) without auth cookies
+- [x] Backend: `/auth/verify-mfa` accepts TOTP or one single-use backup code and then issues auth cookies
+- [x] Backend: authenticated users with `mfa_enabled=false` are blocked from normal protected APIs with `403 mfa_required`
+- [x] Backend: enrollment/session endpoints remain usable before MFA setup (`me`, `logout`, `refresh`, `totp/setup`, `totp/verify`)
+- [x] Frontend: authenticated users without MFA are redirected to `/settings/security`
+- [x] Frontend: successful TOTP verify refreshes auth state and unlocks the app without manual reload
+- [x] Admin-created users keep onboarding state and must complete MFA before normal app use
+- [x] Bootstrap admin remains the first-user path for fresh deployments
+- [x] Backup-code acceptance aligned to implementation: 10 single-use codes
+- [x] Deferred from EP-002: Request Access, email infrastructure, invite tokens, questionnaire/self-service account creation
+
 ## Phase 6.1 — Azure-style Provisioning + Data-Driven Config (COMPLETE — 2026-04-17)
 
 - [x] Dropped Tenant schema — switched to one-VPS-per-client model

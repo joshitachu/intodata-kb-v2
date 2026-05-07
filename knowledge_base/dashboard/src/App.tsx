@@ -6,8 +6,10 @@ import KpiBar from "./components/KpiBar";
 import LogPanel from "./components/LogPanel";
 import ProjectList from "./components/ProjectList";
 import ProjectSettings from "./components/ProjectSettings";
+import QualityHistoryPanel from "./components/QualityHistoryPanel";
 import RunHistory from "./components/RunHistory";
 import ScanHistory from "./components/ScanHistory";
+import ValidationReviewPanel from "./components/ValidationReviewPanel";
 import TemplateCatalogue from "./components/templates/TemplateCatalogue";
 import TemplateEditor from "./components/templates/TemplateEditor";
 import VersionTimeline from "./components/templates/VersionTimeline";
@@ -189,7 +191,13 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   )}
                   {detailTab === "scans" && <ScanHistory projectId={activeProject} />}
                   {detailTab === "docs" && <DocPreview projectId={activeProject} />}
-                  {detailTab === "compare" && <ABComparison projectId={activeProject} />}
+                  {detailTab === "compare" && (
+                    <div className="space-y-4">
+                      <ABComparison projectId={activeProject} />
+                      <QualityHistoryPanel projectId={activeProject} />
+                      <ValidationReviewPanel projectId={activeProject} />
+                    </div>
+                  )}
                   {detailTab === "settings" && (
                     <ProjectSettings
                       project={activeProjectObj}

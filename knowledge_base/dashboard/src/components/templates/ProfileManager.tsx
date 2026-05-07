@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { usePlatforms } from "../../hooks/useDiscovery";
 import { useProfiles, useCreateProfile, useCloneProfile, useSetDefaultProfile } from "../../hooks/useTemplates";
 import type { TemplateProfile } from "../../types";
 
@@ -12,6 +13,8 @@ export default function ProfileManager({ onSelect, selectedId }: Props) {
   const createProfile = useCreateProfile();
   const cloneProfile = useCloneProfile();
   const setDefault = useSetDefaultProfile();
+  const { data: platformsData } = usePlatforms();
+  const platforms = platformsData?.platforms ?? [];
 
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
@@ -73,9 +76,14 @@ export default function ProfileManager({ onSelect, selectedId }: Props) {
               className="input-dark w-auto"
             >
               <option value="">Any platform</option>
-              <option value="talend">Talend</option>
-              <option value="workato">Workato</option>
-              <option value="lobster">Lobster</option>
+              {platforms.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+              {newPlatform && !platforms.some((p) => p.id === newPlatform) && (
+                <option value={newPlatform}>{newPlatform}</option>
+              )}
             </select>
             <input
               type="text"

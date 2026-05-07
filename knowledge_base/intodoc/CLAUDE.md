@@ -30,6 +30,22 @@ intodoc scan ../vaxxinova-talend --platform talend --output-dir ../intodoc-outpu
 - **ProjectManifest** provides cross-job context to all passes
 - **Universal IR** normalizes to platform-agnostic representation (99.4% expression parse rate)
 
+## Current Custom Harness Notes (May 2026)
+
+- MCP custom documentation generation now runs through a bounded internal agent runtime in `mcp-server/src/mcp_server/providers/custom/agent_runtime.py`.
+- The runtime persists task contracts and exact LLM-authored outputs under `docs_staging/_agent_tasks/{phase}/{target_id}/`, including validation reports, tool ledgers, provider metrics, and accepted/rejected status.
+- Phase 2 is group-agent based with configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Split group work is merged by an LLM merge task, not by Python-authored summaries.
+- Phase 2.6 scorecard and Phase 3 documents are also agent tasks. Phase 3 defaults to one document agent per required markdown doc with concurrency cap `MCP_AGENT_PHASE3_CONCURRENCY` (default 4).
+- Validator gaps now create targeted repair tasks where possible before the run fails.
+- Python supervises scanning, contracts, budgets, validation, retry/repair, cache/resume, and publish only. LLM agents author analysis and documentation prose.
+
+## Steven Generic-Scanner Note
+
+- Project `Steven` exposed a generic-platform documentation gap: generated docs claimed `Web.config` and `Global.asax.cs` were unavailable, while local source and `scan_result.json` contain them.
+- `Web.config` includes sensitive app settings and database connection strings; never copy raw values into prompts, logs, docs, or memory. Keep using credential redaction.
+- `Global.asax.cs` contains ServiceStack/OrmLite setup and named database connection registrations. Future scanner/EngineeringFacts work should expose redacted connection names and app-setting keys so docs can say which runtime connections exist without leaking credentials.
+- The bug is downstream synthesis/evidence surfacing, not source absence: generic docs relied on normalized maps that only showed file paths and dependencies, missing the richer redacted source evidence already present in the scan cache.
+
 ## Planned State
 - **Migration generators** -- auto-generate code for Lobster, Databricks, etc. (Phase 3)
 

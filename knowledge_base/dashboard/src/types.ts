@@ -4,6 +4,7 @@ export interface Project {
   repo_url: string | null;
   local_path: string;
   platform: string;
+  doc_generation_provider: string | null;
   source_type: string;
   status: string;
   last_scan_at: string | null;
@@ -12,6 +13,11 @@ export interface Project {
   job_count: number;
   doc_count: number;
   error_message: string | null;
+  last_ingested_commit_sha: string | null;
+  auto_reingest_enabled: boolean;
+  auto_reingest_last_checked_at: string | null;
+  auto_reingest_error: string | null;
+  git_update_summary: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -19,6 +25,34 @@ export interface Project {
 export interface ProjectListResponse {
   projects: Project[];
   total: number;
+}
+
+export interface PlatformDescriptor {
+  id: string;
+  label: string;
+  unit_label: string;
+  unit_label_plural: string;
+  badge_color: string;
+  accent_color: string;
+}
+
+export interface PlatformListResponse {
+  platforms: PlatformDescriptor[];
+}
+
+export interface ModelDescriptor {
+  id: string;
+  provider: string;
+  label: string;
+  supports_analysis: boolean;
+  supports_writing: boolean;
+  is_default_analysis: boolean;
+  is_default_writing: boolean;
+  is_local: boolean;
+}
+
+export interface ModelListResponse {
+  models: ModelDescriptor[];
 }
 
 export interface StatusResponse {
@@ -49,6 +83,9 @@ export interface GenerateRun {
   doc_count: number;
   error_message: string | null;
   log_file: string | null;
+  model_name: string | null;
+  write_model_name: string | null;
+  quality_score: number | null;
   template_profile_id: number | null;
   template_snapshot: Record<string, number> | null;
 }
@@ -62,6 +99,27 @@ export interface ScanRun {
   completed_at: string | null;
   job_count: number;
   log_file: string | null;
+}
+
+export interface ScanWarning {
+  kind: string;
+  file: string;
+  message: string;
+  phase: string;
+}
+
+export interface ScanStatusResponse {
+  project_id: string;
+  status: string;
+  last_scan_at: string | null;
+  cache_age_minutes: number | null;
+  job_count: number;
+  doc_count: number;
+  error_message: string | null;
+  previous_job_count: number | null;
+  job_delta: number | null;
+  warnings: ScanWarning[];
+  warnings_count: number;
 }
 
 export interface DocFile {
@@ -88,6 +146,101 @@ export interface ProjectUsage {
   total_cost_usd: number;
   total_scan_runs: number;
   completed_scan_runs: number;
+}
+
+export interface RunQualityDetails {
+  overall?: number | null;
+  [key: string]: unknown;
+}
+
+export interface RunComparisonRun {
+  id: number;
+  run_id: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  template_profile_id: number | null;
+  template_snapshot: Record<string, number> | null;
+  doc_count: number;
+  provider: string | null;
+  analysis_model: string | null;
+  model_name: string | null;
+  write_model: string | null;
+  write_model_name: string | null;
+  quality: number | null;
+  quality_score: number | null;
+  quality_pass: boolean;
+  doc_quality: RunQualityDetails | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  num_turns: number | null;
+  metrics_found: boolean;
+}
+
+export interface RunComparison {
+  project_id: string;
+  run_a: RunComparisonRun;
+  run_b: RunComparisonRun;
+  delta: Record<string, number | null>;
+  delta_pct: Record<string, number | null>;
+  quality_delta: number | null;
+  quality_delta_pct: number | null;
+  verdict: "PASS" | "FAIL";
+  checks: Array<Record<string, unknown>>;
+  template_diffs: Array<{ slug: string; version_a: number | null; version_b: number | null }>;
+  total_template_diffs: number;
+}
+
+export interface QualityHistoryEntry {
+  run_id: number | null;
+  started_at: string | null;
+  analysis_model: string | null;
+  write_model: string | null;
+  quality: number | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  regression: boolean;
+  quality_delta_pct: number | null;
+}
+
+export interface QualityHistoryResponse {
+  project_id: string;
+  history: QualityHistoryEntry[];
+  total: number;
+}
+
+export interface ReviewQuestion {
+  id: string;
+  question: string;
+  score: number;
+}
+
+export interface QuestionnaireResponse {
+  project_id: string;
+  run_id: number;
+  questions: ReviewQuestion[];
+}
+
+export interface ReviewAggregateResponse {
+  project_id: string;
+  run_id: number | null;
+  total_reviews: number;
+  average_overall: number;
+  average_per_question: Record<string, number>;
+  pass_result: boolean;
+  reviews: unknown[];
+}
+
+export interface InstructionPackMetadata {
+  path: string;
+  relative_path: string;
+  version: string;
+  exists: boolean;
+  is_local: boolean;
+  supported: boolean;
+  preambles: Array<{ key: string; bytes: number; chars: number }>;
 }
 
 // --- Templates ---
