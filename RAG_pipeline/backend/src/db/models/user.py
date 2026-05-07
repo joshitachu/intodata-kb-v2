@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, JSON, String, Table, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -35,6 +36,19 @@ class User(Base):
     is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     last_login_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # TOTP / MFA. `totp_secret` is the base32-encoded pyotp secret, held in
+    # plaintext because verification needs it — same threat model as
+    # `password_hash`: DB compromise = game over. `backup_codes_hashed` is a
+    # JSON list of `{"hash": <bcrypt>, "used": <bool>}` so each code can be
+    # invalidated after a single use without rotating the whole set.
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    backup_codes_hashed: Mapped[list | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
     )
 
     # Relationships

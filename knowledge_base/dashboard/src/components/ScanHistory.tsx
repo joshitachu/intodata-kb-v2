@@ -1,4 +1,4 @@
-import { useScanRuns } from "../hooks/useProjects";
+import { useScanRuns, useScanStatus } from "../hooks/useProjects";
 
 interface Props {
   projectId: string | null;
@@ -32,10 +32,16 @@ function formatDate(iso: string): string {
 
 export default function ScanHistory({ projectId }: Props) {
   const { data, isLoading } = useScanRuns(projectId);
+  const { data: status } = useScanStatus(projectId);
 
   if (!projectId) return null;
 
   const runs = data?.runs ?? [];
+  const warningsCount = status?.warnings_count ?? 0;
+  const jobDelta = status?.job_delta ?? null;
+  // Find the latest completed run — that's the one the /status warnings apply to.
+  const latestCompleted = runs.find((r) => r.status === "completed");
+  const latestCompletedId = latestCompleted?.id ?? null;
 
   return (
     <div className="card-dark">
@@ -65,31 +71,60 @@ export default function ScanHistory({ projectId }: Props) {
                 <th className="px-4 py-2.5 font-medium">Status</th>
                 <th className="px-4 py-2.5 font-medium">Duration</th>
                 <th className="px-4 py-2.5 font-medium">Components Found</th>
+                <th className="px-4 py-2.5 font-medium">Warnings</th>
                 <th className="px-4 py-2.5 font-medium">Triggered By</th>
               </tr>
             </thead>
             <tbody>
-              {runs.map((run) => (
-                <tr key={run.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02]">
-                  <td className="px-4 py-2.5 whitespace-nowrap text-slate-400">
-                    {formatDate(run.started_at)}
-                  </td>
-                  <td className="px-4 py-2.5">
-                    <span
-                      className={`status-chip ${
-                        statusColors[run.status] ?? "border-slate-500/40 text-slate-500"
-                      }`}
-                    >
-                      {run.status.toUpperCase()}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 whitespace-nowrap text-slate-400 font-mono">
-                    {formatDuration(run.started_at, run.completed_at)}
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-400 font-mono">{run.job_count}</td>
-                  <td className="px-4 py-2.5 text-slate-500">{run.triggered_by}</td>
-                </tr>
-              ))}
+              {runs.map((run) => {
+                const isLatestCompleted = run.id === latestCompletedId;
+                return (
+                  <tr key={run.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02]">
+                    <td className="px-4 py-2.5 whitespace-nowrap text-slate-400">
+                      {formatDate(run.started_at)}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span
+                        className={`status-chip ${
+                          statusColors[run.status] ?? "border-slate-500/40 text-slate-500"
+                        }`}
+                      >
+                        {run.status.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-slate-400 font-mono">
+                      {formatDuration(run.started_at, run.completed_at)}
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-400 font-mono">
+                      {run.job_count}
+                      {isLatestCompleted && jobDelta !== null && jobDelta !== 0 && (
+                        <span
+                          className={`ml-2 text-xs ${
+                            jobDelta > 0 ? "text-[#a0e06f]" : "text-red-400"
+                          }`}
+                          title={`${jobDelta > 0 ? "+" : ""}${jobDelta} vs previous completed scan`}
+                        >
+                          {jobDelta > 0 ? "+" : ""}
+                          {jobDelta}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono">
+                      {isLatestCompleted && warningsCount > 0 ? (
+                        <span
+                          className="status-chip border-yellow-400/40 text-yellow-300"
+                          title={`${warningsCount} file(s) failed to parse in the latest scan`}
+                        >
+                          ! {warningsCount}
+                        </span>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-500">{run.triggered_by}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

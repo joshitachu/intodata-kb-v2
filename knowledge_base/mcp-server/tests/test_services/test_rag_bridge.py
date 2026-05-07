@@ -42,8 +42,8 @@ async def test_push_docs_from_output_dir(bridge, tmp_path):
     # Create some markdown files
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
-    (docs_dir / "file1.md").write_text("# File 1")
-    (docs_dir / "file2.md").write_text("# File 2")
+    (docs_dir / "01_file1.md").write_text("# File 1")
+    (docs_dir / "02_file2.md").write_text("# File 2")
 
     with patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push:
         mock_push.return_value = {"status": "ok"}
@@ -54,10 +54,50 @@ async def test_push_docs_from_output_dir(bridge, tmp_path):
         assert mock_push.call_count == 2
 
 
+async def test_push_docs_from_output_dir_with_filename_filter(bridge, tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "01_file1.md").write_text("# File 1")
+    (docs_dir / "02_file2.md").write_text("# File 2")
+
+    with patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push:
+        mock_push.return_value = {"status": "ok"}
+
+        result = await bridge.push_docs(
+            "proj",
+            output_dir=str(docs_dir),
+            filenames={"02_file2.md"},
+        )
+        assert result["pushed"] == 1
+        assert len(result["errors"]) == 0
+        mock_push.assert_awaited_once()
+        assert mock_push.await_args.kwargs["filename"] == "02_file2.md"
+
+
+async def test_delete_document_sends_scoped_request(bridge):
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"deleted": True}
+
+    with patch("mcp_server.services.rag_bridge.httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.delete.return_value = mock_resp
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        result = await bridge.delete_document("proj", "01_file.md")
+
+        assert result == {"deleted": True}
+        call = mock_client.delete.call_args
+        assert call.args[0] == "http://localhost:9999/api/v1/ingest/by-project/proj/document/01_file.md"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer test-key"
+
+
 async def test_push_docs_handles_error(bridge, tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
-    (docs_dir / "file1.md").write_text("# File 1")
+    (docs_dir / "01_file1.md").write_text("# File 1")
 
     with patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push:
         mock_push.side_effect = Exception("Connection refused")

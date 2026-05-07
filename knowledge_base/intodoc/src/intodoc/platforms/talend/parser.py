@@ -20,6 +20,7 @@ from intodoc.models import (
     ProjectManifest,
     Routine,
     ScanResult,
+    ScanWarning,
     TMapData,
     TMapEntry,
     TRunJobRef,
@@ -146,18 +147,46 @@ class TalendParser:
         self._xmi_id_index: dict[str, MetadataConnection] = {}
         # Property.id → Property.label lookup for resolving tRunJob XMI refs
         self._job_id_index: dict[str, str] = {}
+        # Non-fatal parse failures collected for the final ScanResult.
+        self._warnings: list[ScanWarning] = []
+        # Repo root used to make warning file paths relative.
+        self._warn_root: Path | None = None
+
+    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
+        """Record a non-fatal scan warning alongside the usual console output."""
+        try:
+            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
+        except ValueError:
+            rel = str(file)
+        self._warnings.append(
+            ScanWarning(kind=kind, file=rel, message=message, phase=phase)
+        )
 
     def parse(self, repo_root: Path) -> ScanResult:
         """Parse the entire Talend project."""
         from intodoc.platforms.talend import TalendPlugin
 
         plugin = TalendPlugin()
+        # Reset warning collection for this scan.
+        self._warnings = []
+        self._warn_root = repo_root
 
         # Find the actual Talend project root (may be nested)
         talend_root = _find_talend_root(repo_root)
         if talend_root is None:
             console.print(f"[yellow]Warning: No Talend project structure found under {repo_root}[/yellow]")
-            return ScanResult(platform="talend", repo_root=str(repo_root))
+            return ScanResult(
+                platform="talend",
+                repo_root=str(repo_root),
+                warnings=[
+                    ScanWarning(
+                        kind="missing_file",
+                        file="",
+                        message=f"No Talend project structure found under {repo_root}",
+                        phase="root_discovery",
+                    )
+                ],
+            )
 
         console.print(f"  Talend project root: [cyan]{talend_root}[/cyan]")
 
@@ -206,7 +235,9 @@ class TalendParser:
                 "total_connections": len(self._xmi_id_index),
                 "total_contexts": len(context_groups),
                 "total_routines": len(routines),
+                "total_warnings": len(self._warnings),
             },
+            warnings=list(self._warnings),
         )
 
     # ── Metadata Index ───────────────────────────────────────────────
@@ -224,6 +255,7 @@ class TalendParser:
                 self._parse_metadata_connection(root, item_file)
             except ET.ParseError as e:
                 console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=item_file, message=str(e), phase="metadata_index")
 
     def _parse_metadata_connection(self, root: ET.Element, file_path: Path) -> None:
         """Extract connection info from a metadata .item file."""
@@ -273,8 +305,9 @@ class TalendParser:
                         prop_label = elem.get("label", "")
                         if prop_id and prop_label:
                             self._job_id_index[prop_id] = prop_label
-            except ET.ParseError:
-                pass
+            except ET.ParseError as e:
+                console.print(f"  [yellow]XML parse error in {props_file.name}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=props_file, message=str(e), phase="job_id_index")
 
     # ── Context Parsing ──────────────────────────────────────────────
 
@@ -294,6 +327,7 @@ class TalendParser:
                     groups.append(group)
             except ET.ParseError as e:
                 console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=item_file, message=str(e), phase="context")
 
         return groups
 
@@ -342,8 +376,10 @@ class TalendParser:
                     jobs.append(job)
             except ET.ParseError as e:
                 console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=item_file, message=str(e), phase="job")
             except Exception as e:
                 console.print(f"  [yellow]Error parsing {item_file.name}: {e}[/yellow]")
+                self._warn(kind="unknown", file=item_file, message=str(e), phase="job")
 
         return jobs
 

@@ -45,6 +45,12 @@ const config: Config = {
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
       },
+      boxShadow: {
+        "elevation-xs": "var(--elevation-xs)",
+        "elevation-sm": "var(--elevation-sm)",
+        "elevation-md": "var(--elevation-md)",
+        "elevation-lg": "var(--elevation-lg)",
+      },
     },
   },
   plugins: [typography],

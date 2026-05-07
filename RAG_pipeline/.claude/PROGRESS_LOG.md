@@ -1,5 +1,264 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-05-07
+
+### [Feature]: AI disclaimer in chat UI
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/components/ChatWindow.tsx` (both return paths)
+  - `RAG_pipeline/frontend/components/MessageList.tsx` (empty conversation state)
+- **Problem**: No indication to users that AI-generated answers may contain errors or hallucinations.
+- **Root cause**: Not previously implemented.
+- **Change**:
+  - Added static one-liner footer `"AI can make mistakes. Always review responses before acting on them."` below `<ChatInput />` in both the welcome screen and the conversation view inside `ChatWindow.tsx`.
+  - Added amber notice banner (`AlertTriangle` icon + `"AI responses may contain errors or outdated information. Always verify before acting."`) at the top of the empty conversation state in `MessageList.tsx`, above the suggestion chips.
+- **Why this approach**: Static footer matches the industry pattern (ChatGPT, Gemini). Amber banner in the empty state surfaces the disclaimer at first engagement without blocking interaction. No new components or dependencies required.
+- **Verification**: Visual inspection via `npm run dev`; no TypeScript errors expected (purely additive JSX).
+
+## Session: 2026-05-05
+
+### [Feature]: EP-002 mandatory MFA for existing/admin-created accounts
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/dependencies.py` — `CurrentUser` now blocks authenticated active users with `mfa_enabled=false` from normal protected APIs. Exempt while enrolling: `/auth/me`, `/auth/logout`, `/auth/refresh`, `/auth/totp/setup`, `/auth/totp/verify`.
+  - `RAG_pipeline/backend/tests/test_api/test_auth.py` — added coverage for MFA-enabled login challenge, `/auth/me` exemption before enrollment, and `403` `mfa_required` on normal protected routes before enrollment.
+  - `RAG_pipeline/frontend/hooks/useAuth.ts` + `components/AuthProvider.tsx` — added `refreshUser()` and an authenticated-route MFA guard that redirects non-enrolled users to `/settings/security`.
+  - `RAG_pipeline/frontend/app/settings/security/page.tsx` — successful TOTP verify/disable now refreshes auth state instead of requiring a page reload.
+  - `RAG_pipeline/frontend/app/login/page.tsx` — login completion sends users without MFA directly to `/settings/security`; existing MFA-enabled users still use the password + MFA screen.
+  - `RAG_pipeline/frontend/tests/hooks/useAuth.test.ts` — updated hook harness with `QueryClientProvider` and complete auth user fixtures.
+- **Problem**: TOTP setup/login endpoints existed, but MFA was optional after password login. Users with `mfa_enabled=false` received normal auth cookies and could use protected APIs/app features without enrolling.
+- **Root cause**: MFA state was only consulted inside `/auth/login` for users who had already enabled MFA. The shared `CurrentUser` dependency and frontend authenticated route layer did not enforce enrollment.
+- **Change**: EP-002 scope is now "secure existing/admin-created accounts": every active authenticated user must enroll MFA before normal app/API use. Request Access, outbound email, invite tokens, questionnaire/self-service account creation, TOTP secret encryption, and strict TOTP replay tracking remain deferred. Backup-code behavior stays aligned with implementation: 10 single-use codes, generated once and stored bcrypt-hashed.
+- **Why this approach**: Enforcing in `CurrentUser` gives one backend gate across admin/query/document/etc. APIs without editing every route. The frontend guard improves UX by landing users on the setup page, but the backend remains authoritative.
+- **Verification**:
+  - `cd RAG_pipeline/backend && uv run --extra dev pytest tests/test_api/test_auth.py` — 11 passed.
+  - `cd RAG_pipeline/backend && uv run --extra dev ruff check src/auth/security.py src/api/routes/auth.py src/api/dependencies.py tests/test_api/test_auth.py` — all checks passed.
+  - `cd RAG_pipeline/frontend && npm test -- --run tests/hooks/useAuth.test.ts` — 4 passed.
+  - `cd RAG_pipeline/frontend && npx tsc --noEmit --pretty false` — clean.
+  - Docker-stack API/BFF acceptance pass against `127.0.0.1:3000` and `127.0.0.1:8000` — all 9 EP-002 flow checks passed: non-MFA login establishes session; protected API returns `403 mfa_required`; TOTP setup returns secret/provisioning URI; TOTP verify returns 10 backup codes once; protected API unlocks in the same session without reload; future password login returns MFA challenge; TOTP MFA login succeeds; one backup code succeeds once; reuse is rejected.
+  - `next lint` was attempted but this checkout has no ESLint config, so Next entered its interactive setup prompt instead of linting.
+- **Acceptance fixes found during verification**:
+  - `RAG_pipeline/backend/src/api/routes/auth.py` — backup-code reuse initially succeeded because SQLAlchemy did not mark in-place JSONB mutations dirty. Calls now use `flag_modified(user, "backup_codes_hashed")` after consuming backup codes.
+  - `RAG_pipeline/backend/src/auth/security.py` — rapid repeated logins initially hit the `refresh_tokens.token_hash` unique constraint because refresh JWTs issued in the same second could be identical. Refresh tokens now include a random `jti`.
+- **Acceptance caveat**: The functional EP-002 flow passed through the rebuilt Docker stack via frontend BFF/backend APIs. A literal browser-driven visual pass was not completed in this session because browser automation was unavailable.
+
+## Session: 2026-04-21 (cont.)
+
+### [Feature]: Defer per-platform ZIP uploads to post-onboarding
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/components/onboarding/steps/SourceUploadStep.tsx` — removed the `missing.length > 0` validation block (lines 78–84 pre-change) that blocked Continue unless every selected platform had a ZIP. Updated the header blurb from "Upload one ZIP per selected platform" to "Upload what you have ready now — you can add the rest later from Settings → Sources". Telemetry payload now also carries `declared` (number of platforms selected).
+  - `RAG_pipeline/frontend/components/Sidebar.tsx` — added `Database` import + new `{ href: "/settings/sources", label: "Sources", icon: Database }` entry in `navItems` so the new page is reachable from both collapsed and expanded sidebar layouts.
+  - `RAG_pipeline/frontend/app/settings/sources/page.tsx` (new) — post-onboarding upload page. Reads `useOnboardingStatus()` for `selected_platforms` + `workspace_name` and `useDocsProjects()` for ingested projects. Renders one card per declared platform with a status badge (Uploaded/Pending) + file-drop zone. Pending rows reuse `uploadZip` + `subscribeToLogs` + `generateDocs` from `lib/mcpClient.ts`, exact same queue logic as `ProvisioningStep.RealProcessing` (duplicated deliberately — two call sites isn't enough pressure to extract a shared queue component yet). On `push_complete` SSE event, invalidates the `docs-projects` query so the row flips to Uploaded on the next render. `project_id` format matches the wizard's: `${slugify(workspace_name)}-${platformId}`.
+  - `docker-compose.yml` — added `KB_API_URL` build arg pass-through + runtime env so the Next.js rewrite to the MCP server is baked with the Docker-reachable host, not the `localhost:8002` fallback.
+  - `RAG_pipeline/frontend/Dockerfile` — added `ARG KB_API_URL=http://host.docker.internal:8002` + `ENV KB_API_URL=$KB_API_URL` before `npm run build`, since `next.config.ts` evaluates `process.env.KB_API_URL` at build time for standalone output.
+- **Problem**: Onboarding wizard enforced "one ZIP per selected platform" — a client declaring Talend + Workato + Lobster + Generic had to upload four ZIPs to continue, even if they only had one ready. Error surfaced as "Please select a ZIP for: …" and blocked progress. Users wanted to declare their stack at onboarding and upload incrementally afterward. Separately, the first real-browser test of the existing wizard returned HTTP 500 on upload: `Failed to proxy http://localhost:8002/mcp/upload-zip Error: connect ECONNREFUSED ::1:8002` — runtime `KB_API_URL` env wasn't reaching the baked `next.config.ts` rewrite.
+- **Root cause**:
+  1. `SourceUploadStep.handleContinue()` computed `missing = zipTargets.filter((id) => !zipFiles[id])` and bailed if non-empty. Validation was over-strict relative to actual product intent; both downstream branches (`SkipProcessing` for 0 ZIPs, `RealProcessing` for 1+) already handle the "partial upload" case gracefully.
+  2. Next.js `rewrites()` in `next.config.ts` uses a JS template literal `${MCP_URL}` which is resolved at config-load time. In `output: "standalone"` builds the config is evaluated during `npm run build` (not per-request), so runtime-only env vars never reach the compiled routes manifest.
+- **Change**:
+  1. Dropped the blocking validation. ZIP mode now saves whatever the user has uploaded (potentially zero) and forwards to `ProvisioningStep`, which already branches correctly on `Object.keys(zipFiles).length`.
+  2. New standalone client page at `/settings/sources` reuses `mcpClient.uploadZip` + `subscribeToLogs` + `generateDocs` to drive the same upload → scan → generate → push pipeline per pending platform. Status derives from the cross-reference of `UserOnboarding.selected_platforms` (declared) vs `docs.projects` (ingested).
+  3. `KB_API_URL` is now a Docker build ARG, baked in at image build time, so the rewrite points to `host.docker.internal:8002` not `localhost:8002`.
+- **Why this approach**:
+  - No backend migration needed — upload state is already derivable from existing tables (`user_onboarding.selected_platforms` ∩ `projects` rows).
+  - Duplicated queue logic (ProvisioningStep + SourcesSettingsPage) rather than extracting a shared component. Two call sites isn't enough abstraction pressure, and the two pages have different chrome needs (wizard full-screen stepper vs settings table rows).
+  - Sidebar link at top-level `navItems` (not under a "Settings" cluster). Cluster would mean ~60 more LOC for two sub-links; overkill for a single page.
+- **Verification**:
+  - `npm run build` (frontend, via `docker-compose build frontend`) compiles clean. Output shows `/settings/sources` at 8.49 kB.
+  - `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/settings/sources` → `307` (auth redirect), confirming the route is live.
+  - Manual browser verification pending from user: reset admin onboarding → pick 4 platforms → upload 1 ZIP → Continue works, provisions only Talend; then visit `/settings/sources` → 4 rows (1 Uploaded, 3 Pending) → upload a second ZIP → SSE-driven progress → flips to Uploaded on push_complete.
+- **Gotcha documented**: For future `next.config.ts` env-driven settings, always pass them via Docker build ARG when running in `output: "standalone"` mode. Runtime env only works for values read per-request (server components, API routes), not for compile-time config evaluation.
+
+---
+
+## Session: 2026-04-21
+
+### [Feature]: Nexus per-client deployment — readiness report + Task 1–3 implementation
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/config.py` — added `qdrant_collection`, `allowed_ips`, `trusted_proxies` settings. Tightened `validate_production_secrets()` to hard-fail on default JWT secret, default admin password, and empty `MCP_INGEST_API_KEY` (previously only warned on JWT).
+  - `RAG_pipeline/backend/src/retrieval/vector_store.py` — replaced module constant `COLLECTION_NAME = "documents"` with `COLLECTION_NAME = settings.qdrant_collection`. No downstream import changes needed; all 4 call sites (`search.py`, `map_reduce.py`, `query.py`) still import the same name.
+  - `RAG_pipeline/backend/src/api/main.py` — skip default-admin seed in production (`APP_ENV=production`); seed only the `admin` role row so `POST /auth/bootstrap-admin` can attach to it. Added `ProxyHeadersMiddleware` + new `IPAllowlistMiddleware` (registered BEFORE `ProxyHeaders` so dispatch order puts the allowlist after proxy-headers rewrite — allowlist sees real client IP).
+  - `RAG_pipeline/backend/src/api/middleware/__init__.py` + `ip_allowlist.py` (new) — Starlette BaseHTTPMiddleware parsing comma-separated `ALLOWED_IPS` (CIDR-capable via stdlib `ipaddress`), no-op when empty, 403 otherwise.
+  - `RAG_pipeline/backend/src/api/routes/auth.py` — new endpoints:
+    - `GET /auth/bootstrap-status` — open, returns `{needs_bootstrap: bool}` so the login page can switch into admin-creation mode on a fresh stack.
+    - `POST /auth/bootstrap-admin` — only succeeds when `count(User) == 0`; creates a superadmin attached to the `admin` role, writes a `UserOnboarding` row, sets auth cookies, 409 once any user exists.
+    - `POST /auth/verify-mfa` — second step of the MFA login flow: exchanges a short-lived `mfa_token` JWT (`type: "mfa"`, 5 min TTL) plus a 6-digit TOTP or backup code for access + refresh cookies.
+    - `POST /auth/totp/setup` — authenticated, generates + persists a fresh base32 secret, returns `{secret, otpauth_uri}` for QR/manual entry.
+    - `POST /auth/totp/verify` — authenticated, flips `mfa_enabled` on first valid code, generates 10 single-use backup codes (returned once, stored as bcrypt hashes).
+    - `POST /auth/totp/disable` — authenticated, requires password + current code (TOTP or backup) before wiping MFA state.
+    - Also modified `/auth/login` to return `{mfa_required, mfa_token, expires_in}` without setting cookies when `user.mfa_enabled`.
+  - `RAG_pipeline/backend/src/auth/totp.py` (new) — pyotp wrapper: `generate_totp_secret`, `provisioning_uri` (issuer = tenant_name), `verify_totp` (±30s drift window, 6-digit only), `generate_backup_codes` (10 × 10-char uppercase-alphanumeric), `hash_backup_codes`, `consume_backup_code` (bcrypt match + flip `used: true`).
+  - `RAG_pipeline/backend/src/db/models/user.py` — added `mfa_enabled`, `totp_secret` (String 64 nullable), `backup_codes_hashed` (JSONB) to `User` model. Design note inline: totp_secret stored plaintext — same threat model as password_hash, a DB compromise is already game over either way.
+  - `RAG_pipeline/backend/alembic/versions/017_add_mfa_fields.py` (new) — idempotent migration adding those three columns.
+  - `RAG_pipeline/backend/pyproject.toml` — added `pyotp>=2.9.0` dep.
+  - `knowledge_base/mcp-server/src/mcp_server/config.py` — added `allowed_ips`, `trusted_proxies`, `app_env`. New `validate_production_secrets()` hard-fails on default JWT secret and empty ingest api key.
+  - `knowledge_base/mcp-server/src/mcp_server/api/app.py` + `api/middleware.py` (new) — mirror the IP allowlist + ProxyHeaders setup from the RAG backend.
+  - `knowledge_base/mcp-server/src/mcp_server/__main__.py` — default `--port 8002` (was 8001, which collided with the dashboard). Default `--host` kept at `0.0.0.0` so Docker containers on the same host can still reach MCP via `host.docker.internal`; production deployments use the systemd template unit which passes `--host 127.0.0.1`.
+  - `docker-compose.yml` — parameterized all port mappings via env vars (`POSTGRES_PORT`, `QDRANT_HTTP_PORT`, `QDRANT_GRPC_PORT`, `HINDSIGHT_API_PORT`, `HINDSIGHT_INTERNAL_PORT`, `BACKEND_PORT`, `FRONTEND_PORT`, `DASHBOARD_PORT`), fixed Postgres healthcheck to use `${POSTGRES_USER}` / `${POSTGRES_DB}` (was hardcoded `admin` / `intodata_kb`), moved Hindsight ports off `0.0.0.0` and onto `127.0.0.1`, added `QDRANT_COLLECTION`, `ALLOWED_IPS`, `TRUSTED_PROXIES` env vars for the backend service.
+  - `.env.production.template` — added `QDRANT_COLLECTION`, `ALLOWED_IPS`, `TRUSTED_PROXIES`, `MCP_ALLOWED_IPS`, `MCP_TRUSTED_PROXIES`, `MCP_APP_ENV`, `MCP_PORT`. Extended with hardening commentary.
+  - `RAG_pipeline/frontend/next.config.ts` — added `rewrites()` so `/mcp/*` and `/logs/*` proxy to `${KB_API_URL}` in dev (matches production Caddy routing).
+  - `RAG_pipeline/frontend/lib/mcpClient.ts` (new) — browser-side helpers:
+    - `uploadZip({file, projectId, platform, onProgress, signal})` — XMLHttpRequest upload with progress tracking (fetch can't expose upload progress in browsers).
+    - `generateDocs(projectId)` — POST /mcp/generate wrapper.
+    - `subscribeToLogs(projectId, onEvent, onError)` — EventSource consumer, returns unsubscribe fn.
+  - `RAG_pipeline/frontend/contexts/OnboardingContext.tsx` — extended with `zipFiles: Record<string, File>`, `setZipFile`, `clearZipFiles`. File objects can't be persisted via the existing `UserOnboarding` DB row (they don't JSON-serialize) so they live in memory — lost on refresh, user re-selects if they abandon mid-upload.
+  - `RAG_pipeline/frontend/components/onboarding/steps/SourceUploadStep.tsx` — rewrote ZIP mode: one drop zone per selected platform, stores `File` objects in `OnboardingContext.zipFiles`, validates every platform has a file before Continue.
+  - `RAG_pipeline/frontend/components/onboarding/steps/ProvisioningStep.tsx` — split into two flows: `RealProcessing` (activates when `zipFiles` is non-empty) drives upload → scan → generate → push sequentially per ZIP via the MCP endpoints + SSE log stream, with per-ZIP status cards, progress bar, retry button, and collapsible raw-log panel. `SkipProcessing` keeps the old cosmetic animation for skip / GitHub paths.
+  - `RAG_pipeline/frontend/components/onboarding/OnboardingWizard.tsx` — passes `selectedPlatformIds` into `SourceUploadStep`.
+  - `RAG_pipeline/frontend/app/login/page.tsx` — rewrote to support three modes: `login` (default), `bootstrap` (empty users table → creates first admin), `mfa` (prompts for TOTP code when login returns `mfa_required`). Mode is chosen on mount from `GET /api/auth/bootstrap-status`.
+  - `RAG_pipeline/frontend/app/settings/security/page.tsx` (new) — MFA setup: calls `/totp/setup`, shows otpauth URL + base32 secret (tap on mobile opens authenticator), verify form, displays backup codes once on success, disable flow requires password + code.
+  - `RAG_pipeline/frontend/components/AuthProvider.tsx` + `hooks/useAuth.ts` — added `mfa_enabled` to `AuthUser` so `/settings/security` can render the correct state.
+  - `RAG_pipeline/frontend/app/api/auth/bootstrap-admin|bootstrap-status|verify-mfa|totp/{setup,verify,disable}/route.ts` (6 new) — Next.js BFF proxies to the FastAPI endpoints, forwarding `Set-Cookie` where applicable.
+  - `deploy/deploy-client.sh` (new) — single-entry deploy script. `--client-name` required, `--port-offset` defaults to 0 (one-VPS-per-client production layout). On first run generates `/etc/intodata-kb/envs/<client>.env` with freshly randomized JWT secret, Postgres password, MCP ingest key, admin password. Renders `/etc/nginx/sites-available/nexus-<client>.conf` from the template, symlinks into sites-enabled, brings up `docker compose -p <client>` with the env file. Prints the remaining manual steps (nginx reload, certbot, `systemctl enable --now mcp-server@<client>.service`).
+  - `deploy/nginx/nexus-client.conf.template` (new) — envsubst-templated HTTP server block routing `/api/v1/*` → backend, `/mcp/*` → MCP (`client_max_body_size 500m` for ZIP uploads), `/logs/*` → MCP with `proxy_buffering off` + `proxy_read_timeout 24h` for SSE, `/dashboard/*` → dashboard, default → frontend. Sets `X-Real-IP` / `X-Forwarded-For` for correct proxy-header propagation.
+  - `deploy/mcp-server@.service` (new) — systemd template unit (instance syntax `mcp-server@<client>.service`) so one host can run multiple isolated MCP instances, each reading `/etc/intodata-kb/envs/<client>.env` and binding to the client's `MCP_PORT` on `127.0.0.1`.
+  - `deploy/README.md` (new) — usage docs.
+- **Problem**: Platform couldn't be deployed per-client. `docker-compose.yml` hardcoded ports, healthcheck, and volume names; `vector_store.COLLECTION_NAME` was a module literal; MCP systemd unit hardcoded port 8002; no IP allowlist; no MFA; seed admin logic assumed a single-tenant stack. Onboarding wizard's SourceUploadStep saved only the filename — the actual ZIP never left the browser.
+- **Change**: Three-track implementation landing Tasks 1 (per-client deployment), 2 (real onboarding), and 3 (security hardening) from the Nexus readiness plan at `~/.claude/plans/context-intodata-kb-platform-jolly-gem.md`.
+- **Key decisions**: one VPS per client in production (port offsets exist but default 0); bootstrap-admin is the only way in on a fresh production stack (no public register ever); `totp_secret` stored plaintext, backup codes stored bcrypt-hashed; `COLLECTION_NAME` parameterized at import time (reads settings once, so every downstream import stays literal-free); MCP default bind stays `0.0.0.0` in code (Docker reachability) — production systemd unit explicitly passes `--host 127.0.0.1` instead.
+- **Verification**: `python3 -c "import ast; …"` parses clean across all 10 edited backend files. `bash -n deploy/deploy-client.sh` passes. Frontend unchecked — needs `npm run build` under a working node_modules, and migration 017 needs `alembic upgrade head` before the TOTP endpoints work.
+
+## Session: 2026-04-20
+
+### [Feature]: Persist chat thumbs-up/down feedback (Pre-Sales Audit, Day 1 / Gap 9)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/alembic/versions/016_add_feedback.py` (new) — `feedback` table: `id`, `user_id FK→users CASCADE`, `conversation_id FK→conversations SET NULL`, `message_id FK→conversation_messages SET NULL`, `kind VARCHAR(20)` ∈ `{up, down, correction, cleared}`, `text TEXT NULL`, `citations_snapshot JSONB NULL`, `created_at`, `updated_at` (matches `Base` mixin). Indexes on `user_id`, `message_id`, `(kind, created_at)`.
+  - `RAG_pipeline/backend/src/db/models/feedback.py` (new) — `Feedback` SQLAlchemy model mirroring the table.
+  - `RAG_pipeline/backend/src/db/models/__init__.py` — import + `__all__` registration so Alembic autogenerate sees the model.
+  - `RAG_pipeline/backend/src/api/routes/feedback.py` (new) — `POST /api/v1/feedback` (fire-and-forget, rate-limited 120/min, validates message ownership via join on `Conversation.user_id`) + `GET /api/v1/feedback/mine` for future thumbs-state rehydrate.
+  - `RAG_pipeline/backend/src/api/main.py` — imported and mounted `feedback_routes.router` under `/api/v1`.
+  - `RAG_pipeline/frontend/app/api/feedback/route.ts` (new) — Next.js proxy mirroring the `telemetry/wizard-event` pattern; forwards cookies, preserves backend status, swallows upstream failures.
+  - `RAG_pipeline/frontend/lib/feedback.ts` (new) — `submitFeedback(payload)` client helper, keepalive, error-tolerant.
+  - `RAG_pipeline/frontend/components/MessageBubble.tsx` — added `conversationId` prop + `handleFeedback()` that POSTs to `/api/feedback` with optimistic UI and rollback on failure; disables buttons when `message.id < 1` (streaming/optimistic rows); sends `citations_snapshot: message.sources` on thumbs-down so we know *which doc* failed the user.
+  - `RAG_pipeline/frontend/components/MessageList.tsx` — added `conversationId` prop, forwards to `MessageBubble`.
+  - `RAG_pipeline/frontend/components/ChatWindow.tsx` — passes `conversationId={conversation.id}` into `MessageList`.
+- **Problem**: `MessageBubble.tsx:139-166` rendered 👍/👎 buttons whose only action was `setFeedback(...)` into local React state. No API call, no DB row, nothing persisted. Every click was a promise the product didn't keep.
+- **Root cause**: Feature scaffolded UI-first without the backend pipe; the backlog didn't catch up.
+- **Change**: Full persistence path — new `feedback` table, new route, new proxy, wired UI. Append-only log so the Week-3 knowledge-gaps admin view can reconstruct history. Latest-row-per-(user_id, message_id) is the current reaction; toggling off writes `kind='cleared'`.
+- **Why this approach**:
+  - Append-only matches the existing `wizard_events` telemetry pattern (no upsert dance; same analytics shape).
+  - Integer PK matches every other table in the schema (audit incorrectly said UUID — corrected during exploration).
+  - Fire-and-forget + rate-limit mirrors `telemetry.py`; feedback must never block chat UX.
+  - Ownership check via SQL join (not ORM lazy-load relationship) — avoids async-lazy-load pitfalls.
+  - `citations_snapshot` captured on thumbs-down only, so admins can later cluster "which docs get thumbs-down most" without joining against possibly-stale sources.
+- **Verification**:
+  - Frontend `npx tsc --noEmit` — clean.
+  - Backend `python -m py_compile` on all 5 modified/added `.py` files — clean.
+  - `Feedback` model imports, table columns = `['citations_snapshot', 'conversation_id', 'created_at', 'id', 'kind', 'message_id', 'text', 'updated_at', 'user_id']`.
+  - Alembic script walker confirms head is `016` (follows 015 → 014 → ...), no branching.
+  - **Manual E2E remaining for user**: `docker-compose up -d postgres && cd RAG_pipeline/backend && alembic upgrade head`, start backend + frontend, log in, ask a chat question, click 👍 and 👎 on the assistant response. Verify with `psql -c "SELECT id, user_id, message_id, kind, citations_snapshot IS NOT NULL AS has_sources, created_at FROM feedback ORDER BY id DESC LIMIT 5;"` — expect rows with correct `user_id`, `message_id`, `kind`, and `has_sources=t` for thumbs-down.
+
+### [Refactor]: Remove "Replay Tour" button from sidebar
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/components/Sidebar.tsx` — removed the `<button>` + `PlayCircle` import + `useOnboardingContext` import + `const { startTour } = useOnboardingContext()` line (all became unused once the button was gone).
+  - `RAG_pipeline/frontend/components/onboarding/steps/SetupCompleteStep.tsx` — removed the stale "You can replay the tour anytime from the sidebar." helper paragraph.
+  - `RAG_pipeline/frontend/components/tour/tourSteps.ts` — trimmed the last tour step's description: "…ask your first question — you can replay this tour from the sidebar anytime." → "…ask your first question."
+  - `RAG_pipeline/frontend/components/tour/ProductTour.tsx` — updated file-level comment that still referred to the removed sidebar entry point.
+- **Problem**: The sidebar had a dedicated "Replay Tour" row alongside "User Guide". User asked to remove it — it clutters the nav and isn't part of the desired enterprise aesthetic.
+- **Root cause**: n/a (product decision).
+- **Change**: Deleted the sidebar button and cleaned up every other surface that referenced replaying from the sidebar, so the docs/UX don't invite a click on something that no longer exists. `startTour()` remains in `OnboardingContext` because the Ready step (`OnboardingWizard.tsx:128`) still calls it to kick off the tour after wizard completion.
+- **Why this approach**: Delete dead references, don't hide them. A stale "replay from the sidebar" hint after the feature is gone is worse than saying nothing. `ProductTour` and `OnboardingContext` are untouched beyond comments — the tour itself still runs via the explicit "Take the quick tour" CTA on the Ready step.
+- **Verification**:
+  - `npx tsc --noEmit` on `RAG_pipeline/frontend` — clean.
+  - `docker-compose build frontend && docker-compose up -d frontend` — frontend container rebuilt and restarted; backend, postgres, qdrant stayed healthy through the recreate.
+
+### [Fix]: Project-assignment form uses a name dropdown instead of a raw ID input
+
+- **Files changed**: `RAG_pipeline/frontend/app/admin/project-assignments/page.tsx`
+- **Problem**: On `/admin/project-assignments`, the "Assign Project" form required typing the raw `project_id` (e.g. `vaxxinova-talend`) into a text input. Admins couldn't select by project name — they had to know the ID up-front, which is unworkable in practice. The filter dropdown below only showed raw IDs it had learned from existing assignments, and the assignments table rendered the ID instead of the display name.
+- **Root cause**: The page was scaffolded with a plain `<input type="text">` for the project field while the user field was already a `<select>` of fetched users. Projects were never fetched, even though `GET /api/v1/projects` (backend) and `/api/projects` (BFF proxy) already exist and return `{id, display_name, platform}[]` — and for admins/superadmins already returns all projects with documents.
+- **Change**:
+  - Added `ProjectOption` interface (`id`, `display_name`, `platform`) and a `projects` state slot.
+  - Added a `fetchProjects` callback mirroring `fetchUsers`, called via `Promise.all` on mount.
+  - Replaced the `<input type="text" placeholder="Project ID">` with a `<select required>` ("Select project..." placeholder + one option per project, label = `display_name`, value = `id`).
+  - Swapped the filter dropdown to use the fetched `projects` list (display names) instead of the old `uniqueProjects = Array.from(new Set(assignments.map(a => a.project_id)))` derivation.
+  - Added a `projectNameById` `Map` so the assignments table renders `display_name ?? project_id` (fallback preserves rows whose project is empty/deleted and therefore missing from the endpoint's response).
+- **Why this approach**: Pure reuse of already-deployed surfaces — the backend endpoint, the BFF proxy, the Zod schema, and the exact `<select>` styling the page already uses for the user field. No new endpoints, no new components, no new dependencies. The page is already superadmin-gated, so permission scope is unchanged.
+- **Known limitation documented in plan**: `GET /api/v1/projects` only lists projects that have at least one ingested document. If an admin ever needs to pre-assign a user to a brand-new empty project, the dropdown won't list it. If that becomes a real need, add an `?include_empty=true` query param to the endpoint — explicitly out of scope for this fix.
+- **Verification**:
+  - `npx tsc --noEmit` on `RAG_pipeline/frontend` — clean.
+  - Manual check still required by the user against a running frontend (see plan's verification steps).
+
+### [Feature]: Tenant identity surfaced in UI (per-VPS branding)
+
+- **Problem**: One-VPS-per-client deployment model was chosen (confirmed in memory) but the UI showed a hardcoded "IntoData" everywhere. Users on `acme.intodata.nl` and `widgets.intodata.nl` saw the same bare wordmark — no visual confirmation of which environment they were in, no "STAGING" signal, and the onboarding wizard's per-user `workspace_name` was the only tenant-ish label anywhere.
+- **Changes (backend)**:
+  - `src/config.py` — added `tenant_name` (default "IntoData"), `tenant_slug` (default "intodata"), `tenant_environment` (default "development"). Read from env at boot via pydantic-settings.
+  - NEW `src/api/routes/tenant.py` — `GET /api/v1/tenant/config` returns `{name, slug, environment}`. **Public, no auth** (the login page needs to render branded before the user signs in).
+  - `src/api/main.py` — registers `tenant_routes.router` under `/api/v1`.
+  - `.env.production.template` (repo root) — added a `Tenant identity (per deployment)` section documenting `TENANT_NAME` / `TENANT_SLUG` / `TENANT_ENVIRONMENT` with ops-facing guidance (slug usually matches subdomain; only "production" hides the env badge).
+- **Changes (frontend)**:
+  - NEW `types/tenant.ts` — Zod `TenantConfigSchema`, `TenantEnvironmentSchema`, `FALLBACK_TENANT` for graceful degradation.
+  - NEW `app/api/tenant/config/route.ts` — GET BFF proxy. Returns `FALLBACK_TENANT` on any upstream failure so the app never fails to boot over tenant-config.
+  - NEW `hooks/useTenant.ts` — React Query with `staleTime: Infinity` + `initialData: FALLBACK_TENANT` (per-deployment config doesn't change at runtime).
+  - NEW `contexts/TenantContext.tsx` — `TenantProvider` + `useTenantContext()`. Also syncs `document.title` to `{tenant.name} Knowledge Base [(STAGING/DEV/...)]` whenever tenant changes. Exposes `isProduction` derived flag.
+  - `app/providers.tsx` — wraps `AuthProvider` + `OnboardingProvider` with `TenantProvider`.
+  - NEW `components/TenantMark.tsx` — reusable brand lockup. Props: `size: sm|md|lg`, `iconOnly`, `showEnvironment`, `subtitle`. Also exports `<EnvironmentBadge />` (amber for staging, violet for preview, muted otherwise). Hides itself when `environment === "production"`.
+  - `components/Sidebar.tsx` — renders `<TenantMark />` in the collapsed state (icon-only, centered) and in the expanded state (full mark + workspace_name subtitle + env badge), replacing the bare collapse button. Passes `status?.workspace_name` through from `useOnboardingContext()` so a per-user workspace override is shown when set.
+  - `components/onboarding/WizardProgress.tsx` — replaced the hardcoded "IntoData · Workspace setup" brand lockup with `<TenantMark subtitle={workspaceName || "Workspace setup"} />`. Now reflects the deployment's tenant name.
+  - `app/login/page.tsx` — swapped the hardcoded "IntoData KB" heading for `<TenantMark size="lg" />` (shows env badge for non-prod so users see they're on staging before signing in), subtitle reads "Sign in to {tenant.name}".
+- **Why this approach**:
+  - Public no-auth endpoint is required because the login page needs branding before any cookie exists.
+  - `staleTime: Infinity` is correct — tenant config is a build/deploy-time artifact, not runtime state. Changing tenant means `.env` edit + container restart, not a live refetch.
+  - `TenantMark` as a single reusable component (not a one-off per surface) guarantees the sidebar, login, and wizard never drift from each other, and keeps the environment-badge logic in exactly one place.
+  - Only "production" hides the env badge — every other value renders it so devs/staging users can't miss where they are.
+- **Verification**:
+  - `npx tsc --noEmit` — clean, no type errors.
+  - `python3 -c "import ast; ast.parse(...)"` clean on `tenant.py`, `config.py`, `main.py`.
+  - End-to-end manual test (pending rebuild): set `TENANT_NAME=Acme Corp` + `TENANT_ENVIRONMENT=staging` in `.env`, restart backend, load the app → sidebar reads "Acme Corp" with an amber STAGING pill, browser tab title reads "Acme Corp Knowledge Base (STAGING)", login page reads "Sign in to Acme Corp".
+- **Non-goals deferred**: custom primary color (`TENANT_PRIMARY_COLOR`), custom logo URL, custom favicon. Those were shown as higher-scope options; user chose "name + env badge" for this pass.
+
+---
+
+### [Feature]: Enterprise onboarding wizard premium polish + "Ready" step + wizard telemetry
+
+- **Problem**:
+  1. The onboarding wizard felt MVP — flat/boxy, no depth, every step redefined its own button class-strings, no shared design primitives.
+  2. After the user submitted the Source step, the wizard jumped straight into the product tour with no "setup complete" moment — jarring UX. Root cause: `OnboardingGuard` unmounted the wizard as soon as `complete_wizard` flipped `wizard_completed=true`, and `ProductTour` had an auto-start effect that fired immediately afterwards.
+  3. No visibility into which platforms/tools users actually pick — we're guessing which integration to build next.
+- **Changes (frontend design system)**:
+  - `app/globals.css` — refined `--primary` to a deeper indigo (`225 72% 30%`), added `--elevation-xs/sm/md/lg` shadow tokens, updated `--ring` to match new primary, added `.dark` variants. New `.animate-step-enter` keyframe for the Ready step entrance. New `.driver-popover.intodata-tour` ruleset to brand the product-tour popovers (rounded corners, elevation-lg shadow, brand primary on the Next button, muted Prev button, tighter internal padding).
+  - `tailwind.config.ts` — exposed `shadow-elevation-xs/sm/md/lg` utilities wired to the CSS vars.
+  - New `components/ui/` primitives: `button.tsx` (variants: primary/secondary/ghost/destructive, sizes: sm/md/lg, `isLoading`), `input.tsx` (`hasError`), `card.tsx` (`Card`/`CardHeader`/`CardBody`/`CardFooter`), `badge.tsx` (variants: default/muted/success/warning/soon/destructive), `label.tsx` (`optional`).
+- **Changes (wizard chrome + Ready step)**:
+  - `components/onboarding/WizardProgress.tsx` — redesigned: top bar with IntoData brand lockup + workspace name, right-aligned "Step N of M · Title", segmented progress rail (filled vs unfilled rounded pills), mobile-collapsed label. ARIA progressbar semantics.
+  - `components/onboarding/OnboardingWizard.tsx` — now 7 steps (added "Ready" at index 6 between Provisioning and the tour). Accepts `onDismiss` prop. Fires `wizard_step_viewed` telemetry on step change. `finalize()` still calls `complete_wizard` on step 4→5 (so background setup kicks off during provisioning). Provisioning's `onDone` now advances to step 6 (SetupCompleteStep) instead of calling `startTour()`. SetupCompleteStep's CTAs dismiss the wizard and optionally kick off the tour.
+  - `components/onboarding/OnboardingGuard.tsx` — latches a `sessionStarted` ref on the first render where the wizard is not done, and stays rendered until `onDismiss` flips a local `sessionDismissed` state. Fixes the old behaviour where the Guard unmounted the wizard mid-flow as soon as `wizard_completed` flipped true.
+  - NEW `components/onboarding/steps/SetupCompleteStep.tsx` — green success halo + check glyph, "{workspace} is ready" headline, compact "What we set up" summary card, "Take the quick tour" (primary) + "Skip and explore" (secondary) CTAs, hint text about Replay Tour. Emits `wizard_completed` telemetry on mount; CTAs emit `tour_started` / `tour_skipped`. "Skip" also fires `useCompleteTour()` so the tour is marked done.
+  - `components/tour/ProductTour.tsx` — removed the auto-start effect. Tour now only starts when the new SetupCompleteStep's CTA (or sidebar "Replay Tour") calls `startTour()`. Added `popoverClass: "intodata-tour"` + custom button labels ("Back"/"Next"/"Finish tour").
+- **Changes (step refactors to primitives + polish)**:
+  - `WelcomeStep.tsx` — larger hero with glowing halo around the brand mark, refined feature list with primary-tinted check bullets, lg-sized primary CTA with arrow icon, "Takes about 2 minutes" hint.
+  - `WorkspaceStep.tsx` — `Card`-wrapped form with header (icon + title + subtitle), `Label` + `Input` primitives, Enter-to-submit, consistent error display via `text-destructive`.
+  - `PlatformSelectStep.tsx` + `CommToolSelectStep.tsx` — `Card`-wrapped, selectable tile grid using `Badge variant="soon"` for coming-soon pills, check-circle affordance that scales in on hover/selection, fires platform/tool select/deselect telemetry on toggle.
+  - `SourceUploadStep.tsx` — segmented tab toggle with proper `role="tablist"` semantics, real drag-and-drop drop-zone (dragOver highlight + onDrop) using `UploadCloud` glyph, `Input` primitive for the GitHub URL field, fires `wizard_source_method` telemetry with `{method: github|zip|skip}`.
+  - `ProvisioningStep.tsx` — rebuilt as two `Card`s (staged progress list + configuration summary) with refined stage icons (primary check badge for done, brand spinner for active, pending dot for upcoming), animated pulsing halo around the Server icon while provisioning, auto-advances to the Ready step on completion instead of showing a "Take the tour" button.
+- **Changes (frontend telemetry client)**:
+  - NEW `lib/telemetry.ts` — `trackWizardEvent(type, step, payload)` with `navigator.sendBeacon` fallback for the unload-adjacent events (`wizard_completed`, `tour_started`, `tour_skipped`) and `fetch({keepalive: true})` otherwise. Errors are swallowed — telemetry must never block UX.
+  - NEW `app/api/telemetry/wizard-event/route.ts` — BFF POST proxy to `FASTAPI_URL/api/v1/telemetry/wizard-event`; swallows upstream errors with a 204 response so the client's fire-and-forget path never throws.
+- **Changes (backend telemetry)**:
+  - NEW `src/db/models/wizard_event.py` — `WizardEvent` model: `id`, `user_id` (FK users, CASCADE), `event_type: String(64)`, `step: int|None`, `payload: JSONB|None`, `created_at: DateTime(tz)` with indexes on `user_id`, `event_type`, `created_at`.
+  - `src/db/models/__init__.py` — export `WizardEvent`.
+  - NEW `alembic/versions/015_add_wizard_events.py` — creates `wizard_events` table + 3 indexes. Down-revision `014`.
+  - NEW `src/api/routes/telemetry.py`:
+    - `POST /api/v1/telemetry/wizard-event` — authed, `@limiter.limit("120/minute")`, whitelists `event_type` against `ALLOWED_EVENT_TYPES` (silent no-op for anything else so clients don't retry), 2kB payload sanity cap, returns 204.
+    - `GET /api/v1/telemetry/wizard/summary?window_days=30` — admin-only, aggregates over `[now - window_days, now]`: totals by event type, platform selections (JSONB `payload->>'platform'`), tool selections (`payload->>'tool'`), source-method counts (`payload->>'method'`), tour started/skipped counts, unique users.
+  - `src/api/main.py` — imports + registers `telemetry_routes.router` under `/api/v1`.
+- **Why this approach**:
+  - A tiny local primitive layer (no shadcn CLI, no extra deps) kills the "every step redefines its own button" root cause and gives us a foundation for other enterprise-facing surfaces without taking on a design-system migration as a side-quest.
+  - Latching the guard via a ref + explicit `onDismiss` is the minimal fix for the wizard-unmount race — no backend schema changes, no new tour_completed lifecycle complication.
+  - Whitelist-based telemetry intake + JSONB payload keeps the data model trivial and the admin summary a pure SQL query, while `sendBeacon` for terminal events ensures we don't lose the `tour_started` signal when the user navigates away mid-click.
+- **Verification**:
+  - `npx tsc --noEmit` — clean, no type errors.
+  - `python3 -c "import ast; ast.parse(...)"` — new Python files parse.
+  - End-to-end manual test (pending user run): reset a test user, sign in, walk through wizard 0→6, confirm Ready step shows, click "Take the tour" → driver.js popovers render in branded styling. Click "Skip and explore" → wizard closes, no tour.
+- **Migration pending**: `015_add_wizard_events.py` must be applied via `alembic upgrade head` (or rebuild + migrate the backend container) before the telemetry POST endpoint will succeed. Until then, `trackWizardEvent` still silently fails client-side — which is by design (it's fire-and-forget).
+
+---
+
 ## Session: 2026-04-17
 
 ### [Refactor]: Phase 6.1 — Azure-style provisioning + data-driven wizard config

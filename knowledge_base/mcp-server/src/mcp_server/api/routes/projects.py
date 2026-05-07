@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import asyncio
 import json
 import logging
 import re
@@ -11,6 +12,11 @@ import zipfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Per-process set of project IDs currently running generation.
+# Prevents concurrent generate calls for the same project in the same process.
+# Multi-worker deployments rely on the DB status check as the cross-process guard.
+_currently_generating: set[str] = set()
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
@@ -28,6 +34,7 @@ from mcp_server.schemas import (
     DeleteProjectResponse,
     DocFileInfo,
     DocListResponse,
+    DocReview,
     GenerateRequest,
     GenerateRunListResponse,
     GenerateRunResponse,
@@ -45,6 +52,7 @@ from mcp_server.schemas import (
     ProjectUsageResponse,
     PushToRagRequest,
     ResetStatusRequest,
+    ReviewAggregateResponse,
     ScanRequest,
     ScanStatusResponse,
     ScanRunListResponse,
@@ -52,12 +60,16 @@ from mcp_server.schemas import (
     StatusResponse,
     UpdateProjectRequest,
 )
+from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.claude_service import ClaudeService
 from mcp_server.services.deep_dive_service import DeepDiveService
+from mcp_server.services.git_diff_patcher import run_webhook_diff_update
+from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.services.summary_service import SummaryService
+from mcp_server.services import validation_service
 
 router = APIRouter(tags=["projects"])
 
@@ -69,6 +81,7 @@ def _project_to_response(p) -> ProjectResponse:
         repo_url=p.repo_url,
         local_path=p.local_path,
         platform=p.platform,
+        doc_generation_provider=p.doc_generation_provider,
         source_type=p.source_type,
         status=p.status,
         last_scan_at=p.last_scan_at,
@@ -77,6 +90,11 @@ def _project_to_response(p) -> ProjectResponse:
         job_count=p.job_count,
         doc_count=p.doc_count,
         error_message=p.error_message,
+        last_ingested_commit_sha=p.last_ingested_commit_sha,
+        auto_reingest_enabled=p.auto_reingest_enabled,
+        auto_reingest_last_checked_at=p.auto_reingest_last_checked_at,
+        auto_reingest_error=p.auto_reingest_error,
+        git_update_summary=p.git_update_summary,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -143,6 +161,7 @@ async def add_repo(req: AddRepoRequest, request: Request):
                 )
 
         await db.commit()
+        await db.refresh(project)
         return _project_to_response(project)
 
 
@@ -159,6 +178,9 @@ async def upload_zip(
         raise HTTPException(400, "Invalid project_id: alphanumeric, hyphens, underscores only")
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="File must be a .zip")
+    from mcp_server.config import SUPPORTED_PLATFORMS
+    if platform not in SUPPORTED_PLATFORMS:
+        raise HTTPException(400, f"Unsupported platform: {platform!r}. Must be one of {sorted(SUPPORTED_PLATFORMS)}")
 
     # Save ZIP
     zip_path = config.uploads_dir / f"{project_id}.zip"
@@ -201,6 +223,7 @@ async def upload_zip(
                 )
 
         await db.commit()
+        await db.refresh(project)
         return _project_to_response(project)
 
 
@@ -278,6 +301,13 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
     await require_project_access(request, req.project_id)
     log_mgr = request.app.state.log_manager
 
+    if req.project_id in _currently_generating:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Generation is already running for project {req.project_id!r}. "
+                   "Wait for it to complete or reset the status.",
+        )
+
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(req.project_id)
@@ -288,16 +318,123 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         await db.commit()
         run_id = run.id
 
+    _currently_generating.add(req.project_id)
     background_tasks.add_task(
         _run_generate_background, req.project_id, run_id, log_mgr,
         template_profile_id=req.template_profile_id,
         model=req.model,
+        write_model=req.write_model,
         resume=req.resume,
+        doc_generation_provider=project.doc_generation_provider,
     )
     return StatusResponse(
         status="generation_triggered",
         message=f"Doc generation started for {req.project_id}",
     )
+
+
+@router.post("/projects/{project_id}/git-updates/repair-latest", response_model=StatusResponse)
+async def repair_latest_git_update(project_id: str, request: Request, background_tasks: BackgroundTasks):
+    """Replay the latest stored Git diff through the diff-only patcher."""
+    await require_project_access(request, project_id)
+    log_mgr = request.app.state.log_manager
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if project.source_type != "git":
+            raise HTTPException(status_code=400, detail="Repair latest Git update is only available for git projects")
+
+        summary = project.git_update_summary or {}
+        before_sha = str(summary.get("before") or "")
+        after_sha = str(summary.get("after") or "")
+        if not before_sha or not after_sha:
+            raise HTTPException(status_code=400, detail="No stored Git diff is available to repair")
+
+    background_tasks.add_task(
+        run_webhook_diff_update,
+        project_id=project_id,
+        before_sha=before_sha,
+        after_sha=after_sha,
+        log_mgr=log_mgr,
+        trigger="repair_latest",
+    )
+    return StatusResponse(
+        status="repair_triggered",
+        message=f"Diff-only repair started for {project_id}",
+    )
+
+
+async def _push_with_retry(
+    bridge,
+    project_id: str,
+    output_dir,
+    filenames: set[str] | None = None,
+    max_attempts: int = 3,
+):
+    """Push docs to RAG with exponential backoff retry. Returns (result, errors_or_None)."""
+    import asyncio as _asyncio
+    last_errors = None
+    result: dict = {}
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            await _asyncio.sleep(2 ** attempt)
+        result = await bridge.push_docs(
+            project_id=project_id,
+            output_dir=str(output_dir),
+            filenames=filenames,
+        )
+        if not result.get("errors"):
+            return result, None
+        last_errors = result["errors"]
+    return result, last_errors
+
+
+async def _current_git_head(local_path: str) -> str | None:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "HEAD",
+            cwd=local_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            return stdout.decode().strip()
+    except Exception as e:
+        logger.warning("Failed reading git HEAD for %s: %s", local_path, e)
+    return None
+
+
+def _read_public_doc_texts(docs_dir: Path) -> dict[str, str]:
+    """Return top-level generated docs eligible for RAG indexing."""
+    if not docs_dir.exists():
+        return {}
+    docs: dict[str, str] = {}
+    for md_file in sorted(docs_dir.glob("*.md")):
+        if not md_file.name[0].isdigit():
+            continue
+        try:
+            docs[md_file.name] = md_file.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed reading generated doc %s: %s", md_file, e)
+    return docs
+
+
+def _diff_generated_docs(old_docs_dir: Path, new_docs_dir: Path) -> tuple[set[str], set[str]]:
+    """Compare generated docs and return (added_or_changed, removed) filenames."""
+    old_docs = _read_public_doc_texts(old_docs_dir)
+    new_docs = _read_public_doc_texts(new_docs_dir)
+
+    changed = {
+        filename
+        for filename, content in new_docs.items()
+        if old_docs.get(filename) != content
+    }
+    removed = set(old_docs) - set(new_docs)
+    return changed, removed
 
 
 async def _run_generate_background(
@@ -307,7 +444,10 @@ async def _run_generate_background(
     *,
     template_profile_id: int | None = None,
     model: str | None = None,
+    write_model: str | None = None,
     resume: bool = True,
+    doc_generation_provider: str | None = None,
+    partial_rag_sync: bool = False,
 ):
     """Background task: spawn Claude Code for doc generation.
 
@@ -318,7 +458,8 @@ async def _run_generate_background(
     log_mgr.reset_log_file(project_id)
     result = await claude.generate_docs(
         project_id, template_profile_id=template_profile_id, model=model,
-        resume=resume,
+        write_model=write_model, resume=resume,
+        doc_generation_provider=doc_generation_provider,
     )
 
     success = result.get("success", False)
@@ -336,20 +477,55 @@ async def _run_generate_background(
         doc_count = len(list(staging_dir.glob("*.md"))) if staging_dir.exists() else 0
 
         if doc_count > 0:
-            # Atomic swap: remove old docs, rename staging → docs
-            if docs_dir.exists():
-                shutil.rmtree(docs_dir, ignore_errors=True)
-            staging_dir.rename(docs_dir)
+            changed_rag_docs: set[str] | None = None
+            removed_rag_docs: set[str] = set()
+            if partial_rag_sync:
+                changed_rag_docs, removed_rag_docs = _diff_generated_docs(
+                    docs_dir, staging_dir
+                )
+
+            # Atomic swap with rollback + `docs_prev/` backup kept only during
+            # the swap itself (see services/atomic_swap.py). A crash between
+            # the two renames is recoverable on next startup via
+            # recover_stale_backups().
+            swap_docs(output_dir)
+
+            # Preserve Phase 2 analysis files for incremental webhook regen.
+            # After the swap, docs/_analysis/ holds the freshest group summaries.
+            _analysis_src = docs_dir / "_analysis"
+            if _analysis_src.exists():
+                _cache = output_dir / "analysis_cache"
+                if _cache.exists():
+                    shutil.rmtree(_cache)
+                shutil.copytree(_analysis_src, _cache)
 
             # Push new docs to RAG server-side
             bridge = RagBridge(log_manager=log_mgr)
-            try:
-                await bridge.push_docs(project_id=project_id, output_dir=str(docs_dir))
-            except Exception as e:
+            for filename in sorted(removed_rag_docs):
+                try:
+                    await bridge.delete_document(project_id, filename)
+                    await log_mgr.emit(
+                        project_id,
+                        f"Deleted stale RAG doc: {filename}",
+                        level="info",
+                    )
+                except Exception as e:
+                    await log_mgr.emit(
+                        project_id,
+                        f"Failed to delete stale RAG doc {filename}: {e}",
+                        level="error",
+                    )
+            _rag_result, rag_errors = await _push_with_retry(
+                bridge,
+                project_id=project_id,
+                output_dir=docs_dir,
+                filenames=changed_rag_docs,
+            )
+            if rag_errors:
                 await log_mgr.emit(
                     project_id,
-                    f"RAG push failed (docs are saved): {e}",
-                    level="warning",
+                    f"RAG push failed after retries (docs are saved): {rag_errors}",
+                    level="error",
                 )
 
             # Persist token usage to RAG backend
@@ -377,17 +553,100 @@ async def _run_generate_background(
                 await log_mgr.emit(
                     project_id,
                     f"Assessment generation failed: {e}",
-                    level="warning",
+                    level="error",
                 )
+
+            # Score the generated docs and write run_metrics.json
+            quality_score: float | None = None
+            try:
+                from mcp_server.services.doc_quality_scorer import DocQualityScorer
+                scorer = DocQualityScorer()
+                quality_report = scorer.score(project_id, docs_dir=docs_dir)
+                quality_score = quality_report.overall
+
+                metrics = {
+                    "run_id": run_id,
+                    "started_at": result.get("started_at"),
+                    "analysis_model": result.get("model_name"),
+                    "write_model": result.get("write_model_name"),
+                    "provider": doc_generation_provider,
+                    "input_tokens": result.get("input_tokens"),
+                    "output_tokens": result.get("output_tokens"),
+                    "cost_usd": result.get("cost_usd"),
+                    "duration_ms": result.get("duration_ms"),
+                    "num_turns": result.get("num_turns"),
+                    "doc_quality": quality_report.to_dict(),
+                }
+                # Write to docs/ (latest run, always overwritten)
+                (docs_dir / "run_metrics.json").write_text(
+                    json.dumps(metrics, indent=2, default=str), encoding="utf-8"
+                )
+                # Write to logs/ with run_id for historical comparison
+                run_metrics_log = config.project_root / "output" / project_id / "logs" / f"run_metrics_{run_id}.json"
+                run_metrics_log.parent.mkdir(parents=True, exist_ok=True)
+                run_metrics_log.write_text(
+                    json.dumps(metrics, indent=2, default=str), encoding="utf-8"
+                )
+                await log_mgr.emit(
+                    project_id,
+                    f"Quality score: {quality_score:.2f}/5.0 ({len(quality_report.docs)} docs graded)",
+                    level="info",
+                )
+            except Exception as e:
+                logger.error("Doc quality scoring failed: %s", e)
+
+            # Build rag_error_message to persist if push failed
+            rag_error_message: str | None = (
+                f"RAG push failed after retries: {rag_errors}" if rag_errors else None
+            )
         else:
-            # Generation "succeeded" but produced no docs — clean staging
+            # Generation reported success but produced no docs — treat as failure
             if staging_dir.exists():
                 shutil.rmtree(staging_dir, ignore_errors=True)
+            await log_mgr.emit(
+                project_id,
+                "Generation produced no documents — marking as failed.",
+                level="error",
+            )
+            async with async_session_factory() as db:
+                registry = ProjectRegistry(db)
+                await registry.update_status(
+                    project_id, "error",
+                    error_message="Generation produced no documents",
+                )
+                await registry.complete_generate_run(
+                    run_id,
+                    status="failed",
+                    cost_usd=result.get("cost_usd"),
+                    duration_ms=result.get("duration_ms"),
+                    duration_api_ms=result.get("duration_api_ms"),
+                    input_tokens=result.get("input_tokens"),
+                    output_tokens=result.get("output_tokens"),
+                    num_turns=result.get("num_turns"),
+                    session_id=result.get("session_id"),
+                    doc_count=0,
+                    model_name=result.get("model_name"),
+                    write_model_name=result.get("write_model_name"),
+                    quality_score=None,
+                    error_message="Generation produced no documents",
+                    log_file=log_file,
+                )
+                await db.commit()
+            _currently_generating.discard(project_id)
+            await log_mgr.emit_done(project_id)
+            return
 
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
-            await registry.update_status(project_id, "ready")
+            await registry.update_status(
+                project_id, "ready", error_message=rag_error_message
+            )
             await registry.update_generate_result(project_id, doc_count=doc_count)
+            project = await registry.get_project(project_id)
+            if project and project.source_type == "git" and rag_error_message is None:
+                head_sha = await _current_git_head(project.local_path)
+                if head_sha:
+                    await registry.update_last_ingested_commit(project_id, head_sha)
             await registry.complete_generate_run(
                 run_id,
                 status="completed",
@@ -400,7 +659,9 @@ async def _run_generate_background(
                 session_id=result.get("session_id"),
                 doc_count=doc_count,
                 model_name=result.get("model_name"),
-                error_message=None,
+                write_model_name=result.get("write_model_name"),
+                quality_score=quality_score,
+                error_message=rag_error_message,
                 log_file=log_file,
                 template_profile_id=template_profile_id,
                 template_snapshot=result.get("template_snapshot"),
@@ -436,12 +697,14 @@ async def _run_generate_background(
                 session_id=result.get("session_id"),
                 doc_count=0,
                 model_name=result.get("model_name"),
+                write_model_name=result.get("write_model_name"),
                 error_message="Doc generation failed",
                 log_file=log_file,
             )
             await db.commit()
 
     # Signal SSE subscribers that generation is done
+    _currently_generating.discard(project_id)
     await log_mgr.emit_done(project_id)
 
 
@@ -488,6 +751,44 @@ async def get_status(project_id: str):
             delta = datetime.datetime.now(datetime.timezone.utc) - project.last_scan_at
             cache_age = round(delta.total_seconds() / 60, 1)
 
+        # Job-count delta: previous completed scan's job_count (if any).
+        # Current job_count lives on project.job_count, which is the latest
+        # completed scan. Find the one before that.
+        previous_job_count: int | None = None
+        job_delta: int | None = None
+        from mcp_server.db.models import ScanRun  # noqa: WPS433 -- local import keeps startup cost down
+        from sqlalchemy import select
+
+        prev_rows = (
+            await db.execute(
+                select(ScanRun.job_count)
+                .where(ScanRun.project_id == project_id)
+                .where(ScanRun.status == "completed")
+                .order_by(ScanRun.started_at.desc())
+                .limit(2)
+            )
+        ).scalars().all()
+        if len(prev_rows) >= 2:
+            previous_job_count = int(prev_rows[1])
+            job_delta = int(prev_rows[0]) - previous_job_count
+
+        # Read warnings from the most recent scan_result.json, if present.
+        warnings: list[dict] = []
+        warnings_count = 0
+        try:
+            scan_result_path = config.intodoc_output_dir / project_id / "scan_result.json"
+            if scan_result_path.is_file():
+                data = json.loads(scan_result_path.read_text(encoding="utf-8"))
+                raw_warnings = data.get("warnings") or []
+                if isinstance(raw_warnings, list):
+                    # Full count reflects reality; list is capped at 50 for payload size.
+                    warnings_count = len(raw_warnings)
+                    warnings = [w for w in raw_warnings if isinstance(w, dict)][:50]
+        except (OSError, json.JSONDecodeError):
+            # Never let a broken scan_result.json hide the rest of the status payload.
+            warnings = []
+            warnings_count = 0
+
         return ScanStatusResponse(
             project_id=project.id,
             status=project.status,
@@ -496,6 +797,10 @@ async def get_status(project_id: str):
             job_count=project.job_count,
             doc_count=project.doc_count,
             error_message=project.error_message,
+            previous_job_count=previous_job_count,
+            job_delta=job_delta,
+            warnings=warnings,
+            warnings_count=warnings_count,
         )
 
 
@@ -579,10 +884,12 @@ async def update_project(project_id: str, req: UpdateProjectRequest, request: Re
             project_id,
             display_name=req.display_name,
             platform=req.platform,
+            doc_generation_provider=req.doc_generation_provider,
         )
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
         await db.commit()
+        await db.refresh(project)
         return _project_to_response(project)
 
 
@@ -803,6 +1110,8 @@ def _run_to_response(r) -> GenerateRunResponse:
         error_message=r.error_message,
         log_file=r.log_file,
         model_name=getattr(r, "model_name", None),
+        write_model_name=getattr(r, "write_model_name", None),
+        quality_score=getattr(r, "quality_score", None),
         template_profile_id=getattr(r, "template_profile_id", None),
         template_snapshot=getattr(r, "template_snapshot", None),
     )
@@ -818,6 +1127,131 @@ async def list_generate_runs(project_id: str):
             runs=[_run_to_response(r) for r in runs],
             total=len(runs),
         )
+
+
+@router.get("/generate-run-detail/{project_id}/{run_id}")
+async def get_generate_run(project_id: str, run_id: int):
+    """Return a single generation run with per-doc quality breakdown from run_metrics.json."""
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        runs = await registry.list_generate_runs(project_id)
+        run = next((r for r in runs if r.id == run_id), None)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found for project {project_id}")
+
+    base = _run_to_response(run).model_dump()
+
+    metrics_path = config.project_root / "output" / project_id / "logs" / f"run_metrics_{run_id}.json"
+    if metrics_path.exists():
+        try:
+            base["run_metrics"] = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return base
+
+
+@router.get("/compare-runs/{project_id}")
+async def compare_generate_runs(
+    project_id: str,
+    run_a: int,
+    run_b: int,
+    quality_drop_pct: float = 5.0,
+    size_change_pct: float = 10.0,
+):
+    """Side-by-side comparison of two generation runs by quality, cost, and token usage."""
+    from mcp_server.api.routes.generate_runs import build_run_comparison
+
+    return await build_run_comparison(
+        project_id,
+        run_a,
+        run_b,
+        quality_drop_pct=quality_drop_pct,
+    )
+
+
+@router.get("/projects/{project_id}/quality-history")
+async def get_quality_history(project_id: str):
+    """Return time-series quality scores for all completed runs of a project."""
+    metrics_dir = config.project_root / "output" / project_id / "logs"
+    entries = []
+    if metrics_dir.exists():
+        for path in sorted(metrics_dir.glob("run_metrics_*.json")):
+            try:
+                m = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            entries.append({
+                "run_id": m.get("run_id"),
+                "started_at": m.get("started_at"),
+                "analysis_model": m.get("analysis_model"),
+                "write_model": m.get("write_model"),
+                "quality": (m.get("doc_quality") or {}).get("overall"),
+                "cost_usd": m.get("cost_usd"),
+                "duration_ms": m.get("duration_ms"),
+                "regression": False,
+                "quality_delta_pct": None,
+            })
+
+    for i, e in enumerate(entries):
+        if i == 0:
+            continue
+        prev_q = entries[i - 1]["quality"]
+        curr_q = e["quality"]
+        if prev_q is not None and curr_q is not None and prev_q > 0:
+            drop_pct = ((prev_q - curr_q) / prev_q) * 100
+            e["regression"] = drop_pct > 5.0
+            e["quality_delta_pct"] = round(-drop_pct, 2)
+
+    return {"project_id": project_id, "history": entries, "total": len(entries)}
+
+
+# --- Validation (US-105) ---
+
+@router.get("/projects/{project_id}/questionnaire")
+async def get_questionnaire(project_id: str, run_id: int = 0):
+    return validation_service.generate_questionnaire(project_id, run_id)
+
+
+@router.post("/projects/{project_id}/reviews", status_code=201)
+async def submit_review(project_id: str, review: DocReview):
+    if not (1 <= review.overall <= 10):
+        raise HTTPException(status_code=422, detail="overall must be 1–10")
+    for q in review.questions:
+        if not (1 <= q.score <= 5):
+            raise HTTPException(status_code=422, detail=f"score for '{q.id}' must be 1–5")
+    output_root = config.project_root / "output"
+    path = validation_service.save_review(output_root, project_id, review)
+    return {"status": "saved", "path": str(path)}
+
+
+@router.get("/projects/{project_id}/reviews", response_model=ReviewAggregateResponse)
+async def get_reviews(project_id: str, run_id: int | None = None):
+    output_root = config.project_root / "output"
+    return validation_service.aggregate_reviews(output_root, project_id, run_id)
+
+
+@router.get("/instruction-pack")
+async def get_instruction_pack_metadata():
+    """Return active instruction pack metadata for dashboard visibility."""
+    pack_dir = config.project_root / config.instruction_pack_dir
+    pack = PackLoader(pack_dir).load()
+    return {
+        "path": str(pack.path),
+        "relative_path": config.instruction_pack_dir,
+        "version": pack.version,
+        "exists": pack.path.exists(),
+        "is_local": pack.path.is_dir(),
+        "supported": pack.path.exists() and pack.path.is_dir(),
+        "preambles": [
+            {
+                "key": key,
+                "bytes": len(value.encode("utf-8")),
+                "chars": len(value),
+            }
+            for key, value in sorted(pack.preambles.items())
+        ],
+    }
 
 
 @router.get("/logs/{project_id}", response_model=LogFileListResponse)
@@ -977,144 +1411,17 @@ async def get_assessment(project_id: str):
 # --- Project Graph (Topology) ---
 
 
-# ── Fallback system derivation for old scans ─────────────────────────
-# Used at request time when manifest lacks job_external_systems.
-# Mirrors the scanner logic so the REST API stays self-contained.
-
-_FALLBACK_INTERNAL_COMPONENTS: frozenset[str] = frozenset({
-    "tMap", "tLogRow", "tJavaRow", "tJava", "tJavaFlex", "tPrejob", "tPostjob",
-    "tRunJob", "tFixedFlowInput", "tFlowToIterate", "tSetGlobalVar", "tContextLoad",
-    "tRouteInput", "tRouteOutput",
-    "tUnite", "tReplicate", "tSortRow", "tFilterRow", "tAggregateRow",
-    "tFileInputDelimited", "tFileOutputDelimited", "tFileInputExcel", "tFileOutputExcel",
-    "tWriteJSONField", "tExtractJSONFields", "tExtractXMLField",
-    "tSchemaComplianceCheck", "tSleep", "tLoop", "tFileList", "tFileDelete",
-    "tFileCopy", "tFileExist",
-    "tMsgBox", "tWarn", "tDie", "tBufferInput", "tBufferOutput",
-    "tNormalize", "tDenormalize", "tIterateToFlow",
-    # tRunJob family + diagnostics: these are internal Talend job-call wiring
-    # and logging, not external systems. Excluding them prevents the runtime
-    # fallback from synthesizing fake REFERENCE:* hub connections from legacy
-    # scans missing job_external_systems.
-    "tLogCatcher", "tStatCatcher", "tFlowMeter", "tFlowMeterCatcher",
-    "tChronometerStart", "tChronometerStop", "tAssert", "tAssertCatcher",
-})
-
-_FALLBACK_TALEND_MAP: dict[str, str] = {
-    "tSalesforce": "Salesforce", "tBigQuery": "BigQuery",
-    "tMysql": "MySQL", "tMSSql": "MSSQL", "tPostgresql": "PostgreSQL",
-    "tOracle": "Oracle", "tSnowflake": "Snowflake", "tRedshift": "Redshift",
-    "tMongoDB": "MongoDB", "tCassandra": "Cassandra",
-    "tAmazonS3": "Amazon S3", "tS3": "Amazon S3",
-    "tRESTClient": "REST API", "tREST": "REST API",
-    "tHTTP": "HTTP API", "tSOAP": "SOAP API", "tWebService": "SOAP API",
-    "tKafka": "Kafka", "tFTP": "FTP", "tSFTP": "SFTP",
-    "tSAP": "SAP", "tLDAP": "LDAP", "tJDBC": "JDBC",
-    "tElasticsearch": "Elasticsearch", "tDynamoDB": "DynamoDB",
-    "tNetSuite": "NetSuite", "tSendMail": "Email",
-    "tHBase": "HBase", "tHive": "Hive", "tImpala": "Impala", "tNeo4j": "Neo4j",
-    "tAzureStorage": "Azure Storage", "tGoogleStorage": "Google Cloud Storage",
-    "tActiveMQ": "ActiveMQ", "tRabbitMQ": "RabbitMQ", "tMarketo": "Marketo",
-}
-
-_FALLBACK_WORKATO_MAP: dict[str, str] = {
-    "salesforce": "Salesforce", "netsuite": "NetSuite",
-    "postgresql": "PostgreSQL", "mysql": "MySQL", "snowflake": "Snowflake",
-    "redshift": "Redshift", "bigquery": "BigQuery",
-    "s3": "S3", "gcs": "GCS", "http": "HTTP/REST",
-    "workato_webhooks": "Webhook", "ftp": "FTP", "sftp": "SFTP", "smtp": "SMTP",
-    "jira": "Jira", "zendesk": "Zendesk", "slack": "Slack", "teams": "MSTeams",
-    "sap": "SAP", "oracle": "Oracle", "mssql": "MSSQL",
-    "dynamodb": "DynamoDB", "mongodb": "MongoDB",
-    "google_sheets": "GoogleSheets", "box": "Box", "dropbox": "Dropbox",
-    "workday": "Workday", "hubspot": "HubSpot", "marketo": "Marketo",
-    "stripe": "Stripe", "quickbooks": "QuickBooks", "xero": "Xero",
-    "servicenow": "ServiceNow", "email": "Email",
-}
-
-_FALLBACK_WORKATO_INTERNAL: frozenset[str] = frozenset({
-    "clock", "workato", "workato_scheduler", "logger",
-})
-
-
-def _fallback_talend_system(component_type: str) -> str | None:
-    """Derive external system from a Talend component type (fallback)."""
-    if component_type in _FALLBACK_INTERNAL_COMPONENTS:
-        return None
-    best: str | None = None
-    best_len = 0
-    for prefix, system in _FALLBACK_TALEND_MAP.items():
-        if component_type.startswith(prefix) and len(prefix) > best_len:
-            best = system
-            best_len = len(prefix)
-    if best:
-        return best
-    name = component_type
-    if name.startswith("t") and len(name) > 1:
-        name = name[1:]
-    for suffix in ("Input", "Output", "Connection", "Close", "Open", "Row",
-                    "BulkExec", "CDC", "Commit", "Rollback", "Lookup"):
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    return name if len(name) >= 3 else None
-
-
-def _fallback_collect_providers(obj: object, providers: set[str]) -> None:
-    """Recursively collect provider/application values from JSON."""
-    if isinstance(obj, dict):
-        for key in ("provider", "application", "trigger_application"):
-            val = obj.get(key)
-            if isinstance(val, str) and val:
-                providers.add(val)
-        apps = obj.get("action_applications")
-        if isinstance(apps, list):
-            for app in apps:
-                if isinstance(app, str) and app:
-                    providers.add(app)
-        for val in obj.values():
-            _fallback_collect_providers(val, providers)
-    elif isinstance(obj, list):
-        for item in obj:
-            _fallback_collect_providers(item, providers)
-
-
 def _derive_systems_from_job_json(job_data: dict, platform: str) -> list[str]:
     """Derive external systems from per-job JSON at request time.
 
     Used for old scans that predate the job_external_systems manifest field.
     """
-    if platform == "talend":
-        systems: set[str] = set()
-        for comp in job_data.get("components", []):
-            system = _fallback_talend_system(comp.get("component_type", ""))
-            # Belt-and-braces: drop any synthesized REFERENCE:* names that
-            # leak through the suffix-stripping path. They're internal Talend
-            # job-reference wiring, not real external systems.
-            if system and not system.startswith("REFERENCE"):
-                systems.add(system)
-        # Cap fallback derivation at 6 systems per job: more than this means
-        # the heuristic is matching noise. Modern scans populate
-        # job_external_systems explicitly and bypass this path entirely.
-        return sorted(systems)[:6]
+    from mcp_server.platforms import get_platform_strategy
 
-    if platform == "workato":
-        providers: set[str] = set()
-        for comp in job_data.get("components", []):
-            for param in comp.get("params", []):
-                value = param.get("value", "")
-                parsed = None
-                if isinstance(value, str) and value.startswith(("{", "[")):
-                    try:
-                        parsed = json.loads(value)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                if parsed is not None:
-                    _fallback_collect_providers(parsed, providers)
-        providers -= _FALLBACK_WORKATO_INTERNAL
-        return sorted({_FALLBACK_WORKATO_MAP.get(p, p.replace("_", " ").title()) for p in providers})
-
-    return []
+    try:
+        return get_platform_strategy(platform).derive_external_systems(job_data)
+    except ValueError:
+        return []
 
 
 def _derive_direction(path: str, job_name: str) -> str:
@@ -1334,12 +1641,14 @@ def _extract_job_doc_sections(
 
 
 @router.get("/projects/{project_id}/graph", response_model=ProjectGraphResponse)
-async def get_project_graph(project_id: str):
+async def get_project_graph(project_id: str, request: Request):
     """Return manifest + connections data for topology visualization.
 
     Reads external systems from manifest.job_external_systems (populated by
     the scanner). Falls back to runtime derivation for old scans.
     """
+    await require_project_access(request, project_id)
+
     # Look up platform for fallback derivation on old scans
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
@@ -1477,8 +1786,10 @@ async def get_project_graph(project_id: str):
 
 
 @router.get("/projects/{project_id}/jobs/{job_name}/detail", response_model=JobDetailResponse)
-async def get_job_detail(project_id: str, job_name: str):
+async def get_job_detail(project_id: str, job_name: str, request: Request):
     """Return full scan data and relevant doc sections for a specific job."""
+    await require_project_access(request, project_id)
+
     # Sanitize job_name
     if "/" in job_name or "\\" in job_name or ".." in job_name:
         raise HTTPException(status_code=400, detail="Invalid job name")
@@ -1622,15 +1933,16 @@ async def deep_dive_query(req: DeepDiveRequest):
                         cost_usd=data.get("cost_usd"),
                         latency_ms=data.get("duration_ms") or data.get("latency_ms"),
                         model_name=data.get("model", "claude"),
-                        provider="anthropic",
+                        provider=data.get("provider", "anthropic"),
                         query_text=req.question[:500] if req.question else None,
                     )
                 except Exception:
                     pass  # Don't break the SSE stream
 
-            if isinstance(data, dict):
-                data = json.dumps(data)
-            yield f"event: {event_type}\ndata: {data}\n\n"
+            # JSON-encode all SSE payloads, including strings. Deep Dive answers
+            # often contain markdown newlines; raw multiline data breaks the
+            # frontend's line-based SSE parser.
+            yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -1643,11 +1955,27 @@ async def deep_dive_query(req: DeepDiveRequest):
 
 
 @router.get("/deep-dive/projects", response_model=DeepDiveProjectsResponse)
-async def deep_dive_projects():
-    """List projects available for deep dive (scanned with job data)."""
+async def deep_dive_projects(request: Request):
+    """List projects available for deep dive, filtered by user access."""
+    auth_payload = getattr(request.state, "auth_payload", None)
+
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         all_projects = await registry.list_projects()
+
+        scanned = [
+            p for p in all_projects
+            if p.status in ("ready", "scanned") and p.job_count > 0
+        ]
+
+        if auth_payload:
+            user_id = int(auth_payload.get("sub", 0))
+            is_superadmin = await _get_user_is_superadmin(db, user_id)
+            if not is_superadmin:
+                perms = await _get_user_permission_codenames(db, user_id)
+                if "view_all_projects" not in perms:
+                    assigned_ids = await _get_assigned_project_ids(db, user_id)
+                    scanned = [p for p in scanned if p.id in assigned_ids]
 
         available = [
             DeepDiveProject(
@@ -1657,8 +1985,7 @@ async def deep_dive_projects():
                 job_count=p.job_count,
                 last_scan_at=p.last_scan_at,
             )
-            for p in all_projects
-            if p.status in ("ready", "scanned") and p.job_count > 0
+            for p in scanned
         ]
 
         return DeepDiveProjectsResponse(projects=available, total=len(available))

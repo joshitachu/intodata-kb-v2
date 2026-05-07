@@ -29,6 +29,7 @@ from intodoc.models import (
     ParsedJob,
     ProjectManifest,
     ScanResult,
+    ScanWarning,
     TRunJobRef,
 )
 from intodoc.scanner.walker import walk_repo
@@ -87,12 +88,29 @@ class LobsterParser:
 
     def __init__(self, cred_filter: CredentialFilter) -> None:
         self.cred_filter = cred_filter
+        # Non-fatal parse failures collected for the final ScanResult.
+        self._warnings: list[ScanWarning] = []
+        self._warn_root: Path | None = None
+
+    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
+        """Record a non-fatal scan warning alongside the usual console output."""
+        try:
+            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
+        except ValueError:
+            rel = str(file)
+        self._warnings.append(
+            ScanWarning(kind=kind, file=rel, message=message, phase=phase)
+        )
 
     # ── Main entry ───────────────────────────────────────────────────
 
     def parse(self, repo_root: Path) -> ScanResult:
         """Parse all Lobster profiles under repo_root into a ScanResult."""
         from intodoc.platforms.lobster import LobsterPlugin
+
+        # Reset warning collection for this scan.
+        self._warnings = []
+        self._warn_root = repo_root
 
         plugin = LobsterPlugin()
         all_files = walk_repo(repo_root, plugin)
@@ -118,6 +136,7 @@ class LobsterParser:
                     cross_refs[job.name] = refs
             except (ET.ParseError, OSError) as e:
                 console.print(f"  [yellow]Warning: Failed to parse {profile_path}: {e}[/yellow]")
+                self._warn(kind="parse_error", file=profile_path, message=str(e), phase="profile")
 
         manifest = self._build_manifest(jobs, cross_refs)
 
@@ -128,6 +147,7 @@ class LobsterParser:
             "jobs": len(jobs),
             "connections": len(all_connections),
             "context_groups": len(all_context_groups),
+            "total_warnings": len(self._warnings),
         }
 
         console.print(
@@ -144,6 +164,7 @@ class LobsterParser:
             context_groups=all_context_groups,
             manifest=manifest,
             stats=stats,
+            warnings=list(self._warnings),
         )
 
     # ── Profile discovery ────────────────────────────────────────────

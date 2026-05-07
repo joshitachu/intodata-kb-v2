@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { usePlatforms } from "../hooks/useDiscovery";
 import { useAddRepo, useUploadZip } from "../hooks/useProjects";
 
 interface Props {
@@ -15,6 +16,13 @@ export default function AddRepoDialog({ open, onClose }: Props) {
 
   const addRepo = useAddRepo();
   const uploadZip = useUploadZip();
+  const { data: platformsData } = usePlatforms();
+  const platforms = platformsData?.platforms ?? [
+    { id: "talend", label: "Talend" },
+    { id: "workato", label: "Workato" },
+    { id: "lobster", label: "Lobster" },
+    { id: "generic", label: "Generic" },
+  ];
 
   if (!open) return null;
 
@@ -91,10 +99,11 @@ export default function AddRepoDialog({ open, onClose }: Props) {
               value={platform}
               onChange={(e) => setPlatform(e.target.value)}
             >
-              <option value="talend">Talend</option>
-              <option value="workato">Workato</option>
-              <option value="lobster">Lobster</option>
-              <option value="generic">Generic</option>
+              {platforms.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
             </select>
           </div>
 

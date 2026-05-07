@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_server.db.models import GenerateRun, Project, ScanRun
+from mcp_server.services.model_pricing import calculate_model_cost, load_model_pricing
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,15 @@ class ProjectRegistry:
         )
         return list(result.scalars().all())
 
+    async def list_auto_reingest_git_projects(self) -> list[Project]:
+        result = await self.db.execute(
+            select(Project)
+            .where(Project.source_type == "git")
+            .where(Project.auto_reingest_enabled.is_(True))
+            .order_by(Project.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def update_status(
         self,
         project_id: str,
@@ -128,12 +138,15 @@ class ProjectRegistry:
         )
         await self.db.flush()
 
+    _UNSET = object()
+
     async def update_project(
         self,
         project_id: str,
         *,
         display_name: str | None = None,
         platform: str | None = None,
+        doc_generation_provider: object = _UNSET,
     ) -> Project | None:
         """Update editable fields on a project."""
         project = await self.get_project(project_id)
@@ -143,6 +156,8 @@ class ProjectRegistry:
             project.display_name = display_name
         if platform is not None:
             project.platform = platform
+        if doc_generation_provider is not ProjectRegistry._UNSET:
+            project.doc_generation_provider = doc_generation_provider  # type: ignore[assignment]
         await self.db.flush()
         return project
 
@@ -170,6 +185,61 @@ class ProjectRegistry:
             update(Project)
             .where(Project.id == project_id)
             .values(last_rag_push_at=now, updated_at=now)
+        )
+        await self.db.flush()
+
+    async def update_auto_reingest_check(
+        self,
+        project_id: str,
+        *,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                auto_reingest_last_checked_at=now,
+                auto_reingest_error=error,
+                updated_at=now,
+            )
+        )
+        await self.db.flush()
+
+    async def update_last_ingested_commit(
+        self,
+        project_id: str,
+        commit_sha: str,
+    ) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                last_ingested_commit_sha=commit_sha,
+                auto_reingest_error=None,
+                updated_at=now,
+            )
+        )
+        await self.db.flush()
+
+    async def update_git_update_summary(
+        self,
+        project_id: str,
+        summary: dict,
+        *,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                git_update_summary=summary,
+                auto_reingest_last_checked_at=now,
+                auto_reingest_error=error,
+                updated_at=now,
+            )
         )
         await self.db.flush()
 
@@ -237,6 +307,8 @@ class ProjectRegistry:
         session_id: str | None = None,
         doc_count: int = 0,
         model_name: str | None = None,
+        write_model_name: str | None = None,
+        quality_score: float | None = None,
         error_message: str | None = None,
         log_file: str | None = None,
         template_profile_id: int | None = None,
@@ -253,6 +325,8 @@ class ProjectRegistry:
             session_id=session_id,
             doc_count=doc_count,
             model_name=model_name,
+            write_model_name=write_model_name,
+            quality_score=quality_score,
             error_message=error_message,
             log_file=log_file,
             completed_at=datetime.datetime.now(datetime.timezone.utc),
@@ -275,3 +349,36 @@ class ProjectRegistry:
             .order_by(GenerateRun.started_at.desc())
         )
         return list(result.scalars().all())
+
+    async def backfill_generate_run_costs(self, project_id: str | None = None) -> int:
+        """Populate null GenerateRun costs from configured model pricing."""
+
+        pricing = load_model_pricing()
+        if not pricing:
+            return 0
+
+        conditions = [
+            GenerateRun.cost_usd.is_(None),
+            GenerateRun.input_tokens.is_not(None),
+            GenerateRun.output_tokens.is_not(None),
+            GenerateRun.model_name.is_not(None),
+        ]
+        if project_id is not None:
+            conditions.append(GenerateRun.project_id == project_id)
+
+        result = await self.db.execute(select(GenerateRun).where(*conditions))
+        updated = 0
+        for run in result.scalars().all():
+            cost_usd = calculate_model_cost(
+                run.model_name,
+                run.input_tokens,
+                run.output_tokens,
+                pricing,
+            )
+            if cost_usd is None:
+                continue
+            run.cost_usd = cost_usd
+            updated += 1
+
+        await self.db.flush()
+        return updated

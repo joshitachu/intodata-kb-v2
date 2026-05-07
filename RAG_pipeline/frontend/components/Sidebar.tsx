@@ -15,13 +15,14 @@ import {
   Loader2,
   Trash2,
   Users,
+  UserPlus,
   KeyRound,
   FolderKanban,
   BarChart3,
   FlaskConical,
   Brain,
   HelpCircle,
-  PlayCircle,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -30,7 +31,7 @@ import { useChatContext } from "@/contexts/ChatContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { UserGuideDialog } from "@/components/UserGuideDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
-import { useOnboardingContext } from "@/contexts/OnboardingContext";
+import { TenantMark } from "@/components/TenantMark";
 import type { ConversationResponse } from "@/types";
 
 const SIDEBAR_KEY = "sidebar-expanded";
@@ -55,6 +56,7 @@ const navItems = [
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/docs", label: "Project Docs", icon: BookOpen },
   { href: "/topology", label: "Topology", icon: Network },
+  { href: "/settings/sources", label: "Sources", icon: Database },
 ];
 
 type PermissionCodename =
@@ -78,6 +80,7 @@ interface AdminSubLink {
 
 const adminSubLinks: AdminSubLink[] = [
   { href: "/admin/users", label: "Users", icon: Users, superadminOnly: true },
+  { href: "/admin/access-requests", label: "Access", icon: UserPlus, superadminOnly: true },
   { href: "/admin/roles", label: "Roles", icon: KeyRound, superadminOnly: true },
   { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, superadminOnly: true },
   { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },
@@ -96,7 +99,6 @@ export function Sidebar() {
   const [expanded, setExpanded] = useLocalExpand();
   const [deleteTarget, setDeleteTarget] = useState<ConversationResponse | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
-  const { startTour } = useOnboardingContext();
 
   const isChatPage = pathname === "/";
 
@@ -126,6 +128,10 @@ export function Sidebar() {
   if (!expanded) {
     return (
       <aside className="w-14 border-r bg-card flex flex-col h-full transition-all duration-200">
+        {/* Tenant mark */}
+        <div className="px-2 py-3 flex items-center justify-center border-b border-border/60">
+          <TenantMark iconOnly size="md" />
+        </div>
         {/* Toggle expand */}
         <div className="p-2 flex items-center justify-center">
           <button
@@ -213,11 +219,12 @@ export function Sidebar() {
   // ─── Expanded sidebar ────────────────────────────────────────────
   return (
     <aside className="w-56 border-r bg-card flex flex-col h-full transition-all duration-200">
-      {/* Header: collapse */}
-      <div className="p-2">
+      {/* Tenant mark + collapse */}
+      <div className="px-3 py-3 border-b border-border/60 flex items-center gap-2">
+        <TenantMark size="md" className="flex-1 min-w-0" />
         <button
           onClick={() => setExpanded(false)}
-          className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+          className="shrink-0 p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
           title="Collapse sidebar"
         >
           <PanelLeftClose className="h-4 w-4" />
@@ -295,13 +302,6 @@ export function Sidebar() {
         >
           <HelpCircle className="h-4 w-4" />
           User Guide
-        </button>
-        <button
-          onClick={() => startTour()}
-          className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <PlayCircle className="h-4 w-4" />
-          Replay Tour
         </button>
       </nav>
 

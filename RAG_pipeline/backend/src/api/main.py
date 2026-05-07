@@ -7,13 +7,18 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from src.api.middleware.ip_allowlist import IPAllowlistMiddleware
 from src.config import settings
 from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
 from src.api.routes import onboarding as onboarding_routes
 from src.api.routes import notifications as notifications_routes
+from src.api.routes import telemetry as telemetry_routes
+from src.api.routes import tenant as tenant_routes
+from src.api.routes import feedback as feedback_routes
 
 logger = logging.getLogger(__name__)
 
@@ -36,47 +41,59 @@ async def lifespan(app: FastAPI):
         from src.retrieval.reranker import warmup as warmup_reranker
         warmup_reranker()
 
-    # Ensure default admin user exists (seed data)
+    # Seed a convenience admin for development only. In production we intentionally
+    # leave the users table empty so the onboarding wizard's POST /auth/bootstrap-admin
+    # is the single code path that creates the first real admin.
     from src.db.session import get_db
     from src.db.models import User, Role, Permission
     from src.auth.security import hash_password
     from sqlalchemy import select, text
     async for db in get_db():
-        admin = (await db.execute(select(User).where(User.id == 1))).scalar_one_or_none()
-        if admin is None:
+        if settings.app_env != "production":
+            admin = (await db.execute(select(User).where(User.id == 1))).scalar_one_or_none()
+            if admin is None:
+                role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one_or_none()
+                if role is None:
+                    role = Role(id=1, name="admin", description="Administrator")
+                    db.add(role)
+                    await db.flush()
+                user = User(
+                    id=1,
+                    username="admin",
+                    email="admin@intodata.local",
+                    password_hash=hash_password(settings.admin_default_password),
+                    is_superadmin=True,
+                )
+                user.roles.append(role)
+                db.add(user)
+                await db.flush()
+                await db.execute(text("SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))"))
+                await db.execute(text("SELECT setval('roles_id_seq', (SELECT MAX(id) FROM roles))"))
+                await db.commit()
+                logger.info("Seeded default admin user (id=1) with password [dev mode]")
+            elif admin.password_hash is None:
+                admin.password_hash = hash_password(settings.admin_default_password)
+                admin.is_superadmin = True
+                await db.commit()
+                logger.info("Updated existing admin user with password hash [dev mode]")
+        else:
+            # Production: make sure the admin role row exists so bootstrap-admin can attach
+            # to it without needing a separate bootstrap-role step. Roles/permissions
+            # themselves are seeded by Alembic migrations (006, 012+).
             role = (await db.execute(select(Role).where(Role.name == "admin"))).scalar_one_or_none()
             if role is None:
                 role = Role(id=1, name="admin", description="Administrator")
                 db.add(role)
                 await db.flush()
-            user = User(
-                id=1,
-                username="admin",
-                email="admin@intodata.local",
-                password_hash=hash_password(settings.admin_default_password),
-                is_superadmin=True,
-            )
-            user.roles.append(role)
-            db.add(user)
-            await db.flush()
-            # Reset sequences after explicit-ID inserts to avoid duplicate key errors
-            await db.execute(text("SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))"))
-            await db.execute(text("SELECT setval('roles_id_seq', (SELECT MAX(id) FROM roles))"))
-            await db.commit()
-            logger.info("Seeded default admin user (id=1) with password")
-        elif admin.password_hash is None:
-            # Existing admin without password — set it
-            admin.password_hash = hash_password(settings.admin_default_password)
-            admin.is_superadmin = True
-            await db.commit()
-            logger.info("Updated existing admin user with password hash")
+                await db.execute(text("SELECT setval('roles_id_seq', (SELECT MAX(id) FROM roles))"))
+                await db.commit()
+                logger.info("Seeded admin role [production mode — users table left empty for bootstrap-admin]")
 
         # Verify RBAC permissions exist (idempotent check only)
         existing_perms = (await db.execute(select(Permission.codename))).scalars().all()
         if not existing_perms:
             logger.info("No permissions table data yet, skipping RBAC seed (run migration 006)")
         # Note: admin role permissions are managed by migrations (012+).
-        # Do NOT auto-sync admin role to all permissions here.
 
     yield
     logger.info("Shutting down IntoData KB API")
@@ -113,6 +130,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+# IP allowlist — no-op when ALLOWED_IPS is empty. Added BEFORE ProxyHeadersMiddleware
+# in registration order means it runs AFTER in dispatch order (Starlette stacks LIFO),
+# so by the time IP allowlist checks request.client.host the proxy headers have already
+# rewritten it to the real client IP.
+app.add_middleware(IPAllowlistMiddleware, allowed_ips=settings.allowed_ips)
+
+# Rewrite request.client.host from X-Forwarded-For when the incoming connection comes
+# from a trusted proxy. Without this, slowapi rate limits and the IP allowlist would
+# see the reverse proxy's IP for every request.
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts=[p.strip() for p in settings.trusted_proxies.split(",") if p.strip()]
+    or "127.0.0.1",
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.allowed_origins.split(",") if o.strip()],
@@ -135,3 +167,6 @@ app.include_router(projects_api.router, prefix="/api/v1")
 app.include_router(memory.router, prefix="/api/v1")
 app.include_router(onboarding_routes.router, prefix="/api/v1")
 app.include_router(notifications_routes.router, prefix="/api/v1")
+app.include_router(telemetry_routes.router, prefix="/api/v1")
+app.include_router(tenant_routes.router, prefix="/api/v1")
+app.include_router(feedback_routes.router, prefix="/api/v1")

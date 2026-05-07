@@ -798,7 +798,8 @@ class ScannerService:
             "02_ARCHITECTURE_INVENTORY", "03_DATA_FLOWS_LINEAGE",
         ],
         "Business+Ops": [
-            "04_BUSINESS_LOGIC", "05_OPERATIONS_RISK",
+            "04_BUSINESS_LOGIC",
+            "05a_OPERATIONS", "05b_SECURITY", "05c_RISK", "05d_CHANGE_MANAGEMENT",
             "06_ENVIRONMENT_EXTERNAL",
         ],
         "Patterns+User": [

@@ -13,10 +13,12 @@ import {
 import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
+import { submitFeedback } from "@/lib/feedback";
 import type { MessageResponse, UsageStats } from "@/types";
 
 interface MessageBubbleProps {
   message: MessageResponse;
+  conversationId?: number | null;
   isStreaming?: boolean;
   hasSources?: boolean;
   usage?: UsageStats | null;
@@ -24,6 +26,7 @@ interface MessageBubbleProps {
 
 export function MessageBubble({
   message,
+  conversationId,
   isStreaming,
   hasSources,
   usage,
@@ -31,6 +34,26 @@ export function MessageBubble({
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+
+  // message.id < 1 marks optimistic / streaming messages that haven't been
+  // persisted yet — feedback is disabled until the server assigns a real id.
+  const canSubmitFeedback = !isUser && message.id > 0;
+
+  function handleFeedback(next: "up" | "down") {
+    if (!canSubmitFeedback) return;
+    const toggledOff = feedback === next;
+    const newState = toggledOff ? null : next;
+    const prev = feedback;
+    setFeedback(newState);  // optimistic
+    void submitFeedback({
+      kind: toggledOff ? "cleared" : next,
+      conversation_id: conversationId ?? null,
+      message_id: message.id,
+      citations_snapshot: next === "down" ? message.sources ?? null : null,
+    }).then((ok) => {
+      if (!ok) setFeedback(prev);  // revert on failure
+    });
+  }
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const sourceCount = message.sources?.length ?? 0;
@@ -137,28 +160,28 @@ export function MessageBubble({
                     )}
                   </button>
                   <button
-                    onClick={() =>
-                      setFeedback(feedback === "up" ? null : "up")
-                    }
+                    onClick={() => handleFeedback("up")}
+                    disabled={!canSubmitFeedback}
                     className={cn(
                       "p-1 rounded-md transition-colors",
                       feedback === "up"
                         ? "text-primary bg-primary/10"
                         : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                      !canSubmitFeedback && "opacity-50 cursor-not-allowed",
                     )}
                     title="Good response"
                   >
                     <ThumbsUp className="h-3.5 w-3.5" />
                   </button>
                   <button
-                    onClick={() =>
-                      setFeedback(feedback === "down" ? null : "down")
-                    }
+                    onClick={() => handleFeedback("down")}
+                    disabled={!canSubmitFeedback}
                     className={cn(
                       "p-1 rounded-md transition-colors",
                       feedback === "down"
                         ? "text-destructive bg-destructive/10"
                         : "text-muted-foreground hover:text-foreground hover:bg-muted",
+                      !canSubmitFeedback && "opacity-50 cursor-not-allowed",
                     )}
                     title="Bad response"
                   >

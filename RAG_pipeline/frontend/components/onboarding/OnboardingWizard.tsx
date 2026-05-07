@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { WizardProgress } from "./WizardProgress";
 import { WelcomeStep } from "./steps/WelcomeStep";
 import { WorkspaceStep } from "./steps/WorkspaceStep";
@@ -8,31 +8,43 @@ import { PlatformSelectStep } from "./steps/PlatformSelectStep";
 import { CommToolSelectStep } from "./steps/CommToolSelectStep";
 import { SourceUploadStep } from "./steps/SourceUploadStep";
 import { ProvisioningStep } from "./steps/ProvisioningStep";
+import { SetupCompleteStep } from "./steps/SetupCompleteStep";
 import { useCompleteOnboarding } from "@/hooks/useOnboarding";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { useAuthContext } from "@/components/AuthProvider";
+import { trackWizardEvent } from "@/lib/telemetry";
 
-// Six-step wizard. Progress-bar labels are shorter than the step headings.
+// 7-step wizard. Step 5 provisions; step 6 is the explicit "Ready" celebration
+// (fixes the old UX where the wizard jumped straight into the product tour).
 const STEP_LABELS = [
   "Welcome",
   "Workspace",
   "Platforms",
   "Tools",
   "Source",
+  "Setup",
   "Ready",
 ];
 
-export function OnboardingWizard() {
+interface Props {
+  onDismiss: () => void;
+}
+
+export function OnboardingWizard({ onDismiss }: Props) {
   const { user } = useAuthContext();
   const { status, refetch, startTour } = useOnboardingContext();
   const complete = useCompleteOnboarding();
 
-  // Resume from the last saved step, but never auto-start at Provisioning (5)
-  // since that step requires `complete_wizard` to have run on the backend.
+  // Resume from the last saved step, but never auto-start on Provisioning (5)
+  // or SetupComplete (6) — those require server-side complete_wizard to have run.
   const [step, setStep] = useState(() => {
     const saved = status?.wizard_current_step ?? 0;
     return saved >= 5 ? 0 : saved;
   });
+
+  useEffect(() => {
+    trackWizardEvent("wizard_step_viewed", step);
+  }, [step]);
 
   async function finalize() {
     await complete.mutateAsync();
@@ -41,9 +53,13 @@ export function OnboardingWizard() {
 
   return (
     <div className="fixed inset-0 bg-background z-50 flex flex-col overflow-y-auto">
-      <WizardProgress steps={STEP_LABELS} currentStep={step} />
+      <WizardProgress
+        steps={STEP_LABELS}
+        currentStep={step}
+        workspaceName={status?.workspace_name}
+      />
 
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center py-10">
         {step === 0 && (
           <WelcomeStep
             username={user?.username ?? "there"}
@@ -77,6 +93,7 @@ export function OnboardingWizard() {
             initialUrl={status?.source_url}
             initialFilename={status?.source_filename}
             initialType={status?.source_type ?? null}
+            selectedPlatformIds={status?.selected_platforms ?? []}
             onBack={() => setStep(3)}
             onNext={finalize}
             onSkip={finalize}
@@ -97,7 +114,23 @@ export function OnboardingWizard() {
             selectedToolIds={status?.selected_comm_tools ?? []}
             onDone={async () => {
               await refetch();
+              setStep(6);
+            }}
+          />
+        )}
+        {step === 6 && (
+          <SetupCompleteStep
+            workspaceName={status?.workspace_name}
+            selectedPlatformIds={status?.selected_platforms ?? []}
+            selectedToolIds={status?.selected_comm_tools ?? []}
+            onStartTour={() => {
+              trackWizardEvent("tour_started", 6);
+              onDismiss();
               startTour();
+            }}
+            onSkipTour={() => {
+              trackWizardEvent("tour_skipped", 6);
+              onDismiss();
             }}
           />
         )}

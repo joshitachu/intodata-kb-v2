@@ -140,17 +140,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [mode, streamState.isStreaming, streamState.messageId]);
 
-  // Clear pending user message when deep dive finishes
-  useEffect(() => {
-    if (
-      mode === "deep-dive" &&
-      !deepDive.state.isStreaming &&
-      deepDive.state.content
-    ) {
-      setPendingUserMessage(null);
-    }
-  }, [mode, deepDive.state.isStreaming, deepDive.state.content]);
-
   async function createConversation() {
     try {
       const newConversation = await createMutation.mutateAsync({});
@@ -216,6 +205,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setModeState(newMode);
     if (newMode !== "deep-dive") {
       deepDive.reset();
+      setPendingUserMessage(null);
     }
   }
 

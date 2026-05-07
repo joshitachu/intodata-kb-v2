@@ -1,38 +1,64 @@
 "use client";
 
-import { Sparkles } from "lucide-react";
+import { Sparkles, ArrowRight, Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   username: string;
   onNext: () => void;
 }
 
+const HIGHLIGHTS = [
+  "Name your workspace",
+  "Pick the integration platforms you run",
+  "Choose the tools your team works in",
+  "Connect a codebase — or skip it for now",
+  "Take a quick product tour",
+];
+
 export function WelcomeStep({ username, onNext }: Props) {
   return (
-    <div className="flex flex-col items-center justify-center text-center px-6 py-10 max-w-2xl mx-auto">
-      <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-6">
-        <Sparkles className="h-8 w-8 text-primary" />
+    <div className="flex flex-col items-center justify-center text-center px-6 max-w-xl mx-auto">
+      {/* Glowing halo around the mark for a premium first impression */}
+      <div className="relative mb-8">
+        <div
+          className="absolute inset-0 rounded-full bg-primary/15 blur-2xl scale-110"
+          aria-hidden
+        />
+        <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-elevation-lg">
+          <Sparkles className="h-9 w-9" aria-hidden />
+        </div>
       </div>
-      <h1 className="text-3xl font-semibold mb-3">
-        Welcome to IntoData, {username}
+
+      <h1 className="text-4xl font-semibold tracking-tight text-foreground mb-3">
+        Welcome, {username}
       </h1>
-      <p className="text-muted-foreground text-base max-w-md mb-8">
-        Let&rsquo;s set up your workspace in a couple of quick steps so you can start
-        querying your integrations with natural language.
+      <p className="text-base text-muted-foreground max-w-md mb-10 leading-relaxed">
+        Let&rsquo;s set up your workspace in a couple of quick steps so you can
+        start querying your integrations with natural language.
       </p>
-      <ul className="text-sm text-muted-foreground space-y-2 mb-10 text-left">
-        <li>• Name your workspace</li>
-        <li>• Pick the integration platforms your team works with</li>
-        <li>• Choose communication &amp; ticketing tools to connect</li>
-        <li>• Optionally connect your source codebase</li>
-        <li>• Take a short tour of the product</li>
+
+      <ul className="w-full max-w-sm text-left space-y-2.5 mb-12">
+        {HIGHLIGHTS.map((text) => (
+          <li
+            key={text}
+            className="flex items-start gap-2.5 text-sm text-foreground/80"
+          >
+            <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <Check className="h-2.5 w-2.5" strokeWidth={3} />
+            </span>
+            {text}
+          </li>
+        ))}
       </ul>
-      <button
-        onClick={onNext}
-        className="px-6 py-2.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
-      >
+
+      <Button size="lg" onClick={onNext}>
         Get started
-      </button>
+        <ArrowRight className="h-4 w-4" />
+      </Button>
+      <p className="mt-4 text-xs text-muted-foreground">
+        Takes about 2 minutes.
+      </p>
     </div>
   );
 }

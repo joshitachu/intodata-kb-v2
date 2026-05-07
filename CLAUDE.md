@@ -61,6 +61,15 @@ Two independent sub-systems sharing infrastructure:
 | frontend | RAG_pipeline/frontend | 3000 | RAG UI (Next.js) |
 | dashboard | knowledge_base/dashboard | 8001 | intodoc control panel |
 
+## Deployment Foundation Status (EP-001)
+
+- EP-001 is now **Deployment Foundation**, generic rather than customer-specific.
+- Canonical deploy path is `deploy/deploy-client.sh` + `deploy/nginx/nexus-client.conf.template` + certbot. Caddy files remain legacy/deferred unless a future story revives them.
+- Six Docker services are still the Compose health boundary: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `dashboard`.
+- MCP API is a required host-level systemd service via `deploy/mcp-server@.service`, not a seventh Docker service.
+- Deployment docs now live in `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`.
+- EP-001 is not accepted until the runbook and smoke test pass on a clean reference VPS.
+
 ## Quick Commands
 
 ```bash

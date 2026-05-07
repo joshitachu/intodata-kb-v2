@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, HTTPException, Request
 from jose import JWTError
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import select
@@ -40,7 +40,20 @@ QdrantClient = Annotated[AsyncQdrantClient, Depends(get_qdrant)]
 
 # --- Current user (JWT cookie auth) ---
 
+MFA_ENROLLMENT_EXEMPT_PATHS = {
+    "/api/v1/auth/me",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/refresh",
+    "/api/v1/auth/totp/setup",
+    "/api/v1/auth/totp/verify",
+}
+
+
+def _is_mfa_enrollment_exempt(path: str) -> bool:
+    return path in MFA_ENROLLMENT_EXEMPT_PATHS
+
 async def get_current_user(
+    request: Request,
     db: DBSession,
     access_token: Annotated[str | None, Cookie()] = None,
 ) -> User:
@@ -62,6 +75,15 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User not found")
     if not user.is_active:
         raise HTTPException(status_code=401, detail="User account is deactivated")
+
+    if not user.mfa_enabled and not _is_mfa_enrollment_exempt(request.url.path):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "mfa_required",
+                "message": "MFA enrollment is required before using this endpoint.",
+            },
+        )
 
     return user
 

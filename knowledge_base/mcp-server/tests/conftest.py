@@ -1,5 +1,7 @@
 """Shared test fixtures for MCP server tests."""
 
+import datetime
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, text
@@ -33,7 +35,11 @@ CREATE TABLE IF NOT EXISTS user_roles (
 );
 CREATE TABLE IF NOT EXISTS project_assignments (
     user_id INTEGER,
-    project_id TEXT
+    project_id TEXT,
+    assigned_at DATETIME,
+    created_at DATETIME,
+    updated_at DATETIME,
+    UNIQUE(user_id, project_id)
 );
 INSERT INTO users (id, username, is_superadmin) VALUES (1, 'testuser', 1);
 """
@@ -50,6 +56,7 @@ async def engine():
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+        dbapi_conn.create_function("NOW", 0, lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
 
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -108,14 +115,22 @@ async def client(session_factory, monkeypatch, tmp_path):
 
     # Monkeypatch session factory in all modules
     import mcp_server.api.routes.projects as projects_mod
+    import mcp_server.api.routes.generate_runs as generate_runs_mod
     import mcp_server.api.routes.webhook as webhook_mod
     import mcp_server.api.permissions as permissions_mod
     import mcp_server.db.session as session_mod
+    import mcp_server.services.git_poller as git_poller_mod
+    import mcp_server.services.git_reingestion as git_reingestion_mod
+    import mcp_server.services.git_diff_patcher as git_diff_patcher_mod
 
     monkeypatch.setattr(session_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(projects_mod, "async_session_factory", session_factory)
+    monkeypatch.setattr(generate_runs_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(webhook_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(permissions_mod, "async_session_factory", session_factory)
+    monkeypatch.setattr(git_poller_mod, "async_session_factory", session_factory)
+    monkeypatch.setattr(git_reingestion_mod, "async_session_factory", session_factory)
+    monkeypatch.setattr(git_diff_patcher_mod, "async_session_factory", session_factory)
 
     # Import app after monkeypatching config
     from fastapi import Request

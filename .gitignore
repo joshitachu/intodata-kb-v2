@@ -65,3 +65,9 @@ tmpclaude-*
 # Large binary files (not project code)
 OpenBrain_Behavioral_Architecture.pdf
 profiles.zip
+
+# MCP server runtime artifacts
+knowledge_base/mcp-server/mcp_server.db
+knowledge_base/mcp-server/screenlog.0
+knowledge_base/mcp-server/packs/
+knowledge_base/mcp-server/data/logs/

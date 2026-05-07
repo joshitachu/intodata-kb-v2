@@ -18,6 +18,7 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
   const { data: profilesData } = useProfiles({ platform: platform || undefined });
 
   const [selectedProfileId, setSelectedProfileId] = useState<number | undefined>(undefined);
+  const [resumeGenerate, setResumeGenerate] = useState(true);
 
   const busy = status === "scanning" || status === "generating";
   const profiles = profilesData?.profiles ?? [];
@@ -54,14 +55,35 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
         </select>
       )}
 
+      <label
+        className="flex items-center gap-1 px-1.5 py-1 text-xs text-slate-500 select-none"
+        title="Resume from docs_staging checkpoint when available"
+      >
+        <input
+          type="checkbox"
+          checked={resumeGenerate}
+          onChange={(e) => setResumeGenerate(e.target.checked)}
+          className="h-3 w-3 accent-accent-primary"
+          onClick={(e) => e.stopPropagation()}
+        />
+        Resume
+      </label>
+
       {/* Generate */}
       <button
         className="btn-icon-action"
         disabled={busy || generate.isPending}
-        title={selectedProfileId ? `Generate (Profile: ${profiles.find(p => p.id === selectedProfileId)?.name})` : "Generate Docs"}
+        title="Generate Docs"
         onClick={() => {
+          const writeModel = localStorage.getItem(`project_write_model_${projectId}`) || null;
           onAction(projectId);
-          generate.mutate({ projectId, templateProfileId: selectedProfileId });
+          generate.mutate({
+            projectId,
+            templateProfileId: selectedProfileId,
+            resume: resumeGenerate,
+            model: null,
+            writeModel,
+          });
         }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

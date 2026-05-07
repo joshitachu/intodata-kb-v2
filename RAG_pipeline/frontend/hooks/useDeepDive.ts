@@ -7,9 +7,11 @@ export interface DeepDiveState {
   isStreaming: boolean;
   content: string;
   thinking: string;
-  toolCalls: string[];
+  activityCount: number;
+  status: string;
   error: string | null;
   sessionId: string | null;
+  question: string | null;
   usage: {
     duration_ms?: number;
     cost_usd?: number;
@@ -22,11 +24,33 @@ const INITIAL_STATE: DeepDiveState = {
   isStreaming: false,
   content: "",
   thinking: "",
-  toolCalls: [],
+  activityCount: 0,
+  status: "",
   error: null,
   sessionId: null,
+  question: null,
   usage: null,
 };
+
+function decodeSseData(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function isLeakedToolSyntax(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed.startsWith("<function_calls>") ||
+    /^<invoke\s/i.test(trimmed) ||
+    /^[a-zA-Z_][\w]*\(\s*\{/.test(trimmed) ||
+    trimmed.startsWith('{"tool"') ||
+    trimmed.startsWith('{"tool_calls"') ||
+    trimmed.includes("\nTOOL_RESULTS:")
+  );
+}
 
 export function useDeepDive() {
   const [state, setState] = useState<DeepDiveState>(INITIAL_STATE);
@@ -51,10 +75,12 @@ export function useDeepDive() {
       isStreaming: true,
       content: "",
       thinking: "",
-      toolCalls: [],
+      activityCount: 0,
+      status: "Starting deep dive analysis...",
       error: null,
       // Preserve sessionId from previous state if the request has one
       sessionId: request.session_id ?? prev.sessionId,
+      question: request.question,
       usage: null,
     }));
 
@@ -91,6 +117,10 @@ export function useDeepDive() {
       const decoder = new TextDecoder();
       let buffer = "";
       let currentEvent = "";
+      let acceptedAnswer = false;
+      let receivedError = false;
+      let receivedDone = false;
+      let suppressedInternalOutput = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -106,17 +136,24 @@ export function useDeepDive() {
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
-            const data = line.slice(6);
+            const data = decodeSseData(line.slice(6));
+            const textData =
+              typeof data === "string" ? data : JSON.stringify(data);
 
             if (currentEvent === "token") {
-              setState((prev) => ({
-                ...prev,
-                content: prev.content + data,
-              }));
+              if (!isLeakedToolSyntax(textData)) {
+                acceptedAnswer = true;
+                setState((prev) => ({
+                  ...prev,
+                  content: prev.content + textData,
+                }));
+              } else {
+                suppressedInternalOutput = true;
+              }
             } else if (currentEvent === "thinking") {
               setState((prev) => ({
                 ...prev,
-                thinking: prev.thinking + data,
+                thinking: prev.thinking + textData,
               }));
             } else if (currentEvent === "thinking_start") {
               // Reset thinking for new thinking block
@@ -127,41 +164,53 @@ export function useDeepDive() {
             } else if (currentEvent === "session") {
               setState((prev) => ({
                 ...prev,
-                sessionId: data,
+                sessionId: textData,
               }));
             } else if (currentEvent === "tool_use") {
               setState((prev) => ({
                 ...prev,
-                toolCalls: [...prev.toolCalls, data],
+                activityCount: prev.activityCount + 1,
+                status: "Inspecting repository...",
               }));
             } else if (currentEvent === "usage") {
-              try {
-                const usageData = JSON.parse(data);
+              if (data && typeof data === "object") {
+                const usageData = data as DeepDiveState["usage"];
                 setState((prev) => ({ ...prev, usage: usageData }));
-              } catch {
-                // ignore
               }
             } else if (currentEvent === "done") {
-              try {
-                const doneData = JSON.parse(data);
+              receivedDone = true;
+              if (data && typeof data === "object") {
+                const doneData = data as DeepDiveState["usage"];
                 setState((prev) => ({
                   ...prev,
                   isStreaming: false,
                   usage: { ...prev.usage, ...doneData },
+                  error:
+                    !acceptedAnswer && !receivedError
+                      ? "Deep Dive ended without a final answer."
+                      : prev.error,
                 }));
-              } catch {
-                setState((prev) => ({ ...prev, isStreaming: false }));
+              } else {
+                setState((prev) => ({
+                  ...prev,
+                  isStreaming: false,
+                  error:
+                    !acceptedAnswer && !receivedError
+                      ? "Deep Dive ended without a final answer."
+                      : prev.error,
+                }));
               }
             } else if (currentEvent === "error") {
+              receivedError = true;
               setState((prev) => ({
                 ...prev,
                 isStreaming: false,
-                error: data,
+                error: textData,
               }));
             } else if (currentEvent === "status") {
               setState((prev) => ({
                 ...prev,
-                toolCalls: [...prev.toolCalls, `[status] ${data}`],
+                status: textData,
               }));
             }
 
@@ -173,7 +222,18 @@ export function useDeepDive() {
       // If stream ended without a done event
       setState((prev) => {
         if (prev.isStreaming) {
-          return { ...prev, isStreaming: false };
+          return {
+            ...prev,
+            isStreaming: false,
+            error:
+              !acceptedAnswer && !receivedError
+                ? suppressedInternalOutput
+                  ? "Deep Dive returned internal tool output but no final answer."
+                  : receivedDone
+                    ? "Deep Dive ended without a final answer."
+                    : "Deep Dive stream closed before a final answer."
+                : prev.error,
+          };
         }
         return prev;
       });

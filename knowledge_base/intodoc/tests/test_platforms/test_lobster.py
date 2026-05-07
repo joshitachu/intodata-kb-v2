@@ -45,10 +45,15 @@ class TestClassifyFile:
         ("export.pak", FileType.UNKNOWN),
         ("readme.txt", FileType.DOCUMENTATION),
         ("config.json", FileType.CONFIG),
-        ("script.py", FileType.ROUTINE),  # GenericPlugin classifies .py as ROUTINE
     ])
     def test_classify_files(self, plugin, filename, expected):
         assert plugin.classify_file(Path(filename)) == expected
+
+    def test_classify_code_fallback(self, plugin, tmp_path):
+        """GenericPlugin binary detection classifies readable .py as ROUTINE."""
+        f = tmp_path / "script.py"
+        f.write_text("print('hello')\n")
+        assert plugin.classify_file(f) == FileType.ROUTINE
 
 
 # ── Parser ───────────────────────────────────────────────────────────

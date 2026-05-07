@@ -5,33 +5,22 @@ import { usePathname, useRouter } from "next/navigation";
 import { driver, type Driver } from "driver.js";
 import "driver.js/dist/driver.css";
 
-import { useAuthContext } from "@/components/AuthProvider";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
 import { useCompleteTour } from "@/hooks/useOnboarding";
 import { tourSteps } from "./tourSteps";
 
 /**
- * Driver.js wrapper. Mounts in the app shell and starts automatically for
- * users whose tour is incomplete (right after they finish the wizard). It
- * also obeys `startTour()` from OnboardingContext for the "Replay tour" button.
+ * Driver.js wrapper. Mounts in the app shell and responds to `startTour()`
+ * from OnboardingContext. The tour no longer auto-starts right after the
+ * wizard — that transition was jarring; the Ready step owns kick-off
+ * via its explicit "Take the quick tour" CTA.
  */
 export function ProductTour() {
   const router = useRouter();
   const pathname = usePathname();
-  const { user } = useAuthContext();
-  const { status, tourActive, stopTour, startTour } = useOnboardingContext();
+  const { tourActive, stopTour } = useOnboardingContext();
   const completeTour = useCompleteTour();
   const driverRef = useRef<Driver | null>(null);
-
-  // Auto-start right after wizard completes (first time only)
-  useEffect(() => {
-    if (!user) return;
-    if (!status?.wizard_completed) return;
-    if (status.tour_completed) return;
-    if (user.tour_completed) return;
-    if (tourActive) return;
-    startTour();
-  }, [user, status, tourActive, startTour]);
 
   useEffect(() => {
     if (!tourActive) return;
@@ -40,9 +29,13 @@ export function ProductTour() {
       showProgress: true,
       animate: true,
       allowClose: true,
-      overlayOpacity: 0.6,
+      overlayOpacity: 0.55,
+      popoverClass: "intodata-tour",
+      nextBtnText: "Next",
+      prevBtnText: "Back",
+      doneBtnText: "Finish tour",
       steps: tourSteps,
-      onNextClick: (_el, step, ctx) => {
+      onNextClick: (_el, _step, ctx) => {
         const idx = ctx.state.activeIndex ?? 0;
         const nextStep = tourSteps[idx + 1];
         if (nextStep?.navigateTo && nextStep.navigateTo !== pathname) {
@@ -53,7 +46,7 @@ export function ProductTour() {
           d.moveNext();
         }
       },
-      onPrevClick: (_el, step, ctx) => {
+      onPrevClick: (_el, _step, ctx) => {
         const idx = ctx.state.activeIndex ?? 0;
         const prevStep = tourSteps[idx - 1];
         if (prevStep?.navigateTo && prevStep.navigateTo !== pathname) {

@@ -1,5 +1,6 @@
 import type { Project } from "../types";
 import { getPlatform } from "../lib/platform";
+import { usePlatforms } from "../hooks/useDiscovery";
 import { timeAgo, formatAbsoluteDate } from "../lib/timeago";
 import ActionButtons from "./ActionButtons";
 import StatusBadge from "./StatusBadge";
@@ -19,7 +20,8 @@ export default function ProjectCard({
   onAction,
   canManageProjects,
 }: Props) {
-  const platform = getPlatform(project.platform);
+  const { data: platformsData } = usePlatforms();
+  const platform = getPlatform(project.platform, platformsData?.platforms);
 
   return (
     <div
@@ -28,6 +30,7 @@ export default function ProjectCard({
         ${platform.accentColor} cursor-pointer
         ${isActive ? "ring-1 ring-accent-primary/30 shadow-card-hover" : "shadow-card"}
       `}
+      style={platform.accentHex ? { borderLeftColor: platform.accentHex } : undefined}
       onClick={() => onSelect(project.id)}
     >
       {/* Header */}
@@ -40,7 +43,15 @@ export default function ProjectCard({
             <p className="text-xs font-mono text-slate-600 mt-0.5">{project.id}</p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            <span className={platform.badgeClasses}>{platform.label}</span>
+            <span
+              className={platform.badgeClasses}
+              style={platform.badgeColor ? {
+                borderColor: platform.badgeColor,
+                color: platform.badgeColor,
+              } : undefined}
+            >
+              {platform.label}
+            </span>
             <StatusBadge status={project.status} />
           </div>
         </div>

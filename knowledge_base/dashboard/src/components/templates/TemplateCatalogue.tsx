@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { usePlatforms } from "../../hooks/useDiscovery";
 import { useTemplates } from "../../hooks/useTemplates";
 import type { Template, TemplateTier } from "../../types";
 
@@ -44,6 +45,8 @@ export default function TemplateCatalogue({ onSelect, selectedSlug, defaultPlatf
   const [platformFilter, setPlatformFilter] = useState(defaultPlatform ?? "");
   const [tierFilter, setTierFilter] = useState("");
   const [search, setSearch] = useState("");
+  const { data: platformsData } = usePlatforms();
+  const platforms = platformsData?.platforms ?? [];
 
   const { data, isLoading } = useTemplates({
     category: categoryFilter || undefined,
@@ -94,9 +97,14 @@ export default function TemplateCatalogue({ onSelect, selectedSlug, defaultPlatf
           className="input-dark w-auto"
         >
           <option value="">All Platforms</option>
-          <option value="talend">Talend</option>
-          <option value="workato">Workato</option>
-          <option value="lobster">Lobster</option>
+          {platforms.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+          {platformFilter && !platforms.some((p) => p.id === platformFilter) && (
+            <option value={platformFilter}>{platformFilter}</option>
+          )}
         </select>
         <select
           value={tierFilter}

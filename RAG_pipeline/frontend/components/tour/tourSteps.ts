@@ -91,7 +91,7 @@ export const tourSteps: TourStep[] = [
     popover: {
       title: "You're all set!",
       description:
-        "That's the whirlwind tour. Head to the chat and ask your first question — you can replay this tour from the sidebar anytime.",
+        "That's the whirlwind tour. Head to the chat and ask your first question.",
     },
   },
 ];

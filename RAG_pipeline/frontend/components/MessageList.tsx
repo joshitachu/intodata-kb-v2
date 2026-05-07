@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { ArrowDown, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowDown, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MessageBubble } from "./MessageBubble";
 import { DeepDiveChatBubble } from "./DeepDiveChatBubble";
@@ -18,6 +18,7 @@ const SUGGESTIONS = [
 
 interface MessageListProps {
   messages: MessageResponse[];
+  conversationId?: number | null;
   streamingMessage?: StreamState | null;
   pendingUserMessage?: string | null;
   deepDiveState?: DeepDiveState | null;
@@ -27,6 +28,7 @@ interface MessageListProps {
 
 export function MessageList({
   messages,
+  conversationId,
   streamingMessage,
   pendingUserMessage,
   deepDiveState,
@@ -68,11 +70,22 @@ export function MessageList({
     return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
+  const hasDeepDiveContent =
+    deepDiveState &&
+    (deepDiveState.isStreaming ||
+      deepDiveState.content ||
+      deepDiveState.thinking ||
+      deepDiveState.error);
+
   // Empty conversation state
-  if (messages.length === 0 && !pendingUserMessage) {
+  if (messages.length === 0 && !pendingUserMessage && !hasDeepDiveContent) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
         <div className="max-w-md text-center space-y-4">
+          <div className="flex items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400 text-left">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+            <span>AI responses may contain errors or outdated information. Always verify before acting.</span>
+          </div>
           <p className="text-sm text-muted-foreground">
             Start a conversation by typing a message below, or try a suggestion:
           </p>
@@ -93,28 +106,24 @@ export function MessageList({
     );
   }
 
-  const hasDeepDiveContent =
-    deepDiveState &&
-    (deepDiveState.isStreaming ||
-      deepDiveState.content ||
-      deepDiveState.thinking ||
-      deepDiveState.error ||
-      deepDiveState.toolCalls.length > 0);
-
   return (
     <div ref={scrollContainerRef} className="relative flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-6 py-6 space-y-6">
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+          <MessageBubble
+            key={message.id}
+            message={message}
+            conversationId={conversationId ?? null}
+          />
         ))}
 
-        {/* Optimistic user message while streaming */}
-        {pendingUserMessage && (
+        {/* Optimistic user message: prefer pendingUserMessage, fall back to stored deep dive question */}
+        {(pendingUserMessage || (hasDeepDiveContent && deepDiveState?.question)) && (
           <MessageBubble
             message={{
               id: -1,
               role: "user",
-              content: pendingUserMessage,
+              content: pendingUserMessage ?? deepDiveState!.question!,
               sources: null,
               latency_ms: null,
               created_at: new Date().toISOString(),

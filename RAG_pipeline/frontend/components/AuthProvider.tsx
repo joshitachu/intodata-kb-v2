@@ -3,8 +3,10 @@
 import {
   createContext,
   useContext,
+  useEffect,
   type ReactNode,
 } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 
 interface AuthUser {
@@ -17,6 +19,7 @@ interface AuthUser {
   permissions: string[];
   onboarding_completed: boolean;
   tour_completed: boolean;
+  mfa_enabled: boolean;
 }
 
 interface AuthContextValue {
@@ -25,6 +28,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   logout: () => Promise<void>;
   loginAs: (user: AuthUser) => void;
+  refreshUser: () => Promise<AuthUser | null>;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -33,10 +37,22 @@ const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   logout: async () => {},
   loginAs: () => {},
+  refreshUser: async () => null,
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
+  const pathname = usePathname();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (auth.isLoading || !auth.user) return;
+    if (auth.user.mfa_enabled) return;
+    if (pathname === "/login" || pathname === "/settings/security") return;
+
+    router.replace("/settings/security");
+  }, [auth.isLoading, auth.user, pathname, router]);
+
   return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>;
 }
 

@@ -30,9 +30,23 @@ class RagBridge:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=config.rag_delete_timeout_s) as client:
             resp = await client.delete(
                 f"{self.base_url}/api/v1/ingest/by-project/{project_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def delete_document(self, project_id: str, filename: str) -> dict:
+        """Delete one generated document from the RAG pipeline."""
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        async with httpx.AsyncClient(timeout=config.rag_delete_timeout_s) as client:
+            resp = await client.delete(
+                f"{self.base_url}/api/v1/ingest/by-project/{project_id}/document/{filename}",
                 headers=headers,
             )
             resp.raise_for_status()
@@ -62,7 +76,7 @@ class RagBridge:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=config.rag_push_timeout_s) as client:
             resp = await client.post(
                 f"{self.base_url}/api/v1/ingest/md",
                 json=payload,
@@ -76,15 +90,18 @@ class RagBridge:
         project_id: str,
         docs: list[dict] | None = None,
         output_dir: str | None = None,
+        filenames: set[str] | list[str] | None = None,
     ) -> dict:
         """Push multiple docs to RAG.
 
         If `docs` list provided, push those directly.
         If `output_dir` provided, read .md files from that directory.
+        If `filenames` provided, only push docs whose filename is in that set.
 
         Returns: {pushed: int, errors: list[str]}
         """
         result = {"pushed": 0, "errors": []}
+        filename_filter = set(filenames) if filenames is not None else None
 
         if docs:
             items = docs
@@ -97,6 +114,8 @@ class RagBridge:
         for doc in items:
             filename = doc.get("filename", "")
             content = doc.get("content", "")
+            if filename_filter is not None and filename not in filename_filter:
+                continue
             if not filename or not content:
                 result["errors"].append(f"Skipped empty doc: {filename}")
                 continue
@@ -161,7 +180,7 @@ class RagBridge:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=config.rag_usage_timeout_s) as client:
                 resp = await client.post(
                     f"{self.base_url}/api/v1/usage/record",
                     json=payload,
@@ -173,19 +192,24 @@ class RagBridge:
             logger.warning("Failed to post usage record: %s", e)
 
     def _read_md_files(self, output_dir: str) -> list[dict]:
-        """Read all .md files from a directory tree."""
+        """Read only user-facing doc .md files (NN_*.md) from the top-level docs/ directory.
+
+        Internal orchestration artifacts in _assessment/, _analysis/, _investigation/
+        subdirectories are excluded — they contain system prompts and debug output
+        that must not appear in RAG query results.
+        """
         docs: list[dict] = []
         base = Path(output_dir)
         if not base.exists():
             return docs
 
-        for md_file in sorted(base.rglob("*.md")):
+        for md_file in sorted(base.glob("*.md")):
+            if not md_file.name[0].isdigit():
+                continue
             try:
                 content = md_file.read_text(encoding="utf-8")
-                # Use relative path as filename
-                rel = md_file.relative_to(base)
                 docs.append({
-                    "filename": str(rel).replace("\\", "/"),
+                    "filename": md_file.name,
                     "content": content,
                 })
             except Exception as e:

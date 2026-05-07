@@ -1,8 +1,31 @@
 # Current State
 
-**Status**: Phase 6.1 Azure-style provisioning + data-driven wizard config (2026-04-17). Wizard is now 6 steps with workspace naming and a staged provisioning animation; platform/tool options are data-driven via `GET /onboarding/config` and coming-soon tools render with badges. Tenant table dropped — switched to one-VPS-per-client deployment model.
-**Last session**: 2026-04-17
-**Last completed**: Phase 6.1 refactor — migration 014 rewritten to drop tenants + add `workspace_name`. New `GET /onboarding/config` endpoint + `PUT /onboarding/step/workspace` endpoint. Frontend: new `WorkspaceStep`, new `ProvisioningStep` (replaces `SetupLoadingStep`) with staged checklist + summary card, Platform/Tool steps now fetch options from backend config, coming-soon items show "COMING SOON" badge. Background setup flow is still stubbed (3s sleep + notification) — real ingest pipeline integration is TODO.
+**Status** (2026-05-05): EP-002 is implemented as "secure existing/admin-created accounts" and passed Docker-stack API/BFF acceptance. MFA is mandatory for every active authenticated user before normal app/API use. Backend enforcement lives in `CurrentUser`: non-enrolled users can still call `/auth/me`, `/auth/logout`, `/auth/refresh`, `/auth/totp/setup`, and `/auth/totp/verify`, but normal protected APIs return `403` with `code: "mfa_required"`. Frontend auth guard redirects authenticated users with `mfa_enabled=false` to `/settings/security`; successful TOTP verify refreshes auth state so the app unlocks without a manual reload. Existing MFA-enabled users still see the password + MFA login screen, and backup-code login remains inside `/auth/verify-mfa`. Request Access, outbound email, invite tokens, questionnaire/self-service account creation, TOTP secret encryption, and strict TOTP replay tracking remain deferred. Acceptance uncovered and fixed two backend issues: backup-code JSONB mutation persistence now uses `flag_modified`, and refresh JWTs include a random `jti` so rapid repeated logins do not collide on `refresh_tokens.token_hash`.
+
+**Previous status** (2026-04-21 cont.): Post-onboarding source upload landed. Wizard no longer blocks on "must upload a ZIP per selected platform" — users declare their stack at onboarding and upload ZIPs from the new `/settings/sources` page whenever they have them ready. Page derives Uploaded/Pending status by cross-referencing `UserOnboarding.selected_platforms` against rows in the MCP `projects` table; pending rows reuse `lib/mcpClient` (uploadZip + subscribeToLogs) to drive the same upload → scan → generate → push pipeline as the wizard. Sidebar now has a top-level "Sources" entry. Bug fix earlier in the session: `KB_API_URL` promoted to a Docker build ARG because `next.config.ts` rewrites are resolved at `npm run build` time in standalone mode, not per-request — the wizard was 500'ing with `ECONNREFUSED ::1:8002` until this was fixed.
+
+**Earlier today (2026-04-21)**: Nexus per-client deployment track landed. Backend parameterized for per-client stacks, `POST /auth/bootstrap-admin` + `GET /auth/bootstrap-status` live, TOTP/MFA end-to-end (pyotp + 10 bcrypt-hashed backup codes, QR code via `qrcode.react` added this session), IP allowlist + ProxyHeaders middleware on both RAG backend and MCP, `deploy/deploy-client.sh` + nginx template + systemd template unit. Frontend onboarding wizard actually streams ZIPs to `/mcp/upload-zip` and drives the stepper from the `/logs/stream` SSE feed. Login page auto-detects empty users table and switches into bootstrap mode; `/settings/security` page for MFA setup.
+
+**Key decisions today** (rationale in PROJECT_MEMORY.md):
+- Production skips the default-admin seed; `POST /auth/bootstrap-admin` is the single first-admin path (returns 409 forever after first user). Dev mode still seeds admin/admin.
+- `vector_store.COLLECTION_NAME` reads `settings.qdrant_collection` at import time — default `documents`, per-client override via env.
+- `validate_production_secrets()` HARD-FAILS on default JWT secret, default admin password, empty `MCP_INGEST_API_KEY`.
+- Middleware order: `IPAllowlist` registered BEFORE `ProxyHeaders` (stacks LIFO → dispatch is ProxyHeaders then IPAllowlist) so the allowlist sees real client IP.
+- MCP `--host` default kept at `0.0.0.0` for Docker; production lockdown via `deploy/mcp-server@.service` which passes `--host 127.0.0.1`.
+
+**Migrations pending**: `alembic upgrade head` applies `015_add_wizard_events.py`, `016_add_feedback.py`, AND `017_add_mfa_fields.py`. Without 017 the TOTP endpoints will 500 on first use.
+
+**Next up**:
+- Optional literal browser pass for EP-002 UI rendering/redirect polish. Functional Docker-stack API/BFF acceptance passed for the full MFA flow: password login for a non-enrolled user, protected API blocked with `403 mfa_required`, TOTP setup/verify, 10 backup codes returned once, same-session unlock, future TOTP login, backup-code login, and backup-code reuse rejection.
+- Manual end-to-end verification of the new partial-upload flow: reset admin onboarding, pick multiple platforms, upload one ZIP, hit Continue, then visit `/settings/sources` and upload another.
+- End-to-end deploy dry-run: `deploy/deploy-client.sh --client-name demo --port-offset 100 --no-certbot` against a clean host (still deferred from the Nexus track).
+- Consider extracting the `RealProcessing` / `SourcesSettingsPage` upload queue into a shared component if a third call site appears (intentionally deferred — two sites isn't enough abstraction pressure).
+
+**Older status** (Pre-Sales Audit Day 1, 2026-04-20): chat thumbs-up/down persisted end-to-end. Day 2 (atomic docs swap + staging GC) was the planned next item before today's Nexus track preempted it.
+
+**Earlier today**: Admin project-assignment UX fix (dropdown by display name) — see PROGRESS_LOG entry.
+**Before that**: Tenant identity surfaced in UI + enterprise onboarding wizard premium polish. Per-VPS branding now drives the sidebar wordmark, browser title, login page, and wizard chrome via `GET /api/v1/tenant/config` reading `TENANT_NAME` / `TENANT_SLUG` / `TENANT_ENVIRONMENT` env vars. Small environment pill (amber STAGING / violet PREVIEW / muted others) renders everywhere when not production. Same session shipped: 7-step onboarding wizard with an explicit "Ready" celebration step (fixed the auto-tour bug), UI primitive layer under `components/ui/` (Button/Input/Card/Badge/Label), elevation shadow tokens, branded driver.js popovers, and wizard telemetry.
+**Prior session**: 2026-04-17
 **Also this session (earlier from dev-B)**: Hindsight memory retention fix deployed. `decide_retention()` now allows FULL retention for metadata queries with search results, all retain call sites pass `action`/`query_type`/`project_ids`, distillation disabled (structured fallback), Hindsight timeout increased to 300s.
 
 ## What's Done

@@ -1,49 +1,73 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { TenantMark } from "@/components/TenantMark";
 
 interface Props {
   steps: string[];
   currentStep: number;
+  workspaceName?: string | null;
 }
 
-export function WizardProgress({ steps, currentStep }: Props) {
+export function WizardProgress({ steps, currentStep, workspaceName }: Props) {
+  const total = steps.length;
+  const current = Math.min(Math.max(currentStep, 0), total - 1);
+  const activeLabel = steps[current] ?? "";
+  const progressPct = ((current + 1) / total) * 100;
+
   return (
-    <div className="flex items-center justify-center gap-2 py-6">
-      {steps.map((label, i) => {
-        const active = i === currentStep;
-        const complete = i < currentStep;
-        return (
-          <div key={label} className="flex items-center">
-            <div
-              className={cn(
-                "flex items-center justify-center w-8 h-8 rounded-full text-xs font-medium transition-colors",
-                complete && "bg-green-500 text-white",
-                active && "bg-primary text-primary-foreground ring-4 ring-primary/20",
-                !active && !complete && "bg-muted text-muted-foreground",
-              )}
-            >
-              {complete ? <span aria-hidden>✓</span> : i + 1}
-            </div>
-            <span
-              className={cn(
-                "ml-2 text-xs hidden sm:inline",
-                active ? "text-foreground font-medium" : "text-muted-foreground",
-              )}
-            >
-              {label}
+    <div className="border-b border-border/60 bg-background/95 backdrop-blur-sm">
+      <div className="mx-auto max-w-5xl px-6 py-4">
+        {/* Top row — brand lockup + step indicator */}
+        <div className="flex items-center justify-between gap-4">
+          <TenantMark
+            size="md"
+            subtitle={workspaceName || "Workspace setup"}
+          />
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs tabular-nums text-muted-foreground">
+              Step {current + 1} of {total}
             </span>
-            {i < steps.length - 1 && (
-              <div
-                className={cn(
-                  "w-8 h-px mx-2 transition-colors",
-                  complete ? "bg-green-500" : "bg-border",
-                )}
-              />
-            )}
+            <span className="hidden sm:inline h-3 w-px bg-border" aria-hidden />
+            <span className="hidden sm:inline text-xs font-medium text-foreground">
+              {activeLabel}
+            </span>
           </div>
-        );
-      })}
+        </div>
+
+        {/* Progress rail — segmented */}
+        <div
+          className="mt-4 flex items-center gap-1.5"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={total}
+          aria-valuenow={current + 1}
+          aria-valuetext={activeLabel}
+        >
+          {steps.map((label, i) => {
+            const reached = i <= current;
+            return (
+              <div
+                key={label}
+                className={cn(
+                  "h-1 flex-1 rounded-full transition-colors duration-300",
+                  reached ? "bg-primary" : "bg-border",
+                )}
+                aria-hidden
+              />
+            );
+          })}
+        </div>
+
+        {/* Mobile label row */}
+        <div className="mt-2 sm:hidden">
+          <span className="text-xs font-medium text-foreground">{activeLabel}</span>
+        </div>
+
+        {/* Visually-hidden rail that keeps width consistent */}
+        <span className="sr-only">Overall progress: {Math.round(progressPct)}%</span>
+      </div>
     </div>
   );
 }

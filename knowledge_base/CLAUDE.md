@@ -48,6 +48,23 @@ The MCP-based 4-phase documentation workflow is documented in:
 
 This is the primary method for generating project documentation. Follow it exactly.
 
+### Current Custom Harness Notes
+
+- Custom doc generation now uses a bounded internal agent runtime in `mcp-server/src/mcp_server/providers/custom/agent_runtime.py`.
+- Phase 2 dispatches one persisted group-analysis task per scanner group, with configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Oversized/split group work is merged by an LLM merge task, not by Python-authored prose.
+- Phase 2.6 scorecard and Phase 3 document writing are also persisted agent tasks under `docs_staging/_agent_tasks/{phase}/{target_id}/`.
+- Phase 3 dispatches one document task per required markdown document, with configurable concurrency (`MCP_AGENT_PHASE3_CONCURRENCY`, default 4).
+- Runtime task directories store `contract.json`, exact LLM `output.md`, `validation_report.json`, `tool_call_ledger.json`, `provider_metrics.json`, and `status.json`. Resume should skip accepted task artifacts and retry rejected/incomplete tasks independently.
+- Python may construct contracts, constrain context/tools, validate coverage, trigger retries/repairs, and persist exact LLM output. Python must not synthesize business explanations or fill final documentation prose itself.
+- Generic `list_artifacts` / `read_artifact` tools must not be exposed to Phase 2/3 core generation. Use scoped evidence tools and bounded context files instead.
+
+### Steven Project Finding
+
+- For project `Steven`, the generated docs/RAG answer incorrectly claimed `Web.config` and `Global.asax.cs` were unavailable. Local source and scan output show both files exist and scanner output contains substantial content.
+- The real issue is a documentation synthesis/coverage bug: Phase 3 docs inferred absence from thin normalized artifacts such as `config_runtime_map.md` / `dependency_map.md`, even though `scan_result.json` contains the relevant `content` / `source_code`.
+- Do not repeat raw secrets from Steven. `Web.config` contains sensitive app settings and database connection strings. Any fix must preserve credential redaction before LLM calls and should document connection names/systems without exposing secret values.
+- Follow-up fix direction: ensure generic-platform evidence tools / EngineeringFacts surface redacted config keys and database connection names from `Web.config`, plus OrmLite registration names from `Global.asax.cs`, so docs stop saying configuration is missing when scanner evidence exists.
+
 ### Safe Re-Runs (Staging Directory)
 
 Doc generation uses a **staging directory** (`docs_staging/`) to protect existing docs:
@@ -74,6 +91,14 @@ Key files: `claude_service.py` (prompt + staging dir setup), `projects.py:_run_g
 - **Connection matching**: use `REPOSITORY_PROPERTY_TYPE` refs, not name matching
 - **hatchling**: use hatchling, NOT setuptools -- pyproject.toml is configured for it
 - **Budget**: legacy CLI analyzer default $5 limit; 18 passes on 9 chunks can exceed
+
+## Deployment Foundation Notes (EP-001)
+
+- EP-001 has been realigned to generic deployment foundation, not a customer-specific rollout.
+- nginx/certbot is canonical for new deployments. Caddy is legacy/deferred.
+- Dashboard depends on MCP REST API, but MCP API runs as host systemd (`deploy/mcp-server@.service`), not in the six-service Docker Compose stack.
+- Runbook and smoke-test docs are in root `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`.
+- Before marking EP-001 done, validate on a clean reference VPS: six Docker healthchecks, MCP `/health`, HTTPS/security headers, login/logout, ingest, streaming query, dashboard, and IP allowlist.
 
 ## Project Structure
 

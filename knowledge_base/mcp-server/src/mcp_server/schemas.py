@@ -6,7 +6,7 @@ import datetime
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field, BeforeValidator
+from pydantic import BaseModel, Field, BeforeValidator, field_validator
 
 StrippedStr = Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v)]
 
@@ -19,6 +19,7 @@ class ProjectResponse(BaseModel):
     repo_url: str | None = None
     local_path: str
     platform: str
+    doc_generation_provider: str | None = None
     source_type: str
     status: str
     last_scan_at: datetime.datetime | None = None
@@ -27,6 +28,11 @@ class ProjectResponse(BaseModel):
     job_count: int = 0
     doc_count: int = 0
     error_message: str | None = None
+    last_ingested_commit_sha: str | None = None
+    auto_reingest_enabled: bool = True
+    auto_reingest_last_checked_at: datetime.datetime | None = None
+    auto_reingest_error: str | None = None
+    git_update_summary: dict | None = None
     created_at: datetime.datetime | None = None
     updated_at: datetime.datetime | None = None
 
@@ -34,6 +40,34 @@ class ProjectResponse(BaseModel):
 class ProjectListResponse(BaseModel):
     projects: list[ProjectResponse]
     total: int
+
+
+class PlatformDescriptorResponse(BaseModel):
+    id: str
+    label: str
+    unit_label: str
+    unit_label_plural: str
+    badge_color: str
+    accent_color: str
+
+
+class PlatformListResponse(BaseModel):
+    platforms: list[PlatformDescriptorResponse]
+
+
+class ModelDescriptorResponse(BaseModel):
+    id: str
+    provider: str
+    label: str
+    supports_analysis: bool
+    supports_writing: bool
+    is_default_analysis: bool = False
+    is_default_writing: bool = False
+    is_local: bool = False
+
+
+class ModelListResponse(BaseModel):
+    models: list[ModelDescriptorResponse]
 
 
 PROJECT_ID_PATTERN = r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$"
@@ -45,8 +79,18 @@ class AddRepoRequest(BaseModel):
         ..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN,
         description="Unique project identifier",
     )
-    platform: str = Field(default="talend", description="Integration platform")
+    platform: str = Field(default="talend", description="Integration platform (talend|workato|lobster|generic)")
     display_name: str | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, v: str) -> str:
+        from mcp_server.config import SUPPORTED_PLATFORMS
+        if v not in SUPPORTED_PLATFORMS:
+            raise ValueError(
+                f"Unsupported platform: {v!r}. Must be one of {sorted(SUPPORTED_PLATFORMS)}"
+            )
+        return v
 
 
 class ScanRequest(BaseModel):
@@ -57,7 +101,8 @@ class ScanRequest(BaseModel):
 class GenerateRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     template_profile_id: int | None = None
-    model: str | None = Field(None, description="Model override for orchestrator")
+    model: str | None = Field(None, description="Analysis model override (Phase 2) — 'provider/model' format")
+    write_model: str | None = Field(None, description="Doc-writing model override (Phase 3) — 'provider/model' format")
     resume: bool = Field(True, description="Resume from staging checkpoint if available")
 
 
@@ -72,6 +117,19 @@ class ResetStatusRequest(BaseModel):
 class UpdateProjectRequest(BaseModel):
     display_name: str | None = None
     platform: str | None = None
+    doc_generation_provider: str | None = None
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from mcp_server.config import SUPPORTED_PLATFORMS
+        if v not in SUPPORTED_PLATFORMS:
+            raise ValueError(
+                f"Unsupported platform: {v!r}. Must be one of {sorted(SUPPORTED_PLATFORMS)}"
+            )
+        return v
 
 
 # --- Scan Status ---
@@ -84,6 +142,10 @@ class ScanStatusResponse(BaseModel):
     job_count: int = 0
     doc_count: int = 0
     error_message: str | None = None
+    previous_job_count: int | None = None
+    job_delta: int | None = None
+    warnings: list[dict] = Field(default_factory=list)
+    warnings_count: int = 0
 
 
 # --- MCP Tool Responses ---
@@ -146,6 +208,8 @@ class GenerateRunResponse(BaseModel):
     error_message: str | None = None
     log_file: str | None = None
     model_name: str | None = None
+    write_model_name: str | None = None
+    quality_score: float | None = None
     template_profile_id: int | None = None
     template_snapshot: dict | None = None
 
@@ -208,6 +272,33 @@ class PdfGenerateResponse(BaseModel):
     converted: int = 0
     failed: int = 0
     errors: list[str] = []
+
+
+# --- Validation (US-105) ---
+
+class ReviewQuestion(BaseModel):
+    id: str
+    question: str
+    score: int = 0  # 1-5; 0 means not yet scored (questionnaire shell)
+
+
+class DocReview(BaseModel):
+    run_id: int
+    reviewer: str
+    overall: int  # 1-10
+    questions: list[ReviewQuestion]
+    feedback: str = ""
+    reviewed_at: str  # ISO timestamp
+
+
+class ReviewAggregateResponse(BaseModel):
+    project_id: str
+    run_id: int | None
+    total_reviews: int
+    average_overall: float
+    average_per_question: dict[str, float]
+    pass_result: bool  # average_overall >= 7.0
+    reviews: list[dict]
 
 
 # --- Assessment ---

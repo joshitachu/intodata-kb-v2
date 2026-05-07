@@ -14,6 +14,7 @@ interface AuthUser {
   permissions: string[];
   onboarding_completed: boolean;
   tour_completed: boolean;
+  mfa_enabled: boolean;
 }
 
 interface UseAuthReturn {
@@ -23,6 +24,8 @@ interface UseAuthReturn {
   logout: () => Promise<void>;
   /** Set user state directly (e.g. after login). */
   loginAs: (user: AuthUser) => void;
+  /** Refetch /auth/me and update local auth state. */
+  refreshUser: () => Promise<AuthUser | null>;
   /** Attempt a token refresh on 401. Returns true if refreshed (caller should retry). */
   handleUnauthorized: () => Promise<boolean>;
 }
@@ -33,17 +36,20 @@ export function useAuth(): UseAuthReturn {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const fetchUser = useCallback(async () => {
+  const fetchUser = useCallback(async (): Promise<AuthUser | null> => {
     try {
       const res = await fetch("/api/auth/me");
       if (res.ok) {
         const data = await res.json();
         setUser(data);
+        return data;
       } else {
         setUser(null);
+        return null;
       }
     } catch {
       setUser(null);
+      return null;
     } finally {
       setIsLoading(false);
     }
@@ -120,6 +126,7 @@ export function useAuth(): UseAuthReturn {
     isAuthenticated: user !== null,
     logout,
     loginAs,
+    refreshUser: fetchUser,
     handleUnauthorized,
   };
 }

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   Loader2,
-  Terminal,
   AlertCircle,
   XCircle,
   ChevronDown,
@@ -23,11 +22,12 @@ export function DeepDiveChatBubble({
   state,
   onCancel,
 }: DeepDiveChatBubbleProps) {
-  const { isStreaming, content, thinking, toolCalls, error, usage } = state;
+  const { isStreaming, content, thinking, activityCount, status, error, usage } =
+    state;
   const [showThinking, setShowThinking] = useState(false);
 
   // Nothing to display
-  if (!isStreaming && !content && !error && !thinking && toolCalls.length === 0) {
+  if (!isStreaming && !content && !error && !thinking) {
     return null;
   }
 
@@ -66,38 +66,15 @@ export function DeepDiveChatBubble({
           </div>
         )}
 
-        {/* Tool calls progress */}
-        {toolCalls.length > 0 && (
-          <div className="rounded-lg border border-input bg-muted/50 p-3 w-full">
-            <div className="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground">
-              <Terminal className="h-3 w-3" />
-              Analysis Steps
-            </div>
-            <div className="space-y-1 max-h-32 overflow-y-auto">
-              {toolCalls.map((call, i) => (
-                <div
-                  key={i}
-                  className="flex items-start gap-2 text-xs font-mono text-muted-foreground"
-                >
-                  <span className="text-primary shrink-0">
-                    {i === toolCalls.length - 1 && isStreaming ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      ">"
-                    )}
-                  </span>
-                  <span className="break-all">{call}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Streaming indicator when no content yet */}
-        {isStreaming && !content && !thinking && toolCalls.length === 0 && (
+        {/* Compact progress indicator. Tool calls are internal and intentionally hidden. */}
+        {isStreaming && !content && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Starting deep dive analysis...
+            <span>
+              {activityCount > 0
+                ? `Inspecting repository... checked ${activityCount} ${activityCount === 1 ? "source" : "sources"}`
+                : status || "Starting deep dive analysis..."}
+            </span>
           </div>
         )}
 

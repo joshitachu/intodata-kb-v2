@@ -265,6 +265,8 @@ Source locations: trigger output schemas, search/get action schemas, `run_sql` q
 
 ### SOURCE_SQL
 
+If no SQL queries (run_sql actions) exist in this group, write exactly: `None`
+
 Extract EVERY SQL query in FULL (never truncate). For each:
 - Which `run_sql` action and recipe contains it
 - Whether it is a source query (SELECT), DML (INSERT/UPDATE/DELETE), or DDL (CREATE/ALTER/DROP)
@@ -302,6 +304,8 @@ For each recipe, document:
 - **Silent failure scenarios**: specific scenarios where failure would go unnoticed (no monitor/catch and no notification, catch swallows error, subscriber fails without dead-letter, polling trigger misses records during downtime)
 
 ### CUSTOM_CODE
+
+If no custom adapter components exist in this group, write exactly: `None`
 
 For ALL custom adapter components:
 - Adapter name and purpose

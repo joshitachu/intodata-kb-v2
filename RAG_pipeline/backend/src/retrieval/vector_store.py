@@ -13,12 +13,13 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from src.config import settings
 from src.retrieval.embedder import get_embedding_dim
 from src.retrieval.sparse_embedder import SparseVector as AppSparseVector
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "documents"
+COLLECTION_NAME = settings.qdrant_collection
 
 
 async def ensure_collection(client: AsyncQdrantClient) -> None:

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from jose import JWTError, jwt
+from jose import jwt
 
 from src.config import settings
 
@@ -36,6 +37,7 @@ def create_refresh_token(user_id: int) -> tuple[str, datetime]:
     payload = {
         "sub": str(user_id),
         "type": "refresh",
+        "jti": secrets.token_urlsafe(24),
         "exp": expire,
     }
     token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
