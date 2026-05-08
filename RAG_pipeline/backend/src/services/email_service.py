@@ -55,14 +55,24 @@ def send_invite_email(to_email: str, token: str) -> str:
             raise EmailSendError("SMTP is not configured")
         return url
 
-    message = _base_message(to_email, "Your IntoData Nexus invite")
+    message = _base_message(to_email, "Your access to IntoData Nexus has been approved")
     message.set_content(
-        "You have been invited to this company's IntoData Nexus app.\n\n"
-        f"Open this link within 48 hours to finish setup:\n{url}\n"
+        "Your access request has been approved!\n\n"
+        "Click the link below to finish setting up your account. "
+        "You'll be asked to fill in your profile (name, job title, intended use) "
+        "and then set up two-factor authentication to secure your account.\n\n"
+        f"Set up your account: {url}\n\n"
+        "This link expires in 48 hours.\n"
     )
     message.add_alternative(
-        "<p>You have been invited to this company's IntoData Nexus app.</p>"
-        f"<p><a href=\"{url}\">Finish setup</a> within 48 hours.</p>",
+        "<p>Your access request has been approved!</p>"
+        "<p>Click the button below to finish setting up your account. "
+        "You'll fill in a few profile details and then set up two-factor authentication.</p>"
+        f"<p><a href=\"{url}\" style=\"display:inline-block;padding:10px 20px;"
+        "background:#1d4ed8;color:#fff;text-decoration:none;border-radius:6px;"
+        "font-weight:600\">Set up my account</a></p>"
+        "<p style=\"color:#6b7280;font-size:13px\">This link expires in 48 hours. "
+        "If you weren't expecting this, you can ignore it.</p>",
         subtype="html",
     )
 
@@ -102,16 +112,17 @@ def send_invite_otp_email(to_email: str, code: str) -> str:
 
     message = _base_message(to_email, "Your IntoData Nexus setup code")
     message.set_content(
-        "You have been invited to IntoData Nexus.\n\n"
-        f"Go to /onboarding and enter this setup code:\n\n{code}\n\n"
-        f"Direct link: {setup_url}\n\n"
+        "Your IntoData Nexus setup code:\n\n"
+        f"{code}\n\n"
+        f"Go here to continue: {setup_url}\n\n"
         "The code expires in 10 minutes. Your invitation remains valid for 48 hours.\n"
     )
     message.add_alternative(
-        "<p>You have been invited to IntoData Nexus.</p>"
-        f"<p>Go to <a href=\"{setup_url}\">/onboarding</a> and enter this setup code:</p>"
-        f"<p style=\"font-size:24px;letter-spacing:4px;font-weight:700\">{code}</p>"
-        "<p>The code expires in 10 minutes. Your invitation remains valid for 48 hours.</p>",
+        "<p>Your IntoData Nexus setup code:</p>"
+        f"<p style=\"font-size:32px;letter-spacing:6px;font-weight:700;font-family:monospace\">{code}</p>"
+        f"<p><a href=\"{setup_url}\">Continue account setup</a></p>"
+        "<p style=\"color:#6b7280;font-size:13px\">This code expires in 10 minutes. "
+        "Your invitation remains valid for 48 hours.</p>",
         subtype="html",
     )
     _send(message, "setup code", to_email)
@@ -126,20 +137,19 @@ def send_rejection_email(to_email: str, reason: str | None = None) -> None:
         return
 
     body = (
-        "Your access request to IntoData Nexus has been reviewed.\n\n"
-        "Unfortunately your request was not approved at this time.\n"
+        "Your access request to IntoData Nexus was not approved at this time.\n"
     )
     if reason:
         body += f"\nReason: {reason}\n"
-    body += "\nIf you believe this is an error, please contact your administrator.\n"
+    body += "\nIf you think this is a mistake, reach out to your administrator.\n"
 
     message = _base_message(to_email, "Your IntoData Nexus access request")
     message.set_content(body)
     message.add_alternative(
-        "<p>Your access request to IntoData Nexus has been reviewed.</p>"
-        "<p>Unfortunately your request was not approved at this time.</p>"
+        "<p>Your access request to IntoData Nexus was not approved at this time.</p>"
         + (f"<p><strong>Reason:</strong> {reason}</p>" if reason else "")
-        + "<p>If you believe this is an error, please contact your administrator.</p>",
+        + "<p style=\"color:#6b7280;font-size:13px\">If you think this is a mistake, "
+        "reach out to your administrator.</p>",
         subtype="html",
     )
     _send(message, "rejection", to_email)

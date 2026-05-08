@@ -59,7 +59,6 @@
 - Runtime-verify the earlier RBAC fix: superadmin still sees all scanned projects; a user assigned to only one project sees just that project on Topology + chat Deep Dive; direct `GET /projects/{unassigned_id}/graph` returns 403.
 - Re-generate docs for a small project to verify the earlier depth-regression fix.
 - Re-scan vaxxinova-talend to verify the earlier tmap_data parser fix produces populated data.
-
 ## Important: Data Layout
 
 - `intodoc-output/` and `output/` live at `/home/intodata/intodata-kb-v2/knowledge_base/`. The old paths under `/home/intodata/intodata-kb/knowledge_base/` are symlinks back to v2.
@@ -154,7 +153,7 @@ cd knowledge_base/intodoc && intodoc scan <source-dir> --platform talend --outpu
 - [ ] **Re-generate docs for esb-main**: verify quality doesn't regress (should stay >=523KB). Verify 3 agents used (below threshold).
 - [ ] Restart MCP server: `sudo systemctl restart mcp-server`
 - [ ] Verify enriched prompts: re-generate docs for esbmain, compare depth against previous run (09_RUNBOOK failure scenarios, 05_OPERATIONS_RISK error audit tables, 03_DATA_FLOWS column mappings, 11_MIGRATION scenario comparison)
-- [ ] Run Alembic migration: `cd mcp-server && alembic upgrade head`
+- [x] Run Alembic migration: `cd mcp-server && alembic upgrade head` (done 2026-04-21, stamped 001 + applied 002+003)
 - [ ] Run seed script: `cd mcp-server && python scripts/seed_templates.py`
 - [ ] Restart MCP server: `sudo systemctl restart mcp-server`
 - [ ] Test template CRUD via dashboard (create, edit, version, diff)

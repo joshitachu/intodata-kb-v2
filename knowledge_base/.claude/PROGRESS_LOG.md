@@ -3,6 +3,18 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-05-08
+
+### [Fix]: SMTP password update — invite email 502 resolved
+
+- **Files changed**: `.env` (line 37)
+- **Problem**: Invite email flow returned 502; Strato SMTP returned `535 Authentication failed`
+- **Root cause**: Stale SMTP password in `.env`
+- **Change**: Updated `SMTP_PASSWORD` to new credential; restarted `intodata-kb-v2-backend-1` container
+- **Verification**: Backend restarted successfully; send a test invite via admin UI to confirm
+
+---
+
 ## Session: 2026-05-05 — EP-000 US-105 / US-106
 
 ### [Feature]: US-105 — Document validation process (review API)
@@ -638,7 +650,20 @@ what was done, what changed, and lessons learned.
 - **Verification**: `python3 -m py_compile` passes on the edited file. Runtime verification pending: (1) as superadmin, `/deep-dive/projects` should still return every scanned project; (2) as a user assigned to only one project, `/deep-dive/projects` should return just that project, direct calls to `/projects/{unassigned_id}/graph` should 403, and `/projects/{assigned_id}/graph` should 200; (3) Topology dropdown + chat Deep Dive picker should match the Normal-mode project list for the same user.
 
 ---
+## Session: 2026-04-21
 
+### [Fix]: Run KB Alembic migrations to add missing `model_name` column
+
+- **Files changed**: None (DB schema only)
+- **Problem**: "Generate Docs" button failed because `generate_runs.model_name` column did not exist. The MCP server SQLAlchemy model references it, but the alembic migration (003) was never applied. The `kb_alembic_version` table didn't exist — no KB migrations had ever been run.
+- **Root cause**: Tables were created via `create_all()` at startup, but that only creates tables that don't exist yet — it doesn't add columns to existing tables. The 3 alembic migrations (001 templates, 002 tier, 003 model_name) were written but never executed.
+- **Change**:
+  1. Stamped migration 001 as applied (tables already existed from `create_all`)
+  2. Ran `alembic upgrade head` to apply migrations 002 (adds `tier` to `templates`) and 003 (adds `model_name` to `generate_runs`)
+  3. Restarted `mcp-server` systemd service
+- **Why this approach**: Stamping 001 avoids "duplicate table" errors since the schema already existed. Only 002 and 003 needed actual execution.
+- **Verification**: Confirmed `model_name` column exists via `information_schema.columns` query. Server starts cleanly with no errors. Health endpoint returns OK.
+- **Gotcha**: Running alembic requires `.env` to be sourced (for `MCP_DATABASE_URL`). Without it, the default empty-password URL fails auth against the dockerized postgres.
 ## Session: 2026-04-17
 
 ### [Fix]: Remove depth regression — restore old 26-doc output volume in 12-doc structure

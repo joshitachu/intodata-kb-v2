@@ -33,6 +33,12 @@ interface PasswordResetState {
   confirm: string;
 }
 
+interface EditRolesState {
+  userId: number;
+  username: string;
+  role_ids: number[];
+}
+
 export default function AdminUsersPage() {
   const { user: authUser } = useAuthContext();
   const router = useRouter();
@@ -51,6 +57,7 @@ export default function AdminUsersPage() {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [passwordReset, setPasswordReset] = useState<PasswordResetState | null>(null);
   const [confirmDeactivate, setConfirmDeactivate] = useState<AdminUser | null>(null);
+  const [editRoles, setEditRoles] = useState<EditRolesState | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -144,6 +151,31 @@ export default function AdminUsersPage() {
       });
       setSuccessMsg("User activated");
       await fetchUsers();
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleEditRolesSubmit() {
+    if (!editRoles) return;
+    setActionLoading(editRoles.userId);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/users/${editRoles.userId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role_ids: editRoles.role_ids }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        setError(data?.detail || "Failed to update roles");
+        return;
+      }
+      setEditRoles(null);
+      setSuccessMsg(`Roles updated for ${editRoles.username}`);
+      await fetchUsers();
+    } catch {
+      setError("Network error");
     } finally {
       setActionLoading(null);
     }
@@ -340,6 +372,49 @@ export default function AdminUsersPage() {
         </div>
       )}
 
+      {/* Edit Roles Modal */}
+      {editRoles && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-sm shadow-xl">
+            <h3 className="text-lg font-semibold mb-4">
+              Edit Roles: {editRoles.username}
+            </h3>
+            <div className="space-y-2 mb-4">
+              {roles.map((role) => (
+                <label key={role.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editRoles.role_ids.includes(role.id)}
+                    onChange={(e) => {
+                      const ids = e.target.checked
+                        ? [...editRoles.role_ids, role.id]
+                        : editRoles.role_ids.filter((id) => id !== role.id);
+                      setEditRoles({ ...editRoles, role_ids: ids });
+                    }}
+                  />
+                  {role.name}
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setEditRoles(null); setError(""); }}
+                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleEditRolesSubmit}
+                disabled={actionLoading === editRoles.userId}
+                className="px-4 py-2 text-sm text-primary-foreground bg-primary rounded-md hover:bg-primary/90 disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Deactivate Confirmation Modal */}
       {confirmDeactivate && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -431,6 +506,19 @@ export default function AdminUsersPage() {
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex gap-2">
+                    <button
+                      onClick={() =>
+                        setEditRoles({
+                          userId: u.id,
+                          username: u.username,
+                          role_ids: u.roles.map((r) => r.id),
+                        })
+                      }
+                      disabled={actionLoading === u.id}
+                      className="text-xs text-primary hover:text-primary/80 disabled:opacity-50"
+                    >
+                      Roles
+                    </button>
                     <button
                       onClick={() =>
                         setPasswordReset({
