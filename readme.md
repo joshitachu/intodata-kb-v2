@@ -1,100 +1,93 @@
- Setup & Test Workflow                                                                                                                    
-  1. Install dependencies                                                                                                                  
-  # MCP server (Python)                                                                                                                   cd C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/mcp-server                                                                        
-  pip install -e .
+# IntoData Knowledge Base
 
-  # Dashboard (Node)
-  cd ../dashboard
-  npm install
+Development workflow for the local RAG backend, MCP server, and dashboard.
 
+## Install
 
-  2. Run the DB migration
+From the repository root:
 
-  cd C:/Users/kabeljo/Documents/intodata-kb/RAG_pipeline/backend
-  alembic upgrade head
+```bash
+cd knowledge_base/mcp-server
+pip install -e .
 
+cd ../dashboard
+npm install
+```
 
-  This adds the projects and scan_runs tables to your existing intodata_kb database.
+## Run Database Migrations
 
-  3. Start services (3 terminals)
+```bash
+cd RAG_pipeline/backend
+alembic upgrade head
+```
 
-  # Terminal 1: RAG pipeline (already exists, port 8000)
-  cd C:/Users/kabeljo/Documents/intodata-kb/RAG_pipeline/backend
-  python -m uvicorn src.api.main:app --port 8000
+## Start Services
 
-  # Terminal 2: MCP REST API (port 8001)
-  cd C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/mcp-server
-  python -m mcp_server --serve
+Run each service from the repository root in a separate terminal.
 
-  # Terminal 3: Dashboard (port 5173)
-  cd C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/dashboard
-  npm run dev
+```bash
+cd RAG_pipeline/backend
+python -m uvicorn src.api.main:app --port 8000
+```
 
+```bash
+cd knowledge_base/mcp-server
+python -m mcp_server --serve
+```
 
-  4. Test the REST API (curl)
+```bash
+cd knowledge_base/dashboard
+npm run dev
+```
 
-  # Health check
-  curl http://localhost:8001/health
+## Smoke Test
 
-  # Register vaxxinova-talend
-  curl -X POST http://localhost:8001/mcp/add-repo \
-    -H "Content-Type: application/json" \
-    -d '{"url": "C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/vaxxinova-talend", "project_id": "vaxxinova", "platform": "talend"}'  
+```bash
+curl http://localhost:8001/health
+curl http://localhost:8001/mcp/projects
+```
 
-  # List projects
-  curl http://localhost:8001/mcp/projects
+Register a local project by passing a path that exists on your machine:
 
-  # Trigger scan
-  curl -X POST http://localhost:8001/mcp/scan \
-    -H "Content-Type: application/json" \
-    -d '{"project_id": "vaxxinova", "force": true}'
+```bash
+curl -X POST http://localhost:8001/mcp/add-repo \
+  -H "Content-Type: application/json" \
+  -d '{"url": "./path/to/project", "project_id": "example", "platform": "talend"}'
+```
 
-  # Check status
-  curl http://localhost:8001/mcp/status/vaxxinova
+Trigger a scan:
 
+```bash
+curl -X POST http://localhost:8001/mcp/scan \
+  -H "Content-Type: application/json" \
+  -d '{"project_id": "example", "force": true}'
+```
 
-  5. Test the dashboard (browser)
+Check scan status:
 
-  1. Open http://localhost:5173
-  2. Click Add Repo → enter path C:/Users/kabeljo/Documents/intodata-kb/vaxxinova/vaxxinova-talend, project ID vaxxinova, platform      
-  talend
-  3. Click Re-scan → watch the log panel at the bottom for live output
-  4. Click Push to RAG → sends generated .md files to RAG pipeline
-  5. Click Generate Docs → spawns Claude Code CLI (requires claude in PATH)
+```bash
+curl http://localhost:8001/mcp/status/example
+```
 
-  6. Test the RAG /ingest/md endpoint
+## Dashboard
 
-  curl -X POST http://localhost:8000/api/v1/ingest/md \
-    -H "Content-Type: application/json" \
-    -d '{"text": "# Test Job\nThis job loads payment data.", "filename": "test_job.md", "source": "intodoc:vaxxinova", "project_id":    
-  "vaxxinova"}'
+Open `http://localhost:5173`, add a repo using a project path from your machine, then run scan, push to RAG, or generate docs from the dashboard.
 
+## RAG Markdown Ingest
 
-  7. Test MCP tools (from Claude Code)
+```bash
+curl -X POST http://localhost:8000/api/v1/ingest/md \
+  -H "Content-Type: application/json" \
+  -d '{"text": "# Test Job\nThis job loads payment data.", "filename": "test_job.md", "source": "intodoc:example", "project_id": "example"}'
+```
 
-  Restart Claude Code in the vaxxinova/ directory so it picks up .mcp.json, then try:
+## Common Issues
 
-  > Use the intodoc MCP tools to list projects
-  > Use add_repo to register vaxxinova-talend
-  > Use fetch_json to read the scan data for vaxxinova
-
-
-  What to expect to break first
-
-  ┌──────────────────────┬───────────────────────────┬─────────────────────────────────────────────────────────────┐
-  │         Area         │       Likely issue        │                        How to check                         │
-  ├──────────────────────┼───────────────────────────┼─────────────────────────────────────────────────────────────┤
-  │ pip install -e .     │ Missing mcp package       │ pip install mcp separately                                  │
-  ├──────────────────────┼───────────────────────────┼─────────────────────────────────────────────────────────────┤
-  │ alembic upgrade head │ DB connection refused     │ Make sure PostgreSQL is running                             │
-  ├──────────────────────┼───────────────────────────┼─────────────────────────────────────────────────────────────┤
-  │ /mcp/scan            │ intodoc command not found │ Ensure intodoc is installed: cd intodoc && pip install -e . │
-  ├──────────────────────┼───────────────────────────┼─────────────────────────────────────────────────────────────┤
-  │ /mcp/generate        │ claude CLI not in PATH    │ Only works if Claude Code CLI is installed globally         │
-  ├──────────────────────┼───────────────────────────┼─────────────────────────────────────────────────────────────┤
-  │ Dashboard            │ API 500s                  │ Check Terminal 2 logs for Python tracebacks                 │
-  ├──────────────────────┼───────────────────────────┼─────────────────────────────────────────────────────────────┤
-  │ /ingest/md           │ Ollama not running        │ Embedding requires Ollama with nomic-embed-text model       │
-  └──────────────────────┴───────────────────────────┴─────────────────────────────────────────────────────────────┘
-
-  Start with steps 1-4 (curl tests). Fix any errors there before moving to the dashboard or MCP tools.
+| Area | Likely issue | How to check |
+| --- | --- | --- |
+| `pip install -e .` | Missing MCP package | Install project dependencies for the active environment |
+| `alembic upgrade head` | Database connection refused | Make sure PostgreSQL is running |
+| `/mcp/scan` | `intodoc` command not found | Install `knowledge_base/intodoc` into the active environment |
+| `/mcp/generate` | Claude CLI not in `PATH` | Install/configure the CLI used by the generation provider |
+| Dashboard | API errors | Check MCP server logs |
+| `/ingest/md` | Embedding service unavailable | Check the configured embedding provider |
