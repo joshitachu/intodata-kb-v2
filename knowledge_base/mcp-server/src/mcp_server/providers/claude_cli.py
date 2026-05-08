@@ -119,20 +119,19 @@ class ClaudeCliProvider(DocGenerationProvider):
                 "   The 4 doc-assembly agents (large project -- split for deeper output):\n"
                 "   | Agent          | Bundle                            | Reference bundle      | Writes                                                                                          |\n"
                 "   |----------------|-----------------------------------|-----------------------|-------------------------------------------------------------------------------------------------|\n"
-                "   | Core           | _analysis/_bundle_core.md         | _ref_core*.md         | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE    |\n"
-                "   | Business+Ops   | _analysis/_bundle_business_ops.md | _ref_business_ops*.md | 04_BUSINESS_LOGIC, 05a_OPERATIONS, 05b_SECURITY, 05c_RISK, 05d_CHANGE_MANAGEMENT, 06_ENVIRONMENT_EXTERNAL |\n"
-                "   | Patterns       | _analysis/_bundle_patterns.md     | _ref_patterns*.md     | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*                                                |\n"
-                "   | User           | _analysis/_bundle_user.md         | _ref_user*.md         | 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT                                         |"
+                "   | Core           | _analysis/_bundle_core.md         | _ref_core*.md         | 00_AGENT_BRIEF, 01_ARCHITECTURE_MAP, 02_COMPONENT_INVENTORY, 03_DATA_FLOWS_AND_LINEAGE          |\n"
+                "   | Business+Ops   | _analysis/_bundle_business_ops.md | _ref_business_ops*.md | 04_BUSINESS_RULES_AND_TRANSFORMATIONS, 05_RUNTIME_CONFIG_AND_EXTERNALS, 06_OPERATIONS_TESTING_AND_DEBUGGING |\n"
+                "   | User           | _analysis/_bundle_user.md         | _ref_user*.md         | 07_QUALITY_SECURITY_RISK_SCORECARD, 08_CHANGE_PLAYBOOK                                         |"
             )
-            agent_retry_map = "Core, Business+Ops, Patterns, or User"
+            agent_retry_map = "Core, Business+Ops, or User"
         else:
             agent_table = (
                 "   The 3 doc-assembly agents:\n"
                 "   | Agent          | Bundle                             | Reference bundle                 | Writes                                                                                          |\n"
                 "   |----------------|------------------------------------|----------------------------------|-------------------------------------------------------------------------------------------------|\n"
-                "   | Core           | _analysis/_bundle_core.md          | _ref_core*.md                    | 00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW, 02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE    |\n"
-                "   | Business+Ops   | _analysis/_bundle_business_ops.md  | _ref_business_ops*.md            | 04_BUSINESS_LOGIC, 05a_OPERATIONS, 05b_SECURITY, 05c_RISK, 05d_CHANGE_MANAGEMENT, 06_ENVIRONMENT_EXTERNAL |\n"
-                "   | Patterns+User  | _analysis/_bundle_patterns_user.md | _ref_patterns*.md, _ref_user*.md | 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS*, 09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT |"
+                "   | Core           | _analysis/_bundle_core.md          | _ref_core*.md                    | 00_AGENT_BRIEF, 01_ARCHITECTURE_MAP, 02_COMPONENT_INVENTORY, 03_DATA_FLOWS_AND_LINEAGE          |\n"
+                "   | Business+Ops   | _analysis/_bundle_business_ops.md  | _ref_business_ops*.md            | 04_BUSINESS_RULES_AND_TRANSFORMATIONS, 05_RUNTIME_CONFIG_AND_EXTERNALS, 06_OPERATIONS_TESTING_AND_DEBUGGING |\n"
+                "   | Patterns+User  | _analysis/_bundle_patterns_user.md | _ref_patterns*.md, _ref_user*.md | 07_QUALITY_SECURITY_RISK_SCORECARD, 08_CHANGE_PLAYBOOK                                         |"
             )
             agent_retry_map = "Core, Business+Ops, or Patterns+User"
 
@@ -308,12 +307,7 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    Each Phase 3 agent also reads {staging_abs}/_preprocess/_phase3_guide.md for cross-group synthesis.
    Each doc agent writes final .md files to {staging_abs}/.
 
-   NOTE: 05_OPERATIONS_RISK has been SPLIT into 4 focused documents to avoid bloat:
-   05a_OPERATIONS.md, 05b_SECURITY.md, 05c_RISK.md, 05d_CHANGE_MANAGEMENT.md
-   See _doc_templates.md for the exact required sections in each.
-
 {agent_table}
-   *08_PATTERNS_STANDARDS cross-region section only if 2+ groups exist.
 
    Each sub-agent prompt MUST include:
    - "Read {staging_abs}/_analysis/_index.md first to understand what's available."
@@ -330,9 +324,9 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - Reference specific scores from the scorecard in your documents.
    - Example: "Security: 2/5 (see Assessment Scorecard for details)"
    - Include anti-pattern IDs and red flag IDs where relevant.
-   - The Executive Summary (doc 00) MUST include the overall score and dimension summary table.
-   - The Migration Assessment (doc 11) MUST reference the Migration Readiness score.
-   - Operations & Risk (doc 05) MUST reference error handling and operations scores.
+   - The Scorecard doc (doc 07) MUST include scores, confidence, evidence, red flags, quick wins, and unknowns.
+   - The Change Playbook (doc 08) MUST include inspect/test/rollback guidance.
+   - The Agent Brief (doc 00) MUST include onboarding and documentation map guidance.
 
    DEPTH GUIDANCE:
    This project has {total_jobs} jobs across {total_groups} groups ({depth_tier} project, {depth_multiplier}x depth scaling).
@@ -363,11 +357,9 @@ PHASE 3 -- WRITE DOCS (parallel sub-agents by theme):
    - Match the depth and structure shown in reference doc templates from the bundle.
    - Include specific expressions, column names, job names -- not just summaries.
 
-   ADAPTIVE CATALOG:
-   - Always generate: 00-06, 09-11
-   - Generate 07 if security/performance issues found
-   - Generate 08 cross-region section only if 2+ groups exist
-   - Skip any doc with genuinely no content (but this should be rare with the consolidated structure)
+   DOCUMENT CATALOG:
+   - Always generate exactly the 9 assistant-grade docs: 00_AGENT_BRIEF through 08_CHANGE_PLAYBOOK.
+   - Do not generate the old executive summary, standalone FAQ, migration assessment, or split 05a-05d docs.
 
    Quality standards:
    - Every doc MUST have a table of contents
@@ -382,23 +374,21 @@ PHASE 3.5 -- DOC VALIDATION (before cleanup):
    After ALL Phase 3 doc agents return, validate the output:
    1. Run: Bash ls -la {staging_abs}/*.md
    2. Required docs (must exist and be >500 bytes):
-      00_EXECUTIVE_SUMMARY, 01_PROJECT_OVERVIEW,
-      02_ARCHITECTURE_INVENTORY, 03_DATA_FLOWS_LINEAGE, 04_BUSINESS_LOGIC,
-      05a_OPERATIONS, 05b_SECURITY, 05c_RISK, 05d_CHANGE_MANAGEMENT,
-      09_RUNBOOK, 10_ONBOARDING_FAQ, 11_MIGRATION_ASSESSMENT.
-   3. Optional docs (generate if content warrants):
-      06_ENVIRONMENT_EXTERNAL, 07_SECURITY_PERFORMANCE, 08_PATTERNS_STANDARDS.
-   4. If any REQUIRED doc is missing or under 500 bytes:
+      00_AGENT_BRIEF, 01_ARCHITECTURE_MAP, 02_COMPONENT_INVENTORY,
+      03_DATA_FLOWS_AND_LINEAGE, 04_BUSINESS_RULES_AND_TRANSFORMATIONS,
+      05_RUNTIME_CONFIG_AND_EXTERNALS, 06_OPERATIONS_TESTING_AND_DEBUGGING,
+      07_QUALITY_SECURITY_RISK_SCORECARD, 08_CHANGE_PLAYBOOK.
+   3. If any REQUIRED doc is missing or under 500 bytes:
       - Identify which Phase 3 agent was responsible ({agent_retry_map}).
       - Re-spawn ONLY that agent with the same instructions. Max 1 retry per agent.
-   5. After retries, proceed to Phase 4 with whatever docs exist. Log any still-missing docs as WARNINGS.
+   4. After retries, proceed to Phase 4 with whatever docs exist. Log any still-missing docs as WARNINGS.
 
 PHASE 4 -- CLEANUP & PUBLISH:
    - Delete the {staging_abs}/_analysis/ directory and all its contents.
    - Delete the {staging_abs}/_preprocess/ directory and all its contents.
    - KEEP {staging_abs}/_assessment/scorecard.md -- it is part of the final output.
    - KEEP {staging_abs}/_assessment/quick_scan.md -- it is part of the final output.
-   - Write {staging_abs}/index.json mapping docs to groups. The index MUST include all produced docs with their filenames exactly as written (e.g. "05a_OPERATIONS", "05b_SECURITY", "05c_RISK", "05d_CHANGE_MANAGEMENT" -- NOT "05_OPERATIONS_RISK").
+   - Write {staging_abs}/index.json mapping docs to groups. The index MUST include all produced docs with their filenames exactly as written.
    - Write {logs_abs}/run_{project_id}_{{timestamp}}.log.
    - Do NOT call insert_to_rag -- the server will push docs to RAG automatically after successful generation.
 {hindsight_phase4}

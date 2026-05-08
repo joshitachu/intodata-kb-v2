@@ -166,6 +166,9 @@ def build_context_from_document_sources(
     max_tokens: int = MAX_CONTEXT_TOKENS,
 ) -> str:
     """Build context string from DocumentSource objects (previous sources)."""
+    if not doc_sources:
+        return ""
+
     enc = tiktoken.get_encoding(ENCODING_NAME)
     parts: list[str] = []
     total_tokens = 0
@@ -272,6 +275,9 @@ def build_context(
     reference_numbers: dict[int, int] | None = None,
 ) -> str:
     """Concatenate source texts, truncating to stay within token budget."""
+    if not sources:
+        return ""
+
     enc = tiktoken.get_encoding(ENCODING_NAME)
     parts: list[str] = []
     total_tokens = 0

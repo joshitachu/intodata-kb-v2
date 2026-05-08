@@ -117,8 +117,18 @@ class _FakeProvider:
 
         deep_text = (
             "# Deep Generated Analysis\n\n"
+            "Canonical inventory: 2 recipes/functions. Source artifacts: Recipe One.item, Function One.item.\n"
+            "Platform evidence includes recipe, callable function, folder, export artifact, trigger, step, action, block, "
+            "datapill, formula, lookup table, property, connection, monitor, job history.\n"
+            "Score: 3/5. Confidence: HIGH. Evidence: facts_manifest.json. Red Flags: HIGH risk. Quick Wins: add tests. Unknowns: runtime SLA.\n"
+            "Change Impact: inspect source artifacts, Test changed flows, Verify outputs, Rollback if validation fails.\n"
+            "Documentation Map, Onboarding, Common Tasks, Known Traps. Debug and Recovery guidance with Testing evidence.\n"
             "## Inventory and purpose\n"
             "Recipe One and Function One are covered as canonical units in the Recipes and Functions groups.\n"
+            "| Unit | Group | Source Artifact | Type | Purpose | Dependencies | Confidence |\n"
+            "|------|-------|-----------------|------|---------|--------------|------------|\n"
+            "| Recipe One | Recipes | Recipe One.item | recipe | purpose | dependency | HIGH |\n"
+            "| Function One | Functions | Function One.item | function | purpose | dependency | HIGH |\n"
             "## Components, actions, or implementation units\n"
             "Components and actions are described with component evidence and connector behavior.\n"
             "## Data flows and lineage\n"

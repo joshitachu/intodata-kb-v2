@@ -69,8 +69,8 @@ def test_build_context_with_reference_numbers():
 
 
 def test_build_context_truncates_per_source():
-    # Create a source with a very long text that exceeds MAX_CONTEXT_TOKENS (6144)
-    long_text = "word " * 8000  # ~8000 tokens, well exceeds 6144 limit
+    # Create a source with text that exceeds the current context token budget.
+    long_text = "word " * (MAX_CONTEXT_TOKENS + 1000)
     sources = [
         _make_source(long_text, chunk_index=0),
         _make_source("Second source text", chunk_index=1),

@@ -220,6 +220,7 @@ class ScopedEvidenceTools:
             "test_coverage_map.md",
             "change_impact_matrix.md",
             "facts_manifest.json",
+            "documentation_obligations.json",
         ]
         files = [self.staging_dir / name for name in names]
         files.extend(sorted((self.staging_dir / "_investigation").glob("*.md")))

@@ -61,6 +61,7 @@ from mcp_server.providers.custom.validators import (
     validate_analysis_coverage,
     validate_doc_depth,
     validate_docs,
+    build_documentation_obligation_map,
     _scanned_config_files,
     _covered_source_files,
     _strip_config_contradiction_sentences,
@@ -92,21 +93,15 @@ BASELINE_BUNDLE_SECTIONS = {
     ADDITIONAL_FINDINGS_SECTION,
 }
 DOC_SECTION_BUNDLE_MAP = {
-    "00_EXECUTIVE_SUMMARY": {"BUSINESS_RULES", "ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG"},
-    "01_PROJECT_OVERVIEW": {"EXTERNAL_SYSTEMS", "SCHEMA_DICTIONARY", "NAMING_PATTERNS"},
-    "02_ARCHITECTURE_INVENTORY": {"EXTERNAL_SYSTEMS", "SCHEMA_DICTIONARY"},
-    "03_DATA_FLOWS_LINEAGE": {"DATA_FLOWS", "TRANSFORMATION_DETAIL", "SOURCE_SQL", "SCHEMA_DICTIONARY", "EXTERNAL_SYSTEMS"},
-    "04_BUSINESS_LOGIC": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SOURCE_SQL", "CUSTOM_CODE"},
-    "05a_OPERATIONS": {"SCHEDULING", "ERROR_HANDLING", "ENVIRONMENT_CONFIG", "EXTERNAL_SYSTEMS"},
-    "05b_SECURITY": {"ERROR_HANDLING", "ENVIRONMENT_CONFIG", "EXTERNAL_SYSTEMS", "SOURCE_SQL", "CUSTOM_CODE"},
-    "05c_RISK": {"ERROR_HANDLING", "ENVIRONMENT_CONFIG", "EXTERNAL_SYSTEMS", "SOURCE_SQL", "CUSTOM_CODE"},
-    "05d_CHANGE_MANAGEMENT": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SCHEDULING", "ENVIRONMENT_CONFIG"},
-    "06_ENVIRONMENT_EXTERNAL": {"EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SCHEDULING"},
-    "07_SECURITY_PERFORMANCE": {"ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SOURCE_SQL", "CUSTOM_CODE"},
-    "08_PATTERNS_STANDARDS": {"NAMING_PATTERNS", "CROSS_GROUP_REFS", "ERROR_HANDLING"},
-    "09_RUNBOOK": {"SCHEDULING", "ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG"},
-    "10_ONBOARDING_FAQ": {"NAMING_PATTERNS", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "BUSINESS_RULES"},
-    "11_MIGRATION_ASSESSMENT": {"SCHEDULING", "ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "BUSINESS_RULES"},
+    "00_AGENT_BRIEF": {"EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "NAMING_PATTERNS", "RISK_FLAGS"},
+    "01_ARCHITECTURE_MAP": {"EXECUTION_FLOW", "EXTERNAL_SYSTEMS", "SCHEMA_DICTIONARY", "CROSS_GROUP_REFS"},
+    "02_COMPONENT_INVENTORY": {"COMPONENTS", "EXECUTION_FLOW", "EXTERNAL_SYSTEMS", "SCHEMA_DICTIONARY"},
+    "03_DATA_FLOWS_AND_LINEAGE": {"DATA_FLOWS", "TRANSFORMATION_DETAIL", "SOURCE_SQL", "SCHEMA_DICTIONARY", "EXTERNAL_SYSTEMS"},
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SOURCE_SQL", "CUSTOM_CODE"},
+    "05_RUNTIME_CONFIG_AND_EXTERNALS": {"EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SCHEDULING"},
+    "06_OPERATIONS_TESTING_AND_DEBUGGING": {"SCHEDULING", "ERROR_HANDLING", "ENVIRONMENT_CONFIG", "EXTERNAL_SYSTEMS", "RISK_FLAGS"},
+    "07_QUALITY_SECURITY_RISK_SCORECARD": {"ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SOURCE_SQL", "CUSTOM_CODE", "RISK_FLAGS"},
+    "08_CHANGE_PLAYBOOK": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SCHEDULING", "ENVIRONMENT_CONFIG", "CROSS_GROUP_REFS", "RISK_FLAGS"},
 }
 
 
@@ -468,6 +463,7 @@ class CustomHarnessProvider(DocGenerationProvider):
 
             await self._phase26_scorecard(ctx, state, log_cb)
             self._phase28_bundles(ctx, facts.unit_count)
+            self._write_documentation_obligations(ctx, facts)
             await self._phase3_docs(ctx, state, log_cb)
 
             doc_report = validate_docs(ctx.staging_dir, facts)
@@ -1244,6 +1240,12 @@ class CustomHarnessProvider(DocGenerationProvider):
             )
 
     @staticmethod
+    def _write_documentation_obligations(ctx: DocGenContext, facts) -> None:
+        obligation_map = build_documentation_obligation_map(facts)
+        path = ctx.staging_dir / "documentation_obligations.json"
+        path.write_text(json.dumps(obligation_map, indent=2), encoding="utf-8")
+
+    @staticmethod
     def _bundle_sections_for_docs(doc_names: list[str]) -> set[str]:
         sections = set(BASELINE_BUNDLE_SECTIONS)
         for doc_name in doc_names:
@@ -1348,7 +1350,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         first_heading = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
         if not first_heading or canonical_title.lower() not in first_heading.group(1).lower():
             content = f"# {canonical_title}\n\n{content}"
-        if doc_name == "01_PROJECT_OVERVIEW" and "## Canonical Unit Inventory" not in content:
+        if doc_name == "02_COMPONENT_INVENTORY" and "## Canonical Unit Inventory" not in content:
             content = (
                 f"{content.rstrip()}\n\n"
                 "## Canonical Unit Inventory\n\n"
@@ -1494,10 +1496,10 @@ class CustomHarnessProvider(DocGenerationProvider):
                 for name in matched_required:
                     grouped.setdefault(name, []).append(error)
             else:
-                grouped.setdefault("01_PROJECT_OVERVIEW.md", []).append(error)
+                grouped.setdefault("02_COMPONENT_INVENTORY.md", []).append(error)
 
         if not grouped:
-            grouped["01_PROJECT_OVERVIEW.md"] = []
+            grouped["02_COMPONENT_INVENTORY.md"] = []
 
         targets: list[tuple[Path, list[str]]] = []
         for name, doc_errors in grouped.items():
@@ -1508,7 +1510,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                     for doc in REQUIRED_DOCS
                     if (ctx.staging_dir / f"{doc}.md").exists()
                 ]
-                target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / "01_PROJECT_OVERVIEW.md"
+                target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / "02_COMPONENT_INVENTORY.md"
             targets.append((target_doc, doc_errors))
         return targets
 
@@ -1555,6 +1557,7 @@ class CustomHarnessProvider(DocGenerationProvider):
 
         files = [
             ctx.staging_dir / "facts_manifest.json",
+            ctx.staging_dir / "documentation_obligations.json",
             target_doc,
             ctx.staging_dir / "_investigation" / "_summary.md",
             repair_bundle,
@@ -1574,11 +1577,12 @@ class CustomHarnessProvider(DocGenerationProvider):
 Repair only the listed documentation gaps in {doc_name}.
 
 Rules:
-- Use only the supplied facts manifest, existing document, analysis bundle, scorecard, and scanner evidence.
+- Use only the supplied facts manifest, documentation obligations, existing document, analysis bundle, scorecard, and scanner evidence.
 - Preserve exact canonical unit names.
 - Do not infer project-specific meaning beyond scanner evidence.
 - Write markdown sections that can be appended directly to the document.
-- Cover each missing unit or explain scanner-limited evidence if the supplied context is insufficient.
+- Cover each missing obligation directly or explain scanner-limited evidence if the supplied context is insufficient.
+- Do not add broad filler. If a validator asks for inspect/test/change guidance, include concrete inspect/test/change entries.
 
 Canonical inventory: {state.facts_manifest.unit_count} {state.facts_manifest.canonical_unit_label}
 
@@ -2082,7 +2086,7 @@ You are a documentation critic. Compare the supplied docs against the facts mani
 scorecard, investigation evidence, and reference docs. Return JSON only.
 
 Required JSON shape:
-{{"expansions":[{{"doc_name":"02_ARCHITECTURE_INVENTORY","heading":"Evidence gap","markdown":"...","units":["Exact Unit"]}}]}}
+{{"expansions":[{{"doc_name":"02_COMPONENT_INVENTORY","heading":"Evidence gap","markdown":"...","units":["Exact Unit"]}}]}}
 
 Rules:
 - Only expand weak or missing factual sections.
@@ -2339,6 +2343,9 @@ Allowed docs:
         pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
         bundle = DOC_BUNDLE_MAP.get(doc_name, "core")
         files: list[Path] = []
+        obligations = ctx.staging_dir / "documentation_obligations.json"
+        if obligations.exists():
+            files.append(obligations)
         prompt_pack = pack_dir / f"_phase3_prompt_pack_{bundle}.md"
         if prompt_pack.exists():
             files.append(prompt_pack)
@@ -2375,16 +2382,16 @@ Allowed docs:
             names = ["engineering_facts.md", "dependency_map.md", "known_risks.md", "config_runtime_map.md"]
         else:
             names = ["engineering_facts.md", "entity_index.csv", "usage_index.csv"]
-            if doc_name == "02_ARCHITECTURE_INVENTORY":
+            if doc_name in {"01_ARCHITECTURE_MAP", "02_COMPONENT_INVENTORY"}:
                 names.extend(["architecture_map.md", "dependency_map.md"])
-            elif doc_name == "03_DATA_FLOWS_LINEAGE":
+            elif doc_name == "03_DATA_FLOWS_AND_LINEAGE":
                 # CSV versions are more readable and cover the same data as the JSON base — drop JSON duplicates
                 names = ["engineering_facts.md", "data_flow_map.md", "entity_index.csv", "usage_index.csv"]
-            elif doc_name == "05d_CHANGE_MANAGEMENT":
+            elif doc_name == "08_CHANGE_PLAYBOOK":
                 names.extend(["change_impact_matrix.md"])
-            elif doc_name == "06_ENVIRONMENT_EXTERNAL":
+            elif doc_name == "05_RUNTIME_CONFIG_AND_EXTERNALS":
                 names.extend(["api_surface.md", "config_runtime_map.md"])
-            elif doc_name == "09_RUNBOOK":
+            elif doc_name == "06_OPERATIONS_TESTING_AND_DEBUGGING":
                 names.extend(["test_coverage_map.md", "known_risks.md"])
             else:
                 names.extend(["dependency_map.md", "known_risks.md", "config_runtime_map.md"])

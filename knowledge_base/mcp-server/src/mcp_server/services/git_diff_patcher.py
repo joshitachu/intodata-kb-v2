@@ -226,14 +226,18 @@ async def _run_diff_patch(
         if not docs_dir.exists():
             return _manual(base_summary, "No existing docs found to patch")
 
-        candidate_sections = _match_doc_sections(docs_dir, changes, full_diff_text)
+        candidate_sections = await asyncio.to_thread(
+            _match_doc_sections, docs_dir, changes, full_diff_text
+        )
         base_summary["candidate_docs"] = sorted({s.filename for s in candidate_sections})
         preferred_docs = _preferred_docs_for_diff(changes, full_diff_text)
-        sections = _select_doc_sections(
-            candidate_sections,
-            limit=config.git_diff_patch_max_docs,
-            preferred_docs=preferred_docs,
-            docs_dir=docs_dir,
+        sections = await asyncio.to_thread(
+            lambda: _select_doc_sections(
+                candidate_sections,
+                limit=config.git_diff_patch_max_docs,
+                preferred_docs=preferred_docs,
+                docs_dir=docs_dir,
+            )
         )
         matched_docs = sorted({s.filename for s in sections})
         base_summary["matched_docs"] = matched_docs
@@ -325,18 +329,22 @@ async def _run_diff_patch(
                 "Patch agent returned no doc edits for a doc-relevant code diff",
             )
 
-        patched_docs, originals = _apply_patches_with_backup(docs_dir, patches)
+        patched_docs, originals = await asyncio.to_thread(
+            _apply_patches_with_backup, docs_dir, patches
+        )
         if not patched_docs:
             return _manual(base_summary, "Patch model returned no applicable doc edits")
-        validation_errors = _validate_obligations(
-            docs_dir,
-            obligations,
-            candidate_sections,
-            patched_docs,
-            obligations_satisfied | _infer_satisfied_obligations(docs_dir, obligations, patched_docs),
+        validation_errors = await asyncio.to_thread(
+            lambda: _validate_obligations(
+                docs_dir,
+                obligations,
+                candidate_sections,
+                patched_docs,
+                obligations_satisfied | _infer_satisfied_obligations(docs_dir, obligations, patched_docs),
+            )
         )
         if validation_errors:
-            _restore_docs(docs_dir, originals)
+            await asyncio.to_thread(_restore_docs, docs_dir, originals)
             return _manual(
                 {
                     **base_summary,
@@ -381,8 +389,14 @@ async def _git(local_path: str, *args: str) -> str:
         cwd=local_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError(f"git {' '.join(args)} timed out after 60s")
     if proc.returncode != 0:
         detail = stderr.decode().strip() or stdout.decode().strip()
         raise RuntimeError(detail or f"git {' '.join(args)} failed")
@@ -572,17 +586,17 @@ def _preferred_docs_for_diff(changes: list[FileChange], diff_text: str) -> list[
             preferred.append(filename)
 
     if "/patterns/" in paths or "design patterns" in lowered_diff:
-        add("08_PATTERNS_STANDARDS.md")
-        add("02_ARCHITECTURE_INVENTORY.md")
-        add("10_ONBOARDING_FAQ.md")
+        add("08_CHANGE_PLAYBOOK.md")
+        add("01_ARCHITECTURE_MAP.md")
+        add("00_AGENT_BRIEF.md")
 
     if "/controllers/" in paths or "/services/" in paths:
-        add("04_BUSINESS_LOGIC.md")
-        add("03_DATA_FLOWS_LINEAGE.md")
+        add("04_BUSINESS_RULES_AND_TRANSFORMATIONS.md")
+        add("03_DATA_FLOWS_AND_LINEAGE.md")
 
     if "/middleware/" in paths or "exception" in lowered_diff:
-        add("05a_OPERATIONS.md")
-        add("05c_RISK.md")
+        add("06_OPERATIONS_TESTING_AND_DEBUGGING.md")
+        add("07_QUALITY_SECURITY_RISK_SCORECARD.md")
 
     return preferred
 
@@ -597,9 +611,9 @@ def _fallback_section_for_doc(docs_dir: Path, filename: str) -> DocSection | Non
         return None
 
     preferred_headings = {
-        "08_PATTERNS_STANDARDS.md": ("Design Pattern Catalog", "Pattern"),
-        "02_ARCHITECTURE_INVENTORY.md": ("Component Type Census", "Component"),
-        "10_ONBOARDING_FAQ.md": ("Glossary", "Q4: What design patterns are used and where?"),
+        "08_CHANGE_PLAYBOOK.md": ("Change Impact", "Inspect"),
+        "01_ARCHITECTURE_MAP.md": ("Topology", "Dependencies"),
+        "00_AGENT_BRIEF.md": ("Known Traps", "Documentation Map"),
     }
     for wanted in preferred_headings.get(filename, ()):
         for section in sections:
@@ -938,9 +952,9 @@ def _build_patch_prompt(
         "- Put satisfied obligation ids in obligations_satisfied and unsafe/missing ids in obligations_unsatisfied.\n\n"
         "JSON schema:\n"
         "{\"change_summary\":\"short summary\",\"inspected_context\":[\"bounded context used\"],"
-        "\"affected_docs\":[\"04_BUSINESS_LOGIC.md\"],"
+        "\"affected_docs\":[\"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md\"],"
         "\"obligations_satisfied\":[\"obl-01\"],\"obligations_unsatisfied\":[],"
-        "\"edits\":[{\"filename\":\"04_BUSINESS_LOGIC.md\",\"heading\":\"Existing Heading\","
+        "\"edits\":[{\"filename\":\"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md\",\"heading\":\"Existing Heading\","
         "\"replacement_markdown\":\"## Existing Heading\\n\\nUpdated content...\"}],"
         "\"confidence\":0.0}\n\n"
         f"Diff chunk {chunk.index}; changed paths: {json.dumps(chunk.paths)}\n"

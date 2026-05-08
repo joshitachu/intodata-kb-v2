@@ -30,7 +30,7 @@ async def test_first_provider_success():
         result = await generate_answer(MESSAGES)
 
         assert result == "Kimi answer"
-        mock_kimi.assert_awaited_once_with(MESSAGES)
+        mock_kimi.assert_awaited_once_with(MESSAGES, images=None)
         mock_ollama.assert_not_awaited()
 
 
@@ -49,7 +49,7 @@ async def test_fallback_to_ollama():
 
         assert result == "Ollama answer"
         mock_kimi.assert_awaited_once()
-        mock_ollama.assert_awaited_once_with(MESSAGES)
+        mock_ollama.assert_awaited_once_with(MESSAGES, images=None)
 
 
 async def test_all_providers_fail():
@@ -92,7 +92,7 @@ async def test_custom_provider_order():
 async def test_stream_first_provider_success():
     """Streaming: Kimi works → Ollama not called."""
 
-    async def _fake_kimi_stream(messages):
+    async def _fake_kimi_stream(messages, images=None):
         yield "Hello "
         yield "world"
 
@@ -114,11 +114,11 @@ async def test_stream_first_provider_success():
 async def test_stream_fallback():
     """Streaming: Kimi fails → Ollama streams successfully."""
 
-    async def _failing_stream(messages):
+    async def _failing_stream(messages, images=None):
         raise Exception("Kimi stream error")
         yield  # noqa: unreachable — makes this an async generator
 
-    async def _working_stream(messages):
+    async def _working_stream(messages, images=None):
         yield "Fallback "
         yield "works"
 
@@ -139,7 +139,7 @@ async def test_stream_fallback():
 async def test_stream_all_fail():
     """Streaming: all providers fail → RuntimeError."""
 
-    async def _failing(messages):
+    async def _failing(messages, images=None):
         raise Exception("fail")
         yield  # noqa: unreachable
 

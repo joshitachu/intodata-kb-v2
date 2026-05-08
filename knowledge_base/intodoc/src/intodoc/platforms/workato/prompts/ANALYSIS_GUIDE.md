@@ -7,6 +7,45 @@ Every claim needs a specific recipe name and component reference.
 
 ---
 
+## Depth Contract
+
+Apply this evidence standard to every section:
+- Cite every claim with the exact recipe, step number, step alias, action/provider, and artifact/reference where it was found (recipe JSON, connection export, lookup table, topic schema, custom adapter file, scan warning).
+- Enumerate concrete evidence before summarizing. List the actual units, expressions, fields, connections, and references first; then infer architecture, risk, or intent.
+- Quote formulas, SQL, Ruby code, conditions, filters, mappings, endpoint paths, property names, lookup keys, and event topic names verbatim where present. Do not paraphrase away source evidence.
+- Label scanner-limited evidence explicitly, for example: "schema not visible in scan", "connection target redacted", "job history unavailable", or "lookup row values not exported".
+- For important findings include impact, confidence (HIGH/MEDIUM/LOW), risk, and affected units (recipes, steps, connectors, topics, tables, properties, callable recipes).
+
+## Output Quality Gate
+
+Your output is valid only if every canonical section contains cited evidence before interpretation:
+- Start each section with concrete recipe/step/asset evidence. Summaries, architecture conclusions, and recommendations must come after the evidence.
+- Empty sections are allowed only after stating what was checked and whether the absence is confirmed or scanner-limited.
+- Any broad claim such as "uses Salesforce", "has error handling", "syncs customer data", or "depends on a lookup table" must cite the exact recipe, step number, step alias, provider/action, and source artifact.
+- Important findings must include affected unit, source reference, impact, confidence, risk, and scanner limitation if applicable.
+- Do not collapse multiple recipes into one generic paragraph. If several recipes share a pattern, list each recipe and then summarize the pattern.
+
+## Anti-Shallow Output Rule
+
+The following output patterns are invalid:
+- Architecture prose without a recipe topology, callable recipe/event topic relationships, and connector/property/lookup assets listed first.
+- Data-flow summaries without field-level datapill lineage and source step aliases.
+- Business-rule summaries without quoting the formula, condition, SQL predicate, lookup key, property reference, or Ruby code implementing the rule.
+- Error-handling claims without monitor/catch, stop action, notification, retry, job history, or failure-propagation evidence.
+- Change-impact guidance without affected recipes/steps/properties/lookup tables/topics/callable recipes, required checks, rollback risk, and confidence.
+
+## Required Evidence Tables
+
+Include these tables when evidence exists; if evidence is absent, state the checked source and limitation:
+- **Recipe topology table**: recipe, folder/group, trigger type, schedule/event/API endpoint, primary systems, child callable recipes, event topics, shared assets.
+- **Step/action table**: recipe, step number, step alias, keyword, provider/action, parent block, important inputs, outputs consumed downstream.
+- **Datapill lineage table**: target recipe/step/field, full datapill expression, source recipe/step alias/field, formula chain, plain-English meaning, downstream consumers.
+- **Lookup/property table**: asset name, scope/type, key/value or property reference, recipes/steps using it, fallback behavior, environment/change risk.
+- **Monitor/catch table**: recipe, protected steps, catch steps, stop/notification/logging/retry behavior, unprotected critical actions, failure visibility.
+- **Change-impact table**: change target, affected recipes/steps/assets, required validation checks, rollback risk, confidence, scanner limitations.
+
+---
+
 ## Workato Platform Reference
 
 ### Recipe Structure
@@ -75,7 +114,7 @@ Extract for each recipe:
 - Recipe name, purpose, folder path, and group membership
 - All steps with type (WorkatoAction/WorkatoTrigger/WorkatoCondition/WorkatoLoop/WorkatoMonitor/WorkatoCatch/WorkatoStop), step alias (`as` field), provider, action name, and role in the recipe
 - Block tree structure: parent-child nesting, depth levels
-- Dependencies: `call_recipe` child references, connection/provider references, event topic references, lookup table references
+- Dependencies: `call_recipe` child references, connection/provider references, event topic references, lookup table references, property references, callable recipe inputs/outputs, custom adapter references
 - Referenced-by: which parent recipes call this recipe via `call_recipe`
 - Orphaned steps: steps with no logical connection in the block tree
 - Missing references: `call_recipe` refs to non-existent recipes, provider refs to missing connections, topic refs to undefined topics
@@ -94,6 +133,7 @@ Also catalog all non-recipe assets in the group:
 Extract for each recipe:
 
 - **Trigger analysis**: trigger type, provider, polling interval (if applicable), event topic (if subscriber), API method/URL (if API trigger), whether polling-based or event-driven
+- **Recipe interfaces**: trigger input schema, callable recipe input/output schema, API request/response schema, event topic payload schema, and scanner limitations for missing schemas
 - **Block tree mapping**: the complete block tree showing all nesting levels. For each node: keyword, provider, action name, step number, nesting depth, and `as` alias
 - **Conditional branches**: for every `if/elsif/else` block:
   - The condition expression (from `input.conditions`)
@@ -114,6 +154,12 @@ Extract for each recipe:
   - What input parameters are passed
   - Whether return values are used downstream
   - Position in the execution sequence
+  - Error propagation behavior and whether the call is protected by monitor/catch
+- **Event topic orchestration**: for each publish/subscribe pattern:
+  - Publisher recipe and publish step
+  - Topic name and payload mapping
+  - Subscriber trigger recipe(s)
+  - Whether publisher and subscriber failures are decoupled
 - **Stop actions**: all `stop` keywords:
   - What triggers them (condition, catch block, validation failure)
   - Whether they stop with success or error
@@ -127,11 +173,14 @@ Extract for each recipe:
 For EVERY action step with input mappings:
 - List every input field and its mapping expression (datapill reference or static value)
 - The FULL datapill formula (do NOT truncate)
+- Quote nested formulas, conditional expressions, lookup calls, property references, and concatenated strings exactly as exported
 - **HUMAN-READABLE explanation** of what each expression does -- translate to plain English, do not just repeat the expression. Examples:
   - `#{_('data.salesforce_1.account_name')}` -> "Takes the account name from the Salesforce trigger output"
   - `#{_('data.salesforce_1.annual_revenue')}.to_f.round(2)` -> "Takes the annual revenue, converts to decimal, rounds to 2 places"
   - `#{_('data.netsuite_1.email')}.present? ? #{_('data.netsuite_1.email')} : 'no-email@placeholder.com'` -> "Uses NetSuite email if present, otherwise defaults to placeholder"
 - Identify which step alias each datapill references (trace back to source step)
+- Trace formula chains through intermediate steps: source trigger/action -> transformation action -> downstream action/output
+- Identify cross-step fan-out: one step output or datapill consumed by multiple later steps
 - Flag hardcoded values that should be properties or lookup table entries
 
 For trigger data sources:
@@ -155,6 +204,8 @@ Cross-recipe data flows:
 - Event topic payloads (publisher schema to subscriber trigger)
 - Shared lookup tables or Workato DB tables
 - Shared external system tables (recipe A writes, recipe B reads)
+- Property-driven data flows: account/project properties that change source, filter, target, URL, credentials, or routing behavior
+- Schema drift indicators: datapill references to fields not present in known schemas, different recipes using different field sets for the same object, payload fields used by subscribers but not published
 
 **Data quality checks to identify:**
 - Validation patterns: `.present?` / `.blank?` checks, range checks, regex validation via `.match?()`, lookup table reference lookups
@@ -214,6 +265,8 @@ For every lookup table reference:
 - Which column is returned
 - How the result is used downstream
 - Fallback behavior if lookup finds no match
+- Whether the lookup result feeds a conditional branch, write target, notification, or callable recipe parameter
+- Whether the lookup table is read-only configuration or is mutated by recipes in the group
 
 ### BUSINESS_RULES
 
@@ -347,6 +400,7 @@ Extract:
 - **Dependencies between recipes**: execution ordering via call_recipe chains or event topic sequences
 - **Retry configuration**: auto-retry settings, backoff patterns
 - **Recovery patterns**: what happens after a failed run (automatic retry, manual re-run, gap detection)
+- **Concurrency and task limits**: concurrent job settings if visible, loop/task amplification, connector rate-limit exposure, and idempotency checks for safe reruns
 
 ### NAMING_PATTERNS
 
@@ -429,3 +483,47 @@ For each risk, document:
 - Affected recipe(s) and step(s)
 - Description of the specific risk
 - Recommended remediation
+
+### DEBUG_TESTING_EVIDENCE
+
+Extract assistant-grade operations, debugging, and testability evidence:
+- Job history or runtime evidence if available: failed step, error message, retry count, task count, duration, trigger time, and whether the recipe processed zero records or partial records.
+- Monitor/catch debug path: protected steps, catch variables/error datapills used, notification targets, persistent logs, stop status/message, and whether catch resumes or terminates.
+- Retry and backoff evidence: connector retry settings, Workato auto-retry settings, explicit retry loops, repeat blocks used as retries, and gaps for transient HTTP/DB/rate-limit failures.
+- Notification coverage: email/Slack/Teams/Webhook recipients, message body fields, included record identifiers, and missing correlation IDs.
+- Idempotency evidence: search-before-create, upsert keys, dedupe lookup tables, external IDs, replay guards, and unsafe create/delete/write sequences.
+- Rate-limit and task-consumption evidence: polling interval, foreach size, connector quota hints, pagination/batch size, repeated API calls inside loops, and task amplification path.
+- Manual recovery evidence: rerunnable recipe inputs, replay endpoint or API trigger, gap-detection logic, checkpoint properties/lookup rows, and manual stop/restart hazards.
+- Test hooks: callable recipes that can be invoked independently, sample payloads, validation stops, sandbox/test connections, and missing test fixtures.
+
+### CHANGE_IMPACT_EXTRACTION
+
+For each important change target, document affected units, required checks, confidence, and rollback risk:
+- Recipe step change: downstream datapill consumers, branch/loop nesting, monitor/catch coverage, data sinks, callable recipe callers, event publishers/subscribers.
+- Connector/connection change: all recipes using the connection, auth method assumptions, base URL/object schema differences, rate limits, and environment naming.
+- Property change: account/project scope, every formula/condition/URL/query using the property, default/fallback behavior, and environment blast radius.
+- Lookup table change: lookup keys, returned columns, fallback behavior, recipes reading/writing the table, and business rules driven by row values.
+- Event topic change: publisher payload schema, subscriber trigger schemas, fan-out consumers, backward compatibility, and dead-letter/replay risk.
+- Formula or mapping change: target fields, source datapill schema, type conversions, null/default behavior, validation coverage, and duplicate formulas elsewhere.
+- API endpoint change: route/method, request/response schema, auth/rate-limit expectations, downstream callable recipes, and external clients.
+- Custom adapter change: actions/triggers/object definitions affected, Ruby code paths, auth handling, schema contracts, and recipes using the adapter.
+- Callable recipe change: callers, input parameters, return datapills, synchronous failure propagation, and versioning/rollback path.
+
+### ASSISTANT_DOC_OBLIGATIONS
+
+Phase 2 must produce enough evidence for the assistant-grade docs:
+- Architecture docs need recipe topology, callable recipe chains, event topic topology, connector ownership, API endpoints, lookup/property assets, and custom adapters.
+- Lineage docs need field-level datapill mappings, formula-chain traces, lookup fallback behavior, cross-step fan-out, cross-recipe event/callable payloads, and schema drift notes.
+- Business-rule docs need every conditional, SQL predicate, lookup-driven mapping, property-driven branch, magic value, and orchestration rule with impact/confidence.
+- Runtime/config docs need properties, connections, schedules, trigger modes, connector accounts, environment naming, retry settings, task/rate-limit evidence, and concurrency notes.
+- Debugging/runbook docs need monitor/catch paths, stop actions, notifications, logs/job history evidence, rerun/idempotency guidance, and manual recovery hazards.
+- Risk/change docs need affected recipes/steps, blast radius, rollback risk, required validation checks, scanner limitations, and confidence for each major finding.
+
+### SELF_CHECK_BEFORE_RETURNING
+
+Before returning the Phase 2 analysis, verify:
+- All canonical sections are present: COMPONENTS, EXECUTION_FLOW, DATA_FLOWS, TRANSFORMATION_DETAIL, BUSINESS_RULES, SCHEMA_DICTIONARY, SOURCE_SQL, EXTERNAL_SYSTEMS, ERROR_HANDLING, CUSTOM_CODE, ENVIRONMENT_CONFIG, SCHEDULING, NAMING_PATTERNS, CROSS_GROUP_REFS, RISK_FLAGS, DEBUG_TESTING_EVIDENCE, CHANGE_IMPACT_EXTRACTION, ASSISTANT_DOC_OBLIGATIONS.
+- Every major claim cites recipe name, step number/alias or asset name, provider/action, and artifact/source.
+- Every important formula, condition, SQL query, Ruby snippet, property reference, lookup key, topic, API endpoint, or callable recipe reference is quoted verbatim where present.
+- Scanner-limited evidence is labelled rather than hidden or guessed.
+- The analysis contains enough evidence for all 9 assistant-grade docs, especially operations/debugging and change playbook material.

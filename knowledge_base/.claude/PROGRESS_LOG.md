@@ -1345,7 +1345,7 @@ Full implementation of the template management system and scoring pipeline enhan
 - **Root cause**: The `add_repo` endpoint had auto-assign logic (added earlier), but `upload_zip` was missed — it lacked both `request: Request` parameter and the INSERT into `project_assignments`.
 - **Change**: Added `request: Request` parameter to `upload_zip` signature. Added auto-assign block (same pattern as `add_repo`): extracts `auth_payload` from `request.state`, inserts into `project_assignments` with `ON CONFLICT DO NOTHING`.
 - **Why this approach**: Mirrors the existing `add_repo` pattern exactly. Both project creation paths now auto-assign the creator.
-- **Verification**: MCP server restarted via systemctl. Also manually assigned stale `test` project to joshitachu (user_id=6) in DB.
+- **Verification**: MCP server restarted via systemctl. Also manually assigned stale `test` project to a local test user in DB.
 
 ---
 

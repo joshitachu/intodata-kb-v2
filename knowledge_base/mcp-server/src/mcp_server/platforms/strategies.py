@@ -87,6 +87,25 @@ class PlatformStrategy(ABC):
             "Do not use platform-specific Talend wording unless the scanned source uses it."
         )
 
+    def documentation_obligations(self) -> dict[str, list[str]]:
+        """Platform-specific evidence categories expected in assistant-grade docs.
+
+        The shared documentation taxonomy stays platform-neutral. Strategies provide
+        the vocabulary that explains what concrete evidence means for each platform.
+        Validators use these terms as soft evidence signals rather than hardcoded
+        branch logic in the core generation pipeline.
+        """
+
+        return {
+            "identity": ["module", "service", "script", "config", "source artifact"],
+            "entrypoint": ["entrypoint", "handler", "route", "command", "scheduled task"],
+            "internal_structure": ["function", "class", "module dependency", "call chain"],
+            "data_movement": ["API payload", "SQL", "file", "model", "schema", "queue message"],
+            "runtime_config": ["environment variable", "config file", "setting", "secret reference"],
+            "error_handling": ["exception handler", "retry", "fallback", "logging"],
+            "debug_testing": ["test", "health check", "log", "verification command"],
+        }
+
     def detected_source_units(self, files: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> tuple[str, int]:
         return "parsed_units", len(jobs)
 
@@ -132,6 +151,17 @@ class TalendPlatformStrategy(PlatformStrategy):
             "die-on-error/error handling, inactive components, and deployment/migration concerns."
         )
 
+    def documentation_obligations(self) -> dict[str, list[str]]:
+        return {
+            "identity": ["job", ".item", "group", "context group"],
+            "entrypoint": ["tPreJob", "tPostJob", "trigger", "schedule", "tRunJob"],
+            "internal_structure": ["component", "unique_name", "FLOW", "SUBJOB_OK", "SUBJOB_ERROR"],
+            "data_movement": ["tMap", "schema", "column", "SQL", "lookup", "reject"],
+            "runtime_config": ["context variable", "REPOSITORY", "BUILT_IN", "metadata connection"],
+            "error_handling": ["tLogCatcher", "tStatCatcher", "tDie", "tWarn", "DIE_ON_CHILD_ERROR"],
+            "debug_testing": ["execution order", "log catcher", "row count", "validation query"],
+        }
+
     def detected_source_units(self, files: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> tuple[str, int]:
         return "item_files_fallback", sum(
             1 for f in files if str(f.get("relative_path", "")).endswith(".item")
@@ -165,6 +195,17 @@ class WorkatoPlatformStrategy(PlatformStrategy):
             "properties, lookup tables, branching/conditions, retry/error handling, callable recipe/function "
             "dependencies, and connector/account risks. Do not call Workato recipes Talend jobs."
         )
+
+    def documentation_obligations(self) -> dict[str, list[str]]:
+        return {
+            "identity": ["recipe", "callable function", "folder", "export artifact"],
+            "entrypoint": ["trigger", "webhook", "schedule", "event", "call_recipe"],
+            "internal_structure": ["step", "action", "block", "condition", "foreach", "monitor"],
+            "data_movement": ["datapill", "formula", "lookup table", "schema", "payload", "connector"],
+            "runtime_config": ["property", "connection", "account property", "project property"],
+            "error_handling": ["monitor", "catch", "retry", "stop", "notification"],
+            "debug_testing": ["job history", "recipe run", "error monitor", "test recipe"],
+        }
 
     def detected_source_units(self, files: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> tuple[str, int]:
         detected = sum(
@@ -207,6 +248,17 @@ class LobsterPlatformStrategy(PlatformStrategy):
             "variables, schedules, routes, forward/exception profiles, format conversions, and operational "
             "handoff risks. Do not call Lobster profiles Talend jobs."
         )
+
+    def documentation_obligations(self) -> dict[str, list[str]]:
+        return {
+            "identity": ["profile", "agent", "XML", "format definition"],
+            "entrypoint": ["schedule", "route", "profile chain", "agent"],
+            "internal_structure": ["parser", "mapping", "route condition", "forward profile"],
+            "data_movement": ["input format", "output format", "field mapping", "conversion"],
+            "runtime_config": ["variable", "partner connection", "environment setting"],
+            "error_handling": ["exception profile", "error route", "forward-on-error"],
+            "debug_testing": ["profile run", "route trace", "exception output", "validation"],
+        }
 
     def detected_source_units(self, files: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> tuple[str, int]:
         return "profile_xml_files", sum(

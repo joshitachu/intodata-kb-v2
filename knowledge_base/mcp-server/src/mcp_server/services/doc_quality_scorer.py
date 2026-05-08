@@ -1,10 +1,11 @@
 """Heuristic doc quality scorer — no LLM, runs in <1 second.
 
-Scores each generated Markdown doc 0–5 based on four weighted dimensions:
-  line_ratio (30%)      — actual lines vs minimum required
-  section_coverage (25%) — expected section headers present
-  specificity (25%)     — job refs, BR/AP/RF codes, table data
-  risk_depth (20%)      — CRITICAL/HIGH mentions, numbered risk items
+Scores assistant-grade generated Markdown docs 0–5 based on:
+  line_ratio (15%)       — actual lines vs minimum required
+  section_coverage (20%) — expected assistant doc sections present
+  specificity (25%)      — exact unit/artifact refs, coded IDs, tables
+  risk_depth (15%)       — structured risk labels and red flags
+  assistant_usefulness (25%) — confidence/evidence/change/debug signals
 """
 
 from __future__ import annotations
@@ -20,23 +21,15 @@ from mcp_server.config import config
 # Baseline minimum line counts calibrated at 50 units (jobs/recipes).
 # Scaled at score time by unit_count — see _scaled_min_lines().
 _BASE_MIN_LINES_AT_50: dict[str, int] = {
-    "00_EXECUTIVE_SUMMARY": 600,
-    "01_PROJECT_OVERVIEW": 800,
-    "02_ARCHITECTURE_INVENTORY": 1400,
-    "03_DATA_FLOWS_LINEAGE": 1800,
-    "04_BUSINESS_LOGIC": 1600,
-    "05_OPERATIONS_RISK": 1600,
-    "06_ENVIRONMENT_EXTERNAL": 1000,
-    "07_SECURITY_PERFORMANCE": 1000,
-    "08_PATTERNS_STANDARDS": 1000,
-    "09_RUNBOOK": 1000,
-    "10_ONBOARDING_FAQ": 1000,
-    "11_MIGRATION_ASSESSMENT": 1200,
-    # Split ops sub-docs (newer pipeline format)
-    "05a_OPERATIONS": 400,
-    "05b_SECURITY": 300,
-    "05c_RISK": 300,
-    "05d_CHANGE_MANAGEMENT": 200,
+    "00_AGENT_BRIEF": 500,
+    "01_ARCHITECTURE_MAP": 900,
+    "02_COMPONENT_INVENTORY": 1200,
+    "03_DATA_FLOWS_AND_LINEAGE": 1500,
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": 1200,
+    "05_RUNTIME_CONFIG_AND_EXTERNALS": 900,
+    "06_OPERATIONS_TESTING_AND_DEBUGGING": 900,
+    "07_QUALITY_SECURITY_RISK_SCORECARD": 900,
+    "08_CHANGE_PLAYBOOK": 800,
 }
 _SCALE_REFERENCE_UNITS = 50
 
@@ -57,50 +50,40 @@ def _scaled_min_lines(doc_key: str, unit_count: int) -> int:
 
 # Expected H2 section header keywords per doc (regex alternatives)
 _EXPECTED_SECTIONS: dict[str, list[str]] = {
-    "00_EXECUTIVE_SUMMARY": [
-        r"Project Overview",
-        r"Overall Assessment|Score Summary",
-        r"Dimension Score|Scoring",
-        r"Critical Finding|Top \d+ Critical",
-        r"Strength|Top \d+ Strength",
-        r"Recommended|Action",
-        r"FAQ|Question",
-        r"Glossary|Term",
+    "00_AGENT_BRIEF": [
+        r"Project Orientation|Project Summary",
+        r"Documentation Map",
+        r"Onboarding",
+        r"Common Tasks",
+        r"Known Traps|Do-Not-Miss",
     ],
-    "01_PROJECT_OVERVIEW": [
-        r"Platform|Technology",
-        r"Architecture|Layer|Structure",
-        r"Group|Scope|Region",
-        r"Dependency|Integration|External",
+    "01_ARCHITECTURE_MAP": [
+        r"Topology|Architecture",
+        r"Entry Point|Trigger",
+        r"Dependency|Orchestration",
+        r"Boundary|Group",
     ],
-    "02_ARCHITECTURE_INVENTORY": [
-        r"Inventory|Architecture|Component",
-        r"Layer|Tier|Pipeline",
-        r"Job|Pattern|Design",
-        r"Flow|Orchestration|Dependency",
-        r"Connection|Inventory",
-        r"Trigger|Route|Topology",
+    "02_COMPONENT_INVENTORY": [
+        r"Canonical Unit Inventory|Inventory",
+        r"Source Artifact|Path",
+        r"Component|Step|Module",
+        r"Dependency",
+        r"Scanner-Limited|Coverage Gap",
     ],
-    "03_DATA_FLOWS_LINEAGE": [
+    "03_DATA_FLOWS_AND_LINEAGE": [
         r"Data Flow|Flow Pattern|Lineage",
         r"Source|Input|Origin",
         r"Transform|tMap|Expression|Mapping",
         r"Schema|Table|Column|Field",
         r"Data Quality|Validation|Defect",
     ],
-    "04_BUSINESS_LOGIC": [
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": [
         r"Business Rule|Rule Catalog|Rules",
         r"Domain|Category|Entity|Concept",
         r"Logic|Expression|Filter|Condition",
         r"Conflict|Exception|Edge Case|Anomaly",
     ],
-    "05_OPERATIONS_RISK": [
-        r"Risk|Finding|Issue|Anti-Pattern",
-        r"Operation|Monitoring|Schedule",
-        r"Alert|SLA|Recovery|Failover",
-        r"Incident|Failure|Error",
-    ],
-    "06_ENVIRONMENT_EXTERNAL": [
+    "05_RUNTIME_CONFIG_AND_EXTERNALS": [
         r"Environment|Configuration|Setting",
         r"Connection|Credential|Secret|Auth",
         r"External|Integration|API|System",
@@ -108,35 +91,26 @@ _EXPECTED_SECTIONS: dict[str, list[str]] = {
         r"Deployment|Portability",
         r"Hardcoded|Rotation|Credential Risk",
     ],
-    "07_SECURITY_PERFORMANCE": [
-        r"Security|Access|Credential|Auth",
-        r"Performance|Throughput|Latency|Volume",
+    "06_OPERATIONS_TESTING_AND_DEBUGGING": [
+        r"Run|Execute|Procedure",
+        r"Debug|Troubleshoot",
+        r"Verify|Validation|Health Check",
+        r"Recovery|Rollback",
+        r"Testing|Coverage",
     ],
-    "08_PATTERNS_STANDARDS": [
-        r"Pattern|Anti-Pattern|Practice",
-        r"Standard|Convention|Naming|Style",
+    "07_QUALITY_SECURITY_RISK_SCORECARD": [
+        r"Score|Dimension",
+        r"Confidence",
+        r"Evidence",
+        r"Red Flag|Risk",
+        r"Quick Win|Unknown",
     ],
-    "09_RUNBOOK": [
-        r"Step|Procedure|How to|Process",
-        r"Monitoring|Alert|Health Check",
-        r"Incident|Recovery|Troubleshoot",
+    "08_CHANGE_PLAYBOOK": [
+        r"Change Impact",
+        r"Inspect",
+        r"Test|Verify",
+        r"Rollback",
     ],
-    "10_ONBOARDING_FAQ": [
-        r"Getting Started|Introduction|Overview",
-        r"FAQ|Question|How|Common",
-        r"Glossary|Term|Definition|Concept",
-    ],
-    "11_MIGRATION_ASSESSMENT": [
-        r"Migration|Readiness|Assessment",
-        r"Risk|Blocker|Concern|Challenge",
-        r"Recommendation|Strategy|Plan|Approach",
-        r"Scenario|Option|Approach Comparison",
-        r"Effort|Estimate|Timeline",
-    ],
-    "05a_OPERATIONS": [r"Schedule|Job|Trigger|Monitoring"],
-    "05b_SECURITY": [r"Security|Access|Credential|Auth"],
-    "05c_RISK": [r"Risk|Issue|Finding|Priority"],
-    "05d_CHANGE_MANAGEMENT": [r"Change|Release|Deploy|Migration"],
 }
 
 _HEADER_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
@@ -157,6 +131,11 @@ _SEPARATOR_ROW_RE = re.compile(r"^\|[-:| ]+\|", re.MULTILINE)
 _CODE_FENCE_RE = re.compile(r"^```", re.MULTILINE)
 _ERROR_PATTERN_RE = re.compile(
     r"\b(error.handl|exception|retry|fallback|edge.case|on.fail)\b",
+    re.IGNORECASE,
+)
+_PATH_RE = re.compile(r"\b[\w./-]+\.(?:item|json|xml|py|ts|tsx|js|java|sql|yaml|yml|properties|config)\b")
+_ASSISTANT_SIGNAL_RE = re.compile(
+    r"\b(confidence|evidence|scanner-limited|source artifact|inspect|test|verify|debug|change impact|rollback|unknown)\b",
     re.IGNORECASE,
 )
 
@@ -187,7 +166,7 @@ class RunQualityReport:
 def _doc_key(filename: str) -> str:
     """Strip .md extension to get the doc key for lookups."""
     stem = Path(filename).stem
-    # Strip leading number prefix if present: "00_EXECUTIVE_SUMMARY" → "00_EXECUTIVE_SUMMARY"
+    # Keep numbered assistant-grade stems such as "00_AGENT_BRIEF".
     return stem
 
 
@@ -323,6 +302,39 @@ def _score_risk_depth(content: str) -> tuple[float, list[str]]:
     return round(min(5.0, score), 2), flags
 
 
+def _score_assistant_usefulness(content: str) -> tuple[float, list[str]]:
+    flags: list[str] = []
+    hits = len(_ASSISTANT_SIGNAL_RE.findall(content))
+    paths = len(_PATH_RE.findall(content))
+    table_rows = max(0, len(_TABLE_ROW_RE.findall(content)) - len(_SEPARATOR_ROW_RE.findall(content)))
+    score = 0.0
+    if hits >= 20:
+        score += 2.0
+    elif hits >= 10:
+        score += 1.5
+    elif hits >= 4:
+        score += 1.0
+    else:
+        flags.append("weak_assistant_signals")
+    if paths >= 8:
+        score += 1.5
+    elif paths >= 3:
+        score += 1.0
+    elif paths >= 1:
+        score += 0.5
+    else:
+        flags.append("no_source_artifacts")
+    if table_rows >= 12:
+        score += 1.5
+    elif table_rows >= 5:
+        score += 1.0
+    elif table_rows >= 1:
+        score += 0.5
+    else:
+        flags.append("no_actionable_tables")
+    return round(min(5.0, score), 2), flags
+
+
 def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
     """Score a single Markdown file. unit_count calibrates minimum line thresholds."""
     try:
@@ -338,13 +350,15 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
     section_score, section_flags = _score_section_coverage(content, doc_key)
     specificity_score, spec_flags = _score_specificity(content)
     risk_score, risk_flags = _score_risk_depth(content)
+    usefulness_score, usefulness_flags = _score_assistant_usefulness(content)
 
     # Weighted composite
     composite = (
-        0.30 * line_score
-        + 0.25 * section_score
+        0.15 * line_score
+        + 0.20 * section_score
         + 0.25 * specificity_score
-        + 0.20 * risk_score
+        + 0.15 * risk_score
+        + 0.25 * usefulness_score
     )
 
     flags: list[str] = []
@@ -353,6 +367,7 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
     flags.extend(section_flags)
     flags.extend(spec_flags)
     flags.extend(risk_flags)
+    flags.extend(usefulness_flags)
 
     return DocScore(
         file=path.name,
@@ -364,6 +379,7 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
             "section_coverage": section_score,
             "specificity": specificity_score,
             "risk_depth": risk_score,
+            "assistant_usefulness": usefulness_score,
         },
     )
 

@@ -791,21 +791,20 @@ class ScannerService:
 
         return {"error": f"No PHASE_3_GUIDE.md found for platform '{platform}'"}
 
-    # Reference doc -> agent group mapping (consolidated 12-doc structure)
+    # Reference doc -> agent group mapping (assistant-grade 9-doc structure)
     _AGENT_REFERENCE_DOCS: dict[str, list[str]] = {
         "Core": [
-            "00_EXECUTIVE_SUMMARY", "01_PROJECT_OVERVIEW",
-            "02_ARCHITECTURE_INVENTORY", "03_DATA_FLOWS_LINEAGE",
+            "00_AGENT_BRIEF", "01_ARCHITECTURE_MAP",
+            "02_COMPONENT_INVENTORY", "03_DATA_FLOWS_AND_LINEAGE",
         ],
         "Business+Ops": [
-            "04_BUSINESS_LOGIC",
-            "05a_OPERATIONS", "05b_SECURITY", "05c_RISK", "05d_CHANGE_MANAGEMENT",
-            "06_ENVIRONMENT_EXTERNAL",
+            "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+            "05_RUNTIME_CONFIG_AND_EXTERNALS",
+            "06_OPERATIONS_TESTING_AND_DEBUGGING",
         ],
         "Patterns+User": [
-            "07_SECURITY_PERFORMANCE", "08_PATTERNS_STANDARDS",
-            "09_RUNBOOK", "10_ONBOARDING_FAQ",
-            "11_MIGRATION_ASSESSMENT",
+            "07_QUALITY_SECURITY_RISK_SCORECARD",
+            "08_CHANGE_PLAYBOOK",
         ],
     }
 

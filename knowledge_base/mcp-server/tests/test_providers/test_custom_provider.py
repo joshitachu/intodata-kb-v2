@@ -62,6 +62,92 @@ def _job(name: str, group: str = "A", component_type: str = "tMap") -> dict:
     }
 
 
+def _scorecard_text() -> str:
+    return (
+        "Score: 3/5\nConfidence: HIGH\nEvidence: scanned facts\n"
+        "Red Flags: HIGH missing_error_path\nQuick Wins: add verification\nUnknowns: runtime SLA\n"
+    )
+
+
+def _assistant_doc_text(doc: str, facts, extra: str = "") -> str:
+    unit_rows = "\n".join(
+        f"| {u.name} | {u.group} | {u.path} | {u.unit_type} | purpose | dependency | HIGH |"
+        for u in facts.units
+    )
+    unit_names = ", ".join(u.name for u in facts.units)
+    paths = ", ".join(u.path for u in facts.units)
+    platform_terms = {
+        "talend": (
+            "job, .item, group, context group, trigger, component, unique_name, "
+            "FLOW, tMap, schema, context variable, REPOSITORY, tLogCatcher, execution order, validation query"
+        ),
+        "workato": (
+            "recipe, callable function, folder, export artifact, trigger, step, action, block, "
+            "datapill, formula, lookup table, property, connection, monitor, job history"
+        ),
+        "lobster": (
+            "profile, agent, XML, format definition, schedule, route, parser, mapping, "
+            "input format, output format, variable, exception profile, profile run"
+        ),
+        "generic": (
+            "module, service, script, config, source artifact, entrypoint, handler, function, "
+            "API payload, SQL, environment variable, exception handler, health check"
+        ),
+    }.get(facts.platform, "source artifact, entrypoint, dependency, config, error handling, test")
+    common = (
+        f"Canonical inventory: {facts.unit_count} {facts.canonical_unit_label}.\n"
+        f"Evidence confidence: HIGH. Source artifacts: {paths}.\n"
+        f"Units covered: {unit_names}.\n"
+        f"Platform evidence includes {platform_terms}.\n"
+        "Risk: HIGH missing_error_path. Confidence: HIGH. Evidence: facts_manifest.json.\n"
+    )
+    bodies = {
+        "00_AGENT_BRIEF": (
+            "# Agent Brief\n\n## Project Orientation\n" + common +
+            "\n## Documentation Map\nRead 01_ARCHITECTURE_MAP then 02_COMPONENT_INVENTORY.\n"
+            "## Onboarding\nStart with scanned artifacts.\n## Common Tasks\nTrace data, change config, debug runs.\n"
+            "## Known Traps\nDo not ignore scanner-limited evidence.\n"
+        ),
+        "02_COMPONENT_INVENTORY": (
+            "# Component Inventory\n\n## Canonical Unit Inventory\n"
+            "| Unit | Group | Source Artifact | Type | Purpose | Dependencies | Confidence |\n"
+            "|------|-------|-----------------|------|---------|--------------|------------|\n"
+            f"{unit_rows}\n\n## Source Artifacts\n{paths}\n## Components\ncomponent evidence.\n"
+            "## Dependencies\ndependency evidence.\n## Scanner-Limited Evidence\nNone.\n"
+        ),
+        "06_OPERATIONS_TESTING_AND_DEBUGGING": (
+            "# Operations Testing And Debugging\n\n## Run\n" + common +
+            "\n## Debug\nInspect logs.\n## Verify\nRun validation query.\n"
+            "## Recovery\nRollback if needed.\n## Testing\nTest critical flow.\n"
+        ),
+        "07_QUALITY_SECURITY_RISK_SCORECARD": (
+            "# Quality Security Risk Scorecard\n\n## Score\n" + common +
+            "\n## Confidence\nHIGH.\n## Evidence\nfacts_manifest.json.\n"
+            "## Red Flags\nHIGH missing_error_path.\n## Quick Wins\nAdd tests.\n## Unknowns\nRuntime SLA.\n"
+        ),
+        "08_CHANGE_PLAYBOOK": (
+            "# Change Playbook\n\n## Change Impact\n" + common +
+            "\n## Inspect\nInspect source artifact and dependency.\n## Test\nTest and Verify changed flow.\n"
+            "## Rollback\nRollback deployment if validation fails.\n"
+        ),
+    }
+    return bodies.get(
+        doc,
+        f"# {doc.replace('_', ' ').title()}\n\n## Overview\n{common}\n## Evidence\n{unit_names}\n"
+    ) + extra
+
+
+def _write_assistant_docs(staging: Path, facts, extra_by_doc: dict[str, str] | None = None) -> None:
+    (staging / "_assessment").mkdir(parents=True, exist_ok=True)
+    (staging / "_assessment" / "scorecard.md").write_text(_scorecard_text(), encoding="utf-8")
+    extra_by_doc = extra_by_doc or {}
+    for doc in REQUIRED_DOCS:
+        (staging / f"{doc}.md").write_text(
+            _assistant_doc_text(doc, facts, extra_by_doc.get(doc, "")),
+            encoding="utf-8",
+        )
+
+
 @pytest.mark.parametrize(
     ("platform", "label", "unit_type"),
     [
@@ -253,18 +339,7 @@ def test_doc_gate_fails_on_conflicting_unit_count(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a"), _job("b")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
     staging = tmp_path / "staging"
-    (staging / "_assessment").mkdir(parents=True)
-    (staging / "_assessment" / "scorecard.md").write_text(
-        "scorecard details with enough content for validation gate",
-        encoding="utf-8",
-    )
-    for doc in REQUIRED_DOCS:
-        (staging / f"{doc}.md").write_text(
-            "Canonical inventory: 2 jobs.\n"
-            "Total jobs: 1 jobs.\n"
-            "Unit a and unit b are covered.\n",
-            encoding="utf-8",
-        )
+    _write_assistant_docs(staging, facts, {"00_AGENT_BRIEF": "\nTotal jobs: 1 jobs.\n"})
 
     report = validate_docs(staging, facts)
 
@@ -282,22 +357,13 @@ def test_doc_gate_allows_group_and_pattern_counts(tmp_path):
     ])
     facts = build_facts_manifest("proj", tmp_path / "scan")
     staging = tmp_path / "staging"
-    (staging / "_assessment").mkdir(parents=True)
-    (staging / "_assessment" / "scorecard.md").write_text(
-        "scorecard details with enough content for validation gate",
-        encoding="utf-8",
-    )
-    for doc in REQUIRED_DOCS:
-        (staging / f"{doc}.md").write_text(
-            "Canonical inventory: 5 jobs.\n"
-            "Account group contains 2 jobs.\n"
-            "Item (2 jobs) handles products.\n"
-            "SalesOrder has 1 job.\n"
-            "Full detail is available for ~4 jobs.\n"
+    _write_assistant_docs(staging, facts, {
+        "00_AGENT_BRIEF": (
+            "\nAccount group contains 2 jobs.\nItem (2 jobs) handles products.\n"
+            "SalesOrder has 1 job.\nFull detail is available for ~4 jobs.\n"
             "3 of 5 jobs use a shared pattern.\n"
-            "Unit a, unit b, unit c, unit d, and unit e are covered.\n",
-            encoding="utf-8",
         )
+    })
 
     report = validate_docs(staging, facts)
 
@@ -312,18 +378,7 @@ def test_doc_gate_fails_on_dynamic_conflicting_total_claim(tmp_path):
     ])
     facts = build_facts_manifest("proj", tmp_path / "scan")
     staging = tmp_path / "staging"
-    (staging / "_assessment").mkdir(parents=True)
-    (staging / "_assessment" / "scorecard.md").write_text(
-        "scorecard details with enough content for validation gate",
-        encoding="utf-8",
-    )
-    for doc in REQUIRED_DOCS:
-        (staging / f"{doc}.md").write_text(
-            "Canonical inventory: 3 profiles.\n"
-            "Project contains 2 profiles.\n"
-            "profile_a profile_b profile_c\n",
-            encoding="utf-8",
-        )
+    _write_assistant_docs(staging, facts, {"00_AGENT_BRIEF": "\nProject contains 2 profiles.\n"})
 
     report = validate_docs(staging, facts)
 
@@ -495,10 +550,11 @@ def test_docs_validation_fails_when_scanned_config_is_called_unavailable(tmp_pat
         "value_hint": "content scanned; sensitive values redacted",
         "metadata": {"path": "Web.config"},
     }]), encoding="utf-8")
-    body = "Canonical inventory: 1 code units.\nWeb.config is covered.\n"
-    for doc in REQUIRED_DOCS:
-        extra = "Web.config content is unavailable and was not scanned.\n" if doc == REQUIRED_DOCS[0] else ""
-        (staging / f"{doc}.md").write_text(body + extra, encoding="utf-8")
+    _write_assistant_docs(
+        staging,
+        facts,
+        {"00_AGENT_BRIEF": "\nWeb.config content is unavailable and was not scanned.\n"},
+    )
 
     report = validate_docs(staging, facts)
 
@@ -519,12 +575,7 @@ def test_docs_validation_allows_redacted_config_values(tmp_path):
         "value_hint": "content scanned; sensitive values redacted",
         "metadata": {"path": "Web.config"},
     }]), encoding="utf-8")
-    body = (
-        "Canonical inventory: 1 code units.\n"
-        "Web.config exists and was scanned; secret values are intentionally unavailable because they are redacted.\n"
-    )
-    for doc in REQUIRED_DOCS:
-        (staging / f"{doc}.md").write_text(body, encoding="utf-8")
+    _write_assistant_docs(staging, facts)
 
     report = validate_docs(staging, facts)
 
@@ -542,10 +593,11 @@ def test_docs_validation_uses_source_coverage_for_unavailable_claims(tmp_path):
         "mode": "direct_redacted",
         "files": [{"path": "Web.config", "status": "included_full"}],
     }), encoding="utf-8")
-    body = "Canonical inventory: 1 code units.\nWeb.config is covered.\n"
-    for doc in REQUIRED_DOCS:
-        extra = "Web.config was not scanned and its content is unavailable.\n" if doc == REQUIRED_DOCS[0] else ""
-        (staging / f"{doc}.md").write_text(body + extra, encoding="utf-8")
+    _write_assistant_docs(
+        staging,
+        facts,
+        {"00_AGENT_BRIEF": "\nWeb.config was not scanned and its content is unavailable.\n"},
+    )
 
     report = validate_docs(staging, facts)
 
@@ -566,15 +618,11 @@ def test_docs_validation_allows_unavailable_code_claim_near_scanned_config(tmp_p
         "value_hint": "content scanned; sensitive values redacted",
         "metadata": {"path": "Web.config"},
     }]), encoding="utf-8")
-    body = (
-        "Canonical inventory: 1 code units.\n"
-        "Web.config contains connection strings with redacted secret values.\n"
-        "The exact code is not available in the scan, so downstream service logic is scanner-limited.\n"
-        "Known Risks flags missing_error_path for runtime units.\n"
-        "Incorrect Web.config deployment may cause downtime if static files are missing.\n"
+    _write_assistant_docs(
+        staging,
+        facts,
+        {"00_AGENT_BRIEF": "\nThe exact code is not available in the scan, so downstream service logic is scanner-limited.\n"},
     )
-    for doc in REQUIRED_DOCS:
-        (staging / f"{doc}.md").write_text(body, encoding="utf-8")
 
     report = validate_docs(staging, facts)
 
@@ -982,8 +1030,18 @@ class _FakeProvider:
 
         deep_text = (
             "# Deep Generated Analysis\n\n"
+            "Canonical inventory: 2 recipes/functions. Source artifacts: Recipe One.item, Function One.item.\n"
+            "Platform evidence includes recipe, callable function, folder, export artifact, trigger, step, action, block, "
+            "datapill, formula, lookup table, property, connection, monitor, job history.\n"
+            "Score: 3/5. Confidence: HIGH. Evidence: facts_manifest.json. Red Flags: HIGH risk. Quick Wins: add tests. Unknowns: runtime SLA.\n"
+            "Change Impact: inspect source artifacts, Test changed flows, Verify outputs, Rollback if validation fails.\n"
+            "Documentation Map, Onboarding, Common Tasks, Known Traps. Debug and Recovery guidance with Testing evidence.\n"
             "## Inventory and purpose\n"
             "Recipe One and Function One are covered as canonical units in the Recipes and Functions groups.\n"
+            "| Unit | Group | Source Artifact | Type | Purpose | Dependencies | Confidence |\n"
+            "|------|-------|-----------------|------|---------|--------------|------------|\n"
+            "| Recipe One | Recipes | Recipe One.item | recipe | purpose | dependency | HIGH |\n"
+            "| Function One | Functions | Function One.item | function | purpose | dependency | HIGH |\n"
             "## Components, actions, or implementation units\n"
             "Components and actions are described with component evidence and connector behavior.\n"
             "## Data flows and lineage\n"
@@ -1080,18 +1138,18 @@ def test_targeted_analysis_bundle_keeps_relevant_exact_sections(tmp_path):
     assert "Business rule should not be in lineage bundle" not in bundle
 
 
-def test_final_doc_content_only_adds_unit_inventory_to_project_overview():
+def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
     facts = build_facts_manifest_from_units("proj", ["Unit A", "Unit B"])
     harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
     state = HarnessRunState(project_id="proj", facts_manifest=facts)
 
-    overview = harness._final_doc_content(state, "01_PROJECT_OVERVIEW", "# Overview\n\nProject overview body.")
-    runbook = harness._final_doc_content(state, "09_RUNBOOK", "# Runbook\n\nRunbook body.")
+    inventory = harness._final_doc_content(state, "02_COMPONENT_INVENTORY", "# Inventory\n\nInventory body.")
+    brief = harness._final_doc_content(state, "00_AGENT_BRIEF", "# Brief\n\nBrief body.")
 
-    assert "## Canonical Unit Inventory" in overview
-    assert "Unit A" in overview
-    assert "## Canonical Unit Inventory" not in runbook
-    assert "Unit A" not in runbook
+    assert "## Canonical Unit Inventory" in inventory
+    assert "Unit A" in inventory
+    assert "## Canonical Unit Inventory" not in brief
+    assert "Unit A" not in brief
 
 
 def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
@@ -1136,7 +1194,7 @@ def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
     state = HarnessRunState(
         project_id="proj",
         facts_manifest=facts,
-        warnings=["Generated doc 09_RUNBOOK.md missing expected sections/terms: Troubleshooting"],
+        warnings=["Generated doc 06_OPERATIONS_TESTING_AND_DEBUGGING.md missing expected sections/terms: Debug"],
     )
     ctx = DocGenContext(
         project_id="proj",
@@ -1157,14 +1215,14 @@ def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
 
     index = json.loads((staging / "index.json").read_text(encoding="utf-8"))
     assert index["warnings_count"] == 1
-    assert "09_RUNBOOK.md" in index["warnings"][0]
+    assert "06_OPERATIONS_TESTING_AND_DEBUGGING.md" in index["warnings"][0]
 
 
 def test_phase3_repair_targets_uses_doc_named_in_validation_error(tmp_path):
     staging = tmp_path / "docs_staging"
     staging.mkdir()
-    (staging / "01_PROJECT_OVERVIEW.md").write_text("# Project Overview\n", encoding="utf-8")
-    (staging / "09_RUNBOOK.md").write_text("# Runbook\n", encoding="utf-8")
+    (staging / "02_COMPONENT_INVENTORY.md").write_text("# Component Inventory\n", encoding="utf-8")
+    (staging / "06_OPERATIONS_TESTING_AND_DEBUGGING.md").write_text("# Operations\n", encoding="utf-8")
     ctx = DocGenContext(
         project_id="proj",
         staging_dir=staging,
@@ -1182,10 +1240,13 @@ def test_phase3_repair_targets_uses_doc_named_in_validation_error(tmp_path):
 
     targets = CustomHarnessProvider._phase3_repair_targets(
         ctx,
-        ["Generated doc 09_RUNBOOK.md missing expected sections/terms: Troubleshooting"],
+        ["Generated doc 06_OPERATIONS_TESTING_AND_DEBUGGING.md missing expected sections/terms: Debug"],
     )
 
-    assert targets == [(staging / "09_RUNBOOK.md", ["Generated doc 09_RUNBOOK.md missing expected sections/terms: Troubleshooting"])]
+    assert targets == [(
+        staging / "06_OPERATIONS_TESTING_AND_DEBUGGING.md",
+        ["Generated doc 06_OPERATIONS_TESTING_AND_DEBUGGING.md missing expected sections/terms: Debug"],
+    )]
 
 
 @pytest.mark.asyncio
@@ -1382,8 +1443,8 @@ def test_context_splitter_never_returns_oversized_fixed_remainder(tmp_path, monk
     slices = harness._split_context_pack(
         ctx,
         "phase3",
-        "01_PROJECT_OVERVIEW",
-        "Write the project overview.",
+        "02_COMPONENT_INVENTORY",
+        "Write the component inventory.",
         [prompt_pack, bundle, csv_facts, scorecard],
         hard_tokens=config.core_context_hard_ceiling_tokens,
         soft_tokens=config.core_context_soft_target_tokens,
@@ -1488,7 +1549,7 @@ async def test_empty_output_does_not_trigger_recursive_split_retry(tmp_path, mon
         HarnessRunState(project_id="proj", facts_manifest=facts),
         provider=provider,
         phase="phase3",
-        target="00_EXECUTIVE_SUMMARY",
+        target="00_AGENT_BRIEF",
         prompt="Write Unit A docs",
         context_files=[large_md],
         opts=ModelOptions(retries=0),
@@ -1564,7 +1625,7 @@ async def test_context_length_failure_can_trigger_split_retry(tmp_path, monkeypa
         HarnessRunState(project_id="proj", facts_manifest=facts),
         provider=provider,
         phase="phase3",
-        target="00_EXECUTIVE_SUMMARY",
+        target="00_AGENT_BRIEF",
         prompt="Write Unit A docs",
         context_files=[large_md],
         opts=ModelOptions(retries=0),
@@ -1866,7 +1927,7 @@ async def test_agent_task_runtime_persists_exact_output_and_resume(tmp_path):
     runtime = AgentTaskRuntime(staging, facts)
     contract = AgentTaskContract(
         phase="phase3_doc",
-        target_id="01_PROJECT_OVERVIEW",
+        target_id="02_COMPONENT_INVENTORY",
         allowed_units=["Unit A"],
         allowed_groups=["A"],
         expected_artifact="document markdown",
@@ -1879,7 +1940,7 @@ async def test_agent_task_runtime_persists_exact_output_and_resume(tmp_path):
     result = await runtime.run(contract, dispatch, lambda text: {"ok": "Unit A" in text, "errors": []})
 
     assert result.accepted
-    task_dir = staging / "_agent_tasks" / "phase3_doc" / "01_PROJECT_OVERVIEW"
+    task_dir = staging / "_agent_tasks" / "phase3_doc" / "02_COMPONENT_INVENTORY"
     assert (task_dir / "contract.json").exists()
     assert (task_dir / "validation_report.json").exists()
     assert (task_dir / "tool_call_ledger.json").exists()
@@ -1932,7 +1993,7 @@ async def test_agent_task_runtime_passes_validation_gaps_to_retry(tmp_path):
     runtime = AgentTaskRuntime(staging, facts)
     contract = AgentTaskContract(
         phase="phase3_doc",
-        target_id="01_PROJECT_OVERVIEW",
+        target_id="02_COMPONENT_INVENTORY",
         allowed_units=["Unit A"],
         allowed_groups=["A"],
         expected_artifact="document markdown",
@@ -2036,7 +2097,7 @@ async def test_phase3_targeted_repair_appends_validator_gap(tmp_path):
     (staging / "_analysis").mkdir()
     (staging / "_investigation").mkdir()
     facts.write(staging / "facts_manifest.json")
-    (staging / "01_PROJECT_OVERVIEW.md").write_text("# Project\n\nUnit A is documented.\n", encoding="utf-8")
+    (staging / "02_COMPONENT_INVENTORY.md").write_text("# Inventory\n\nUnit A is documented.\n", encoding="utf-8")
     (staging / "_analysis" / "_bundle_core.md").write_text("Unit B analysis evidence", encoding="utf-8")
     (staging / "_investigation" / "_summary.md").write_text("Unit B scanner evidence", encoding="utf-8")
     (staging / "_assessment" / "scorecard.md").write_text("Scorecard evidence", encoding="utf-8")
@@ -2087,7 +2148,7 @@ async def test_phase3_targeted_repair_appends_validator_gap(tmp_path):
         log_cb,
     )
 
-    repaired = (staging / "01_PROJECT_OVERVIEW.md").read_text(encoding="utf-8")
+    repaired = (staging / "02_COMPONENT_INVENTORY.md").read_text(encoding="utf-8")
     assert "Targeted Validator Repair" in repaired
     assert "Unit B" in repaired
     assert any("targeted repair starting" in message for message in logs)
