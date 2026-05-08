@@ -2,6 +2,8 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+collect_ignore = ["stress_test.py"]
+
 from src.db.base import Base
 
 # Import all models so Base.metadata knows about them

@@ -11,6 +11,45 @@ metadata extraction exercise. Explain what the code *actually does*, not just wh
 
 ---
 
+## Depth Contract
+
+Apply this evidence standard to every section:
+- Cite every claim with the exact file path, function/class/method, approximate line number if available, and artifact/reference where it was found (source file, config, SQL, test, package manifest, deployment file).
+- Enumerate concrete evidence before summarizing. List actual routes, functions, imports, config keys, SQL, models, queues, jobs, and tests first; then infer architecture, risk, or intent.
+- Quote formulas, SQL, code, conditions, validators, serializers, mappings, route paths, config keys, constants, and error branches verbatim where present.
+- Label scanner-limited evidence explicitly, for example: "line numbers unavailable", "test fixtures not included", "deployment config not present", or "schema inferred from usage only".
+- For important findings include impact, confidence (HIGH/MEDIUM/LOW), risk, and affected units (files, functions, routes, models, schemas, queues, config keys, tests, external systems).
+
+## Output Quality Gate
+
+Your output is valid only if every canonical section contains cited evidence before interpretation:
+- Start each section with concrete file/function/route/model/config/test evidence. Summaries, architecture conclusions, and recommendations must come after the evidence.
+- Empty sections are allowed only after stating what was checked and whether the absence is confirmed or scanner-limited.
+- Any broad claim such as "has an API", "uses PostgreSQL", "validates orders", or "has tests" must cite the exact file path, function/class/method, line number if available, and source artifact.
+- Important findings must include affected unit, source reference, impact, confidence, risk, and scanner limitation if applicable.
+- Do not collapse multiple files or modules into one generic paragraph. If several files share a pattern, list each file/function first and then summarize the pattern.
+
+## Anti-Shallow Output Rule
+
+The following output patterns are invalid:
+- Architecture prose without entrypoints, modules/services, routes/APIs, scripts/jobs, dependency boundaries, and external systems listed first.
+- Data-flow summaries without source-to-sink traces and field/config/model/queue payload evidence.
+- Business-rule summaries without quoting the condition, validator, serializer, SQL predicate, constant, authorization check, or code implementing the rule.
+- Debugging/testing claims without tests, logs, metrics, health checks, retry/dead-letter, runtime command, or scanner-limited evidence.
+- Change-impact guidance without affected files/functions/routes/models/config keys/jobs/tests, required checks, rollback risk, and confidence.
+
+## Required Evidence Tables
+
+Include these tables when evidence exists; if evidence is absent, state the checked source and limitation:
+- **Entrypoint/module table**: file, inferred job type, route/command/scheduler/worker entrypoint, primary functions/classes, dependencies, external systems, tests.
+- **Source-to-sink data-flow table**: source, validation/auth step, transformation expression, sink, schema/model/payload, config keys, failure path.
+- **Business-rule table**: rule ID, quoted expression/code, file/function/line, domain, impact, blast radius, duplicate/conflict evidence.
+- **Config/external-system table**: config key/env var/connection, file/function using it, default/value pattern, external system, auth/secret risk, environment/rollback risk.
+- **Test/debug table**: behavior or unit, visible tests/fixtures, logs/metrics/health checks, error observability, replay/idempotency evidence, missing coverage.
+- **Change-impact table**: change target, affected files/functions/routes/models/jobs/tests/config, required validation checks, rollback risk, confidence, scanner limitations.
+
+---
+
 ## How to Approach This Analysis
 
 You are acting as an expert code reviewer and integration architect reading this codebase for
@@ -186,17 +225,19 @@ function/class/method. Each section should have substantive content -- do not sk
 For each job (file or class) in the chunk:
 
 1. **Identity**: file path, inferred job type (from the heuristics above), one-sentence purpose
-2. **Functions / Methods**: for each significant function or method:
+2. **Entrypoints and boundaries**: API route, controller, service method, script main, CLI command, scheduled job, queue consumer/producer, background worker, frontend page/action, migration, or library module boundary
+3. **Functions / Methods**: for each significant function or method:
    - Signature (name, parameters, return type)
    - What it actually does -- explain the business logic, not just the name
    - What data it reads (parameters, DB queries, config values, external calls)
    - What data it produces (return value, DB writes, HTTP responses, side effects)
    - Decorators / annotations and their meaning
-3. **SQL queries**: full text of every SQL query embedded in the file
-4. **External calls**: every HTTP request, queue message, file I/O (URL/endpoint, method, purpose)
-5. **Configuration used**: every environment variable, config key, or constant the file reads
-6. **Dependencies**: which other files/modules this file imports (internal and external)
-7. **Orphaned code**: functions defined but apparently never called
+4. **SQL queries**: full text of every SQL query embedded in the file
+5. **External calls**: every HTTP request, queue message, file I/O, cloud SDK call, email/payment/SMS/search/cache operation (URL/endpoint/topic/bucket/path, method, purpose)
+6. **Configuration used**: every environment variable, config key, feature flag, constant, command-line argument, or deployment setting the file reads
+7. **Dependencies**: which other files/modules this file imports (internal and external), plus dependency-boundary notes (controller -> service -> repository, job -> queue, script -> DB)
+8. **Tests**: test files or fixtures that exercise this job/function if visible, including missing tests for important behavior
+9. **Orphaned code**: functions defined but apparently never called
 
 ### EXECUTION_FLOW
 
@@ -208,6 +249,8 @@ For each job:
 - Async / concurrent patterns (threads, async/await, task queues)
 - Error exit paths (where exceptions terminate or redirect flow)
 - Job-to-job orchestration: which jobs call or trigger other jobs (via import + call, HTTP, queue)
+- Dependency-boundary crossings: route/controller -> service -> repository/model -> external API/DB/queue/cache/file
+- Scheduler/worker orchestration: cron/timer, queue trigger, event listener, background worker startup, retry/dead-letter behavior
 - Dead code: functions defined but unreachable
 
 ### DATA_FLOWS
@@ -215,13 +258,13 @@ For each job:
 For each job, trace every data flow from source to sink:
 
 **Source** (where data enters): HTTP request body/params, DB query result, file read, queue
-message, function parameter, environment variable, hardcoded constant
+message, function parameter, environment variable, config file, feature flag, hardcoded constant, scheduler payload
 
 **Transformations** (what happens to it): mapping, filtering, aggregation, type conversion,
-enrichment, calculation -- describe each step and quote the expression
+enrichment, validation, authorization, serialization/deserialization, calculation -- describe each step and quote the expression
 
 **Sink** (where data exits): HTTP response, DB write, file write, queue publish, return value,
-in-memory state
+in-memory state, cache write, external API call, log/metric, email/SMS/payment/search/cloud storage operation
 
 For each flow:
 - Which fields are passed through unchanged
@@ -229,6 +272,8 @@ For each flow:
 - Which fields are added (source: constant, calculated, or external lookup)
 - Which fields are dropped / filtered
 - Null handling and default value patterns
+- End-to-end trace: request/file/queue/DB/config -> validation/auth -> service/domain logic -> persistence/external call/response
+- Boundary contracts: DTO/schema/model names, serializer/parser behavior, queue/topic payload shape, DB model/table fields, and config keys that alter the flow
 
 ### TRANSFORMATION_DETAIL
 
@@ -257,6 +302,16 @@ For EVERY function that maps, transforms, or calculates data, produce:
    - Step-by-step from source value to final output
    - All intermediate variables
 
+5. **Validation / serialization analysis**:
+   - Validator, serializer, parser, schema, form, or DTO used
+   - Required/optional fields and defaults
+   - Authorization checks or role gates applied before transformation
+   - Error response or exception raised on invalid input
+
+6. **Configuration-driven transformation**:
+   - Config keys, feature flags, constants, or environment variables that change mappings, filters, destinations, or business behavior
+   - Default behavior when the config key is missing
+
 ### BUSINESS_RULES
 
 Extract every business rule visible in code. A business rule is any conditional, calculation,
@@ -276,6 +331,22 @@ Look specifically for:
 - Validation rules (required fields, format checks, range assertions)
 - Date/time logic (cutoff windows, grace periods, scheduling rules)
 - Security rules (role checks, permission assertions, rate limiting thresholds)
+- Serializer/model/schema constraints and database constraints
+- Authorization and ownership checks
+- Feature flags/config branches
+- SQL WHERE/JOIN/CASE/HAVING predicates
+- Orchestration and error-path rules (retry, rollback, compensating action, dead-letter routing)
+
+**Extraction sub-categories** -- apply each systematically:
+
+1. **Domain inference**: From file paths, route names, model names, table names, config keys, and external systems, infer the business domain and confidence for each rule.
+2. **Validator/serializer/model rules**: Required fields, type constraints, enum values, default values, normalized fields, and schema validations are business rules. Quote the code or schema definition.
+3. **Authorization/routing rules**: Role checks, ownership checks, tenant filters, feature-flag branches, queue/topic routing, and error response selection encode policy.
+4. **SQL/data rules**: WHERE/JOIN/CASE/HAVING clauses, ORM filters, migrations, constraints, and indexes can encode eligibility, deduplication, ordering, and uniqueness rules.
+5. **Error-path rules**: Retry limits, fallback defaults, rollback/compensation, swallowed exceptions, and dead-letter paths determine business outcomes under failure.
+6. **Parameter catalog**: List every hardcoded status, date, threshold, timeout, rate limit, currency/tax value, category code, role name, queue/topic name, and external URL with location, apparent purpose, and staleness risk.
+7. **Impact analysis per rule**: Rate blast radius as ISOLATED (single function/output), MODERATE (module/API/job/schema affected), or WIDE (multiple services/external consumers/data stores).
+8. **Conflict detection**: Find inconsistent validation, status mappings, date/time handling, null/default handling, authorization filters, or schema assumptions across files.
 
 ### SCHEMA_DICTIONARY
 
@@ -319,6 +390,9 @@ For each job include:
 - Retry logic: decorator, policy, or manual retry loop (document the policy)
 - Rollback or compensating actions on failure
 - Whether background/async failures are observable
+- User-facing/API error responses and status codes
+- Queue dead-letter, retry, ack/nack, visibility timeout, or poison-message behavior
+- Test coverage for error paths if visible
 
 ### CUSTOM_CODE
 
@@ -347,6 +421,7 @@ For each job that runs on a schedule or is triggered asynchronously:
 - Dependencies on other jobs (must finish before this one starts)
 - Retry configuration
 - Idempotency assessment: can the job be safely re-run if it fails mid-way?
+- Queue/topic/worker binding, concurrency settings, locks, and duplicate-message handling where visible
 
 ### NAMING_PATTERNS
 
@@ -416,3 +491,46 @@ For each risk: severity, affected files and functions, description, recommended 
 - Patterns suggesting deprecated library versions
 - Direct dependency on internal service URLs hardcoded as strings
 - Missing null/undefined checks on external API responses
+
+### DEBUG_TESTING_EVIDENCE
+
+Extract assistant-grade test, debugging, and operations evidence:
+- Test inventory: unit/integration/e2e files, fixtures, factories, snapshots, mocks, contract tests, migration tests, and which functions/routes/jobs they cover.
+- Missing test gaps: important business rules, serializers/validators, error paths, queue consumers, scheduled jobs, migrations, config branches, and external integrations without visible tests.
+- Debugging hooks: logging statements, structured fields, correlation/request IDs, metrics, health checks, tracing, audit logs, admin/debug endpoints, and command-line dry-run flags.
+- Error observability: exception propagation, logged context, user-facing status codes, background worker failure visibility, retry/dead-letter evidence, and alerting hooks.
+- Runtime evidence: scripts, Makefile/package commands, Docker/compose/Kubernetes/deployment files, CI workflows, migration commands, and local run/test commands.
+- Idempotency and replay evidence: unique keys, upsert patterns, dedupe tables, queue ack semantics, transaction boundaries, locks, checkpoint files, and safe rerun behavior.
+- Scanner limitations: tests/config/deployment files missing from chunk, generated code not included, line numbers unavailable, or schemas inferred only from usage.
+
+### CHANGE_IMPACT_EXTRACTION
+
+For each important change target, document affected units, required checks, confidence, and rollback risk:
+- Function/module change: callers, imports, public API, side effects, tests, config keys, exceptions, and downstream sinks.
+- Schema/model/database change: migrations, ORM models, serializers/DTOs, SQL queries, indexes/constraints, seed data, backward compatibility, and rollback migration risk.
+- Route/API change: route path/method, request/response schema, auth/authorization, clients, tests, documentation, status codes, and versioning risk.
+- Config/feature-flag change: all read sites, defaults, environment differences, deployment files, secrets, rollback behavior, and startup failure risk.
+- External system change: client wrapper, credentials, base URL/topic/bucket/table, timeout/retry policy, mocks/tests, and fallback behavior.
+- Queue/job/scheduler change: producer/consumer contracts, payload schema, idempotency, retry/dead-letter, concurrency/locking, and replay/rollback plan.
+- Business-rule change: validators, constants, SQL predicates, authorization checks, error paths, tests, duplicate implementations, and affected reports/data stores.
+- Test-only change: production behavior assumptions encoded in tests/fixtures, brittle snapshots, missing integration coverage, and confidence impact.
+- Deployment/rollback change: migrations, environment variables, startup order, background workers, health checks, and operational runbook steps.
+
+### ASSISTANT_DOC_OBLIGATIONS
+
+Phase 2 must produce enough evidence for the assistant-grade docs:
+- Architecture docs need entrypoints, modules/services, routes/APIs, scripts, schedulers, workers/queues, models/schemas, dependency boundaries, and external systems.
+- Lineage docs need end-to-end traces from request/file/queue/DB/config through validation, transformations, persistence, external calls, and responses.
+- Business-rule docs need validators, serializers, constants, authorization checks, SQL/ORM filters, orchestration rules, and error-path behavior with impact/confidence.
+- Runtime/config docs need config keys, env vars, deployment files, commands, queues/jobs/schedules, retries/timeouts, migrations, and external connection evidence.
+- Debugging/runbook docs need tests, logs, metrics, health checks, error handling, replay/idempotency guidance, and manual recovery hazards.
+- Risk/change docs need affected files/functions/routes/models/jobs/tests, blast radius, rollback risk, required validation checks, scanner limitations, and confidence for each major finding.
+
+### SELF_CHECK_BEFORE_RETURNING
+
+Before returning the Phase 2 analysis, verify:
+- All canonical sections are present: COMPONENTS, EXECUTION_FLOW, DATA_FLOWS, TRANSFORMATION_DETAIL, BUSINESS_RULES, SCHEMA_DICTIONARY, SOURCE_SQL, EXTERNAL_SYSTEMS, ERROR_HANDLING, CUSTOM_CODE, ENVIRONMENT_CONFIG, SCHEDULING, NAMING_PATTERNS, CROSS_GROUP_REFS, RISK_FLAGS, DEBUG_TESTING_EVIDENCE, CHANGE_IMPACT_EXTRACTION, ASSISTANT_DOC_OBLIGATIONS.
+- Every major claim cites file path, function/class/method or config/test artifact, and line number if available.
+- Every important condition, validator, serializer, SQL query, constant, config key, route path, queue/topic, error branch, or code block is quoted verbatim where present.
+- Scanner-limited evidence is labelled rather than hidden or guessed.
+- The analysis contains enough evidence for all 9 assistant-grade docs, especially operations/debugging and change playbook material.

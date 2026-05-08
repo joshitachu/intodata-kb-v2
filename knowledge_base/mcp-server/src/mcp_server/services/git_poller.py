@@ -21,8 +21,14 @@ async def _git_output(local_path: str, *args: str) -> str:
         cwd=local_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError(f"git {' '.join(args)} timed out after 30s")
     if proc.returncode != 0:
         detail = stderr.decode().strip() or stdout.decode().strip()
         raise RuntimeError(detail or f"git {' '.join(args)} failed")
@@ -85,6 +91,7 @@ async def poll_git_projects_once(log_mgr: LogManager) -> None:
 
 async def git_polling_loop(log_mgr: LogManager) -> None:
     interval = max(1, int(config.auto_reingest_poll_interval_seconds))
+    await asyncio.sleep(30)
     while True:
         try:
             await poll_git_projects_once(log_mgr)

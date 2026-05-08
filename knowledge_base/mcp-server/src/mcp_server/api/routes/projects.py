@@ -1542,7 +1542,7 @@ def _extract_job_purpose_from_inventory(
     project_id: str, job_name: str
 ) -> str | None:
     """Return the verbatim ``**Purpose**`` line for a job from
-    ``02_ARCHITECTURE_INVENTORY.md``, or ``None`` if not found.
+    ``02_COMPONENT_INVENTORY.md``, or ``None`` if not found.
 
     Per-job descriptions live in the inventory doc as
     ``#### {job_name}`` followed by a ``**Purpose**: ...`` paragraph.
@@ -1552,7 +1552,7 @@ def _extract_job_purpose_from_inventory(
     docs_dir = config.project_root / "output" / project_id / "docs"
     if not docs_dir.exists():
         docs_dir = config.project_root / "output" / project_id / "docs_staging"
-    inventory_path = docs_dir / "02_ARCHITECTURE_INVENTORY.md"
+    inventory_path = docs_dir / "02_COMPONENT_INVENTORY.md"
     if not inventory_path.exists():
         return None
     try:
@@ -1831,7 +1831,7 @@ async def get_job_detail(project_id: str, job_name: str, request: Request):
         s for c in scan_data.get("components", [])
         for s in ([c.get("external_system")] if c.get("external_system") else [])
     })
-    # Prefer the structured Purpose line from 02_ARCHITECTURE_INVENTORY.md.
+    # Prefer the structured Purpose line from 02_COMPONENT_INVENTORY.md.
     # Fall back to the legacy heuristic for jobs missing from the inventory.
     summary = (
         _extract_job_purpose_from_inventory(project_id, job_name)

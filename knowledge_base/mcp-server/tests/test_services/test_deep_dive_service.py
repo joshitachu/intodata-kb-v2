@@ -75,11 +75,11 @@ def test_repo_toolbox_scan_and_generated_doc_tools(tmp_path, monkeypatch):
     )
     docs = config.project_root / "output" / "proj" / "docs"
     docs.mkdir(parents=True)
-    (docs / "00_EXECUTIVE_SUMMARY.md").write_text("# Summary\n\nEvidence", encoding="utf-8")
+    (docs / "00_AGENT_BRIEF.md").write_text("# Summary\n\nEvidence", encoding="utf-8")
 
     toolbox = RepoToolbox("proj")
     scan = toolbox.read_scan_summary()
-    doc = toolbox.read_generated_doc("00_EXECUTIVE_SUMMARY.md")
+    doc = toolbox.read_generated_doc("00_AGENT_BRIEF.md")
 
     assert scan.ok
     assert '"job_count": 1' in scan.content

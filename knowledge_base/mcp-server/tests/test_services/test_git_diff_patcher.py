@@ -30,7 +30,7 @@ def test_agent_confidence_infers_confidence_for_valid_edits(monkeypatch):
     data = {
         "edits": [
             {
-                "filename": "08_PATTERNS_STANDARDS.md",
+                "filename": "08_CHANGE_PLAYBOOK.md",
                 "heading": "Design Pattern Catalog",
                 "replacement_markdown": "### Design Pattern Catalog\n\nUpdated.",
             }
@@ -127,7 +127,7 @@ async def test_webhook_diff_update_patches_matched_doc_only(
     monkeypatch.setattr(config, "project_root", tmp_path)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    doc = docs_dir / "04_BUSINESS_LOGIC.md"
+    doc = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
     doc.write_text(
         "# Business Logic\n\n"
         "## PaymentService\n\n"
@@ -160,8 +160,8 @@ async def test_webhook_diff_update_patches_matched_doc_only(
                 text=(
                     '{"change_summary":"payment validation changed",'
                     '"inspected_context":["src/PaymentService.ts hunk"],'
-                    '"affected_docs":["04_BUSINESS_LOGIC.md"],'
-                    '"edits":[{"filename":"04_BUSINESS_LOGIC.md","heading":"PaymentService",'
+                    '"affected_docs":["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],'
+                    '"edits":[{"filename":"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md","heading":"PaymentService",'
                     '"replacement_markdown":"## PaymentService\\n\\nNew payment behavior."}],'
                     '"confidence":0.92}'
                 ),
@@ -174,7 +174,7 @@ async def test_webhook_diff_update_patches_matched_doc_only(
             self.log_manager = log_manager
 
         async def push_docs(self, project_id, output_dir=None, filenames=None, docs=None):
-            assert filenames == {"04_BUSINESS_LOGIC.md"}
+            assert filenames == {"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"}
             return {"pushed": 1, "errors": []}
 
     monkeypatch.setattr(patcher, "RagBridge", RagStub)
@@ -204,7 +204,7 @@ async def test_webhook_diff_update_patches_matched_doc_only(
         assert project is not None
         assert project.last_ingested_commit_sha == "b" * 40
         assert project.git_update_summary["action"] == "patched"
-        assert project.git_update_summary["patched_docs"] == ["04_BUSINESS_LOGIC.md"]
+        assert project.git_update_summary["patched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
 
 
 async def test_webhook_diff_update_manual_review_when_no_doc_match(
@@ -221,7 +221,7 @@ async def test_webhook_diff_update_manual_review_when_no_doc_match(
     monkeypatch.setattr(config, "project_root", tmp_path)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    (docs_dir / "04_BUSINESS_LOGIC.md").write_text("# Business Logic\n\nNo matching terms.\n", encoding="utf-8")
+    (docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md").write_text("# Business Logic\n\nNo matching terms.\n", encoding="utf-8")
 
     async def git_stub(local_path: str, *args: str) -> str:
         if args[:2] == ("diff", "--name-status"):
@@ -316,7 +316,7 @@ async def test_webhook_diff_update_manual_review_when_too_many_docs_match(
     monkeypatch.setattr(config, "git_diff_patch_min_confidence", 0.1)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    for name in ("03_DATA_FLOWS_LINEAGE.md", "04_BUSINESS_LOGIC.md"):
+    for name in ("03_DATA_FLOWS_AND_LINEAGE.md", "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"):
         (docs_dir / name).write_text("# Doc\n\n## PaymentService\n\nExisting.\n", encoding="utf-8")
 
     async def git_stub(local_path: str, *args: str) -> str:
@@ -365,7 +365,7 @@ async def test_webhook_diff_update_manual_review_when_too_many_docs_match(
         assert project.last_ingested_commit_sha == "a" * 40
         assert project.git_update_summary["action"] == "manual_review"
         assert "no doc edits" in project.git_update_summary["reason"]
-        assert project.git_update_summary["matched_docs"] == ["03_DATA_FLOWS_LINEAGE.md"]
+        assert project.git_update_summary["matched_docs"] == ["03_DATA_FLOWS_AND_LINEAGE.md"]
 
 
 def test_pattern_diff_prefers_pattern_architecture_and_onboarding_docs(tmp_path):
@@ -373,16 +373,16 @@ def test_pattern_diff_prefers_pattern_architecture_and_onboarding_docs(tmp_path)
 
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
-    (docs_dir / "08_PATTERNS_STANDARDS.md").write_text(
-        "# Patterns\n\n### Design Pattern Catalog\n\nExisting patterns.\n",
+    (docs_dir / "08_CHANGE_PLAYBOOK.md").write_text(
+        "# Change Playbook\n\n### Change Impact\n\nExisting change guidance.\n",
         encoding="utf-8",
     )
-    (docs_dir / "02_ARCHITECTURE_INVENTORY.md").write_text(
-        "# Architecture\n\n### Component Type Census\n\nExisting components.\n",
+    (docs_dir / "01_ARCHITECTURE_MAP.md").write_text(
+        "# Architecture\n\n### Topology\n\nExisting topology.\n",
         encoding="utf-8",
     )
-    (docs_dir / "10_ONBOARDING_FAQ.md").write_text(
-        "# Onboarding\n\n## Glossary\n\nExisting glossary.\n",
+    (docs_dir / "00_AGENT_BRIEF.md").write_text(
+        "# Agent Brief\n\n## Known Traps\n\nExisting traps.\n",
         encoding="utf-8",
     )
 
@@ -397,16 +397,16 @@ def test_pattern_diff_prefers_pattern_architecture_and_onboarding_docs(tmp_path)
         "+### 12. Chain of Responsibility (Behavioral)\n",
     )
     selected = patcher._select_doc_sections(
-        [patcher.DocSection("02_ARCHITECTURE_INVENTORY.md", "Component Type Census", "Existing")],
+        [patcher.DocSection("01_ARCHITECTURE_MAP.md", "Topology", "Existing")],
         limit=3,
         preferred_docs=preferred,
         docs_dir=docs_dir,
     )
 
     assert [(section.filename, section.heading) for section in selected] == [
-        ("08_PATTERNS_STANDARDS.md", "Design Pattern Catalog"),
-        ("02_ARCHITECTURE_INVENTORY.md", "Component Type Census"),
-        ("10_ONBOARDING_FAQ.md", "Glossary"),
+        ("08_CHANGE_PLAYBOOK.md", "Change Impact"),
+        ("01_ARCHITECTURE_MAP.md", "Topology"),
+        ("00_AGENT_BRIEF.md", "Known Traps"),
     ]
 
 
@@ -424,7 +424,7 @@ async def test_webhook_diff_update_invalid_patch_json_leaves_docs_unchanged(
     monkeypatch.setattr(config, "project_root", tmp_path)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    doc = docs_dir / "04_BUSINESS_LOGIC.md"
+    doc = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
     original = "# Business Logic\n\n## PaymentService\n\nOld behavior.\n"
     doc.write_text(original, encoding="utf-8")
 
@@ -490,7 +490,7 @@ async def test_webhook_diff_update_rag_failure_prevents_commit_advancement(
     monkeypatch.setattr(config, "project_root", tmp_path)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    doc = docs_dir / "04_BUSINESS_LOGIC.md"
+    doc = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
     doc.write_text("# Business Logic\n\n## PaymentService\n\nOld behavior.\n", encoding="utf-8")
 
     async def git_stub(local_path: str, *args: str) -> str:
@@ -511,8 +511,8 @@ async def test_webhook_diff_update_rag_failure_prevents_commit_advancement(
                 output_tokens=20,
                 text=(
                     '{"change_summary":"payment changed","inspected_context":["diff"],'
-                    '"affected_docs":["04_BUSINESS_LOGIC.md"],'
-                    '"edits":[{"filename":"04_BUSINESS_LOGIC.md","heading":"PaymentService",'
+                    '"affected_docs":["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],'
+                    '"edits":[{"filename":"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md","heading":"PaymentService",'
                     '"replacement_markdown":"## PaymentService\\n\\nNew behavior."}],'
                     '"confidence":0.95}'
                 ),
@@ -569,7 +569,7 @@ async def test_webhook_diff_update_manual_review_when_output_cap_hit_before_obli
     monkeypatch.setattr(config, "git_diff_patch_output_tokens_small", 8000)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    doc = docs_dir / "04_BUSINESS_LOGIC.md"
+    doc = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
     original = "# Business Logic\n\n## InvoiceWorkflow\n\nOld behavior.\n"
     doc.write_text(original, encoding="utf-8")
 
@@ -595,8 +595,8 @@ async def test_webhook_diff_update_manual_review_when_output_cap_hit_before_obli
                 output_tokens=8000,
                 text=(
                     '{"change_summary":"partial","inspected_context":["diff"],'
-                    '"affected_docs":["04_BUSINESS_LOGIC.md"],'
-                    '"edits":[{"filename":"04_BUSINESS_LOGIC.md","heading":"InvoiceWorkflow",'
+                    '"affected_docs":["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],'
+                    '"edits":[{"filename":"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md","heading":"InvoiceWorkflow",'
                     '"replacement_markdown":"## InvoiceWorkflow\\n\\nPartial new behavior."}],'
                     '"confidence":0.95}'
                 ),
@@ -645,8 +645,8 @@ async def test_webhook_diff_update_rolls_back_when_stale_count_remains(
     monkeypatch.setattr(config, "project_root", tmp_path)
     docs_dir = tmp_path / "output" / "proj" / "docs"
     docs_dir.mkdir(parents=True)
-    doc_a = docs_dir / "04_BUSINESS_LOGIC.md"
-    doc_b = docs_dir / "10_ONBOARDING_FAQ.md"
+    doc_a = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
+    doc_b = docs_dir / "00_AGENT_BRIEF.md"
     original_a = "# Business Logic\n\n## Feature Widgets\n\nThe system supports 3 widgets.\n"
     original_b = "# FAQ\n\n## Feature Widgets\n\nThe system supports 3 widgets.\n"
     doc_a.write_text(original_a, encoding="utf-8")
@@ -669,7 +669,7 @@ async def test_webhook_diff_update_rolls_back_when_stale_count_remains(
 
     class ProviderStub:
         async def complete(self, prompt, context_files=None, options=None):
-            if "04_BUSINESS_LOGIC.md" in prompt:
+            if "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md" in prompt:
                 return ModelResult(
                     success=True,
                     model_name="test-model",
@@ -677,9 +677,9 @@ async def test_webhook_diff_update_rolls_back_when_stale_count_remains(
                     output_tokens=20,
                     text=(
                         '{"change_summary":"widget count changed","inspected_context":["diff"],'
-                        '"affected_docs":["04_BUSINESS_LOGIC.md"],'
+                        '"affected_docs":["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],'
                         '"obligations_satisfied":["obl-01"],"obligations_unsatisfied":[],'
-                        '"edits":[{"filename":"04_BUSINESS_LOGIC.md","heading":"Feature Widgets",'
+                        '"edits":[{"filename":"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md","heading":"Feature Widgets",'
                         '"replacement_markdown":"## Feature Widgets\\n\\nThe system supports 4 widgets."}],'
                         '"confidence":0.95}'
                     ),

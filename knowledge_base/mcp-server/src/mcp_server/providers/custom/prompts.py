@@ -9,45 +9,33 @@ from mcp_server.services.pack_loader import InstructionPack
 
 
 REQUIRED_DOCS = [
-    "00_EXECUTIVE_SUMMARY",
-    "01_PROJECT_OVERVIEW",
-    "02_ARCHITECTURE_INVENTORY",
-    "03_DATA_FLOWS_LINEAGE",
-    "04_BUSINESS_LOGIC",
-    "05a_OPERATIONS",
-    "05b_SECURITY",
-    "05c_RISK",
-    "05d_CHANGE_MANAGEMENT",
-    "06_ENVIRONMENT_EXTERNAL",
-    "07_SECURITY_PERFORMANCE",
-    "08_PATTERNS_STANDARDS",
-    "09_RUNBOOK",
-    "10_ONBOARDING_FAQ",
-    "11_MIGRATION_ASSESSMENT",
+    "00_AGENT_BRIEF",
+    "01_ARCHITECTURE_MAP",
+    "02_COMPONENT_INVENTORY",
+    "03_DATA_FLOWS_AND_LINEAGE",
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+    "05_RUNTIME_CONFIG_AND_EXTERNALS",
+    "06_OPERATIONS_TESTING_AND_DEBUGGING",
+    "07_QUALITY_SECURITY_RISK_SCORECARD",
+    "08_CHANGE_PLAYBOOK",
 ]
 
 
 DOC_ASSIGNMENTS = {
     "core": [
-        "00_EXECUTIVE_SUMMARY",
-        "01_PROJECT_OVERVIEW",
-        "02_ARCHITECTURE_INVENTORY",
-        "03_DATA_FLOWS_LINEAGE",
+        "00_AGENT_BRIEF",
+        "01_ARCHITECTURE_MAP",
+        "02_COMPONENT_INVENTORY",
+        "03_DATA_FLOWS_AND_LINEAGE",
     ],
     "business_ops": [
-        "04_BUSINESS_LOGIC",
-        "05a_OPERATIONS",
-        "05b_SECURITY",
-        "05c_RISK",
-        "05d_CHANGE_MANAGEMENT",
-        "06_ENVIRONMENT_EXTERNAL",
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+        "05_RUNTIME_CONFIG_AND_EXTERNALS",
+        "06_OPERATIONS_TESTING_AND_DEBUGGING",
     ],
     "patterns_user": [
-        "07_SECURITY_PERFORMANCE",
-        "08_PATTERNS_STANDARDS",
-        "09_RUNBOOK",
-        "10_ONBOARDING_FAQ",
-        "11_MIGRATION_ASSESSMENT",
+        "07_QUALITY_SECURITY_RISK_SCORECARD",
+        "08_CHANGE_PLAYBOOK",
     ],
 }
 
@@ -60,21 +48,15 @@ DOC_BUNDLE_MAP = {
 
 
 DOC_SECTION_REQUIREMENTS = {
-    "00_EXECUTIVE_SUMMARY": ["Executive Overview", "Key Findings", "Recommendations", "FAQ", "Glossary"],
-    "01_PROJECT_OVERVIEW": ["Scope", "Groups", "Inventory"],
-    "02_ARCHITECTURE_INVENTORY": ["Architecture", "Component", "Connectivity", "Trigger", "Route"],
-    "03_DATA_FLOWS_LINEAGE": ["Data Flow", "Lineage", "Transformation"],
-    "04_BUSINESS_LOGIC": ["Business", "Transformation", "Rule"],
-    "05a_OPERATIONS": ["Operations", "Execution", "Monitoring"],
-    "05b_SECURITY": ["Security", "Credential", "Access"],
-    "05c_RISK": ["Risk", "Severity", "Mitigation"],
-    "05d_CHANGE_MANAGEMENT": ["Change", "Impact", "Testing"],
-    "06_ENVIRONMENT_EXTERNAL": ["Environment", "External", "Configuration", "Deployment"],
-    "07_SECURITY_PERFORMANCE": ["Security", "Performance", "Risk"],
-    "08_PATTERNS_STANDARDS": ["Pattern", "Standard", "Anti-Pattern"],
-    "09_RUNBOOK": ["Runbook", "Troubleshooting", "Recovery"],
-    "10_ONBOARDING_FAQ": ["Onboarding", "FAQ", "Glossary"],
-    "11_MIGRATION_ASSESSMENT": ["Migration", "Readiness", "Plan", "Scenario", "Effort"],
+    "00_AGENT_BRIEF": ["Project Orientation", "Documentation Map", "Onboarding", "Common Tasks", "Known Traps"],
+    "01_ARCHITECTURE_MAP": ["Topology", "Entry Points", "Dependencies", "Boundaries"],
+    "02_COMPONENT_INVENTORY": ["Canonical Unit Inventory", "Source Artifacts", "Dependencies", "Scanner-Limited"],
+    "03_DATA_FLOWS_AND_LINEAGE": ["Data Flow", "Lineage", "Transformation", "Validation"],
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": ["Business Rules", "Transformation", "Hardcoded", "Impact"],
+    "05_RUNTIME_CONFIG_AND_EXTERNALS": ["Runtime Config", "External Systems", "Credentials", "Environment"],
+    "06_OPERATIONS_TESTING_AND_DEBUGGING": ["Run", "Debug", "Verify", "Recovery", "Testing"],
+    "07_QUALITY_SECURITY_RISK_SCORECARD": ["Score", "Confidence", "Evidence", "Red Flags", "Quick Wins"],
+    "08_CHANGE_PLAYBOOK": ["Change Impact", "Inspect", "Test", "Rollback"],
 }
 
 
@@ -98,6 +80,17 @@ def platform_analysis_requirements(facts: FactsManifest) -> str:
         return get_platform_strategy(facts.platform).analysis_requirements()
     except ValueError:
         return get_platform_strategy("generic").analysis_requirements()
+
+
+def platform_documentation_obligations(facts: FactsManifest) -> str:
+    try:
+        obligations = get_platform_strategy(facts.platform).documentation_obligations()
+    except ValueError:
+        obligations = get_platform_strategy("generic").documentation_obligations()
+    lines = []
+    for category, terms in obligations.items():
+        lines.append(f"- {category}: {', '.join(terms)}")
+    return "\n".join(lines)
 
 
 def _platform_section_depth(facts: FactsManifest) -> str:
@@ -605,15 +598,19 @@ Canonical inventory: exactly {facts.unit_count} {facts.canonical_unit_label} -- 
 
 _PHASE3_PREAMBLE_DEFAULT = """\
 Generate `{doc_name}.md` from the supplied validated analysis bundle and scorecard.
+You are writing durable context for coding assistants, integration engineers, and developers
+working across codebases and integration platforms. The document must help a future assistant
+analyze, plan, debug, refactor, assess risk, and make changes without rediscovering the project.
+
 Follow the Phase 3 synthesis guide, document templates, and reference docs in the supplied context.
 Use supplied EngineeringFacts artifacts as normalized evidence where relevant:
-- 02_ARCHITECTURE_INVENTORY: prioritize `architecture_map` and `dependency_map`
-- 03_DATA_FLOWS_LINEAGE: prioritize `entity_index`, `usage_index`, and `data_flow_map`
-- 05d_CHANGE_MANAGEMENT: prioritize `change_impact_matrix`
-- 06_ENVIRONMENT_EXTERNAL: prioritize `api_surface` and `config_runtime_map`
-- 09_RUNBOOK: prioritize `test_coverage_map` and `known_risks`
+- 01_ARCHITECTURE_MAP and 02_COMPONENT_INVENTORY: prioritize `architecture_map` and `dependency_map`
+- 03_DATA_FLOWS_AND_LINEAGE: prioritize `entity_index`, `usage_index`, and `data_flow_map`
+- 05_RUNTIME_CONFIG_AND_EXTERNALS: prioritize `api_surface` and `config_runtime_map`
+- 06_OPERATIONS_TESTING_AND_DEBUGGING: prioritize `test_coverage_map` and `known_risks`
+- 08_CHANGE_PLAYBOOK: prioritize `change_impact_matrix`, `dependency_map`, and `known_risks`
 Cite EngineeringFacts artifact names when they support a claim. Do not invent relationships,
-routes, fields, flows, runtime settings, or risks not present in the supplied evidence.
+routes, fields, flows, runtime settings, risks, tests, or operational procedures not present in evidence.
 If `_source_coverage.json` or redacted source bundles are supplied, treat those source files as the
 evidence of record. Do not say a covered file is missing/unavailable/not scanned; values marked
 `[REDACTED]` are intentionally hidden secrets."""
@@ -651,12 +648,16 @@ FORMAT:
 - Use plain ASCII tables (no Unicode box-drawing characters)
 - Use markdown headings, bullet lists, and fenced code blocks for expressions/SQL/code
 - Reference scorecard dimension scores where relevant (e.g. "Security: 2/5 -- see Assessment Scorecard")
+- Mark evidence confidence as HIGH / MEDIUM / LOW where claims are inferred or scanner-limited
+- Use exact source artifact/path names where available
 
 MANDATORY HEADINGS for {doc_name} -- your response MUST contain each of these as a `##` markdown
 heading, using exactly this wording (do not rename, merge, or omit any of them):
 {headings_block}
 
 {doc_specific}
+Platform-specific evidence obligations:
+{platform_documentation_obligations(facts)}
 Platform documentation guidance:
 {platform_analysis_requirements(facts)}
 
@@ -667,155 +668,66 @@ Facts:
 
 def _doc_specific_instructions(doc_name: str, facts: FactsManifest) -> str:
     instructions: dict[str, str] = {
-        "00_EXECUTIVE_SUMMARY": f"""\
+        "00_AGENT_BRIEF": f"""\
 SPECIFIC REQUIREMENTS:
-- Open with the overall quality score and dimension summary table from the scorecard (mandatory -- first section)
-- Canonical inventory count ({facts.unit_count} {facts.canonical_unit_label}) must appear in the opening paragraph
-- Key findings: minimum 5 findings with specific job/component references, not generic observations
-- Top risks table: all CRITICAL and HIGH items with severity, affected units, and one-line description
-- Recommendations: prioritized, actionable, referencing specific jobs or components
-- Group-by-group summary table: group name | job count | key characteristic | top risk
-- Strengths section: minimum 3 genuine strengths observed in the project with exact evidence, not generic praise
-- Risk count summary: state Critical / High / Medium / Low counts when available from the scorecard or risk artifacts; if exact counts are not available, state the evidence source and uncertainty instead of inventing numbers
-- Recommendations roadmap split by timeline: Immediate (fix now) | Short-term (1-3 months) | Long-term (3-6 months)
-- FAQ section: minimum 10 Q&A grounded in scan evidence, covering what the platform does, what breaks on re-run, credential handling, biggest risks, known broken jobs, integration loop prevention, monitoring, migration requirements, operational ownership, and first remediation steps
-- Glossary: domain-specific terms, abbreviations, component types, and named patterns found in this project
+- Open with the canonical inventory count ({facts.unit_count} {facts.canonical_unit_label}) and platform.
+- Include an onboarding path for a new assistant/engineer: first docs to read, first artifacts to inspect, and safest first tasks.
+- Include a documentation map linking the other 8 docs to concrete task types.
+- Include common tasks: trace data, change config, change a transformation/rule, debug a failed run, assess risk.
+- Include known traps and do-not-miss items with evidence references.
+- Include a glossary of project/platform terms found in evidence, not a generic platform glossary.
 """,
-        "01_PROJECT_OVERVIEW": """\
+        "01_ARCHITECTURE_MAP": """\
 SPECIFIC REQUIREMENTS:
-- Full inventory table: every group with job count and purpose
-- Platform version and deployment model if present in scan data
-- Scope boundaries: what is and is not covered by the scan
-- Group-by-group summary with every canonical unit name listed
+- Describe the system topology and execution/orchestration shape.
+- Identify entrypoints, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and boundaries.
+- Include per-group or per-domain architecture summary with exact unit examples.
+- Explain scanner-limited architecture gaps explicitly.
 """,
-        "02_ARCHITECTURE_INVENTORY": """\
+        "02_COMPONENT_INVENTORY": """\
 SPECIFIC REQUIREMENTS:
-- Component type census table: component type | count | purpose -- cover all groups
-- Connection type census: FLOW / SUBJOB_OK / SUBJOB_ERROR / etc. with counts
-- Dependency graph narrative: which groups call which via tRunJob chains
-- Shared infrastructure: connections and metadata objects used by multiple groups
-- Orphaned component catalog (if any found in analysis)
-- Missing reference catalog: REPOSITORY refs or tRunJob targets that do not resolve
-- Connection inventory table: connection name | type | protocol | auth method | groups using it | job count | REPOSITORY vs BUILT_IN
-- Trigger patterns section: trigger type | job count | named examples, covering ESB/message, file event, scheduled, manual, webhook/API, and database polling patterns when present
-- Entity route map: per-entity message bus or route topology showing which jobs produce and consume each message type; ASCII diagrams are acceptable when they clarify the flow
-- Deactivated routes and inactive components: explicit catalog of disabled, inactive, bypassed, or test-only routes/components and their production risk
+- Provide a canonical unit inventory table covering every unit: name | group | source artifact/path | type | purpose | key dependencies | evidence confidence.
+- Include component/step/action/module census using platform-specific vocabulary from the supplied platform obligations.
+- Include missing references, orphaned/inactive assets, scanner-limited units, and shared dependencies.
+- This is the exhaustive "what exists" reference; do not collapse units into vague summaries.
 """,
-        "03_DATA_FLOWS_LINEAGE": """\
+        "03_DATA_FLOWS_AND_LINEAGE": """\
 SPECIFIC REQUIREMENTS:
-- Full column-level lineage for every tMap: source_table.column -> expression -> target_table.column
-- Full tMap expressions shown verbatim -- never truncate
-- End-to-end data flow per group: source system -> transformation stages -> target system
-- Data quality checkpoint locations: where validation occurs and what is checked
-- Row rejection and dead-letter paths: where failed rows route
-- Schema dictionary: every table referenced with columns (name / type / nullable), readers vs writers
+- Document source-to-target data journeys by group/domain and by critical path.
+- Include transformation/mapping expressions verbatim where present.
+- Include schemas/entities/fields, readers/writers, validation checkpoints, reject/error paths, and lineage confidence.
+- Use platform-specific mapping terminology only from the platform evidence, not hardcoded assumptions.
 """,
-        "04_BUSINESS_LOGIC": """\
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS": """\
 SPECIFIC REQUIREMENTS:
-- Complete BR-{{GROUP}}-NNN catalog: every rule with full expression, domain, impact rating (ISOLATED/MODERATE/WIDE)
-- Parameter catalog table: hardcoded value | location (job + component) | apparent purpose | staleness risk
-- Conflict analysis: same business concept handled differently across jobs -- flag each explicitly
-- Domain breakdown table: group rules by business area with rule count per domain
-- Rules from tMap conditionals, SQL WHERE/CASE, Java code, RunIf expressions -- all sources covered
+- Complete BR-{{GROUP}}-NNN catalog: rule | expression/condition/formula | implementing unit/artifact | domain | impact.
+- Include transformation chains, lookup behavior, hardcoded values, magic constants, conflicts, and duplicated logic.
+- Separate direct evidence from inferred business intent.
 """,
-        "05a_OPERATIONS": """\
+        "05_RUNTIME_CONFIG_AND_EXTERNALS": """\
 SPECIFIC REQUIREMENTS:
-- Reference the Operations dimension score from the scorecard
-- Execution model: sequential vs parallel, scheduling topology, group execution order
-- Error handling rating table: every group (or key jobs) rated GOOD / ADEQUATE / POOR / NONE with evidence
-- tLogCatcher / tStatCatcher coverage table: job | has logcatcher? | captures what? | output destination
-- Silent failure catalog: every job with no SUBJOB_ERROR connection -- list explicitly
-- Monitoring gaps: per job, detection latency if it silently produces wrong output (minutes/hours/days/never)
-- Normal execution runbook: step-by-step what happens on a successful run
+- Catalog runtime configuration, environment selection, external systems, connection modes, endpoints, credentials/secret handling, and portability risks.
+- Include config values only in sanitized form; identify redacted secrets as redacted, not missing.
+- Identify environment-specific behavior and deployment assumptions.
 """,
-        "05b_SECURITY": """\
+        "06_OPERATIONS_TESTING_AND_DEBUGGING": """\
 SPECIFIC REQUIREMENTS:
-- Reference the Security dimension score from the scorecard
-- Credential exposure audit: every hardcoded credential or BUILT_IN mode connection -- list all
-- SQL injection vector catalog: every string-concatenated query with job + component reference
-- Data sensitivity map: what sensitive data flows through which jobs to which systems
-- Encryption status: data in transit (JDBC over TLS? FTP vs SFTP?) and at rest
-- Access control: which jobs require elevated DB/file permissions
+- Explain how execution works, how to debug failures, what logs/monitors/checks exist, and how to verify success.
+- Include failure scenarios with symptom | likely cause | affected units | diagnosis | recovery | prevention.
+- Include test coverage gaps and concrete verification checks from supplied evidence.
 """,
-        "05c_RISK": """\
+        "07_QUALITY_SECURITY_RISK_SCORECARD": """\
 SPECIFIC REQUIREMENTS:
-- Complete risk register: all CRITICAL / HIGH / MEDIUM / LOW risks with specific job+component references
-- Cascading failure chains: trace each critical failure to downstream impact (Job A fails -> table X stale -> Job B wrong -> Report Y incorrect)
-- Single points of failure: RECOVERABLE vs CATASTROPHIC classification with fallback assessment
-- Recovery gap catalog: non-idempotent jobs -- re-running would cause duplicates, corrupt totals, or re-fire side effects
-- Capacity risk table: jobs that will break or miss SLA as data volumes grow
+- Turn `_assessment/scorecard.md` into a readable deep review without losing numeric scores.
+- Include dimensions: architecture, data lineage, operations, reliability, security, maintainability, testability, and platform/tooling fit when evidence exists.
+- Every score requires confidence, evidence, unknowns, red flags, quick wins, and affected units.
+- Include risk register with severity, affected artifacts, evidence basis, remediation, and effort.
 """,
-        "05d_CHANGE_MANAGEMENT": """\
+        "08_CHANGE_PLAYBOOK": """\
 SPECIFIC REQUIREMENTS:
-- Change impact matrix: changing component/table/variable X breaks Y -- cross-group dependencies
-- Fragile parameters: hardcoded values requiring code edits rather than config changes
-- Test coverage gaps: which jobs have no observable validation or data quality check
-- Deployment order: correct sequence for deploying changes safely
-- Rollback risks: changes that cannot be easily reversed once deployed
-""",
-        "06_ENVIRONMENT_EXTERNAL": """\
-SPECIFIC REQUIREMENTS:
-- Full context variable catalog: every variable with name | type | default | PROD vs TEST/DEV difference | prompt-overridable
-- External system inventory: type | connection name | mode (REPOSITORY/BUILT_IN) | host pattern | jobs using it
-- Environment-conditional behavior: jobs that behave differently per environment context group
-- tContextLoad patterns: jobs loading context variables dynamically
-- Missing environment separation: BUILT_IN connections that should be promoted to REPOSITORY
-- Deployment portability risks: every hardcoded absolute path, machine-specific value, developer workstation artifact, host, port, schema, bucket, or environment-specific constant with job + component reference and remediation
-- Environment separation gaps: connections or values that should differ between PROD/TEST/DEV but appear shared, hardcoded, unused, or impossible to switch without editing the job/profile
-- Credential risk table: connection/system | auth type | credential storage location | jobs using it | rotation risk | recommended remediation
-""",
-        "07_SECURITY_PERFORMANCE": """\
-SPECIFIC REQUIREMENTS:
-- Reference Security and Performance dimension scores from the scorecard
-- Security findings from the scorecard anti-pattern and red-flag catalogs with evidence
-- Performance hotspots: full table scans, unbounded queries, memory-intensive lookups -- list each with job reference
-- Capacity projections: at what data volume will each hotspot fail or miss its SLA window?
-- Prioritized security remediation roadmap with estimated effort tier (small/medium/large)
-""",
-        "08_PATTERNS_STANDARDS": """\
-SPECIFIC REQUIREMENTS:
-- Good pattern catalog: patterns observed with specific job examples (not generic best practices)
-- Anti-pattern catalog: AP-xxx-nnn IDs from scorecard, affected jobs, specific remediation
-- Naming convention assessment: GOOD / ADEQUATE / POOR rating with outlier examples
-- Cross-group consistency: where the same pattern is applied consistently vs inconsistently
-- Standards violations: explicit list with severity and affected jobs
-""",
-        "09_RUNBOOK": """\
-SPECIFIC REQUIREMENTS:
-- Step-by-step execution procedure for each group with prerequisites
-- Failure scenarios: what to do when each critical job fails (named, not generic)
-- Recovery procedures: restart sequences, data repair steps for non-idempotent jobs
-- Monitoring checklist: what to verify to confirm a successful run
-- Common issues and diagnosis steps (grounded in risk flags found in analysis)
-- Escalation paths
-""",
-        "10_ONBOARDING_FAQ": """\
-SPECIFIC REQUIREMENTS:
-- Architecture orientation: key concepts a new developer needs -- specific to this project's patterns
-- Where to find things: actual file/job locations, naming convention explained with real examples
-- How to make common changes: adding a job, changing a tMap mapping, updating a connection -- concrete steps
-- Glossary: ALL domain-specific terms, abbreviations, platform concepts found in the scan (not generic Talend glossary)
-- FAQ: minimum 8 questions with specific answers grounded in this project's scan evidence
-""",
-        "11_MIGRATION_ASSESSMENT": """\
-SPECIFIC REQUIREMENTS:
-- Reference the Migration Readiness score from the scorecard
-- Dependency inventory: every external system that must be available in the target environment
-- Migration risk register: CRITICAL / HIGH / MEDIUM / LOW with specific job/component references
-- Non-idempotent jobs: explicitly catalog every job that is unsafe to re-run (duplicates, side effects)
-- Recommended cutover sequence: ordered list of groups with rationale
-- Rollback plan: what to do if migration fails at each stage
-- Data validation checkpoints: how to confirm data integrity after cutover for each group
-- Three migration scenarios compared side-by-side:
-  A) Lift-and-shift to the same platform or upgraded/cloud version
-  B) Transform-and-migrate to modern iPaaS or integration platform
-  C) Redesign from requirements / greenfield
-  For each scenario include effort, risk, whether existing logic is preserved, and whether it is recommended for this project
-- Effort estimates table: phase | description | estimated effort (S/M/L/XL) | confidence | evidence basis
-- Technical debt classification: Resolve Before Migration | Resolve During Migration | Eliminated By Migration
-- Pre-migration checklist: concrete go/no-go items before cutover begins
-- Post-migration verification checklist: how to confirm data integrity per group after cutover
-- Go/No-Go decision framework: what must be true for each phase to proceed
+- Include a matrix: change target | inspect first | affected units | required tests/checks | rollback risk | confidence.
+- Cover changes to mappings/transformations, schemas/entities, config/env, connections/external systems, shared dependencies, business rules, and operational schedules/triggers.
+- Include safe-edit guidance and scanner-limited warnings when impact cannot be proven.
 """,
     }
     return instructions.get(doc_name, "")

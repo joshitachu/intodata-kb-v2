@@ -183,7 +183,7 @@ class FilesystemFallback:
         return None
 
     def get_reference_doc(self, doc_name: str) -> str | None:
-        """Read a reference doc (e.g. '00_EXECUTIVE_SUMMARY')."""
+        """Read a reference doc (e.g. '00_AGENT_BRIEF')."""
         ref_file = self.ref_dir / f"{doc_name}.md"
         if ref_file.exists():
             return ref_file.read_text(encoding="utf-8")

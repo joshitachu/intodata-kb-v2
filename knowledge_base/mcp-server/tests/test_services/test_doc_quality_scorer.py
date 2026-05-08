@@ -35,8 +35,8 @@ DEU_LoadCustomers BR-DEU-002 AP-DEU-002 RF-DEU-002 CRITICAL HIGH MEDIUM LOW CRIT
 
 
 def test_code_example_signal_adds_bonus(tmp_path):
-    plain = _write_doc(tmp_path, "04_BUSINESS_LOGIC.md", _BASE_CONTENT)
-    with_code = _write_doc(tmp_path, "04_BUSINESS_LOGIC_code.md", _BASE_CONTENT + "\n```python\nprint('hi')\n```\n```sql\nSELECT 1\n```\n```bash\necho ok\n```\n")
+    plain = _write_doc(tmp_path, "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md", _BASE_CONTENT)
+    with_code = _write_doc(tmp_path, "04_BUSINESS_RULES_AND_TRANSFORMATIONS_code.md", _BASE_CONTENT + "\n```python\nprint('hi')\n```\n```sql\nSELECT 1\n```\n```bash\necho ok\n```\n")
 
     score_plain = score_doc(plain).dimensions["specificity"]
     score_code = score_doc(with_code).dimensions["specificity"]
@@ -45,10 +45,10 @@ def test_code_example_signal_adds_bonus(tmp_path):
 
 
 def test_error_handling_signal_adds_bonus(tmp_path):
-    plain = _write_doc(tmp_path, "05_OPERATIONS_RISK.md", _BASE_CONTENT)
+    plain = _write_doc(tmp_path, "06_OPERATIONS_TESTING_AND_DEBUGGING.md", _BASE_CONTENT)
     with_errors = _write_doc(
         tmp_path,
-        "05_OPERATIONS_RISK_err.md",
+        "06_OPERATIONS_TESTING_AND_DEBUGGING_err.md",
         _BASE_CONTENT + "\nError handling via retry logic. On exception, fallback to cache. Edge case: empty payload triggers on_fail handler. Exception raised on timeout.\n",
     )
 
@@ -59,15 +59,21 @@ def test_error_handling_signal_adds_bonus(tmp_path):
 
 
 def test_no_code_examples_flag(tmp_path):
-    doc = _write_doc(tmp_path, "04_BUSINESS_LOGIC.md", _BASE_CONTENT)
+    doc = _write_doc(tmp_path, "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md", _BASE_CONTENT)
     result = score_doc(doc)
     assert "no_code_examples" in result.flags
 
 
 def test_score_doc_returns_correct_dimensions(tmp_path):
-    doc = _write_doc(tmp_path, "04_BUSINESS_LOGIC.md", _BASE_CONTENT)
+    doc = _write_doc(tmp_path, "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md", _BASE_CONTENT)
     result = score_doc(doc)
 
     assert isinstance(result, DocScore)
-    assert set(result.dimensions.keys()) == {"line_ratio", "section_coverage", "specificity", "risk_depth"}
+    assert set(result.dimensions.keys()) == {
+        "line_ratio",
+        "section_coverage",
+        "specificity",
+        "risk_depth",
+        "assistant_usefulness",
+    }
     assert 0.0 <= result.score <= 5.0

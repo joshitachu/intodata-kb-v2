@@ -603,19 +603,17 @@ class ClaudeService:
         if ref_dir.exists():
             agent_ref_map = {
                 "_ref_core": [
-                    "00_EXECUTIVE_SUMMARY", "01_PROJECT_OVERVIEW",
-                    "02_ARCHITECTURE_INVENTORY", "03_DATA_FLOWS_LINEAGE",
+                    "00_AGENT_BRIEF", "01_ARCHITECTURE_MAP",
+                    "02_COMPONENT_INVENTORY", "03_DATA_FLOWS_AND_LINEAGE",
                 ],
                 "_ref_business_ops": [
-                    "04_BUSINESS_LOGIC", "05_OPERATIONS_RISK",
-                    "06_ENVIRONMENT_EXTERNAL",
-                ],
-                "_ref_patterns": [
-                    "07_SECURITY_PERFORMANCE", "08_PATTERNS_STANDARDS",
+                    "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+                    "05_RUNTIME_CONFIG_AND_EXTERNALS",
+                    "06_OPERATIONS_TESTING_AND_DEBUGGING",
                 ],
                 "_ref_user": [
-                    "09_RUNBOOK", "10_ONBOARDING_FAQ",
-                    "11_MIGRATION_ASSESSMENT",
+                    "07_QUALITY_SECURITY_RISK_SCORECARD",
+                    "08_CHANGE_PLAYBOOK",
                 ],
             }
             for bundle_name, doc_names in agent_ref_map.items():
@@ -975,183 +973,100 @@ Do NOT rename sections.
 
 ---
 
-## 00_EXECUTIVE_SUMMARY.md
+## 00_AGENT_BRIEF.md
 Required sections (in order):
-1. Document Map
-2. Executive Summary (narrative, 2-4 paragraphs)
-3. Assessment Scorecard (overall score table + 8 dimension scores)
-4. Key Findings (bullet list — top 5-7 findings with severity)
-5. Critical Risks (table: Risk | Severity | Affected Jobs | Recommendation)
-6. Strengths (bullet list — top 3-5 strengths)
-7. Quick-Start Guide (3-5 action items for new team members)
+1. Project Orientation
+2. Documentation Map
+3. Onboarding
+4. Common Tasks
+5. Known Traps
+6. Glossary
 
-Optional sections: none — keep this doc tight.
+## 01_ARCHITECTURE_MAP.md
+Required sections:
+1. Topology
+2. Entry Points
+3. Dependencies
+4. Boundaries
 
 ---
 
-## 01_PROJECT_OVERVIEW.md
+## 02_COMPONENT_INVENTORY.md
 Required sections:
-1. Project Purpose & Scope
-2. Platform & Technology Stack
-3. Group Structure (table: Group | Job Count | Purpose | Key Systems)
-4. Integration Patterns Overview
-5. Data Volume & SLA Context (if available)
-6. Key Stakeholders & Ownership (if available)
-7. Related Documentation
+1. Canonical Unit Inventory
+2. Source Artifacts
+3. Components
+4. Dependencies
+5. Scanner-Limited Evidence
 
 ---
 
-## 02_ARCHITECTURE_INVENTORY.md
+## 03_DATA_FLOWS_AND_LINEAGE.md
 Required sections:
-1. Architecture Overview
-2. Job Catalog (table: Job | Group | Type | Components | Inputs | Outputs)
-3. Component Inventory (counts by type, with notable usages)
-4. Connection Registry (table: Name | Type | Host/URL | Protocol | Used By)
-5. Context Variable Catalog (table: Name | Value/Pattern | Scope | Used By)
-6. Scheduling Architecture (cron expressions, trigger chains)
-7. Dependency Graph (text-based diagram or table)
+1. Data Flow
+2. Lineage
+3. Transformation
+4. Validation
 
 ---
 
-## 03_DATA_FLOWS_LINEAGE.md
+## 04_BUSINESS_RULES_AND_TRANSFORMATIONS.md
 Required sections:
-1. Data Flow Overview
-2. End-to-End Flow Diagrams (ASCII or table-based, per group)
-3. Source-to-Target Mappings (table: Source | Transformation | Target | Job)
-4. tMap Expression Details (per tMap: var table, input→output column mappings)
-5. Data Quality Rules (filters, validations, reject handling)
-6. Schema Dictionary (column-level detail: name, type, nullable, source)
-7. Cross-Group Data Dependencies
+1. Business Rules
+2. Transformation
+3. Hardcoded Values
+4. Impact
 
 ---
 
-## 04_BUSINESS_LOGIC.md
+## 05_RUNTIME_CONFIG_AND_EXTERNALS.md
 Required sections:
-1. Business Rules Catalog (BR-{GROUP}-NNN tags, full expressions)
-2. Conditional Logic Detail (ternary expressions, filter conditions with actual code)
-3. Transformation Rules (data type conversions, enrichments, lookups)
-4. Rejection & Exception Logic
-5. Business Rule Dependencies (which rules depend on others)
+1. Runtime Config
+2. External Systems
+3. Credentials
+4. Environment
 
 ---
 
-## 05a_OPERATIONS.md
+## 06_OPERATIONS_TESTING_AND_DEBUGGING.md
 Required sections:
-1. Scheduling Overview (table: Job | Schedule | Trigger | Dependencies)
-2. Job Execution Sequences (ordered chains, parallel branches)
-3. Monitoring & Alerting (what is monitored, where alerts go)
-4. Operational Procedures (restart, re-run, manual trigger procedures)
-5. Performance Characteristics (run times, data volumes where known)
+1. Run
+2. Debug
+3. Verify
+4. Recovery
+5. Testing
 
 ---
 
-## 05b_SECURITY.md
+## 07_QUALITY_SECURITY_RISK_SCORECARD.md
 Required sections:
-1. Credential Inventory (table: Name | Type | Where Used | Rotation Status)
-2. Hardcoded Credential Findings (from quick scan — cite specific jobs)
-3. Access Control Model (who can run what, service accounts)
-4. Data Sensitivity Classification (PII, PCI, PHI if present)
-5. Security Checklist Results (from Phase 2.6 scorecard)
-6. Remediation Recommendations (priority-ordered)
+1. Score
+2. Confidence
+3. Evidence
+4. Red Flags
+5. Quick Wins
+6. Unknowns
 
 ---
 
-## 05c_RISK.md
+## 08_CHANGE_PLAYBOOK.md
 Required sections:
-1. Risk Register (table: ID | Risk | Severity | Likelihood | Affected Jobs | Mitigation)
-2. Dependency Chain Risks (single points of failure, cascading failures)
-3. God Profile Analysis (oversized jobs — from quick scan)
-4. Data Quality Risks (missing validation, silent data loss)
-5. Recovery Procedures (what to do when specific jobs fail)
-
----
-
-## 05d_CHANGE_MANAGEMENT.md
-Required sections:
-1. Deployment Procedures
-2. Environment Promotion (dev → test → prod, configuration differences)
-3. Rollback Procedures
-4. Change Impact Assessment Template
-5. Testing Checklist
-
----
-
-## 06_ENVIRONMENT_EXTERNAL.md
-Required sections:
-1. External Systems Inventory (table: System | Type | Protocol | Direction | Jobs)
-2. Environment Configuration (context variables per environment)
-3. Network & Connectivity Requirements
-4. External System SLAs & Availability
-
----
-
-## 07_SECURITY_PERFORMANCE.md
-Required sections:
-1. Security Posture Summary (score from scorecard)
-2. Authentication & Authorization Analysis
-3. Data Encryption Status
-4. Performance Bottleneck Analysis
-5. Resource Consumption Patterns
-6. Optimization Recommendations
-
-Optional: only generate if security/performance issues found (score < 4/5).
-
----
-
-## 08_PATTERNS_STANDARDS.md
-Required sections:
-1. Naming Convention Analysis
-2. Code Quality Patterns
-3. Cross-Group Comparison (only if 2+ groups)
-4. Anti-Pattern Catalog (from Phase 2.6, AP-xxx-nnn IDs)
-5. Recommended Standards
-
-Optional: only generate for multi-group projects.
-
----
-
-## 09_RUNBOOK.md
-Required sections:
-1. Daily Operations Checklist
-2. Job-by-Job Runbook (alphabetical: purpose, inputs, outputs, common failures, fix steps)
-3. Common Error Scenarios & Fixes
-4. Escalation Procedures
-5. Monitoring Dashboards & Alerts
-
----
-
-## 10_ONBOARDING_FAQ.md
-Required sections:
-1. Quick Start (15-minute overview)
-2. Architecture Mental Model
-3. How To: Run a specific job manually
-4. How To: Debug a failed job
-5. How To: Make a common change (field mapping, schedule, etc.)
-6. FAQ (10-20 questions based on actual complexity found)
-7. Glossary
-
----
-
-## 11_MIGRATION_ASSESSMENT.md
-Required sections:
-1. Migration Readiness Score (from scorecard)
-2. Current-State Risk Summary
-3. Migration Complexity Analysis (by group, by job type)
-4. Recommended Migration Approach
-5. Migration Sequence & Dependencies
-6. Estimated Effort (rough order of magnitude)
-7. Post-Migration Validation Checklist
+1. Change Impact
+2. Inspect
+3. Test
+4. Rollback
 
 ---
 
 ## Naming & Formatting Rules
-- All filenames: exactly as shown above (e.g. `05a_OPERATIONS.md` not `05_operations.md`)
+- All filenames: exactly as shown above
 - Every doc MUST have a table of contents as the first section
 - Use plain ASCII tables only (no Unicode box-drawing: no ─, │, ┼)
 - Business rule tags: BR-{GROUP}-NNN (e.g. BR-DEU-001)
 - Risk severity: CRITICAL / HIGH / MEDIUM / LOW (all caps)
 - Job references: always include full job name, not just partial
-- Component references: include both component type and unique_name
+- Component references: include platform-specific identifiers where present
+- Include evidence confidence: HIGH / MEDIUM / LOW
 """
         (preprocess_dir / "_doc_templates.md").write_text(content, encoding="utf-8")
         logger.info("Wrote _doc_templates.md (%d bytes)", len(content))

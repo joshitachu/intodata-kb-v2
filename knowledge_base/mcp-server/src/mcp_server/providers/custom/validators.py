@@ -512,6 +512,10 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
     if config_claim_errors:
         errors.extend(config_claim_errors)
 
+    assistant_contract_errors = _assistant_doc_contract_errors(staging_dir, facts)
+    if assistant_contract_errors:
+        errors.extend(assistant_contract_errors)
+
     return CoverageReport(
         ok=not errors,
         covered_units=sorted(_unit_label(units_by_id[unit_id], duplicate_names) for unit_id in covered_ids),
@@ -523,6 +527,100 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
         errors=errors,
         warnings=_identity_report_warnings(facts),
     )
+
+
+def build_documentation_obligation_map(facts: FactsManifest) -> dict[str, Any]:
+    """Build the shared + platform obligation contract for a generation run."""
+
+    try:
+        platform_terms = get_platform_strategy(facts.platform).documentation_obligations()
+    except ValueError:
+        platform_terms = get_platform_strategy("generic").documentation_obligations()
+
+    shared = {
+        "identity": ["name", "group", "source artifact", "type"],
+        "purpose": ["purpose", "scanner-limited"],
+        "dependencies": ["upstream", "downstream", "dependency"],
+        "data_movement": ["data", "schema", "mapping", "lineage"],
+        "runtime_config": ["config", "environment", "external system"],
+        "error_handling": ["error handling", "retry", "failure"],
+        "risk": ["risk", "confidence", "evidence"],
+        "debug_testing": ["debug", "test", "verify"],
+    }
+    return {
+        "platform": facts.platform,
+        "canonical_unit_label": facts.canonical_unit_label,
+        "shared": shared,
+        "platform_specific": platform_terms,
+        "units": [
+            {
+                "name": unit.name,
+                "group": unit.group,
+                "path": unit.path,
+                "type": unit.unit_type,
+            }
+            for unit in facts.units
+        ],
+    }
+
+
+def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> list[str]:
+    errors: list[str] = []
+    texts: dict[str, str] = {}
+    for doc in REQUIRED_DOCS:
+        path = staging_dir / f"{doc}.md"
+        if path.exists():
+            texts[doc] = path.read_text(encoding="utf-8", errors="replace")
+
+    def require_terms(doc: str, terms: list[str], label: str) -> None:
+        text = texts.get(doc, "")
+        missing = [term for term in terms if not re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE)]
+        if missing:
+            errors.append(f"Generated doc {doc}.md missing {label}: {', '.join(missing)}")
+
+    require_terms(
+        "00_AGENT_BRIEF",
+        ["Onboarding", "Documentation Map", "Common Tasks", "Known Traps"],
+        "assistant onboarding sections",
+    )
+    require_terms(
+        "07_QUALITY_SECURITY_RISK_SCORECARD",
+        ["Score", "Confidence", "Evidence", "Red Flags", "Quick Wins", "Unknowns"],
+        "scorecard evidence sections",
+    )
+    require_terms(
+        "08_CHANGE_PLAYBOOK",
+        ["Change Impact", "Inspect", "Test", "Rollback"],
+        "change-playbook guidance",
+    )
+    require_terms(
+        "06_OPERATIONS_TESTING_AND_DEBUGGING",
+        ["Debug", "Verify", "Recovery", "Testing"],
+        "debugging and verification guidance",
+    )
+
+    inventory = texts.get("02_COMPONENT_INVENTORY", "")
+    for unit in facts.units:
+        if unit.name not in inventory:
+            errors.append(f"Component inventory missing canonical unit obligation: {unit.name}")
+            continue
+        if unit.path and unit.path not in inventory:
+            errors.append(f"Component inventory missing source artifact for {unit.name}: {unit.path}")
+        if unit.group and unit.group not in inventory:
+            errors.append(f"Component inventory missing group for {unit.name}: {unit.group}")
+
+    obligation_map = build_documentation_obligation_map(facts)
+    all_text = "\n".join(texts.values())
+    platform_terms = obligation_map["platform_specific"]
+    for category, terms in platform_terms.items():
+        if not terms:
+            continue
+        if not any(re.search(rf"\b{re.escape(term)}\b", all_text, re.IGNORECASE) for term in terms):
+            errors.append(
+                f"Generated docs missing platform-specific evidence category "
+                f"{facts.platform}.{category}: expected one of {', '.join(terms[:6])}"
+            )
+    return errors
 
 
 def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageReport:

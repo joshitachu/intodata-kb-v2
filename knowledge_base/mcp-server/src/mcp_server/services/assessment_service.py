@@ -17,23 +17,23 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
-# Sections to extract from 00_EXECUTIVE_SUMMARY.md
+# Sections to extract from 00_AGENT_BRIEF.md
 EXEC_SECTIONS = [
-    "At a Glance",
-    "Key Findings",
-    "Architecture Overview",
-    "Regional Summary",
-    "Risk Summary",
-    "Recommendations",
-    "Platform Statistics",
+    "Project Orientation",
+    "Documentation Map",
+    "Onboarding",
+    "Common Tasks",
+    "Known Traps",
 ]
 
-# Sections to extract from 11_MIGRATION_ASSESSMENT.md
-MIGRATION_SECTIONS = [
-    "Migration Readiness Score",
-    "Dimension Scores",
-    "Total Effort Summary",
+# Sections to extract from 07_QUALITY_SECURITY_RISK_SCORECARD.md
+SCORECARD_SECTIONS = [
+    "Score",
+    "Confidence",
+    "Evidence",
+    "Red Flags",
     "Quick Wins",
+    "Unknowns",
 ]
 
 
@@ -129,13 +129,13 @@ class AssessmentService:
         docs_dir = config.project_root / "output" / project_id / "docs"
 
         # Read doc 00 (required)
-        exec_path = docs_dir / "00_EXECUTIVE_SUMMARY.md"
+        exec_path = docs_dir / "00_AGENT_BRIEF.md"
         if not exec_path.exists():
             return {
                 "project_id": project_id,
                 "status": "no_docs",
                 "html_path": None,
-                "error": "00_EXECUTIVE_SUMMARY.md not found",
+                "error": "00_AGENT_BRIEF.md not found",
             }
 
         exec_text = exec_path.read_text(encoding="utf-8", errors="replace")
@@ -145,14 +145,14 @@ class AssessmentService:
         for section in exec_sections:
             section.html_content = self._md_to_html(section.md_content)
 
-        # Read doc 11 (optional)
+        # Read assistant scorecard (optional, rendered through existing template slot)
         migration_sections: list[Section] = []
-        migration_path = docs_dir / "11_MIGRATION_ASSESSMENT.md"
+        migration_path = docs_dir / "07_QUALITY_SECURITY_RISK_SCORECARD.md"
         has_migration = False
         if migration_path.exists():
             migration_text = migration_path.read_text(encoding="utf-8", errors="replace")
             migration_sections = self.extract_sections(
-                migration_text, MIGRATION_SECTIONS
+                migration_text, SCORECARD_SECTIONS
             )
             for section in migration_sections:
                 section.html_content = self._md_to_html(section.md_content)
