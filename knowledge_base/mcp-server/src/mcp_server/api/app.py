@@ -28,6 +28,7 @@ from mcp_server.services.atomic_swap import (
 )
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.git_poller import git_polling_loop
+from mcp_server.services.ops_telemetry import telemetry_enabled, telemetry_loop
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ async def lifespan(app: FastAPI):
             logger.info("All tables already exist, skipping create")
     app.state.log_manager = log_manager
     app.state.git_poller_task = asyncio.create_task(git_polling_loop(log_manager))
+    app.state.ops_telemetry_task = (
+        asyncio.create_task(telemetry_loop()) if telemetry_enabled() else None
+    )
 
     # Reconcile docs dirs from any previous crash: promote `docs_prev/` to
     # `docs/` if docs is missing, or remove stale backups if both exist.
@@ -83,6 +87,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        telemetry_task = getattr(app.state, "ops_telemetry_task", None)
+        if telemetry_task:
+            telemetry_task.cancel()
+            try:
+                await telemetry_task
+            except asyncio.CancelledError:
+                pass
         poller_task = getattr(app.state, "git_poller_task", None)
         if poller_task:
             poller_task.cancel()

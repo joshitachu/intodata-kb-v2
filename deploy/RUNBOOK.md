@@ -19,7 +19,7 @@ export CLIENT_SLUG=staging
 export BASE_DOMAIN=nexus.intodata.nl
 export FQDN="${CLIENT_SLUG}.${BASE_DOMAIN}"
 export ADMIN_EMAIL=ops@intodata.nl
-export REPO_URL=git@github.com:intodata/intodata-kb-v2.git
+export REPO_URL=git@github.com:intodata/intodata-kb-v2.git  # migrated 2026-05-11
 export REPO_ROOT="/opt/intodata-kb/${CLIENT_SLUG}"
 export ENV_FILE="/etc/intodata-kb/envs/${CLIENT_SLUG}.env"
 export APPROVED_CIDRS="203.0.113.10/32,198.51.100.0/24"
@@ -83,13 +83,21 @@ curl -fsSL https://ollama.com/install.sh | sh
 sudo systemctl enable --now ollama
 ollama pull nomic-embed-text
 ollama pull gemma3:4b
-curl -fsS http://127.0.0.1:11434/api/tags
 ```
+
+Confirm both models are present before continuing — the stack will fail silently if either is missing:
+
+```bash
+ollama list | grep -E "nomic-embed-text|gemma3"
+```
+
+Expected output shows at least `nomic-embed-text:latest` and `gemma3:4b` (or the variant configured in the env file). If a model is absent, re-run the `ollama pull` command and wait for the download to complete before proceeding.
 
 Verify container access to Ollama:
 
 ```bash
 sudo docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:8.8.0 -fsS http://host.docker.internal:11434/api/tags
+curl -fsS http://127.0.0.1:11434/api/tags
 ```
 
 ## 5. Configure DNS
@@ -138,7 +146,33 @@ If the env file existed before this runbook was updated, confirm these MCP value
 sudo grep -E '^(MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT)=' "$ENV_FILE"
 ```
 
-## 7. Enable MCP API Systemd Service
+## 7. Configure Email (SMTP)
+
+The platform sends invite emails and login OTP codes via SMTP. Set these variables in the env file before starting services if email is required at launch:
+
+```bash
+sudo sed -i "s|^#\?SMTP_HOST=.*|SMTP_HOST=smtp.yourprovider.com|" "$ENV_FILE"
+sudo sed -i "s|^#\?SMTP_PORT=.*|SMTP_PORT=587|" "$ENV_FILE"
+sudo sed -i "s|^#\?SMTP_USERNAME=.*|SMTP_USERNAME=your@sender.com|" "$ENV_FILE"
+sudo sed -i "s|^#\?SMTP_PASSWORD=.*|SMTP_PASSWORD=yourpassword|" "$ENV_FILE"
+sudo sed -i "s|^#\?SMTP_FROM_ADDRESS=.*|SMTP_FROM_ADDRESS=noreply@yourdomain.com|" "$ENV_FILE"
+sudo sed -i "s|^#\?SMTP_FROM_NAME=.*|SMTP_FROM_NAME=IntoData Nexus|" "$ENV_FILE"
+```
+
+Any SMTP provider (Resend, SendGrid, Mailgun, AWS SES, Office365 relay) works. Use port 587 with STARTTLS. The sender domain must have SPF and DKIM records published before emails will pass spam filters reliably.
+
+Send a test email after services are up:
+
+```bash
+curl -fsS -X POST "https://${FQDN}/api/v1/admin/email/test" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"ops@intodata.nl"}' \
+  --cookie-jar /tmp/cookies.txt --cookie /tmp/cookies.txt
+```
+
+If SMTP is not configured in development or staging, invite URLs and OTP codes are logged to the backend journal instead of sent.
+
+## 8. Enable MCP API Systemd Service
 
 ```bash
 cd "$REPO_ROOT"
@@ -148,7 +182,21 @@ sudo systemctl enable --now "mcp-server@${CLIENT_SLUG}.service"
 sudo systemctl status "mcp-server@${CLIENT_SLUG}.service" --no-pager
 ```
 
-## 8. Enable HTTPS With nginx/certbot
+Optional: enable central IntoData Ops telemetry after the central Ops API has a
+client record and API key. This reports metadata only and does not send uploaded
+documents, source code, generated document bodies, chat history, raw logs, or
+secrets.
+
+```bash
+sudo sed -i "s|^MCP_OPS_CLIENT_SLUG=.*|MCP_OPS_CLIENT_SLUG=${CLIENT_SLUG}|" "$ENV_FILE"
+sudo sed -i "s|^MCP_OPS_ENVIRONMENT=.*|MCP_OPS_ENVIRONMENT=production|" "$ENV_FILE"
+sudo sed -i "s|^MCP_OPS_RELEASE_VERSION=.*|MCP_OPS_RELEASE_VERSION=$(git rev-parse --short HEAD)|" "$ENV_FILE"
+sudo sed -i "s|^MCP_OPS_TELEMETRY_URL=.*|MCP_OPS_TELEMETRY_URL=https://ops.nexus.intodata.nl|" "$ENV_FILE"
+sudo sed -i "s|^MCP_OPS_TELEMETRY_API_KEY=.*|MCP_OPS_TELEMETRY_API_KEY=<client-telemetry-key>|" "$ENV_FILE"
+sudo systemctl restart "mcp-server@${CLIENT_SLUG}.service"
+```
+
+## 9. Enable HTTPS With nginx/certbot
 
 ```bash
 sudo nginx -t
@@ -163,17 +211,25 @@ Verify HTTPS, redirect, and security headers:
 curl -I "https://${FQDN}/"
 curl -I "http://${FQDN}/"
 curl -I "https://${FQDN}/dashboard/"
+curl -I "https://${FQDN}/mcp/health"
+curl -I "https://${FQDN}/logs/stream"
 ```
 
-`/logs/*` must keep SSE buffering disabled through nginx:
+Expected public responses:
+
+- `/` and `/api/v1/*` are reachable through the customer domain.
+- `/dashboard/`, `/mcp/*`, and `/logs/*` return 404 on the customer domain.
+- The Next.js frontend proxies required onboarding source actions through `/api/source/*`.
+
+If private operator access to MCP is needed for debugging, use SSH port
+forwarding to the VPS-local MCP port instead of exposing `/mcp/*` publicly:
 
 ```bash
-sudo nginx -T | grep -A8 'location /logs/'
+ssh -L 8002:127.0.0.1:8002 "intodata@${FQDN}"
+curl -fsS http://127.0.0.1:8002/health
 ```
 
-Expected nginx settings include `proxy_buffering off`, `proxy_cache off`, and a long `proxy_read_timeout`.
-
-## 9. Restrict Inbound Access
+## 10. Restrict Inbound Access
 
 Do not close the current SSH session until a second approved connection is verified.
 
@@ -193,25 +249,26 @@ sudo ufw --force enable
 sudo ufw status verbose
 ```
 
-## 10. Verify Health
+## 11. Verify Health
 
 ```bash
 cd "$REPO_ROOT"
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" ps
 curl -fsS "https://${FQDN}/health"
-curl -fsS "https://${FQDN}/mcp/health"
 curl -fsS "https://${FQDN}/api/v1/auth/bootstrap-status"
+MCP_PORT="$(grep '^MCP_PORT=' "$ENV_FILE" | cut -d= -f2)"
+curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 curl -fsS http://127.0.0.1:11434/api/tags
 ```
 
 Expected:
 
 - Six Docker services are running and healthy.
-- MCP API returns `{"status":"ok","service":"intodoc-mcp-server"}`.
+- MCP API returns `{"status":"ok","service":"intodoc-mcp-server"}` on the VPS-local port.
 - Backend health is `healthy`, or `degraded` only if a non-core dependency is intentionally unavailable.
 - Ollama returns model tags.
 
-## 11. Run Smoke Test
+## 12. Run Smoke Test
 
 Open:
 
@@ -229,3 +286,69 @@ If a deployment step fails:
 2. Update this runbook before marking the story done.
 3. Re-run the affected section.
 4. Add missing verification to [SMOKE-TEST.md](./SMOKE-TEST.md) if it protects a critical path.
+
+## Rollback Procedure
+
+Use this when a deployment leaves the stack broken and a clean restart is needed. It does not destroy data volumes.
+
+### Stop the stack without losing data
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" down
+```
+
+### Revert to a known-good commit
+
+```bash
+cd "$REPO_ROOT"
+git log --oneline -10          # find the last known-good SHA
+git checkout <sha>             # check out that commit
+```
+
+### Rebuild and restart
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d --build
+```
+
+### If the database migration caused the failure
+
+Identify the migration that broke the schema:
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
+  exec backend alembic history --verbose | head -30
+```
+
+Downgrade one revision:
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
+  exec backend alembic downgrade -1
+```
+
+Then fix the migration file, rebuild, and run `alembic upgrade head` again.
+
+### If Postgres data is corrupted
+
+Restore from the most recent backup (see `backup-postgres.sh`):
+
+```bash
+# List available backups
+ls -lht /var/backups/intodata-kb/
+
+# Stop the stack
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" down
+
+# Restore
+gunzip -c /var/backups/intodata-kb/<backup-file>.sql.gz | \
+  sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
+  exec -T postgres psql -U admin intodata_kb
+
+# Restart
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d
+```
+
+### Verify recovery
+
+Run sections 1–2 of [SMOKE-TEST.md](./SMOKE-TEST.md) to confirm the stack is healthy again before restoring client access.

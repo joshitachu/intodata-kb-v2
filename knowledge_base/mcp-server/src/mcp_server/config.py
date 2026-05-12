@@ -50,11 +50,22 @@ class MCPServerConfig(BaseSettings):
     ingest_api_key: str = ""
     jwt_algorithm: str = "HS256"
     github_webhook_secret: str | None = None  # MCP_GITHUB_WEBHOOK_SECRET
+    token_encryption_key: str = ""            # MCP_TOKEN_ENCRYPTION_KEY — Fernet key for PAT storage
+    public_url: str = ""                      # MCP_PUBLIC_URL — public-facing base URL for webhook callbacks
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
 
     # Network hardening — mirror of RAG backend. Empty ALLOWED_IPS = disabled.
     allowed_ips: str = ""
     trusted_proxies: str = "127.0.0.1"
+
+    # IntoData Ops telemetry. Disabled unless ops_telemetry_url and
+    # ops_telemetry_api_key are both set. Payloads must contain metadata only.
+    ops_telemetry_url: str = ""
+    ops_telemetry_api_key: str = ""
+    ops_client_slug: str = ""
+    ops_environment: str = "production"
+    ops_release_version: str = "unknown"
+    ops_telemetry_interval_seconds: int = 300
 
     # App env (development | staging | production) — toggles hard-fail secret validation
     app_env: str = "development"
@@ -99,6 +110,8 @@ class MCPServerConfig(BaseSettings):
     # App
     log_level: str = "INFO"
     auto_reingest_poll_interval_seconds: int = 300
+    auto_reingest_poll_timezone: str = "Europe/Amsterdam"
+    auto_reingest_poll_hours: str = "0,12"
     git_diff_patch_max_files: int = 5
     git_diff_patch_max_chars: int = 50_000
     git_diff_patch_max_docs: int = 3

@@ -1,9 +1,8 @@
 /**
  * Browser-side MCP client.
  *
- * Talks to /mcp/* and /logs/* which are proxied to the MCP server by Caddy
- * (prod) or Next.js rewrites (dev). Same-origin requests so the JWT auth
- * cookie set on "/" flows through unchanged.
+ * Talks to Next.js API routes which proxy to the MCP server from the server
+ * side. Customer deployments do not expose /mcp/* or /logs/* publicly.
  */
 
 export interface UploadZipArgs {
@@ -38,7 +37,7 @@ export function uploadZip({
     form.append("project_id", projectId);
     form.append("platform", platform);
 
-    xhr.open("POST", "/mcp/upload-zip");
+    xhr.open("POST", "/api/source/upload-zip");
     xhr.withCredentials = true;
 
     if (onProgress) {
@@ -54,7 +53,7 @@ export function uploadZip({
         try {
           resolve(JSON.parse(xhr.responseText));
         } catch {
-          reject(new Error("Invalid response from /mcp/upload-zip"));
+          reject(new Error("Invalid response from /api/source/upload-zip"));
         }
       } else {
         reject(new Error(`Upload failed (${xhr.status}): ${xhr.responseText}`));
@@ -73,18 +72,18 @@ export function uploadZip({
 
 /**
  * Explicitly trigger an `intodoc scan` for a project. Required after
- * `/mcp/upload-zip` — the upload endpoint only unpacks the ZIP and registers
+ * `/api/source/upload-zip` — the upload endpoint only unpacks the ZIP and registers
  * the project, it does not auto-kick the scan.
  */
 export async function scanProject(projectId: string): Promise<void> {
-  const res = await fetch("/mcp/scan", {
+  const res = await fetch("/api/source/scan", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId }),
   });
   if (!res.ok) {
-    throw new Error(`/mcp/scan failed (${res.status}): ${await res.text()}`);
+    throw new Error(`/api/source/scan failed (${res.status}): ${await res.text()}`);
   }
 }
 
@@ -93,14 +92,14 @@ export async function scanProject(projectId: string): Promise<void> {
  * the log stream.
  */
 export async function generateDocs(projectId: string): Promise<void> {
-  const res = await fetch("/mcp/generate", {
+  const res = await fetch("/api/source/generate", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId }),
   });
   if (!res.ok) {
-    throw new Error(`/mcp/generate failed (${res.status}): ${await res.text()}`);
+    throw new Error(`/api/source/generate failed (${res.status}): ${await res.text()}`);
   }
 }
 
@@ -122,7 +121,7 @@ export function subscribeToLogs(
   onEvent: (e: LogEvent) => void,
   onError?: (err: Event) => void,
 ): () => void {
-  const url = `/logs/stream?project_id=${encodeURIComponent(projectId)}`;
+  const url = `/api/source/logs?project_id=${encodeURIComponent(projectId)}`;
   const es = new EventSource(url, { withCredentials: true });
   es.onmessage = (msg) => {
     try {

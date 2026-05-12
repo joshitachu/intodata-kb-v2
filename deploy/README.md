@@ -21,6 +21,11 @@ Each client stack is fully isolated:
 - Separate nginx server block → separate TLS cert via certbot.
 - Separate MCP systemd instance (`mcp-server@<client>.service`).
 
+Optional IntoData Ops telemetry is configured per client through the MCP env
+file. It is disabled by default and sends only operational metadata to the
+central Ops API: health, project status, run status, document counts, quality
+scores, token/cost totals, and redacted error summaries.
+
 ## First-time host setup
 
 Once per VPS:
@@ -46,7 +51,9 @@ deploy/deploy-client.sh \
 On first run the script:
 
 1. Generates `/etc/intodata-kb/envs/<client>.env` with fresh randomized secrets
-   and per-client port assignments.
+   and per-client port assignments. Ops telemetry variables are included but
+   left disabled until `MCP_OPS_TELEMETRY_URL` and
+   `MCP_OPS_TELEMETRY_API_KEY` are set.
 2. Renders `/etc/nginx/sites-available/nexus-<client>.conf` from
    `deploy/nginx/nexus-client.conf.template` and symlinks it into
    `sites-enabled`.
@@ -66,15 +73,17 @@ Once the stack is up and DNS / TLS are live, visit
 table and shows the **"create first admin"** form, which calls
 `POST /api/v1/auth/bootstrap-admin`. After the admin is created, the standard
 7-step wizard runs; ZIP uploads in the Source step stream to
-`POST /mcp/upload-zip` and live logs come from the `/logs/stream` SSE endpoint
-(both fronted by the same nginx block).
+source upload and live logs go through the customer-facing Next.js API
+(`/api/source/*`). Public customer domains do not expose `/dashboard/`,
+`/mcp/*`, or `/logs/*`; MCP remains reachable on the VPS-local port for the
+frontend container and operator SSH tunnels.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `RUNBOOK.md` | Canonical EP-001 fresh VPS deployment runbook using Docker Compose, host Ollama, MCP systemd, and nginx/certbot. |
-| `SMOKE-TEST.md` | End-to-end deployment smoke checklist for health, HTTPS, auth, ingest, streaming, dashboard, and IP allowlisting. |
+| `SMOKE-TEST.md` | End-to-end deployment smoke checklist for health, HTTPS, auth, ingest, streaming, developer-route lockdown, and IP allowlisting. |
 | `deploy-client.sh` | Main deploy entry point. |
 | `docker-compose.yml` (root) | Compose file, ports parameterized via env vars. |
 | `nginx/nexus-client.conf.template` | Rendered per client by envsubst. |

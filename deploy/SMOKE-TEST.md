@@ -10,6 +10,9 @@ export BASE_DOMAIN=nexus.intodata.nl
 export FQDN="${CLIENT_SLUG}.${BASE_DOMAIN}"
 export ENV_FILE="/etc/intodata-kb/envs/${CLIENT_SLUG}.env"
 export REPO_ROOT="/opt/intodata-kb/${CLIENT_SLUG}"
+set -a
+. "$ENV_FILE"
+set +a
 cd "$REPO_ROOT"
 ```
 
@@ -18,8 +21,8 @@ cd "$REPO_ROOT"
 ```bash
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" ps
 curl -fsS "https://${FQDN}/health"
-curl -fsS "https://${FQDN}/mcp/health"
 curl -fsS "https://${FQDN}/api/v1/auth/bootstrap-status"
+curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 curl -fsS http://127.0.0.1:11434/api/tags
 sudo systemctl is-active "mcp-server@${CLIENT_SLUG}.service"
 ```
@@ -28,7 +31,7 @@ Pass criteria:
 
 - `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, and `dashboard` are running.
 - Docker healthchecks are healthy within two minutes of startup.
-- MCP API service is active and returns `status: ok`.
+- MCP API service is active locally and returns `status: ok`.
 - Ollama returns model tags.
 
 ## 2. HTTPS, Redirect, And Headers
@@ -37,6 +40,8 @@ Pass criteria:
 curl -I "https://${FQDN}/"
 curl -I "http://${FQDN}/"
 curl -I "https://${FQDN}/dashboard/"
+curl -I "https://${FQDN}/mcp/health"
+curl -I "https://${FQDN}/logs/stream"
 ```
 
 Pass criteria:
@@ -44,18 +49,42 @@ Pass criteria:
 - Browser certificate is valid.
 - HTTP redirects to HTTPS.
 - Responses include `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, and `Referrer-Policy`.
+- `/dashboard/`, `/mcp/*`, and `/logs/*` return 404 on the public customer domain.
 - Browser console has no mixed-content errors.
 
-## 3. Login And Logout
+## 3. Bootstrap Admin And Login
+
+First, confirm bootstrap is available and create the superadmin:
+
+```bash
+# Should return {"bootstrapped": false} on a fresh deploy
+curl -fsS "https://${FQDN}/api/v1/auth/bootstrap-status"
+
+# Create the first superadmin (only works once; subsequent calls return 400)
+curl -fsS -X POST "https://${FQDN}/api/v1/auth/bootstrap-admin" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<your-admin-password>","email":"ops@intodata.nl"}' | jq .
+
+# Confirm bootstrapped now
+curl -fsS "https://${FQDN}/api/v1/auth/bootstrap-status"
+```
+
+Pass criteria for bootstrap:
+
+- First `/bootstrap-status` returns `{"bootstrapped": false}`.
+- `POST /bootstrap-admin` returns HTTP 201 with `{"id": ..., "username": "admin"}`.
+- Second `/bootstrap-status` returns `{"bootstrapped": true}`.
+- A second `POST /bootstrap-admin` returns HTTP 400.
+
+Then verify login flow:
 
 1. Open `https://<client>.<base-domain>`.
-2. If bootstrap is shown, create the first admin user.
-3. Log in as admin.
-4. Refresh the page and confirm the session remains valid.
-5. Log out.
-6. Log in again.
+2. Log in as the admin user created above.
+3. Refresh the page and confirm the session remains valid.
+4. Log out.
+5. Log in again.
 
-Pass criteria:
+Pass criteria for login:
 
 - Login succeeds.
 - Logout clears the session.
@@ -89,20 +118,22 @@ Pass criteria:
 
 - Stream starts within 30 seconds.
 - Stream completes without reconnect loops.
-- No new 500s appear for query, conversation stream, `/mcp/*`, or `/logs/*`.
+- No new 500s appear for query, conversation stream, `/api/source/*`, or MCP logs on the host.
 
-## 6. Dashboard
+## 6. Developer Surface Lockdown
 
-1. Open `https://<client>.<base-domain>/dashboard/`.
-2. Confirm projects load.
-3. Open a project.
-4. Confirm project status, scan history, run history, docs, comparison, and settings views load.
+From a normal customer network, run:
+
+```bash
+curl -o /dev/null -sS -w "%{http_code}\n" "https://${FQDN}/dashboard/"
+curl -o /dev/null -sS -w "%{http_code}\n" "https://${FQDN}/mcp/projects"
+curl -o /dev/null -sS -w "%{http_code}\n" "https://${FQDN}/logs/stream"
+```
 
 Pass criteria:
 
-- Dashboard is not blank.
-- Project scan status is visible.
-- `/mcp/projects`, `/mcp/status/*`, and generation-run calls do not return 500.
+- All three public requests return `404`.
+- The customer-facing app still completes onboarding source upload through `/api/source/*`.
 
 ## 7. IP Allowlist
 
@@ -135,10 +166,11 @@ Domain:
 Docker services healthy: PASS/FAIL
 MCP API healthy: PASS/FAIL
 HTTPS/security headers: PASS/FAIL
+Bootstrap admin: PASS/FAIL
 Login/logout: PASS/FAIL
 Document ingest: PASS/FAIL
 Streaming answer: PASS/FAIL
-Dashboard: PASS/FAIL
+Developer surface locked down: PASS/FAIL
 IP allowlist: PASS/FAIL
 Notes:
 ```
