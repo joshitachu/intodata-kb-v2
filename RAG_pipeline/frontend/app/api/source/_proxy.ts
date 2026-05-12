@@ -37,7 +37,7 @@ export async function proxyMcpJson(
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase()) && key.toLowerCase() !== "content-length") {
       responseHeaders.set(key, value);
     }
   });
@@ -60,6 +60,9 @@ export async function proxyMcpJsonSanitized(
   const text = await raw.text();
   const headers = new Headers(raw.headers);
   headers.set("Content-Type", "application/json");
+  // Remove content-length: secret-stripping changes body size, so we must
+  // let Node.js recalculate it from the actual (shorter) body.
+  headers.delete("content-length");
 
   try {
     return new Response(JSON.stringify(stripSourceSecrets(JSON.parse(text))), {
