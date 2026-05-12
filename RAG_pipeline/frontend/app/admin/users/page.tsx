@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
+import { apiErrorMessage } from "@/lib/apiError";
 import { useRouter } from "next/navigation";
 
 interface Role {
@@ -108,7 +109,7 @@ export default function AdminUsersPage() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.error || data?.detail || "Failed to create user");
+        setError(data?.error || apiErrorMessage(data?.detail, "Failed to create user"));
         return;
       }
       setShowCreate(false);
@@ -129,7 +130,7 @@ export default function AdminUsersPage() {
       const res = await fetch(`/api/admin/users/${userId}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.detail || "Failed to deactivate user");
+        setError(apiErrorMessage(data?.detail, "Failed to deactivate user"));
         return;
       }
       setSuccessMsg("User deactivated");
@@ -168,7 +169,7 @@ export default function AdminUsersPage() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.detail || "Failed to update roles");
+        setError(apiErrorMessage(data?.detail, "Failed to update roles"));
         return;
       }
       setEditRoles(null);
@@ -201,7 +202,7 @@ export default function AdminUsersPage() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.detail || "Failed to reset password");
+        setError(apiErrorMessage(data?.detail, "Failed to reset password"));
         return;
       }
       setPasswordReset(null);

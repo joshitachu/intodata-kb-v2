@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorMessage } from "@/lib/apiError";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
@@ -11,7 +12,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    return NextResponse.json(res.ok ? data : { error: data.detail || "Request failed" }, {
+    return NextResponse.json(res.ok ? data : { error: apiErrorMessage(data.detail, "Request failed") }, {
       status: res.status,
     });
   } catch {

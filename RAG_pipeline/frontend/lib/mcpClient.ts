@@ -19,6 +19,35 @@ export interface UploadZipResult {
   local_path: string | null;
 }
 
+export interface GithubSourceArgs {
+  repoUrl: string;
+  projectId: string;
+  platform: string;
+  displayName?: string;
+  githubToken: string;
+}
+
+export interface SourceProject {
+  id: string;
+  display_name: string;
+  repo_url?: string | null;
+  platform: string;
+  source_type: string;
+  status: string;
+  job_count?: number;
+  doc_count?: number;
+  error_message?: string | null;
+  last_scan_at?: string | null;
+  last_generate_at?: string | null;
+  last_rag_push_at?: string | null;
+  auto_reingest_enabled?: boolean;
+  auto_reingest_last_checked_at?: string | null;
+  auto_reingest_error?: string | null;
+  last_ingested_commit_sha?: string | null;
+  has_github_token?: boolean;
+  webhook_status?: string | null;
+}
+
 /**
  * Upload a ZIP to MCP. Uses XMLHttpRequest so we can surface upload progress
  * (fetch does not expose upload progress in browsers).
@@ -75,12 +104,12 @@ export function uploadZip({
  * `/api/source/upload-zip` — the upload endpoint only unpacks the ZIP and registers
  * the project, it does not auto-kick the scan.
  */
-export async function scanProject(projectId: string): Promise<void> {
+export async function scanProject(projectId: string, force = true): Promise<void> {
   const res = await fetch("/api/source/scan", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId }),
+    body: JSON.stringify({ project_id: projectId, force }),
   });
   if (!res.ok) {
     throw new Error(`/api/source/scan failed (${res.status}): ${await res.text()}`);
@@ -91,16 +120,125 @@ export async function scanProject(projectId: string): Promise<void> {
  * Kick off doc generation. Called after the scan complete event arrives on
  * the log stream.
  */
-export async function generateDocs(projectId: string): Promise<void> {
+export async function generateDocs(projectId: string, resume = true): Promise<void> {
   const res = await fetch("/api/source/generate", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: projectId,
+      resume,
+      template_profile_id: null,
+      model: null,
+      write_model: null,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`/api/source/generate failed (${res.status}): ${await res.text()}`);
+  }
+}
+
+export async function pushProjectToRag(projectId: string): Promise<void> {
+  const res = await fetch("/api/source/push-to-rag", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project_id: projectId }),
   });
   if (!res.ok) {
-    throw new Error(`/api/source/generate failed (${res.status}): ${await res.text()}`);
+    throw new Error(`/api/source/push-to-rag failed (${res.status}): ${await res.text()}`);
   }
+}
+
+export async function resetProjectStatus(projectId: string): Promise<void> {
+  const res = await fetch("/api/source/reset-status", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  if (!res.ok) {
+    throw new Error(`/api/source/reset-status failed (${res.status}): ${await res.text()}`);
+  }
+}
+
+export async function deleteSourceProject(projectId: string): Promise<void> {
+  const res = await fetch(`/api/source/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(`Delete source failed (${res.status}): ${await res.text()}`);
+  }
+}
+
+export async function addGithubSource(args: GithubSourceArgs): Promise<SourceProject> {
+  const res = await fetch("/api/source/github", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repo_url: args.repoUrl,
+      project_id: args.projectId,
+      platform: args.platform,
+      display_name: args.displayName,
+      github_token: args.githubToken,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`/api/source/github failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function updateGithubToken(
+  projectId: string,
+  githubToken: string,
+): Promise<SourceProject> {
+  const res = await fetch(`/api/source/github/${encodeURIComponent(projectId)}/token`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ github_token: githubToken }),
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub token update failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function registerGithubWebhook(projectId: string): Promise<SourceProject> {
+  const res = await fetch(`/api/source/github/${encodeURIComponent(projectId)}/webhook`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(`Webhook registration failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function deleteGithubWebhook(projectId: string): Promise<void> {
+  const res = await fetch(`/api/source/github/${encodeURIComponent(projectId)}/webhook`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(`Webhook deletion failed (${res.status}): ${await res.text()}`);
+  }
+}
+
+export async function checkGithubWebhookStatus(
+  projectId: string,
+): Promise<{ project_id: string; webhook_status: string; webhook_id: number | null }> {
+  const res = await fetch(
+    `/api/source/github/${encodeURIComponent(projectId)}/webhook/status`,
+    { credentials: "include" },
+  );
+  if (!res.ok) {
+    throw new Error(`Webhook status check failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
 }
 
 export interface LogEvent {

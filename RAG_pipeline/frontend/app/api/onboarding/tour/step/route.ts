@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { backendProxyHeaders } from "@/lib/proxyHeaders";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
 export async function PUT(request: NextRequest) {
-  const cookieHeader = request.headers.get("cookie") || "";
-  const body = await request.text();
+    const body = await request.text();
 
   const res = await fetch(`${FASTAPI_URL}/api/v1/onboarding/tour/step`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: cookieHeader,
-    },
+      headers: backendProxyHeaders(request, { json: true }),
     body,
   });
 

@@ -1,20 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { apiErrorMessage } from "@/lib/apiError";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
-export async function POST(_request: NextRequest) {
+function csrfHeaders(request: NextRequest): HeadersInit {
+  const cookieHeader = request.headers.get("cookie") || "";
+  const csrfToken = request.cookies.get("csrf_token")?.value;
+  return {
+    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+    ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+  };
+}
+
+export async function POST(request: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get("access_token");
     const res = await fetch(`${FASTAPI_URL}/api/v1/auth/totp/setup`, {
       method: "POST",
-      headers: token ? { Cookie: `access_token=${token.value}` } : {},
+      headers: csrfHeaders(request),
     });
     const data = await res.json();
     if (!res.ok) {
       return NextResponse.json(
-        { error: data.detail || "TOTP setup failed" },
+        { error: apiErrorMessage(data.detail, "TOTP setup failed") },
         { status: res.status },
       );
     }

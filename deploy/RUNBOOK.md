@@ -19,11 +19,16 @@ export CLIENT_SLUG=staging
 export BASE_DOMAIN=nexus.intodata.nl
 export FQDN="${CLIENT_SLUG}.${BASE_DOMAIN}"
 export ADMIN_EMAIL=ops@intodata.nl
-export REPO_URL=git@github.com:intodata/intodata-kb-v2.git  # migrated 2026-05-11
+export REPO_URL=https://github.com/intodata/intodata-kb-v2.git
 export REPO_ROOT="/opt/intodata-kb/${CLIENT_SLUG}"
 export ENV_FILE="/etc/intodata-kb/envs/${CLIENT_SLUG}.env"
-export APPROVED_CIDRS="203.0.113.10/32,198.51.100.0/24"
+export APPROVED_CIDRS="<your-current-ssh-ip>/32,<office-vpn-cidr>"
 ```
+
+`APPROVED_CIDRS` is intentionally a placeholder. Do not run the UFW commands
+until it includes the public IP or CIDR you are currently SSHing from. The
+recommended repo path is `/opt/intodata-kb/<client>`; other paths are supported
+only when the `intodata` service user can traverse every parent directory.
 
 ## 2. Prepare Ubuntu
 
@@ -59,13 +64,17 @@ sudo chown "$USER:$USER" "$REPO_ROOT"
 
 ```bash
 sudo rm -rf "$REPO_ROOT"
-sudo git clone "$REPO_URL" "$REPO_ROOT"
-sudo chown -R "$USER:$USER" "$REPO_ROOT"
+sudo mkdir -p "$(dirname "$REPO_ROOT")"
+sudo chown "$USER:$USER" "$(dirname "$REPO_ROOT")"
+git clone "$REPO_URL" "$REPO_ROOT"
 cd "$REPO_ROOT"
 git remote -v
 ```
 
-The remote must point at the company GitHub organisation.
+The remote must point at the company GitHub organisation. If you use an SSH
+remote such as `git@github.com:intodata/intodata-kb-v2.git`, clone as the user
+that has the GitHub SSH key configured. Avoid `sudo git clone` unless root has
+its own GitHub credentials.
 
 Install the MCP/intodoc Python packages for the host-level MCP systemd service:
 
@@ -74,6 +83,17 @@ python3 -m venv "$REPO_ROOT/venv"
 "$REPO_ROOT/venv/bin/pip" install --upgrade pip
 "$REPO_ROOT/venv/bin/pip" install -e "$REPO_ROOT/knowledge_base/intodoc"
 "$REPO_ROOT/venv/bin/pip" install -e "$REPO_ROOT/knowledge_base/mcp-server"
+"$REPO_ROOT/venv/bin/intodoc" --help >/dev/null
+"$REPO_ROOT/venv/bin/python" -m mcp_server --help >/dev/null
+```
+
+If `REPO_ROOT` is under a home directory, ensure the `intodata` service user can
+traverse the parent directories. For example, `/home/nexus` with mode `750`
+will block the service even if the repo itself is readable. Use the narrowest
+fix that grants traverse permission, such as:
+
+```bash
+sudo chmod o+x /home/nexus
 ```
 
 ## 4. Install Ollama On The Host
@@ -81,9 +101,19 @@ python3 -m venv "$REPO_ROOT/venv"
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
 sudo systemctl enable --now ollama
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo tee /etc/systemd/system/ollama.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
 ollama pull nomic-embed-text
 ollama pull gemma3:4b
 ```
+
+The `OLLAMA_HOST` override is required because containers reach the host through
+Docker's bridge gateway, not through the host's `127.0.0.1`.
 
 Confirm both models are present before continuing — the stack will fail silently if either is missing:
 
@@ -119,6 +149,11 @@ curl -4 ifconfig.me
 
 The DNS result must match the VPS public IP before running certbot.
 
+If DNS has not propagated yet, continue the deployment without certbot and run
+the certbot command later, after `dig +short "$FQDN"` returns the VPS IP. The
+deploy script currently prints the certbot command for you; `--no-certbot`
+suppresses that printed instruction when DNS is not ready.
+
 ## 6. Deploy The Docker Stack
 
 ```bash
@@ -127,10 +162,14 @@ sudo deploy/deploy-client.sh \
   --client-name "$CLIENT_SLUG" \
   --port-offset 0 \
   --base-domain "$BASE_DOMAIN" \
-  --admin-email "$ADMIN_EMAIL"
+  --admin-email "$ADMIN_EMAIL" \
+  --repo-root "$REPO_ROOT"
 ```
 
 The script generates `/etc/intodata-kb/envs/<client>.env`, renders nginx config from `deploy/nginx/nexus-client.conf.template`, and starts the Docker Compose stack.
+
+If DNS is not ready, add `--no-certbot` to suppress the certbot instruction and
+return to Step 9 after DNS resolves.
 
 Set app-level allowlists:
 
@@ -143,7 +182,7 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d
 If the env file existed before this runbook was updated, confirm these MCP values exist and add them if missing:
 
 ```bash
-sudo grep -E '^(MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT)=' "$ENV_FILE"
+sudo grep -E '^(REPO_ROOT|PUBLIC_APP_URL|MCP_PUBLIC_URL|MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT|SMTP_HOST|SMTP_PORT)=' "$ENV_FILE"
 ```
 
 ## 7. Configure Email (SMTP)
@@ -180,6 +219,8 @@ sudo cp deploy/mcp-server@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now "mcp-server@${CLIENT_SLUG}.service"
 sudo systemctl status "mcp-server@${CLIENT_SLUG}.service" --no-pager
+MCP_PORT="$(grep '^MCP_PORT=' "$ENV_FILE" | cut -d= -f2)"
+curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 ```
 
 Optional: enable central IntoData Ops telemetry after the central Ops API has a
@@ -197,6 +238,10 @@ sudo systemctl restart "mcp-server@${CLIENT_SLUG}.service"
 ```
 
 ## 9. Enable HTTPS With nginx/certbot
+
+Run this step only after DNS resolves to the VPS. If Step 6 was run before DNS
+was ready, this is where you run certbot. If certbot has already succeeded for
+`$FQDN`, skip the certbot command and only run the verification commands.
 
 ```bash
 sudo nginx -t
@@ -218,7 +263,8 @@ curl -I "https://${FQDN}/logs/stream"
 Expected public responses:
 
 - `/` and `/api/v1/*` are reachable through the customer domain.
-- `/dashboard/`, `/mcp/*`, and `/logs/*` return 404 on the customer domain.
+- `/dashboard/`, `/mcp/*`, and `/logs/*` return 404 on the customer domain. This is intentional public-domain lockdown, not a deployment failure.
+- `/webhook/*` is public and proxies to the MCP service for HMAC-verified GitHub webhooks.
 - The Next.js frontend proxies required onboarding source actions through `/api/source/*`.
 
 If private operator access to MCP is needed for debugging, use SSH port
@@ -232,6 +278,18 @@ curl -fsS http://127.0.0.1:8002/health
 ## 10. Restrict Inbound Access
 
 Do not close the current SSH session until a second approved connection is verified.
+Before enabling UFW, confirm `APPROVED_CIDRS` is not a placeholder and includes
+your current SSH source IP or VPN CIDR.
+
+```bash
+echo "APPROVED_CIDRS=${APPROVED_CIDRS}"
+echo "Current SSH session:"
+who am i
+ss -tnp | grep ':22' || true
+```
+
+If the current SSH source IP is not covered by `APPROVED_CIDRS`, stop here and
+fix Step 1 first.
 
 ```bash
 sudo ufw --force reset
@@ -251,7 +309,18 @@ sudo ufw status verbose
 
 ## 11. Verify Health
 
+If this is a new shell, re-export the Step 1 variables first, then load the env
+file for generated values like `MCP_PORT`:
+
 ```bash
+export CLIENT_SLUG=staging
+export BASE_DOMAIN=nexus.intodata.nl
+export FQDN="${CLIENT_SLUG}.${BASE_DOMAIN}"
+export REPO_ROOT="/opt/intodata-kb/${CLIENT_SLUG}"
+export ENV_FILE="/etc/intodata-kb/envs/${CLIENT_SLUG}.env"
+set -a
+. "$ENV_FILE"
+set +a
 cd "$REPO_ROOT"
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" ps
 curl -fsS "https://${FQDN}/health"
@@ -343,7 +412,7 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" down
 # Restore
 gunzip -c /var/backups/intodata-kb/<backup-file>.sql.gz | \
   sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
-  exec -T postgres psql -U admin intodata_kb
+  exec -T postgres psql -U admin "intodata_kb_${CLIENT_SLUG}"
 
 # Restart
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d

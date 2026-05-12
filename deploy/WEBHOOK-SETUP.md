@@ -6,7 +6,7 @@ Use this guide after the project has already been registered and initially inges
 
 - Webhook URL: `https://<client>.nexus.intodata.nl/webhook/github/webhook`
 - Content type: `application/json`
-- Events: select push events. GitHub also sends an automatic `ping` event when the webhook is created or updated; the platform accepts that ping for validation.
+- Events: select push and pull request events. GitHub also sends an automatic `ping` event when the webhook is created or updated; the platform accepts that ping for validation.
 - Secret environment variable: `MCP_GITHUB_WEBHOOK_SECRET`
 
 Generate a strong secret:
@@ -37,7 +37,7 @@ Verify the service user can clone and pull the repository before adding it in th
 6. Enter `https://<client>.nexus.intodata.nl/webhook/github/webhook` as the Payload URL.
 7. Select `application/json` as the content type.
 8. Paste the same secret value into the webhook Secret field.
-9. Select push events.
+9. Select push and pull request events.
 10. Save the webhook and confirm GitHub's automatic ping delivery succeeds.
 11. Push a small change and confirm the platform performs partial re-ingestion.
 
@@ -45,7 +45,7 @@ Verify the service user can clone and pull the repository before adding it in th
 
 A successful GitHub ping returns `ping_received`. If the repository is already registered, the response includes `registered: true` and the project log records the ping.
 
-A push event for a registered repository returns `scan_triggered`. The background worker then pulls the latest code, scans the changed project, regenerates affected documentation, and pushes updates to RAG.
+A push or pull request event for a registered repository returns `webhook_triggered`. Push events run the diff-only documentation update; pull request events run the existing scan behavior.
 
 As part of release validation, ask three repository-specific questions in the chat UI and confirm the answers cite or reflect the newly generated project documentation. Testing by someone other than the implementation author remains a manual sign-off item.
 

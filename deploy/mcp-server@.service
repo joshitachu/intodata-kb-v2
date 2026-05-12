@@ -1,9 +1,8 @@
 [Unit]
 # Templated systemd unit for per-client MCP servers. Enable with e.g.
 #   systemctl enable --now mcp-server@acme.service
-# The instance name (acme) is used to look up /etc/intodata-kb/envs/acme.env
-# which must define MCP_PORT, MCP_DATA_DIR, MCP_DATABASE_URL, etc. (see
-# .env.production.template).
+# The instance name (acme) is used to look up /etc/intodata-kb/envs/acme.env,
+# which must define REPO_ROOT, MCP_PORT, MCP_DATA_DIR, MCP_DATABASE_URL, etc.
 Description=intodoc MCP Server for client %i
 After=network.target docker.service
 Wants=docker.service
@@ -12,11 +11,10 @@ Wants=docker.service
 Type=simple
 User=intodata
 Group=intodata
-WorkingDirectory=/opt/intodata-kb/%i/knowledge_base
 EnvironmentFile=/etc/intodata-kb/envs/%i.env
-# Using sh -c so ${MCP_PORT} expansion happens at service start rather than
-# being treated as a literal arg by systemd's own limited expansion.
-ExecStart=/bin/sh -c '/opt/intodata-kb/%i/venv/bin/python -m mcp_server --serve --host 127.0.0.1 --port "$${MCP_PORT:-8002}"'
+# Using sh -c so env expansion happens at service start. REPO_ROOT allows
+# deployments outside /opt/intodata-kb/<client> when directory permissions allow it.
+ExecStart=/bin/sh -c 'cd "$${REPO_ROOT:?REPO_ROOT is required}/knowledge_base" && exec "$${REPO_ROOT}/venv/bin/python" -m mcp_server --serve --host 127.0.0.1 --port "$${MCP_PORT:-8002}"'
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

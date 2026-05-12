@@ -56,7 +56,6 @@ const navItems = [
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/docs", label: "Project Docs", icon: BookOpen },
   { href: "/topology", label: "Topology", icon: Network },
-  { href: "/settings/sources", label: "Sources", icon: Database },
 ];
 
 type PermissionCodename =
@@ -74,11 +73,13 @@ interface AdminSubLink {
   href: string;
   label: string;
   icon: typeof Users;
+  adminOnly?: boolean;
   superadminOnly?: boolean;
   perm?: PermissionCodename;
 }
 
 const adminSubLinks: AdminSubLink[] = [
+  { href: "/settings/sources", label: "Sources", icon: Database, adminOnly: true },
   { href: "/admin/users", label: "Users", icon: Users, superadminOnly: true },
   { href: "/admin/access-requests", label: "Access", icon: UserPlus, superadminOnly: true },
   { href: "/admin/roles", label: "Roles", icon: KeyRound, superadminOnly: true },
@@ -101,8 +102,10 @@ export function Sidebar() {
   const [guideOpen, setGuideOpen] = useState(false);
 
   const isChatPage = pathname === "/";
+  const isAdminSection = pathname.startsWith("/admin") || pathname === "/settings/sources";
 
   const visibleAdminLinks = adminSubLinks.filter((link) => {
+    if (link.adminOnly) return hasAnyAdminPermission;
     if (link.superadminOnly) return isSuperadmin;
     if (link.perm) return hasPermission(link.perm);
     return false;
@@ -178,7 +181,7 @@ export function Sidebar() {
               title="Admin"
               className={cn(
                 "flex items-center justify-center w-8 h-8 rounded-md transition-colors",
-                pathname.startsWith("/admin")
+                isAdminSection
                   ? "bg-secondary text-secondary-foreground"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
@@ -266,7 +269,7 @@ export function Sidebar() {
               href={visibleAdminLinks[0]?.href ?? "/admin/usage"}
               className={cn(
                 "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors",
-                pathname.startsWith("/admin")
+                isAdminSection
                   ? "bg-secondary text-secondary-foreground font-medium"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
@@ -274,7 +277,7 @@ export function Sidebar() {
               <Shield className="h-4 w-4" />
               Admin
             </Link>
-            {pathname.startsWith("/admin") &&
+            {isAdminSection &&
               visibleAdminLinks.length > 0 && (
                 <div className="ml-4 space-y-0.5">
                   {visibleAdminLinks.map(({ href, label, icon: Icon }) => (

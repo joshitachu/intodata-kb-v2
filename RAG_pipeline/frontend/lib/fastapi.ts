@@ -9,12 +9,33 @@ interface FetchOptions extends Omit<RequestInit, "body"> {
 async function getAuthHeaders(): Promise<Record<string, string>> {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get("access_token");
-    if (token) {
-      return { Cookie: `access_token=${token.value}` };
+    const cookieHeader = cookieStore
+      .getAll()
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+    const csrfToken = cookieStore.get("csrf_token")?.value;
+    return {
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+    };
+  } catch {
+    // cookies() not available in client context - that's fine
+  }
+  return {};
+}
+
+async function getCookieHeaders(): Promise<Record<string, string>> {
+  try {
+    const cookieStore = await cookies();
+    const cookieHeader = cookieStore
+      .getAll()
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+    if (cookieHeader) {
+      return { Cookie: cookieHeader };
     }
   } catch {
-    // cookies() not available in client context — that's fine
+    // cookies() not available in client context - that's fine
   }
   return {};
 }
@@ -52,7 +73,7 @@ export async function fastapiUpload<T>(
   path: string,
   formData: FormData,
 ): Promise<T> {
-  const authHeaders = await getAuthHeaders();
+  const authHeaders = await getCookieHeaders();
 
   const res = await fetch(`${FASTAPI_URL}${path}`, {
     method: "POST",

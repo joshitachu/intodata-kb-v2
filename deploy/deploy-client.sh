@@ -34,7 +34,8 @@ Optional:
                              Default: nexus.intodata.nl
   --admin-email <email>      Email used by certbot for ACME registration.
                              Default: support@intodata.nl
-  --no-certbot               Skip the certbot --nginx step (useful on CI).
+  --no-certbot               Do not print the certbot command. Use when DNS is
+                             not ready yet or on CI.
   --env-dir <path>           Directory for rendered env files.
                              Default: /etc/intodata-kb/envs
   --nginx-sites-available    Path to nginx sites-available.
@@ -134,12 +135,18 @@ ADMIN_DEFAULT_PASSWORD=$ADMIN_DEFAULT_PASSWORD
 COOKIE_SECURE=true
 COOKIE_DOMAIN=$CLIENT.$BASE_DOMAIN
 ALLOWED_ORIGINS=https://$CLIENT.$BASE_DOMAIN
+PUBLIC_APP_URL=https://$CLIENT.$BASE_DOMAIN
+
+# Repository root used by host-level services
+REPO_ROOT=$REPO_ROOT
 
 # MCP ingest auth (server-to-server)
 MCP_INGEST_API_KEY=$MCP_INGEST_API_KEY
 MCP_PORT=$MCP_PORT
 MCP_DATABASE_URL=postgresql+asyncpg://admin:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/intodata_kb_$CLIENT
 MCP_RAG_BASE_URL=http://127.0.0.1:$BACKEND_PORT
+MCP_PUBLIC_URL=https://$CLIENT.$BASE_DOMAIN
+MCP_GITHUB_WEBHOOK_SECRET=
 MCP_DATA_DIR=$REPO_ROOT/knowledge_base/data
 MCP_INTODOC_OUTPUT_DIR=$REPO_ROOT/knowledge_base/intodoc-output
 MCP_PROJECT_ROOT=$REPO_ROOT/knowledge_base
@@ -183,6 +190,15 @@ MCP_APP_ENV=production
 # App
 APP_ENV=production
 LOG_LEVEL=INFO
+
+# SMTP
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM_ADDRESS=
+SMTP_FROM_NAME=IntoData Nexus
+SMTP_USE_TLS=true
 EOF
     chmod 600 "$ENV_FILE"
     echo "Wrote $ENV_FILE (chmod 600)"

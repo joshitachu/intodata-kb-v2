@@ -179,6 +179,55 @@ export const DocsProjectsResponseSchema = z.object({
 
 export type DocsProjectsResponse = z.infer<typeof DocsProjectsResponseSchema>;
 
+// --- Source Projects ---
+
+export const SourceProjectSchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  repo_url: z.string().nullable().optional(),
+  local_path: z.string().nullable().optional(),
+  platform: z.string(),
+  source_type: z.string(),
+  status: z.string(),
+  job_count: z.number().optional().default(0),
+  doc_count: z.number().optional().default(0),
+  error_message: z.string().nullable().optional(),
+  last_scan_at: z.string().nullable().optional(),
+  last_generate_at: z.string().nullable().optional(),
+  last_rag_push_at: z.string().nullable().optional(),
+  auto_reingest_enabled: z.boolean().optional().default(false),
+  auto_reingest_last_checked_at: z.string().nullable().optional(),
+  auto_reingest_error: z.string().nullable().optional(),
+  last_ingested_commit_sha: z.string().nullable().optional(),
+  has_github_token: z.boolean().optional().default(false),
+  webhook_status: z.string().nullable().optional(),
+});
+
+export type SourceProject = z.infer<typeof SourceProjectSchema>;
+
+export const SourceProjectsResponseSchema = z.object({
+  projects: z.array(SourceProjectSchema),
+  total: z.number(),
+});
+
+export type SourceProjectsResponse = z.infer<typeof SourceProjectsResponseSchema>;
+
+export const AddGithubSourceSchema = z.object({
+  repo_url: z.string().url(),
+  project_id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/),
+  platform: z.string().min(1),
+  display_name: z.string().trim().min(1).max(160).optional(),
+  github_token: z.string().min(1),
+});
+
+export type AddGithubSource = z.infer<typeof AddGithubSourceSchema>;
+
+export const UpdateGithubTokenSchema = z.object({
+  github_token: z.string().min(1),
+});
+
+export type UpdateGithubToken = z.infer<typeof UpdateGithubTokenSchema>;
+
 // --- User Projects (RAG project selector) ---
 
 export const UserProjectSchema = z.object({

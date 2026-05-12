@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { backendProxyHeaders } from "@/lib/proxyHeaders";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
 export async function POST(request: NextRequest) {
   try {
-    // Forward cookies to FastAPI
-    const cookieHeader = request.headers.get("cookie") || "";
-
     const res = await fetch(`${FASTAPI_URL}/api/v1/auth/logout`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: cookieHeader,
-      },
+      headers: backendProxyHeaders(request, { json: true }),
     });
 
     const response = NextResponse.json({ message: "Logged out" });

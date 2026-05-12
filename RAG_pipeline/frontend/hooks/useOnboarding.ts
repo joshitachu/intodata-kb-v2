@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiErrorMessage } from "@/lib/apiError";
 import {
   CommTool,
   CompleteWizardResponse,
@@ -32,7 +33,7 @@ async function putStep<T>(step: string, body: T): Promise<OnboardingStatus> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.detail || `Failed to save ${step}`);
+    throw new Error(apiErrorMessage(data.detail, `Failed to save ${step}`));
   }
   return OnboardingStatusSchema.parse(await res.json());
 }

@@ -26,6 +26,7 @@ _EXEMPT_PATHS = {
     "/api/v1/auth/refresh",
     "/api/v1/auth/otp/send",
     "/api/v1/auth/otp/verify",
+    "/api/v1/auth/verify-mfa",
     "/api/v1/auth/invite/accept",
     "/api/v1/auth/bootstrap-admin",
     "/api/v1/auth/sso",

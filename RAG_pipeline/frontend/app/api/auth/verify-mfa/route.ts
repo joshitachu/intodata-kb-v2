@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { apiErrorMessage } from "@/lib/apiError";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
@@ -16,7 +17,7 @@ export async function POST(request: NextRequest) {
 
     if (!res.ok) {
       return NextResponse.json(
-        { error: data.detail || "MFA verification failed" },
+        { error: apiErrorMessage(data.detail, "MFA verification failed") },
         { status: res.status },
       );
     }

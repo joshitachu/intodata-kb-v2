@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { backendProxyHeaders } from "@/lib/proxyHeaders";
 
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
@@ -9,16 +10,12 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
   const body = await request.json();
-  const cookieHeader = request.headers.get("cookie") || "";
 
   const res = await fetch(
     `${FASTAPI_URL}/api/v1/conversations/${id}/messages/stream`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: cookieHeader,
-      },
+      headers: backendProxyHeaders(request, { json: true }),
       body: JSON.stringify(body),
     },
   );
