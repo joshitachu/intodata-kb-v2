@@ -108,6 +108,14 @@ function formatDate(value?: string | null): string {
   });
 }
 
+function unitLabel(platform: string, count: number): string {
+  const id = platform.toLowerCase();
+  if (id === "workato") return count === 1 ? "recipe" : "recipes";
+  if (id === "lobster") return count === 1 ? "workflow" : "workflows";
+  if (id === "talend") return count === 1 ? "job" : "jobs";
+  return count === 1 ? "unit" : "units";
+}
+
 function stageFromEvent(ev: LogEvent): RowStage | null {
   const text = `${ev.type ?? ""} ${ev.data ?? ""}`.toLowerCase();
   if (ev.type === "scan_complete" || text.includes("scan complete")) return "generating";
@@ -495,7 +503,7 @@ export default function SourcesSettingsPage() {
           <Stat label="Sources" value={projects.length} />
           <Stat label="GitHub" value={projects.filter((p) => p.source_type === "git").length} />
           <Stat label="Docs" value={projects.reduce((sum, p) => sum + (p.doc_count ?? 0), 0)} />
-          <Stat label="Jobs" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
+          <Stat label="Recipes / jobs" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
         </div>
 
         {projects.length === 0 ? (
@@ -689,7 +697,9 @@ function SourceRow({
               {source ? (
                 <p className="text-xs text-muted-foreground truncate">
                   {source.id} &middot; {platformLabel ?? source.platform} &middot;{" "}
-                  {source.source_type === "git" ? "GitHub" : "ZIP"} &middot; {source.doc_count ?? 0} docs
+                  {source.source_type === "git" ? "GitHub" : "ZIP"} &middot;{" "}
+                  {source.job_count ?? 0} {unitLabel(source.platform, source.job_count ?? 0)} &middot;{" "}
+                  {source.doc_count ?? 0} docs
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
@@ -729,6 +739,13 @@ function SourceRow({
           {source.repo_url && (
             <p className="truncate text-xs text-muted-foreground">{source.repo_url}</p>
           )}
+          <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+            <Meta
+              label={unitLabel(source.platform, source.job_count ?? 0)}
+              value={String(source.job_count ?? 0)}
+            />
+            <Meta label="Docs" value={String(source.doc_count ?? 0)} />
+          </div>
           <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
             <Meta label="Last scan" value={formatDate(source.last_scan_at)} />
             <Meta label="Last generate" value={formatDate(source.last_generate_at)} />
