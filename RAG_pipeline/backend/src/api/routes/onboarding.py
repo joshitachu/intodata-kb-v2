@@ -18,6 +18,7 @@ from src.services.onboarding_service import (
     OnboardingService,
     run_background_setup,
 )
+from src.services.system_config_service import SystemConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,8 @@ class OnboardingStatusResponse(BaseModel):
     source_type: str | None = None
     source_url: str | None = None
     source_filename: str | None = None
+    # Company-level flag — frontend uses this to decide which wizard to show
+    company_wizard_completed: bool = False
 
 
 class OptionItem(BaseModel):
@@ -197,7 +200,7 @@ def _to_status(row: UserOnboarding | None) -> OnboardingStatusResponse:
 
 # --- Endpoints -------------------------------------------------------
 
-@router.get("/config", response_model=OnboardingConfigResponse)
+@router.get("/config", response_model=OnboardingConfigResponse, summary="Get wizard platform and tool options")
 async def get_config(_user: CurrentUser) -> OnboardingConfigResponse:
     """Return the wizard's platform + tool options. Auth-required but same for
     every user — adding a new option is a code/config change, not a DB update.
@@ -215,32 +218,31 @@ async def get_config(_user: CurrentUser) -> OnboardingConfigResponse:
     )
 
 
-@router.get("/status", response_model=OnboardingStatusResponse)
+@router.get("/status", response_model=OnboardingStatusResponse, summary="Get the current user's onboarding state")
 async def get_status(user: CurrentUser, db: DBSession) -> OnboardingStatusResponse:
-    """Return wizard + tour state. Creates a fresh row lazily for new users.
+    """Return wizard + tour state, plus the company-level wizard flag.
 
-    "New user" = no row yet AND user created after onboarding shipped. We
-    detect this by checking whether a row exists AT ALL. If you want existing
-    users to see the wizard too, `POST /onboarding/reset` them.
+    Existing users with no onboarding row are treated as completed (grandfathered).
+    Admins can call POST /onboarding/reset to force-show the wizard again.
     """
     svc = OnboardingService(db)
     row = await svc.get_or_create(user, create=False)
 
-    # Lazy-create a row for users who were created after this feature shipped
-    # (heuristic: if the user has no onboarding row, assume they're a grandfathered
-    # existing user — return completed-state so they skip the wizard).
-    # Admins can call POST /onboarding/reset to force-show the wizard.
-    if row is None:
-        # Create the row only when the user is brand new. We can't know "brand
-        # new" perfectly, so we default to skipping the wizard for any user
-        # without a row (safer — existing users are not interrupted).
-        return _to_status(None)
+    status = _to_status(row)
 
-    return _to_status(row)
+    # Embed company wizard state so the frontend needs only one status call
+    company_svc = SystemConfigService(db)
+    company_row = await company_svc.get(create=False)
+    status.company_wizard_completed = (
+        company_row.company_wizard_completed if company_row is not None else False
+    )
+
+    return status
 
 
-@router.put("/step/workspace", response_model=OnboardingStatusResponse)
+@router.put("/step/workspace", response_model=OnboardingStatusResponse, summary="Save workspace name step")
 async def save_workspace(body: WorkspaceStepBody, user: CurrentUser, db: DBSession):
+    """Persist the workspace name entered in the onboarding wizard step."""
     svc = OnboardingService(db)
     try:
         row = await svc.save_step(
@@ -251,8 +253,9 @@ async def save_workspace(body: WorkspaceStepBody, user: CurrentUser, db: DBSessi
     return _to_status(row)
 
 
-@router.put("/step/platforms", response_model=OnboardingStatusResponse)
+@router.put("/step/platforms", response_model=OnboardingStatusResponse, summary="Save selected integration platforms step")
 async def save_platforms(body: PlatformsStepBody, user: CurrentUser, db: DBSession):
+    """Persist the platform selections from the onboarding wizard step."""
     svc = OnboardingService(db)
     try:
         row = await svc.save_step(user, "platforms", {"platforms": body.platforms})
@@ -261,8 +264,9 @@ async def save_platforms(body: PlatformsStepBody, user: CurrentUser, db: DBSessi
     return _to_status(row)
 
 
-@router.put("/step/comm_tools", response_model=OnboardingStatusResponse)
+@router.put("/step/comm_tools", response_model=OnboardingStatusResponse, summary="Save communication tools step")
 async def save_comm_tools(body: CommToolsStepBody, user: CurrentUser, db: DBSession):
+    """Persist the communication tool selections from the onboarding wizard step."""
     svc = OnboardingService(db)
     try:
         row = await svc.save_step(user, "comm_tools", {"comm_tools": body.comm_tools})
@@ -271,8 +275,9 @@ async def save_comm_tools(body: CommToolsStepBody, user: CurrentUser, db: DBSess
     return _to_status(row)
 
 
-@router.put("/step/source", response_model=OnboardingStatusResponse)
+@router.put("/step/source", response_model=OnboardingStatusResponse, summary="Save source repository or file step")
 async def save_source(body: SourceStepBody, user: CurrentUser, db: DBSession):
+    """Persist the source URL or filename from the onboarding wizard step."""
     svc = OnboardingService(db)
     try:
         row = await svc.save_step(
@@ -289,14 +294,19 @@ async def save_source(body: SourceStepBody, user: CurrentUser, db: DBSession):
     return _to_status(row)
 
 
-@router.post("/complete", response_model=CompleteWizardResponse)
+@router.post("/complete", response_model=CompleteWizardResponse, summary="Mark the onboarding wizard as complete")
 async def complete_wizard(
     user: CurrentUser, db: DBSession, bg: BackgroundTasks
 ) -> CompleteWizardResponse:
     svc = OnboardingService(db)
     row = await svc.get_or_create(user)
     assert row is not None
-    has_source = bool(row.source_type and (row.source_url or row.source_filename))
+    # Source upload + background processing only applies to the admin wizard.
+    # Non-admin users complete a slim welcome wizard with no source step.
+    has_source = (
+        user.is_superadmin
+        and bool(row.source_type and (row.source_url or row.source_filename))
+    )
     updated = await svc.complete_wizard(user, has_source=has_source)
     if has_source:
         bg.add_task(run_background_setup, user.id, async_session_factory)
@@ -306,8 +316,9 @@ async def complete_wizard(
     )
 
 
-@router.get("/setup-status", response_model=SetupStatusResponse)
+@router.get("/setup-status", response_model=SetupStatusResponse, summary="Poll background setup progress")
 async def setup_status(user: CurrentUser, db: DBSession) -> SetupStatusResponse:
+    """Return the current background ingest/setup status for the onboarded user."""
     svc = OnboardingService(db)
     row = await svc.get_or_create(user, create=False)
     if row is None:
@@ -315,21 +326,23 @@ async def setup_status(user: CurrentUser, db: DBSession) -> SetupStatusResponse:
     return SetupStatusResponse(setup_status=row.setup_status, setup_error=row.setup_error)
 
 
-@router.post("/tour/complete", response_model=OnboardingStatusResponse)
+@router.post("/tour/complete", response_model=OnboardingStatusResponse, summary="Mark the product tour as complete")
 async def tour_complete(user: CurrentUser, db: DBSession):
+    """Flip tour_completed to true for the current user."""
     svc = OnboardingService(db)
     row = await svc.complete_tour(user)
     return _to_status(row)
 
 
-@router.put("/tour/step", response_model=OnboardingStatusResponse)
+@router.put("/tour/step", response_model=OnboardingStatusResponse, summary="Save the current tour step position")
 async def tour_step(body: TourStepBody, user: CurrentUser, db: DBSession):
+    """Persist the tour progress so it resumes at the last step on reload."""
     svc = OnboardingService(db)
     row = await svc.save_step(user, "tour", {"tour_step": body.tour_step})
     return _to_status(row)
 
 
-@router.post("/reset", status_code=204)
+@router.post("/reset", status_code=204, summary="Reset a user's onboarding state")
 async def reset_onboarding(body: ResetOnboardingBody, admin: AdminUser, db: DBSession):
     """Admin: wipe a user's onboarding state so the wizard shows on next login."""
     result = await db.execute(select(User).where(User.id == body.user_id))

@@ -12,7 +12,7 @@ router = APIRouter(tags=["health"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("/health", response_model=HealthResponse)
+@router.get("/health", response_model=HealthResponse, summary="Service health check")
 async def health_check() -> HealthResponse:
     """Check status of PostgreSQL, Qdrant, Ollama, and Hindsight."""
     db_status = await _check_database()

@@ -1,8 +1,11 @@
 from src.generation.prompt_builder import (
+    CODE_ASSISTANT_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     MAX_CONTEXT_TOKENS,
     build_messages,
+    build_no_results_messages,
     _build_context,
+    should_use_code_assistant,
 )
 from src.schemas import Source
 
@@ -40,6 +43,26 @@ def test_build_messages_with_reference_numbers():
     messages = build_messages("What is X?", sources, reference_numbers=ref_map)
     assert "[Reference 1: test.pdf]" in messages[1]["content"]
     assert "[Source:" not in messages[1]["content"]
+
+
+def test_build_messages_code_answer_style():
+    sources = [_make_source()]
+    messages = build_messages("How is auth implemented?", sources, answer_style="code")
+    assert messages[0]["content"] == CODE_ASSISTANT_SYSTEM_PROMPT
+    assert "Finding" in messages[0]["content"]
+    assert "Deep Dive" in messages[0]["content"]
+
+
+def test_build_no_results_code_answer_style_suggests_deep_dive():
+    messages = build_no_results_messages("Where is the stream route?", answer_style="code")
+    assert "Deep Dive" in messages[0]["content"]
+    assert "indexed project documentation" in messages[0]["content"]
+
+
+def test_should_use_code_assistant_for_engineering_query():
+    assert should_use_code_assistant("Where is streaming chat implemented?")
+    assert should_use_code_assistant("How does this project handle data flow?", ["proj"])
+    assert not should_use_code_assistant("Hello there")
 
 
 def test_build_context_includes_headers():

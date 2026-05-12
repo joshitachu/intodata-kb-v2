@@ -102,3 +102,115 @@ async def test_delete_document_not_found(mock_deps):
         resp = await client.delete("/api/v1/documents/999")
 
     assert resp.status_code == 404
+
+
+async def test_delete_document_forbidden_wrong_project(mock_deps):
+    """Non-admin user cannot delete a document from a project they are not assigned to."""
+    mock_db = mock_deps["db"]
+    user = mock_deps["user"]
+
+    user.is_superadmin = False
+    role = MagicMock()
+    role.permissions = []
+    user.roles = [role]
+
+    doc = _mock_document(id=1)  # project_id = "test-project"
+
+    doc_result = MagicMock()
+    doc_result.scalar_one_or_none.return_value = doc
+
+    # User has no project assignments
+    proj_result = MagicMock()
+    proj_result.scalars.return_value.all.return_value = []
+
+    mock_db.execute = AsyncMock(side_effect=[doc_result, proj_result])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/api/v1/documents/1")
+
+    assert resp.status_code == 403
+
+
+# --- Soft delete tests (real SQLite DB via db_session) ---
+
+async def test_soft_deleted_document_not_in_list(db_session):
+    """A document with deleted_at set must not appear in GET /documents."""
+    from datetime import datetime, timezone
+
+    from src.api.dependencies import get_current_user, get_db
+    from src.auth.security import hash_password
+    from src.db.models import User
+
+    user = User(
+        username="doc-softdel-user",
+        email="doc-softdel@example.com",
+        password_hash=hash_password("pw"),
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    live_doc = Document(filename="live.pdf", file_type="pdf", chunk_count=1)
+    dead_doc = Document(
+        filename="deleted.pdf",
+        file_type="pdf",
+        chunk_count=1,
+        deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    db_session.add_all([live_doc, dead_doc])
+    await db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/documents")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    filenames = [d["filename"] for d in resp.json()["documents"]]
+    assert "live.pdf" in filenames
+    assert "deleted.pdf" not in filenames
+
+
+async def test_soft_deleted_document_returns_404_on_delete(db_session):
+    """DELETE on an already-soft-deleted document must return 404."""
+    from datetime import datetime, timezone
+
+    from src.api.dependencies import get_current_user, get_db, get_qdrant
+    from src.auth.security import hash_password
+    from src.db.models import User
+
+    user = User(
+        username="doc-softdel2-user",
+        email="doc-softdel2@example.com",
+        password_hash=hash_password("pw"),
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    doc = Document(
+        filename="already-deleted.pdf",
+        file_type="pdf",
+        chunk_count=1,
+        deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    db_session.add(doc)
+    await db_session.commit()
+
+    mock_qdrant = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_qdrant] = lambda: mock_qdrant
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.delete(f"/api/v1/documents/{doc.id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 404

@@ -4,7 +4,8 @@ import { usePathname } from "next/navigation";
 import { useRef, useState, type ReactNode } from "react";
 import { useAuthContext } from "@/components/AuthProvider";
 import { useOnboardingContext } from "@/contexts/OnboardingContext";
-import { OnboardingWizard } from "./OnboardingWizard";
+import { AdminOnboardingWizard } from "./AdminOnboardingWizard";
+import { UserWelcomeWizard } from "./UserWelcomeWizard";
 
 const SKIP_PATHS = ["/login"];
 
@@ -13,46 +14,50 @@ interface Props {
 }
 
 /**
- * Wraps the app and mounts the onboarding wizard over the top for users whose
- * wizard is incomplete.
+ * Mounts the appropriate wizard over the app:
+ * - Superadmin with no company config done → AdminOnboardingWizard (full 7-step)
+ * - Regular user with no personal onboarding done → UserWelcomeWizard (slim welcome)
+ * - Everyone else → nothing
  *
- * Once a wizard session is started we keep it mounted until the user explicitly
- * dismisses it (from the Ready step). Otherwise the Guard would unmount the
- * wizard the moment `complete_wizard` flips `wizard_completed=true`, which
- * previously caused the wizard to vanish behind the auto-starting product tour.
+ * Once a session is latched it stays mounted until the user explicitly dismisses
+ * it, preventing the wizard from vanishing when wizard_completed flips mid-flow.
  */
 export function OnboardingGuard({ children }: Props) {
   const pathname = usePathname();
   const { user, isLoading: authLoading } = useAuthContext();
   const { status, isLoading: onboardingLoading } = useOnboardingContext();
 
-  const sessionStarted = useRef(false);
+  const sessionStarted = useRef<"admin" | "user" | null>(null);
   const [sessionDismissed, setSessionDismissed] = useState(false);
 
   if (SKIP_PATHS.some((p) => pathname.startsWith(p))) return <>{children}</>;
   if (authLoading || !user) return <>{children}</>;
-  if (onboardingLoading) return <>{children}</>;
+  if (onboardingLoading) return null;
 
-  // `status.wizard_completed` is the source of truth. `user.onboarding_completed`
-  // is captured at login and never updates, so we only use it as a hint while
-  // status is still loading (above).
-  const wizardDone = status
-    ? status.wizard_completed
-    : user.onboarding_completed;
+  const companyDone = status?.company_wizard_completed ?? false;
+  const userDone = status ? status.wizard_completed : user.onboarding_completed;
 
-  // Latch the session on the first render where the wizard is not done.
-  // Once latched, the session stays open until the user dismisses it —
-  // even if `wizard_completed` flips true mid-flow (it does, as soon as
-  // the user reaches the Setup step).
-  if (!wizardDone && !sessionStarted.current) {
-    sessionStarted.current = true;
+  // Latch: once a wizard session starts, remember which type it is and keep it
+  // open until the user dismisses — even after the completed flag flips.
+  if (!sessionStarted.current && !sessionDismissed) {
+    if (user.is_superadmin && !companyDone) {
+      sessionStarted.current = "admin";
+    } else if (!user.is_superadmin && !userDone) {
+      sessionStarted.current = "user";
+    }
   }
+
+  const dismiss = () => setSessionDismissed(true);
 
   if (sessionStarted.current && !sessionDismissed) {
     return (
       <>
         {children}
-        <OnboardingWizard onDismiss={() => setSessionDismissed(true)} />
+        {sessionStarted.current === "admin" ? (
+          <AdminOnboardingWizard onDismiss={dismiss} />
+        ) : (
+          <UserWelcomeWizard onDismiss={dismiss} />
+        )}
       </>
     );
   }

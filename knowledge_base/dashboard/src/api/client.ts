@@ -36,11 +36,32 @@ export const api = {
 
   listModels: () => request<import("../types").ModelListResponse>("/mcp/models"),
 
-  addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string }) =>
+  addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string; github_token?: string }) =>
     request<import("../types").Project>("/mcp/add-repo", {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  updateGithubToken: (projectId: string, github_token: string) =>
+    request<import("../types").Project>(`/mcp/projects/${projectId}/github-token`, {
+      method: "PATCH",
+      body: JSON.stringify({ github_token }),
+    }),
+
+  registerWebhook: (projectId: string) =>
+    request<import("../types").Project>(`/mcp/projects/${projectId}/github-webhook/register`, {
+      method: "POST",
+    }),
+
+  deleteWebhook: (projectId: string) =>
+    request<import("../types").StatusResponse>(`/mcp/projects/${projectId}/github-webhook`, {
+      method: "DELETE",
+    }),
+
+  getWebhookStatus: (projectId: string) =>
+    request<{ project_id: string; webhook_status: string; webhook_id: number | null }>(
+      `/mcp/projects/${projectId}/github-webhook/status`
+    ),
 
   uploadZip: (file: File, projectId: string, platform: string = "talend") => {
     const form = new FormData();
@@ -109,7 +130,7 @@ export const api = {
       `/mcp/logs/${projectId}/${filename}`
     ),
 
-  updateProject: (projectId: string, data: { display_name?: string; platform?: string; doc_generation_provider?: string | null }) =>
+  updateProject: (projectId: string, data: { display_name?: string; platform?: string; doc_generation_provider?: string | null; instruction_pack_dir?: string | null }) =>
     request<import("../types").Project>(`/mcp/projects/${projectId}`, {
       method: "PATCH",
       body: JSON.stringify(data),

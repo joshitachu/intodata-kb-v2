@@ -9,6 +9,7 @@ import yaml
 
 from intodoc.models import FileType, ScanResult
 from intodoc.platforms.generic import GenericPlugin
+from intodoc.platforms.base_distiller import BaseDistiller
 
 if TYPE_CHECKING:
     from intodoc.scanner.credential_filter import CredentialFilter
@@ -51,6 +52,12 @@ class LobsterPlugin(GenericPlugin):
             if matches:
                 return matches[0].read_text(encoding="utf-8")
         return super().get_prompt(pass_number)
+
+    def get_distiller(self) -> BaseDistiller:
+        """Return the Lobster-specific distiller."""
+        from intodoc.platforms.lobster.distiller import LobsterDistiller
+
+        return LobsterDistiller()
 
     def get_best_practices(self) -> dict:
         """Load Lobster-specific best practices."""

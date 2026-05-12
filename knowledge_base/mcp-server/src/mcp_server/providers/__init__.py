@@ -9,6 +9,7 @@ def get_provider(
     provider_type: str | None = None,
     write_model: str | None = None,
     log_manager=None,
+    instruction_pack_dir: str | None = None,
 ) -> DocGenerationProvider:
     """Return the configured doc generation provider.
 
@@ -57,6 +58,7 @@ def get_provider(
             write_model_str,
             investigation_model_str=config.doc_generation_investigation_model,
             fallback_model_str=config.doc_generation_fallback_model,
+            instruction_pack_dir=instruction_pack_dir,
         )
 
     raise ValueError(

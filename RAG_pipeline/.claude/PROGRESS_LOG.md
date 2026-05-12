@@ -1,5 +1,191 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-05-12
+
+### [Feature]: Sprint 4 — Enterprise Entry (JWT rotation, CSRF, SSO/OIDC, OpenAPI)
+
+- **Files changed**:
+  - `src/config.py` — added `jwt_previous_keys`, `csrf_enabled`, `sso_enabled`, `oidc_discovery_url`, `oidc_client_id`, `oidc_client_secret`, `oidc_redirect_uri`
+  - `src/auth/security.py` — `decode_token()` now tries current key then each `jwt_previous_keys` entry; added `JWTError` import
+  - `src/api/middleware/csrf.py` (new) — `CSRFMiddleware` double-submit cookie pattern; exempts login/refresh/OTP/bootstrap/SSO paths; disabled via `CSRF_ENABLED=false`
+  - `src/api/routes/auth.py` — `_set_auth_cookies()` sets non-httpOnly `csrf_token` cookie; `_clear_auth_cookies()` deletes it; `summary=` added to all 16 routes; docstrings on 10 missing ones
+  - `src/api/routes/sso.py` (new) — OIDC Authorization Code flow: `GET /auth/sso` (redirect to IdP), `GET /auth/sso/callback` (exchange code, find/create user, set cookies)
+  - `src/db/models/user.py` — added `sso_provider` (String 50), `sso_subject` (String 255) columns
+  - `alembic/versions/026_add_sso_fields.py` (new) — adds `sso_provider`, `sso_subject`, partial unique index `ix_users_sso_subject`
+  - `src/api/routes/admin.py` — added `POST /admin/auth/rotate-key` (superadmin); `summary=` on all 26 routes; docstrings on 13 missing
+  - `src/api/main.py` — registered `CSRFMiddleware` (gated on `settings.csrf_enabled`), imported and registered SSO router
+  - `src/api/routes/query.py` — `summary=` on 3 routes
+  - `src/api/routes/documents.py` — `summary=` on 2 routes
+  - `src/api/routes/conversations.py` — `summary=` on 7 routes
+  - `src/api/routes/onboarding.py` — `summary=` + docstrings on 11 routes
+  - `src/api/routes/health.py` — `summary=` on 1 route
+  - `src/api/routes/ingest.py` — `summary=` on 4 routes
+- **Problem**: Four enterprise-blocking gaps identified in the audit: no JWT rotation, no CSRF, no SSO, and no OpenAPI summaries
+- **Root cause**: MVP-phase development left auth hardening and docs incomplete
+- **Change**:
+  1. JWT rotation — sliding window via `jwt_previous_keys` env var; `decode_token` tries all keys
+  2. CSRF — double-submit cookie middleware; CSRF token set at every login/refresh
+  3. SSO — OIDC skeleton using existing `httpx` + `python-jose`; migration 026 adds DB columns; `sso_enabled=False` by default
+  4. OpenAPI — `summary=` added to all 69 routes; 32 missing docstrings added
+- **Why this approach**: No new library deps (reuses httpx + jose already in project); env-var rotation is stateless and safe; double-submit cookie CSRF is standard for SPA/cookie auth
+- **Verification**: `CSRF_ENABLED=false pytest` → 279 passed; `python -c "from src.api.routes.sso import router"` → clean import
+
+## Session: 2026-05-11
+
+### [Feature]: Sprint 2 Item 3 — Soft deletes on documents, conversations, messages
+
+- **Files changed**:
+  - `backend/alembic/versions/024_add_soft_deletes.py` (new migration)
+  - `backend/src/db/models/document.py` (`deleted_at` column)
+  - `backend/src/db/models/conversation.py` (`deleted_at` on Conversation + ConversationMessage)
+  - `backend/src/api/routes/documents.py` (2 list query filters, fetch-for-delete filter, soft delete)
+  - `backend/src/api/routes/conversations.py` (7 SELECT filters, soft delete + cascade to messages)
+  - `backend/src/api/routes/feedback.py` (message join filter)
+  - `backend/tests/test_api/test_documents.py` (2 new tests)
+  - `backend/tests/test_api/test_conversations.py` (2 new tests)
+- **Problem**: Documents and conversations were hard-deleted — no recovery path, no audit trail of deleted content. Compliance clients require deleted rows to be preserved.
+- **Root cause**: No `deleted_at` column; `db.delete(obj)` used throughout.
+- **Change**: Migration 024 adds `deleted_at TIMESTAMPTZ NULL` to all three tables. All SELECT queries add `.where(Model.deleted_at.is_(None))`. Hard deletes replaced with `obj.deleted_at = datetime.now(timezone.utc)`. Conversation soft-delete cascades to messages via a bulk `update(ConversationMessage)`. Qdrant vector deletion unchanged (vectors must not remain searchable). MCP/ingest bulk-delete endpoints left as hard deletes (system-level replace-on-re-upload).
+- **Why this approach**: Column on the row (not a separate audit table) is the simplest recovery path. Explicit per-query filter is transparent and testable. Bulk UPDATE for message cascade avoids N+1 and doesn't require changing the ORM relationship.
+- **Verification**: 279/279 tests passing. 4 new tests cover: soft-deleted doc absent from list, soft-deleted doc returns 404, soft-deleted conversation absent from list, conversation delete cascades to messages.
+
+### [Feature]: Sprint 2 Item 2 — Account lockout on repeated password failures
+
+- **Files changed**:
+  - `backend/alembic/versions/023_add_account_lockout.py` (new migration)
+  - `backend/src/db/models/user.py` (two new columns on User)
+  - `backend/src/auth/service.py` (AccountLockedError, LOCKOUT_THRESHOLD/DURATION constants, authenticate_user rewrite)
+  - `backend/src/api/routes/auth.py` (import AccountLockedError, 403 handler in login endpoint)
+  - `backend/tests/test_api/test_auth.py` (3 new tests: route-level 403 shape, threshold trigger, counter reset)
+- **Problem**: No limit on consecutive wrong-password attempts — brute-force was unbounded (rate limiter is per-minute but doesn't persist counter across minutes).
+- **Root cause**: `authenticate_user` had no failure tracking; User model had no lockout fields.
+- **Change**: Added `failed_login_attempts INT NOT NULL DEFAULT 0` and `locked_until TIMESTAMPTZ NULL` to `users`. `authenticate_user` now: (1) raises `AccountLockedError` if `locked_until > now`, (2) increments counter on bad password and locks for 15 min after 5 failures, (3) resets both fields on success. Login route catches `AccountLockedError` and returns 403 `{"code": "account_locked", "locked_until": "..."}`.
+- **Why this approach**: Counter lives on the User row (survives restarts, no Redis dependency). Lock on threshold-hit rather than per-attempt keeps the counter trivially simple. Lockout window expiry clears stale state on next login attempt so no cleanup job needed.
+- **Verification**: 275/275 tests passing. Three new tests: 403 response shape (mock), counter-to-lockout (real DB), counter-reset-on-success (real DB). Note: `AsyncSession.refresh()` without prior `flush()` sees stale DB state in tests with `expire_on_commit=False`; service correctness verified via in-memory identity-map object.
+
+### [Feature]: Sprint 2 Item 1 — Structured JSON logging + request ID middleware
+
+- **Files changed**:
+  - `backend/src/logging_config.py` (new file)
+  - `backend/src/api/middleware/request_id.py` (new file)
+  - `backend/src/api/main.py` (imports + lifespan + middleware registration)
+- **Problem**: All logging was unstructured `logger.info(f"...")` strings — no JSON fields, no request IDs, no way to correlate log lines across a single request in production.
+- **Root cause**: `logging.basicConfig` called in lifespan with no formatter; no request-scoped context mechanism existed.
+- **Change**:
+  - `src/logging_config.py`: stdlib-only JSON formatter (`_JsonFormatter`) + `_RequestIDFilter` that injects `request_id` into every log record. `configure_logging()` replaces `basicConfig`, mutes sqlalchemy/httpx/httpcore noise, and sets the root handler.
+  - `src/api/middleware/request_id.py`: `RequestIDMiddleware` reads `X-Request-ID` from incoming headers or generates a UUID4; stores it in `_request_id_ctx` (ContextVar); resets the var in a `finally` block; echoes the ID in the response header.
+  - `main.py`: replaced `logging.basicConfig` with `configure_logging(settings.log_level)`; removed now-redundant SQLAlchemy level override; added `RequestIDMiddleware` as last `add_middleware` call so it is the outermost wrapper (dispatches first on every request).
+- **Why this approach**: Stdlib-only JSON formatter avoids `python-json-logger` version pinning risk; ContextVar (not threading.local) is correct for async FastAPI; registering last = outermost per Starlette's LIFO middleware stack.
+- **Verification**: 272/272 tests passing.
+
+### [Refactor]: Increase conversation history and RAG context token limits
+
+- **Files changed**:
+  - `backend/src/generation/conversational_rag.py` (lines 49-51)
+  - `backend/src/generation/prompt_builder.py` (line 10)
+  - `backend/src/generation/llm_client.py` (lines 162, 182)
+- **Problem**: 8K history / 8K RAG context too small for coding assistant use cases — code pastes + stack traces exhaust history in 4-5 exchanges
+- **Change**:
+  - `MAX_HISTORY_TOKENS`: 8,000 → 24,000
+  - `MAX_CONTEXT_TOKENS`: 8,192 → 16,000 (conversational_rag.py) and 10,000 → 16,000 (prompt_builder.py)
+  - `MAX_HISTORY_MESSAGES`: 20 → 40
+  - Ollama `num_ctx`: 16,384 → 32,768 (both non-streaming and streaming calls)
+- **Why this approach**: Kimi is being phased out in favour of OpenAI/Anthropic/Google (128K–200K context). Single limit set sized for cloud providers; Ollama at 32K num_ctx fits 24K history + 16K RAG with ~8K headroom for prompt overhead.
+- **Verification**: Constants verified at definition sites; no test changes needed (tests mock the LLM layer)
+
+## Session: 2026-05-11 (EP-002 sweep)
+
+### [Fix]: TOTP replay protection + EP-002 backlog close-out
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/db/models/user.py` — added `totp_last_code` (String 6, nullable) and `totp_last_code_used_at` (DateTime TZ, nullable) to `User`
+  - `RAG_pipeline/backend/alembic/versions/022_add_totp_replay_protection.py` — new migration, `down_revision: 021`
+  - `RAG_pipeline/backend/src/api/routes/auth.py` — `verify_mfa`: after successful `verify_totp`, check last-used code; reject same code within 90s; store accepted code + timestamp
+  - `deploy/RUNBOOK.md` — added section 7 "Configure Email (SMTP)" with env var setup, SMTP provider guidance, and test email curl command; renumbered sections 8–12
+  - `backlog/epics/EP-002-platform-security.md` — status Refined → Done; fixed story ID table (was US-001..005, now US-007..013)
+  - `backlog/stories/US-007` through `US-013` — status Draft → Done; DoD items ticked with accurate implementation notes
+- **Problem**: `verify_mfa` called `verify_totp` but never recorded the accepted code, allowing the same 6-digit TOTP code to be submitted twice within the 90-second pyotp validity window (replay attack).
+- **Root cause**: Initial MFA implementation focused on code validation but omitted the per-user last-code store.
+- **Change**: Two new DB columns track the last accepted TOTP code and when it was used. The `verify_mfa` route checks these before accepting a code and writes them after.
+- **Why this approach**: Standard TOTP replay mitigation — single DB row per user, no additional tables. 90s window covers pyotp's `valid_window=1` (±30s on either side of the current period).
+- **Verification**: Run `alembic upgrade head` to apply migration 022; verify columns exist in `users` table; submit same TOTP code twice → second attempt returns 401 "Invalid code".
+
+---
+
+## Session: 2026-05-11 (Sprint 1)
+
+### [Fix]: Privilege escalation — document delete missing project RBAC check
+
+- **Files changed**: `RAG_pipeline/backend/src/api/routes/documents.py` (lines 61–92)
+- **Problem**: `DELETE /documents/{id}` checked `CurrentUser` but never verified the document's `project_id` was in the user's allowed projects. A developer in Project A could delete documents from Project B by guessing the document ID.
+- **Root cause**: RBAC check was added to `list_documents`, `ingest`, and `query` but missed on the delete route.
+- **Change**: Added `get_user_project_ids()` check (same pattern as `ingest.py:68–70`) plus `AuditService.log()` for `document_deleted` (deletion was previously unlogged). Imported `AuditService` at module level.
+- **Why this approach**: `get_user_project_ids()` already existed in `src/rbac/permissions.py` and was already imported — zero new code, just applying the existing pattern consistently.
+- **Verification**: New test `test_delete_document_forbidden_wrong_project` passes; full suite 272/272 green.
+
+### [Fix]: Onboarding background setup stub replaced with real ingest logic
+
+- **Files changed**: `RAG_pipeline/backend/src/services/onboarding_service.py` (lines 152–end)
+- **Problem**: `run_background_setup()` slept 3 seconds then unconditionally marked setup complete and sent a "Your source has been ingested" notification — regardless of whether any ingest happened.
+- **Root cause**: TODO stub from initial onboarding implementation; real ingest was wired at the frontend level (ProvisioningStep → MCP → `/ingest/md`) but the backend task was never updated.
+- **Change**:
+  - Removed `asyncio.sleep(3)` fake
+  - ZIP path: ProvisioningStep already ran the full MCP pipeline before wizard completion — mark complete immediately, no double-ingest
+  - GitHub URL path: `_ingest_github_source()` downloads repo archive (tries `main` then `master`), walks supported extensions, skips `node_modules`/`.git`/`__pycache__`, skips files >500 KB, ingests up to 200 files via `ingest_text()`, derives `project_id` from `workspace_name` via `_derive_project_id()`
+  - Error path: exception rolls back DB session; fresh session marks `setup_status = "failed"` with error string
+  - Notification message corrected to "Your workspace is set up and ready to query"
+- **Why this approach**: `ingest_text()` already existed in `src/ingestion/pipeline.py`; `httpx` was already a dependency. No new abstractions.
+- **Verification**: Syntax check passes; 272/272 tests passing.
+
+### [Docs]: EP-001 deployment runbook and smoke test hardened
+
+- **Files changed**:
+  - `deploy/RUNBOOK.md` — Ollama model availability check added before stack start; Rollback Procedure section added (stack stop, git revert, rebuild, migration downgrade, Postgres restore)
+  - `deploy/SMOKE-TEST.md` — section 3 now has explicit `POST /auth/bootstrap-admin` curl test + pass criteria; "Bootstrap admin" added to sign-off checklist
+  - `deploy/legacy/` (new dir) — moved `deploy/caddy-install.sh` here with `README.md` noting Caddy is deferred/replaced by nginx
+- **Problem**: No rollback guidance; missing Ollama model check caused silent failures; bootstrap-admin untested; Caddy file confused operators.
+- **Verification**: Doc-only changes; 272/272 tests still passing.
+
+---
+
+## Session: 2026-05-11
+
+### [Fix]: Update dev admin email
+
+- **Files changed**: `RAG_pipeline/backend/src/api/main.py` (line 64), `RAG_pipeline/backend/alembic/versions/001_initial_schema.py` (line 172)
+- **Problem**: Dev admin seeded with placeholder email `admin@intodata.local`
+- **Change**: Changed to `joshua.kabel@intodata.nl` in both the startup seeder and the initial migration
+- **Why this approach**: Both locations must match so fresh installs and existing dev DBs reflect the correct email
+- **Verification**: Grep confirms no remaining `admin@intodata.local` references in active source files
+
+## Session: 2026-05-08
+
+### [Feature]: Two-tier onboarding — admin wizard vs user welcome wizard
+
+- **Files changed**:
+  - `backend/alembic/versions/021_add_system_config.py` (new migration)
+  - `backend/src/db/models/system_config.py` (new model)
+  - `backend/src/db/models/__init__.py` (export SystemConfig)
+  - `backend/src/services/system_config_service.py` (new service)
+  - `backend/src/api/routes/company_onboarding.py` (new router `/onboarding/company/*`)
+  - `backend/src/api/main.py` (register company_onboarding router)
+  - `backend/src/api/routes/onboarding.py` (enrich status with `company_wizard_completed`, restrict background setup to superadmins)
+  - `frontend/types/onboarding.ts` (add `company_wizard_completed` to OnboardingStatusSchema, add CompanyStatus types)
+  - `frontend/hooks/useSystemConfig.ts` (new React Query hooks for company endpoints)
+  - `frontend/components/onboarding/steps/WorkspaceStep.tsx` (add `overrideSave?` prop)
+  - `frontend/components/onboarding/steps/PlatformSelectStep.tsx` (add `overrideSave?` prop)
+  - `frontend/components/onboarding/steps/CommToolSelectStep.tsx` (add `overrideSave?` prop)
+  - `frontend/components/onboarding/steps/SourceUploadStep.tsx` (add `overrideSave?` prop)
+  - `frontend/components/onboarding/AdminOnboardingWizard.tsx` (new — full wizard for superadmin, saves to system_config)
+  - `frontend/components/onboarding/steps/UserWelcomeStep.tsx` (new — slim welcome for regular users)
+  - `frontend/components/onboarding/UserWelcomeWizard.tsx` (new — 2-step welcome wizard)
+  - `frontend/components/onboarding/OnboardingGuard.tsx` (tiered logic: admin vs user wizard)
+  - `frontend/contexts/OnboardingContext.tsx` (add companyStatus from useCompanyStatus)
+- **Problem**: Every new user ran the same wizard including company-level setup (workspace name, platforms, source). Wrong for an enterprise product — company config should be set once by the admin.
+- **Change**: Split onboarding into two tiers. Superadmins who log in before `system_config.company_wizard_completed` see the full admin wizard (saves to `system_config` table). Regular users see a 2-step slim welcome wizard that shows the pre-configured company details read-only. Bootstrap is already handled by the existing `POST /auth/bootstrap-admin` endpoint (one-time door, locks after first user).
+- **Why this approach**: Mirrors enterprise SaaS model (Microsoft 365, Slack, etc.) — admin provisions the workspace once, users just join. `system_config` as a single-row DB table (vs env vars) keeps it writable from the browser without a server restart.
+- **Verification**: Run `alembic upgrade head` to apply migration 021. Test: (1) fresh deploy → bootstrap admin login → AdminOnboardingWizard appears; (2) invited user login → UserWelcomeWizard appears showing company name from system_config; (3) second admin login after company wizard done → no wizard.
+
 ## Session: 2026-05-07
 
 ### [Feature]: AI disclaimer in chat UI
@@ -2276,4 +2462,33 @@ Then open http://localhost:3000
   - Added `_deserialize_sources()` helper that constructs `DocumentSource` objects from DB JSON, with backward compatibility: uses `reference_number` if present, otherwise assigns sequential numbers (1, 2, 3...)
   - Changed line 127 from `[Source(**s) for s in m.sources]` to `_deserialize_sources(m.sources)`
 - **Why this approach**: A helper function keeps the deserialization logic in one place and handles both old-format sources (with `chunk_index`, no `reference_number`) and new-format sources cleanly. Sequential numbering for old sources is a reasonable fallback.
+
+## Session: 2026-05-12
+
+### [Feature]: Sprint 3 — DB Indexes (Item 1)
+
+- **Files changed**: `alembic/versions/025_add_missing_indexes.py` (new)
+- **Change**: Three indexes identified from the enterprise readiness audit: compound `(project_id, created_at DESC)` on documents, `created_at` on audit_logs, `conversation_id` FK on conversation_messages.
+- **Verification**: 279 tests passing.
+
+### [Feature]: Sprint 3 — Error Schema Standardization (Item 2)
+
+- **Files changed**: `src/api/errors.py` (new), `src/schemas.py` (+ErrorDetail), `src/api/routes/auth.py`, `src/api/routes/documents.py`, `src/api/routes/conversations.py`, `src/api/routes/query.py`, `tests/test_api/test_auth.py`
+- **Problem**: `HTTPException.detail` had three inconsistent shapes across routes — plain string, structured dict (only lockout), and raw exception strings. Frontend could not reliably parse error codes.
+- **Change**: Added `api_error(status_code, code, message, **extra)` helper in `src/api/errors.py`. Added `ErrorDetail(code, message)` Pydantic model in `schemas.py`. Converted ~12 priority raises in auth/documents/conversations/query routes to use `api_error()`. Updated one existing test that asserted on the old string shape.
+- **Codes introduced**: `invalid_credentials`, `passwordless_account`, `invalid_otp`, `invalid_mfa_token`, `not_found`, `forbidden`.
+- **Verification**: 279 tests passing.
+
+### [Refactor]: Sprint 3 — RAG Chain Extraction (Item 3)
+
+- **Files changed**: `src/generation/rag_chain.py`
+- **Problem**: `run_rag_query()` was ~250 lines mixing memory recall, search strategy selection, and persistence — hard to test in isolation.
+- **Change**: Extracted three helpers: `_recall_memories(uid, query, project_ids)` (Hindsight parallel calls, non-fatal), `_execute_search(analysis, user_groups, qdrant, top_k, threshold, doc_ids, project_ids)` (4-strategy if/elif replaced by if/elif/if/return chain), `_persist_query(db, ...)` (QueryUsage + fire-and-forget Hindsight retain + QueryLog). Main orchestrator reduced from ~250 to ~100 lines.
+- **Verification**: 279 tests passing.
+
+### [Feature]: Sprint 3 — Prometheus Metrics (Item 4)
+
+- **Files changed**: `pyproject.toml` (+prometheus-client), `src/config.py` (+metrics_enabled), `src/api/metrics.py` (new), `src/api/middleware/metrics.py` (new), `src/api/main.py` (PrometheusMiddleware + /metrics endpoint)
+- **Change**: Added `http_requests_total` Counter and `http_request_duration_seconds` Histogram. `PrometheusMiddleware` normalizes numeric path segments to `{id}` to prevent label cardinality explosion. `/metrics` endpoint returns `generate_latest()` with `text/plain; version=0.0.4` content type. Gated behind `settings.metrics_enabled` (default True). No auth on the endpoint — rely on nginx network-level access control.
+- **Verification**: 279 tests passing.
 - **Verification**: Code review confirms the fix matches the `DocumentSource` schema fields. Runtime verification requires Docker.

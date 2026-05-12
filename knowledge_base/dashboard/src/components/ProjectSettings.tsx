@@ -6,6 +6,8 @@ import {
   useDeleteProject,
   useInstructionPack,
   useRepairLatestGitUpdate,
+  useRegisterWebhook,
+  useUpdateGithubToken,
 } from "../hooks/useProjects";
 import { formatAbsoluteDate, timeAgo } from "../lib/timeago";
 import type { Project } from "../types";
@@ -25,6 +27,8 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const updateProject = useUpdateProject();
   const deleteProject = useDeleteProject();
   const repairLatestGitUpdate = useRepairLatestGitUpdate();
+  const registerWebhook = useRegisterWebhook();
+  const updateGithubToken = useUpdateGithubToken();
   const usage = useProjectUsage(project?.id ?? null);
   const instructionPack = useInstructionPack();
   const { data: platformsData } = usePlatforms();
@@ -33,8 +37,10 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const [platform, setPlatform] = useState("");
   const [docProvider, setDocProvider] = useState("");
   const [writeModel, setWriteModel] = useState("");
+  const [packDir, setPackDir] = useState("");
   const [saved, setSaved] = useState(false);
   const [confirmText, setConfirmText] = useState("");
+  const [newToken, setNewToken] = useState("");
 
   useEffect(() => {
     if (project) {
@@ -42,6 +48,7 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
       setPlatform(project.platform);
       setDocProvider(project.doc_generation_provider ?? "");
       setWriteModel(localStorage.getItem(`project_write_model_${project.id}`) ?? "");
+      setPackDir(project.instruction_pack_dir ?? "");
       setSaved(false);
       setConfirmText("");
     }
@@ -63,7 +70,8 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const hasChanges =
     displayName !== project.display_name ||
     platform !== project.platform ||
-    docProvider !== (project.doc_generation_provider ?? "");
+    docProvider !== (project.doc_generation_provider ?? "") ||
+    packDir !== (project.instruction_pack_dir ?? "");
   const platforms = platformsData?.platforms ?? [];
   const analysisModels = modelsData?.models.filter((m) => m.supports_analysis) ?? [];
   const writingModels = modelsData?.models.filter((m) => m.supports_writing) ?? [];
@@ -105,6 +113,10 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
           doc_generation_provider:
             docProvider !== (project.doc_generation_provider ?? "")
               ? docProvider || null
+              : undefined,
+          instruction_pack_dir:
+            packDir !== (project.instruction_pack_dir ?? "")
+              ? packDir || null
               : undefined,
         },
       },
@@ -218,6 +230,78 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
                   )}
                 </div>
               </div>
+
+              {/* GitHub Token & Webhook */}
+              <div className="sm:col-span-2">
+                <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-2">GitHub Integration</label>
+                <div className="bg-surface-raised rounded border border-white/[0.07] p-3 space-y-3">
+                  {/* Webhook status */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      {project.webhook_status === "active" ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                          <span className="text-sm text-emerald-400">Webhook active — pushes trigger instant updates</span>
+                        </>
+                      ) : project.webhook_status === "not_registered" ? (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
+                          <span className="text-sm text-amber-400">Webhook not set up — using twice-daily poller</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-slate-500 flex-shrink-0" />
+                          <span className="text-sm text-slate-500">No webhook info</span>
+                        </>
+                      )}
+                    </div>
+                    {project.webhook_status === "not_registered" && project.has_github_token && (
+                      <button
+                        type="button"
+                        className="btn-dark text-xs px-2 py-1 flex-shrink-0"
+                        disabled={registerWebhook.isPending}
+                        onClick={() => registerWebhook.mutate(project.id)}
+                      >
+                        {registerWebhook.isPending ? "Registering..." : "Set up webhook"}
+                      </button>
+                    )}
+                  </div>
+                  {/* Token status + update */}
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1 min-w-0">
+                      <label className="block text-xs text-slate-500 mb-1">
+                        {project.has_github_token ? "Update GitHub Token" : "Add GitHub Token"}
+                      </label>
+                      <input
+                        type="password"
+                        className="input-dark text-sm"
+                        placeholder={project.has_github_token ? "Enter new token to replace" : "ghp_..."}
+                        value={newToken}
+                        onChange={(e) => setNewToken(e.target.value)}
+                        autoComplete="new-password"
+                      />
+                      <p className="text-xs text-slate-600 mt-1">Required scopes: <code className="font-mono">repo</code></p>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-dark text-xs px-3 py-2 flex-shrink-0 disabled:opacity-40"
+                      disabled={!newToken || updateGithubToken.isPending}
+                      onClick={() => {
+                        updateGithubToken.mutate({ projectId: project.id, token: newToken }, {
+                          onSuccess: () => setNewToken(""),
+                        });
+                      }}
+                    >
+                      {updateGithubToken.isPending ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                  {(registerWebhook.isError || updateGithubToken.isError) && (
+                    <p className="text-xs text-red-400 font-mono">
+                      {(registerWebhook.error as Error)?.message || (updateGithubToken.error as Error)?.message}
+                    </p>
+                  )}
+                </div>
+              </div>
             </>
           )}
         </div>
@@ -315,6 +399,22 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
                 This local write model is not supported by the custom harness. Choose a supported model or clear it.
               </p>
             )}
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">
+              Instruction Pack Dir
+            </label>
+            <input
+              type="text"
+              value={packDir}
+              onChange={(e) => setPackDir(e.target.value)}
+              placeholder="packs/default"
+              className="input-dark"
+            />
+            <p className="mt-1 text-xs text-slate-600">
+              Override the instruction pack for this project. Leave blank to use the server default
+              {instructionPack.data ? ` (${instructionPack.data.version})` : ""}.
+            </p>
           </div>
         </div>
 

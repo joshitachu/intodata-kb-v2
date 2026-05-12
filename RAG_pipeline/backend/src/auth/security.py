@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from jose import jwt
+from jose import JWTError, jwt
 
 from src.config import settings
 
@@ -45,8 +45,17 @@ def create_refresh_token(user_id: int) -> tuple[str, datetime]:
 
 
 def decode_token(token: str) -> dict:
-    """Decode and verify a JWT. Raises JWTError on failure."""
-    return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+    """Decode and verify a JWT. Tries the current key first, then previous keys for rotation grace period."""
+    keys = [settings.jwt_secret_key] + [
+        k.strip() for k in settings.jwt_previous_keys.split(",") if k.strip()
+    ]
+    last_err: JWTError | None = None
+    for key in keys:
+        try:
+            return jwt.decode(token, key, algorithms=[settings.jwt_algorithm])
+        except JWTError as exc:
+            last_err = exc
+    raise last_err  # type: ignore[misc]
 
 
 def hash_token(token: str) -> str:

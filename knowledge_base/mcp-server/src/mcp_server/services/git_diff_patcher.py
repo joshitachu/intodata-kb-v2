@@ -121,6 +121,7 @@ async def run_webhook_diff_update(
             return False
         local_path = project.local_path
         doc_generation_provider = project.doc_generation_provider
+        github_token_enc = getattr(project, "github_token_enc", None)
 
     await log_mgr.emit(project_id, f"GitHub push detected: {before_sha[:12]}..{after_sha[:12]}", "info")
 
@@ -132,6 +133,7 @@ async def run_webhook_diff_update(
         doc_generation_provider=doc_generation_provider,
         log_mgr=log_mgr,
         trigger=trigger,
+        github_token_enc=github_token_enc,
     )
 
     async with async_session_factory() as db:
@@ -164,6 +166,7 @@ async def _run_diff_patch(
     doc_generation_provider: str | None,
     log_mgr: LogManager,
     trigger: str,
+    github_token_enc: str | None = None,
 ) -> DiffPatchResult:
     base_summary = {
         "trigger": trigger,
@@ -181,6 +184,14 @@ async def _run_diff_patch(
         if not before_sha or before_sha == "0" * 40:
             return _manual(base_summary, "First push requires initial manual scan/generate")
 
+        if github_token_enc:
+            try:
+                from mcp_server.utils.encryption import inject_token as _inject_token
+                current_url = (await _git(local_path, "remote", "get-url", "origin")).strip()
+                authed_url = _inject_token(current_url, github_token_enc)
+                await _git(local_path, "remote", "set-url", "origin", authed_url)
+            except Exception as exc:
+                logger.warning("Failed to inject token for fetch in %s: %s", local_path, exc)
         await _git(local_path, "fetch", "--quiet", "origin")
         name_status = await _git(local_path, "diff", "--name-status", before_sha, after_sha)
         changes = parse_name_status(name_status)

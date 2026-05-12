@@ -103,7 +103,7 @@ Key files: `claude_service.py` (prompt + staging dir setup), `projects.py:_run_g
 ## Project Structure
 
 ```
-vaxxinova/                          -- Platform root
+knowledge_base/                     -- Platform root
   .agent/                           -- Agent context docs (README, system, SOPs, tasks)
   .claude/                          -- Claude Code settings + session logs
   .mcp.json                         -- MCP server configuration

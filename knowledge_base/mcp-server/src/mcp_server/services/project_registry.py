@@ -147,6 +147,7 @@ class ProjectRegistry:
         display_name: str | None = None,
         platform: str | None = None,
         doc_generation_provider: object = _UNSET,
+        instruction_pack_dir: object = _UNSET,
     ) -> Project | None:
         """Update editable fields on a project."""
         project = await self.get_project(project_id)
@@ -158,6 +159,8 @@ class ProjectRegistry:
             project.platform = platform
         if doc_generation_provider is not ProjectRegistry._UNSET:
             project.doc_generation_provider = doc_generation_provider  # type: ignore[assignment]
+        if instruction_pack_dir is not ProjectRegistry._UNSET:
+            project.instruction_pack_dir = instruction_pack_dir  # type: ignore[assignment]
         await self.db.flush()
         return project
 

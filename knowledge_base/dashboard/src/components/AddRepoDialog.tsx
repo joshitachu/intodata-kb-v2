@@ -13,6 +13,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
   const [projectId, setProjectId] = useState("");
   const [platform, setPlatform] = useState("talend");
   const [file, setFile] = useState<File | null>(null);
+  const [githubToken, setGithubToken] = useState("");
 
   const addRepo = useAddRepo();
   const uploadZip = useUploadZip();
@@ -24,12 +25,14 @@ export default function AddRepoDialog({ open, onClose }: Props) {
     { id: "generic", label: "Generic" },
   ];
 
+  const isGithubUrl = url.includes("github.com");
+
   if (!open) return null;
 
   const handleSubmitPath = () => {
     if (!url || !projectId) return;
     addRepo.mutate(
-      { url, project_id: projectId, platform },
+      { url, project_id: projectId, platform, github_token: githubToken || undefined },
       { onSuccess: () => { onClose(); reset(); } }
     );
   };
@@ -46,6 +49,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
     setUrl("");
     setProjectId("");
     setFile(null);
+    setGithubToken("");
   };
 
   const busy = addRepo.isPending || uploadZip.isPending;
@@ -108,18 +112,39 @@ export default function AddRepoDialog({ open, onClose }: Props) {
           </div>
 
           {tab === "path" ? (
-            <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1">
-                Git URL or Local Path
-              </label>
-              <input
-                type="text"
-                className="input-dark"
-                placeholder="https://github.com/... or /path/to/repo"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-              />
-            </div>
+            <>
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1">
+                  Git URL or Local Path
+                </label>
+                <input
+                  type="text"
+                  className="input-dark"
+                  placeholder="https://github.com/... or /path/to/repo"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                />
+              </div>
+              {isGithubUrl && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-400 mb-1">
+                    GitHub Token{" "}
+                    <span className="text-slate-500 font-normal">(optional — required for private repos)</span>
+                  </label>
+                  <input
+                    type="password"
+                    className="input-dark"
+                    placeholder="ghp_..."
+                    value={githubToken}
+                    onChange={(e) => setGithubToken(e.target.value)}
+                    autoComplete="new-password"
+                  />
+                  <p className="text-xs text-slate-500 mt-1">
+                    Scopes needed: <code className="font-mono">repo</code>. Enables private repo cloning and automatic webhook setup.
+                  </p>
+                </div>
+              )}
+            </>
           ) : (
             <div>
               <label className="block text-sm font-medium text-slate-400 mb-1">ZIP File</label>

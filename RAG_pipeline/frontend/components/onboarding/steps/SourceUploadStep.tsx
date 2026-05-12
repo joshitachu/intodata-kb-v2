@@ -12,6 +12,15 @@ import { Input } from "@/components/ui/input";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
 import { trackWizardEvent } from "@/lib/telemetry";
 
+interface SaveMutation {
+  mutateAsync: (arg: {
+    source_type: SourceType;
+    source_url?: string | null;
+    source_filename?: string | null;
+  }) => Promise<unknown>;
+  isPending: boolean;
+}
+
 interface Props {
   initialUrl?: string | null;
   initialFilename?: string | null;
@@ -20,6 +29,7 @@ interface Props {
   onNext: () => void;
   onSkip: () => void;
   selectedPlatformIds: string[];
+  overrideSave?: SaveMutation;
 }
 
 function formatSize(bytes: number): string {
@@ -35,6 +45,7 @@ export function SourceUploadStep({
   onNext,
   onSkip,
   selectedPlatformIds,
+  overrideSave,
 }: Props) {
   const { zipFiles, setZipFile } = useOnboardingContext();
   const { data: config } = useOnboardingConfig();
@@ -45,7 +56,8 @@ export function SourceUploadStep({
   const [error, setError] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  const save = useSaveSource();
+  const defaultSave = useSaveSource();
+  const save = overrideSave ?? defaultSave;
 
   // Resolve platform labels (fall back to raw id if config not loaded yet)
   const platformLabel = useMemo(() => {

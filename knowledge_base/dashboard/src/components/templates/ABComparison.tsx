@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useGenerateRuns } from "../../hooks/useProjects";
+import { useGenerateRuns, useReviews } from "../../hooks/useProjects";
 import { api } from "../../api/client";
 import type { RunComparisonRun } from "../../types";
 
 interface Props {
   projectId: string;
+  preloadRunA?: number | null;
+  preloadRunB?: number | null;
 }
 
 function formatValue(value: unknown, suffix = "") {
@@ -29,12 +31,20 @@ function qualityBreakdown(run: RunComparisonRun) {
     .map(([key, value]) => ({ key, value: value as number }));
 }
 
-export default function ABComparison({ projectId }: Props) {
+export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Props) {
   const { data: runsData } = useGenerateRuns(projectId);
   const runs = (runsData?.runs ?? []).filter((r) => r.status === "completed");
 
-  const [runA, setRunA] = useState<number | null>(null);
-  const [runB, setRunB] = useState<number | null>(null);
+  const [runA, setRunA] = useState<number | null>(preloadRunA ?? null);
+  const [runB, setRunB] = useState<number | null>(preloadRunB ?? null);
+
+  useEffect(() => {
+    if (preloadRunA != null) setRunA(preloadRunA);
+    if (preloadRunB != null) setRunB(preloadRunB);
+  }, [preloadRunA, preloadRunB]);
+
+  const reviewA = useReviews(projectId, runA);
+  const reviewB = useReviews(projectId, runB);
 
   const { data: comparison, isLoading } = useQuery({
     queryKey: ["run-comparison", projectId, runA, runB],
@@ -246,6 +256,50 @@ export default function ABComparison({ projectId }: Props) {
               </div>
             </div>
           )}
+
+          {/* Human review side-by-side */}
+          <div className="px-4 pb-4 border-t border-white/[0.05] pt-4">
+            <h4 className="text-xs font-mono text-slate-500 uppercase mb-2">Human Review</h4>
+            {reviewA.isLoading || reviewB.isLoading ? (
+              <p className="text-xs text-slate-500">Loading reviews...</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {([
+                  { run: comparison.run_a, data: reviewA.data },
+                  { run: comparison.run_b, data: reviewB.data },
+                ] as const).map(({ run, data }) => (
+                  <div key={run.id} className="bg-white/[0.02] rounded p-3 border border-white/[0.06]">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-mono text-xs text-slate-500">Run #{run.id}</span>
+                      {data && data.total_reviews > 0 ? (
+                        <span className={`text-xs font-mono ${data.pass_result ? "text-[#a0e06f]" : "text-red-400"}`}>
+                          {data.pass_result ? "PASS" : "FAIL"} &mdash; {data.total_reviews} review{data.total_reviews !== 1 ? "s" : ""}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-600">No reviews</span>
+                      )}
+                    </div>
+                    {!data || data.total_reviews === 0 ? (
+                      <p className="text-xs text-slate-600">No reviews submitted yet.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-xs border-b border-white/[0.04] pb-1 mb-1">
+                          <span className="text-slate-500 font-mono">Overall</span>
+                          <span className="font-mono text-slate-300">{data.average_overall.toFixed(2)}</span>
+                        </div>
+                        {Object.entries(data.average_per_question).map(([q, score]) => (
+                          <div key={q} className="flex justify-between text-xs">
+                            <span className="text-slate-600">{q.replace(/_/g, " ")}</span>
+                            <span className="font-mono text-slate-400">{(score as number).toFixed(2)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

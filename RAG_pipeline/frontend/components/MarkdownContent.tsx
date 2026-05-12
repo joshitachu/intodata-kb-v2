@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
 
 interface MarkdownContentProps {
   content: string;
@@ -41,6 +43,19 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          pre({ children }) {
+            return <>{children}</>;
+          },
+          code({ className, children }) {
+            const raw = String(children ?? "").replace(/\n$/, "");
+            const match = /language-(\w+)/.exec(className ?? "");
+            const language = match?.[1] ?? "";
+            const isBlock = raw.includes("\n") || Boolean(language);
+            if (!isBlock) {
+              return <code className={className}>{children}</code>;
+            }
+            return <CodeBlock code={raw} language={language} />;
+          },
           p({ children }) {
             const processed = processChildren(children);
             return <p>{processed}</p>;
@@ -62,6 +77,82 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
       </ReactMarkdown>
     </div>
   );
+}
+
+function CodeBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = useState(false);
+  const lang = language || "text";
+
+  function handleCopy() {
+    void navigator.clipboard.writeText(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <div className="not-prose my-3 overflow-hidden rounded-lg border bg-slate-950 text-slate-100">
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.04] px-3 py-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+          {lang}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-slate-300 hover:bg-white/10 hover:text-white"
+          title="Copy code"
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="m-0 max-w-full overflow-x-auto p-3 text-[13px] leading-relaxed">
+        <code>{highlightCode(code, lang)}</code>
+      </pre>
+    </div>
+  );
+}
+
+function highlightCode(code: string, language: string): ReactNode[] {
+  const keywordPattern = keywordRegexFor(language);
+  if (!keywordPattern) return [code];
+
+  const tokenPattern = new RegExp(
+    `(${keywordPattern.source}|"(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'|\\b\\d+(?:\\.\\d+)?\\b|\\/\\/.*|#.*|--.*)`,
+    "g",
+  );
+  const parts = code.split(tokenPattern);
+  return parts.map((part, index) => {
+    if (!part) return null;
+    if (keywordPattern.test(part)) {
+      keywordPattern.lastIndex = 0;
+      return <span key={index} className="text-sky-300">{part}</span>;
+    }
+    keywordPattern.lastIndex = 0;
+    if (/^["']/.test(part)) {
+      return <span key={index} className="text-emerald-300">{part}</span>;
+    }
+    if (/^\d/.test(part)) {
+      return <span key={index} className="text-amber-300">{part}</span>;
+    }
+    if (/^(\/\/|#|--)/.test(part)) {
+      return <span key={index} className="text-slate-500">{part}</span>;
+    }
+    return part;
+  });
+}
+
+function keywordRegexFor(language: string): RegExp | null {
+  const normalized = language.toLowerCase();
+  if (["ts", "tsx", "js", "jsx", "javascript", "typescript"].includes(normalized)) {
+    return /\b(?:async|await|const|let|var|function|return|if|else|for|while|import|from|export|type|interface|class|extends|new|try|catch|throw|null|undefined|true|false)\b/g;
+  }
+  if (["py", "python"].includes(normalized)) {
+    return /\b(?:async|await|def|class|return|if|elif|else|for|while|import|from|as|try|except|raise|with|lambda|None|True|False)\b/g;
+  }
+  if (["sql"].includes(normalized)) {
+    return /\b(?:select|from|where|join|left|right|inner|outer|insert|update|delete|create|alter|drop|table|view|procedure|with|as|and|or|group|order|by|having|limit|case|when|then|else|end)\b/gi;
+  }
+  return null;
 }
 
 function processChildren(children: ReactNode): ReactNode {

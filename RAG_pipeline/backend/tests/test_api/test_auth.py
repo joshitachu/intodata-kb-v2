@@ -215,9 +215,88 @@ class TestLogin:
             app.dependency_overrides.clear()
 
         assert resp.status_code == 401
-        assert resp.json()["detail"] == (
-            "This account does not have a password. Use email code or contact an admin."
+        detail = resp.json()["detail"]
+        assert detail["code"] == "passwordless_account"
+        assert "password" in detail["message"].lower()
+
+    async def test_login_locked_account_returns_403(self, mock_auth_deps):
+        from datetime import datetime, timezone
+
+        from src.auth.service import AccountLockedError
+
+        locked_until = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        with patch("src.api.routes.auth.AuthService") as mock_svc_cls:
+            mock_svc = MagicMock()
+            mock_svc.authenticate_user = AsyncMock(side_effect=AccountLockedError(locked_until))
+            mock_svc_cls.return_value = mock_svc
+
+            transport = ASGITransport(app=app, client=("127.0.0.5", 123))
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/login",
+                    json={"username": "admin", "password": "wrongpass"},
+                )
+
+        assert resp.status_code == 403
+        detail = resp.json()["detail"]
+        assert detail["code"] == "account_locked"
+        assert "locked_until" in detail
+
+    async def test_lockout_triggers_after_threshold(self, db_session):
+        from datetime import datetime, timezone
+
+        from src.auth.service import AccountLockedError, AuthService, LOCKOUT_THRESHOLD
+
+        user = User(
+            username="lockout-user",
+            email="lockout@example.com",
+            password_hash=hash_password("correct-password"),
         )
+        db_session.add(user)
+        await db_session.commit()
+
+        svc = AuthService(db_session)
+
+        # LOCKOUT_THRESHOLD - 1 failures should not lock
+        for _ in range(LOCKOUT_THRESHOLD - 1):
+            result = await svc.authenticate_user("lockout-user", "wrong")
+            assert result is None
+
+        # Check in-memory state (service modifies the identity-map object in place;
+        # AsyncSession.refresh() would re-fetch DB without autoflush and see stale data)
+        assert user.failed_login_attempts == LOCKOUT_THRESHOLD - 1
+        assert user.locked_until is None
+
+        # One more failure triggers the lock
+        with pytest.raises(AccountLockedError) as exc_info:
+            await svc.authenticate_user("lockout-user", "wrong")
+
+        assert exc_info.value.locked_until > datetime.now(timezone.utc)
+        assert user.failed_login_attempts == 0
+        assert user.locked_until is not None
+
+    async def test_lockout_counter_resets_on_success(self, db_session):
+        from src.auth.service import AuthService, LOCKOUT_THRESHOLD
+
+        user = User(
+            username="lockout-reset",
+            email="lockout-reset@example.com",
+            password_hash=hash_password("correct-password"),
+        )
+        db_session.add(user)
+        await db_session.commit()
+
+        svc = AuthService(db_session)
+
+        for _ in range(LOCKOUT_THRESHOLD - 1):
+            await svc.authenticate_user("lockout-reset", "wrong")
+
+        result = await svc.authenticate_user("lockout-reset", "correct-password")
+        assert result is not None
+
+        # In-memory object reflects the reset applied by authenticate_user
+        assert user.failed_login_attempts == 0
+        assert user.locked_until is None
 
 
 class TestEmailOTPLogin:

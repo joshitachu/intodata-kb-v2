@@ -83,9 +83,11 @@ LARGE_CONTEXT_ARTIFACTS = {
     "change_impact_matrix.json",
 }
 
-ADDITIONAL_FINDINGS_SECTION = "ADDITIONAL_FINDINGS"
-PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (ADDITIONAL_FINDINGS_SECTION,)
+GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
+ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
+PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION, ADDITIONAL_FINDINGS_SECTION,)
 BASELINE_BUNDLE_SECTIONS = {
+    GROUP_SUMMARY_SECTION,
     "COMPONENTS",
     "EXECUTION_FLOW",
     "CROSS_GROUP_REFS",
@@ -462,7 +464,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             await log_cb(ctx.project_id, "[custom] Phase 2 guide-section gate passed", "info")
 
             await self._phase26_scorecard(ctx, state, log_cb)
-            self._phase28_bundles(ctx, facts.unit_count)
+            self._phase28_bundles(ctx, facts)
             self._write_documentation_obligations(ctx, facts)
             await self._phase3_docs(ctx, state, log_cb)
 
@@ -806,9 +808,12 @@ class CustomHarnessProvider(DocGenerationProvider):
             match = heading_re.match(line.strip())
             if match:
                 candidate = re.sub(r"[^A-Z0-9_]+", "_", match.group(1).strip().upper()).strip("_")
+                if candidate == "ADDITIONAL_FINDINGS":
+                    candidate = ADDITIONAL_FINDINGS_SECTION
                 if candidate in section_names:
                     current = candidate
                     continue
+                current = ADDITIONAL_FINDINGS_SECTION
             sections.setdefault(current, []).append(line)
         return {
             name: "\n".join(lines).strip()
@@ -1214,7 +1219,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             await log_cb(ctx.project_id, "[custom] Phase 2.6 scorecard reducer complete", "info")
         return result
 
-    def _phase28_bundles(self, ctx: DocGenContext, unit_count: int) -> None:
+    def _phase28_bundles(self, ctx: DocGenContext, facts) -> None:
         analysis_dir = ctx.staging_dir / "_analysis"
         investigation_text = "\n\n".join(
             p.read_text(encoding="utf-8")
@@ -1229,7 +1234,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             analysis_text = self._targeted_analysis_bundle_text(analysis_files, section_names)
             (analysis_dir / f"_bundle_{bundle_name}.md").write_text(
                 f"# Analysis Bundle: {bundle_name}\n\n"
-                f"Validated canonical coverage: {unit_count} units.\n\n"
+                f"Validated canonical coverage: {facts.unit_count} units.\n\n"
                 "Included Phase 2 sections: "
                 f"{', '.join(sorted(section_names))}.\n\n"
                 "## Investigation Evidence Summaries\n\n"
@@ -1238,6 +1243,21 @@ class CustomHarnessProvider(DocGenerationProvider):
                 f"{analysis_text}",
                 encoding="utf-8",
             )
+        manifest: dict[str, object] = {"source_analyses": [p.name for p in analysis_files], "doc_packs": {}}
+        for doc_name in REQUIRED_DOCS:
+            section_names = self._bundle_sections_for_docs([doc_name])
+            pack_text, pack_manifest = self._doc_evidence_pack_text(
+                ctx,
+                doc_name,
+                analysis_files,
+                section_names,
+                investigation_text,
+                facts,
+            )
+            pack_path = analysis_dir / f"_doc_pack_{doc_name}.md"
+            pack_path.write_text(pack_text, encoding="utf-8")
+            manifest["doc_packs"][doc_name] = {"path": pack_path.name, **pack_manifest}
+        (analysis_dir / "_doc_pack_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     @staticmethod
     def _write_documentation_obligations(ctx: DocGenContext, facts) -> None:
@@ -1252,9 +1272,65 @@ class CustomHarnessProvider(DocGenerationProvider):
             sections.update(DOC_SECTION_BUNDLE_MAP.get(doc_name, set()))
         return sections
 
+    def _doc_evidence_pack_text(
+        self,
+        ctx: DocGenContext,
+        doc_name: str,
+        analysis_files: list[Path],
+        section_names: set[str],
+        investigation_text: str,
+        facts,
+    ) -> tuple[str, dict[str, object]]:
+        selected, manifest = self._targeted_analysis_bundle_parts(analysis_files, section_names)
+        groups = ", ".join(f"{group}={count}" for group, count in sorted(facts.groups.items())) or "none"
+        units = "\n".join(
+            f"- {unit.name} | group={unit.group} | path={unit.path or 'scanner-limited'} | "
+            f"type={unit.unit_type} | systems={', '.join(unit.key_systems) or 'none'}"
+            for unit in facts.units
+        )
+        systems = "\n".join(f"- {system}" for system in facts.key_systems) or "- None identified in scanner facts"
+        source_coverage = ctx.staging_dir / "_preprocess" / "_source_coverage.json"
+        coverage_note = source_coverage.relative_to(ctx.staging_dir).as_posix() if source_coverage.exists() else "No direct source coverage file"
+        pack = (
+            f"# Document Evidence Pack: {doc_name}\n\n"
+            "This is the primary Phase 3 evidence context for this document. "
+            "Use tools only for drill-down or targeted repair, not for first-pass rediscovery.\n\n"
+            "## Shared Project Scope\n\n"
+            f"- Platform: {facts.platform}\n"
+            f"- Canonical inventory: {facts.unit_count} {facts.canonical_unit_label}\n"
+            f"- Groups: {groups}\n"
+            f"- Source coverage: {coverage_note}\n\n"
+            "## All Groups And Units\n\n"
+            f"{units or '- No canonical units found'}\n\n"
+            "## Cross-Group Reference Index\n\n"
+            "Use the CROSS_GROUP_REFS excerpts below; open the full Phase 2 source files only for drill-down.\n\n"
+            "## External Systems Summary\n\n"
+            f"{systems}\n\n"
+            "## Top Risks Summary\n\n"
+            "Use the RISK_FLAGS excerpts below and `_assessment/scorecard.md` for ranked risk and quality scoring evidence.\n\n"
+            "## Source Coverage And Scanner Limits\n\n"
+            "Covered source files are evidence of record. Redacted values are intentionally hidden secrets, not missing files. "
+            "Scanner-limited claims must name the limited artifact or section.\n\n"
+            "## Deep Evidence Pointers\n\n"
+            + "\n".join(f"- `_analysis/{path.name}` full Phase 2 detail" for path in analysis_files)
+            + "\n- `_assessment/scorecard.md` quantitative risk and quality scoring\n"
+            "\n## Investigation Evidence Summaries\n\n"
+            f"{investigation_text or 'No investigation summaries were written.'}\n\n"
+            "## Doc-Specific Phase 2 Evidence\n\n"
+            f"Included sections: {', '.join(sorted(section_names))}.\n\n"
+            f"{selected}\n"
+        )
+        return pack, manifest
+
     @classmethod
     def _targeted_analysis_bundle_text(cls, analysis_files: list[Path], section_names: set[str]) -> str:
+        text, _ = cls._targeted_analysis_bundle_parts(analysis_files, section_names)
+        return text
+
+    @classmethod
+    def _targeted_analysis_bundle_parts(cls, analysis_files: list[Path], section_names: set[str]) -> tuple[str, dict[str, object]]:
         parts: list[str] = []
+        manifest: dict[str, object] = {"included": {}, "omitted": {}, "unclassified": {}}
         for path in analysis_files:
             text = path.read_text(encoding="utf-8", errors="replace")
             sections = cls._parse_phase2_sections(text)
@@ -1265,10 +1341,15 @@ class CustomHarnessProvider(DocGenerationProvider):
             ]
             if not selected:
                 selected = [(ADDITIONAL_FINDINGS_SECTION, text.strip())]
+            selected_names = {name for name, _ in selected}
+            manifest["included"][path.name] = [name for name, _ in selected]
+            manifest["omitted"][path.name] = sorted(name for name in sections if name not in selected_names)
+            if sections.get(ADDITIONAL_FINDINGS_SECTION):
+                manifest["unclassified"][path.name] = True
             parts.append(f"### Source Analysis: {path.name}")
             for section, body in selected:
                 parts.append(f"#### {section}\n\n{body.strip()}")
-        return "\n\n".join(parts).rstrip()
+        return "\n\n".join(parts).rstrip(), manifest
 
     async def _phase3_docs(
         self,
@@ -1559,9 +1640,12 @@ class CustomHarnessProvider(DocGenerationProvider):
             ctx.staging_dir / "facts_manifest.json",
             ctx.staging_dir / "documentation_obligations.json",
             target_doc,
+            analysis_dir / f"_doc_pack_{doc_name}.md",
+            analysis_dir / "_doc_pack_manifest.json",
             ctx.staging_dir / "_investigation" / "_summary.md",
             repair_bundle,
             ctx.staging_dir / "_assessment" / "scorecard.md",
+            *analysis_files,
             *self._engineering_fact_context(ctx, doc_name),
         ]
         return [p for p in files if p.exists()]
@@ -2356,9 +2440,15 @@ Allowed docs:
             doc_templates = preprocess_dir / "_doc_templates.md"
             if doc_templates.exists():
                 files.append(doc_templates)
+        doc_pack = analysis_dir / f"_doc_pack_{doc_name}.md"
+        if doc_pack.exists():
+            files.append(doc_pack)
         bundle_path = analysis_dir / f"_bundle_{bundle}.md"
-        if bundle_path.exists():
+        if bundle_path.exists() and not doc_pack.exists():
             files.append(bundle_path)
+        manifest = analysis_dir / "_doc_pack_manifest.json"
+        if manifest.exists():
+            files.append(manifest)
         source_coverage = preprocess_dir / "_source_coverage.json"
         if not source_coverage.exists():
             files.extend(self._engineering_fact_context(ctx, doc_name))
@@ -2425,6 +2515,7 @@ def build_custom_provider(
     write_model_str: str | None = None,
     investigation_model_str: str | None = None,
     fallback_model_str: str | None = None,
+    instruction_pack_dir: str | None = None,
 ) -> CustomHarnessProvider:
     def _build_secondary(secondary_str: str | None, *, skip_if_same: bool = True) -> ModelProvider | None:
         if not secondary_str or (skip_if_same and secondary_str == model_str):
@@ -2438,7 +2529,8 @@ def build_custom_provider(
         )
 
     from mcp_server.services.pack_loader import PackLoader
-    pack_dir = config.project_root / config.instruction_pack_dir
+    resolved_pack_dir = instruction_pack_dir or config.instruction_pack_dir
+    pack_dir = config.project_root / resolved_pack_dir
     pack = PackLoader(pack_dir).load() if pack_dir.exists() else None
 
     main = build_model_provider(

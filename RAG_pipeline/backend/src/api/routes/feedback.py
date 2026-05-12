@@ -65,7 +65,10 @@ async def submit_feedback(
                 ConversationMessage,
                 ConversationMessage.conversation_id == Conversation.id,
             )
-            .where(ConversationMessage.id == body.message_id)
+            .where(
+                ConversationMessage.id == body.message_id,
+                ConversationMessage.deleted_at.is_(None),
+            )
         )
         if owner_id is None or owner_id != user.id:
             # Quiet no-op on missing / cross-user attempts

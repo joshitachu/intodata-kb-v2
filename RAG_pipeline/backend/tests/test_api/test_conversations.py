@@ -382,3 +382,97 @@ class TestSendMessage:
         call_kwargs = mock_rag.call_args.kwargs
         assert call_kwargs["top_k"] == 10
         assert call_kwargs["threshold"] == 0.8
+
+
+# --- Soft delete tests (real SQLite DB via db_session) ---
+
+async def test_soft_deleted_conversation_not_in_list(db_session):
+    """A conversation with deleted_at set must not appear in GET /conversations."""
+    from datetime import datetime, timezone
+
+    from src.api.dependencies import get_current_user, get_db
+    from src.auth.security import hash_password
+    from src.db.models import User
+
+    user = User(
+        username="conv-softdel-user",
+        email="conv-softdel@example.com",
+        password_hash=hash_password("pw"),
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    live_conv = Conversation(title="Live", user_id=user.id)
+    dead_conv = Conversation(
+        title="Dead",
+        user_id=user.id,
+        deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    db_session.add_all([live_conv, dead_conv])
+    await db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/conversations")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    titles = [c["title"] for c in resp.json()["conversations"]]
+    assert "Live" in titles
+    assert "Dead" not in titles
+    assert resp.json()["total"] == 1
+
+
+async def test_conversation_messages_soft_deleted_on_cascade(db_session):
+    """Deleting a conversation via the API must also soft-delete its messages."""
+    from sqlalchemy import select as sa_select
+
+    from src.api.dependencies import get_current_user, get_db
+    from src.auth.security import hash_password
+    from src.db.models import User
+
+    user = User(
+        username="conv-cascade-user",
+        email="conv-cascade@example.com",
+        password_hash=hash_password("pw"),
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    conv = Conversation(title="To delete", user_id=user.id)
+    db_session.add(conv)
+    await db_session.flush()
+
+    msg1 = ConversationMessage(role="user", content="hello", conversation_id=conv.id)
+    msg2 = ConversationMessage(role="assistant", content="hi", conversation_id=conv.id)
+    db_session.add_all([msg1, msg2])
+    await db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.delete(f"/api/v1/conversations/{conv.id}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 204
+
+    # Conversation row preserved with deleted_at set
+    assert conv.deleted_at is not None
+
+    # Messages also soft-deleted
+    result = await db_session.execute(
+        sa_select(ConversationMessage).where(
+            ConversationMessage.conversation_id == conv.id
+        )
+    )
+    messages = result.scalars().all()
+    assert all(m.deleted_at is not None for m in messages)

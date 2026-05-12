@@ -16,8 +16,9 @@ from sqlalchemy import func as sa_func, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from src.api.dependencies import CurrentUser, DBSession
+from src.api.errors import api_error
 from src.auth.security import hash_password, hash_token, verify_password
-from src.auth.service import AuthService, PasswordlessAccountError
+from src.auth.service import AccountLockedError, AuthService, PasswordlessAccountError
 from src.auth.totp import (
     consume_backup_code,
     generate_backup_codes,
@@ -67,11 +68,24 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         path="/",
         domain=_cookie_domain(),
     )
+    # Non-httpOnly CSRF token — JavaScript reads this and forwards it as
+    # X-CSRF-Token on every state-changing request. Matched by CSRFMiddleware.
+    response.set_cookie(
+        key="csrf_token",
+        value=secrets.token_urlsafe(32),
+        httponly=False,
+        samesite="strict",
+        secure=settings.cookie_secure,
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+        domain=_cookie_domain(),
+    )
 
 
 def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie("access_token", path="/", domain=_cookie_domain())
     response.delete_cookie("refresh_token", path="/", domain=_cookie_domain())
+    response.delete_cookie("csrf_token", path="/", domain=_cookie_domain())
 
 
 class LoginRequest(BaseModel):
@@ -277,16 +291,16 @@ async def _verify_email_otp(
         )
     ).scalars().first()
     if row is None or _is_expired(row.expires_at):
-        raise HTTPException(status_code=401, detail="Invalid or expired code")
+        raise api_error(401, "invalid_otp", "Invalid or expired code")
     if row.attempt_count >= EMAIL_OTP_MAX_ATTEMPTS:
         raise HTTPException(status_code=429, detail="Too many verification attempts")
     if invite_required and row.invite_id is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired code")
+        raise api_error(401, "invalid_otp", "Invalid or expired code")
 
     if row.code_hash != _otp_hash(email, purpose, code.strip()):
         row.attempt_count += 1
         await db.flush()
-        raise HTTPException(status_code=401, detail="Invalid or expired code")
+        raise api_error(401, "invalid_otp", "Invalid or expired code")
     return row
 
 
@@ -305,9 +319,10 @@ def _user_response(user: User, onboarding_completed: bool, tour_completed: bool)
     )
 
 
-@router.post("/request-access")
+@router.post("/request-access", summary="Submit an access request")
 @limiter.limit("5/minute")
 async def request_access(request: Request, body: RequestAccessBody, db: DBSession):
+    """Submit a request for access. Notifies superadmins for review."""
     email = _normalize_email(body.email)
 
     existing_user = (
@@ -387,9 +402,10 @@ async def _load_pending_invite_by_email(db, email: str) -> UserInvite:
     return invite
 
 
-@router.post("/otp/send")
+@router.post("/otp/send", summary="Send a one-time password via email")
 @limiter.limit("5/minute")
 async def send_otp(request: Request, body: OTPSendBody, db: DBSession):
+    """Send a 6-digit OTP to the given email for passwordless login or invite acceptance."""
     email = _normalize_email(body.email)
     if body.purpose == "login":
         user = (
@@ -419,7 +435,7 @@ async def send_otp(request: Request, body: OTPSendBody, db: DBSession):
     return {"status": "sent", "message": "Setup code sent."}
 
 
-@router.post("/otp/verify")
+@router.post("/otp/verify", summary="Verify an email one-time password")
 @limiter.limit("5/minute")
 async def verify_otp(
     request: Request, body: OTPVerifyBody, db: DBSession, response: Response
@@ -441,7 +457,7 @@ async def verify_otp(
         await db.execute(select(User).where(User.email == email, User.is_active == True))  # noqa: E712
     ).scalar_one_or_none()
     if user is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired code")
+        raise api_error(401, "invalid_otp", "Invalid or expired code")
 
     otp.consumed_at = datetime.now(timezone.utc)
     if user.mfa_enabled:
@@ -473,9 +489,10 @@ async def verify_otp(
     }
 
 
-@router.post("/invite/start")
+@router.post("/invite/start", summary="Start the invite acceptance flow")
 @limiter.limit("5/minute")
 async def start_invite(request: Request, body: InviteStartBody, db: DBSession):
+    """Send an OTP to the invited email address to begin account setup."""
     email = _normalize_email(body.email)
     invite = await _load_pending_invite_by_email(db, email)
     code = await _issue_email_otp(db, email=email, purpose="invite", request=request, invite=invite)
@@ -488,8 +505,9 @@ async def start_invite(request: Request, body: InviteStartBody, db: DBSession):
     return {"status": "sent", "message": "Setup code sent."}
 
 
-@router.get("/invite/validate")
+@router.get("/invite/validate", summary="Validate an invite token")
 async def validate_invite(token: str, db: DBSession):
+    """Check that an invite token is valid and return the associated email."""
     invite = await _load_invite_by_token(db, token)
     return {
         "email": invite.email,
@@ -498,7 +516,7 @@ async def validate_invite(token: str, db: DBSession):
     }
 
 
-@router.post("/invite/accept")
+@router.post("/invite/accept", summary="Complete account registration via invite")
 @limiter.limit("5/minute")
 async def accept_invite(
     request: Request, body: InviteAcceptBody, db: DBSession, response: Response
@@ -571,19 +589,30 @@ async def accept_invite(
     }
 
 
-@router.post("/login")
+@router.post("/login", summary="Authenticate with username/password")
 @limiter.limit("5/minute")
 async def login(request: Request, body: LoginRequest, db: DBSession, response: Response):
+    """Authenticate with username/email and password. Returns JWT cookies or an MFA challenge."""
     svc = AuthService(db)
     try:
         user = await svc.authenticate_user(body.login_identifier, body.password)
-    except PasswordlessAccountError as exc:
+    except AccountLockedError as exc:
         raise HTTPException(
-            status_code=401,
-            detail="This account does not have a password. Use email code or contact an admin.",
+            status_code=403,
+            detail={
+                "code": "account_locked",
+                "message": "Too many failed login attempts. Try again after "
+                f"{exc.locked_until.strftime('%Y-%m-%dT%H:%M:%SZ')}.",
+                "locked_until": exc.locked_until.isoformat(),
+            },
+        ) from exc
+    except PasswordlessAccountError as exc:
+        raise api_error(
+            401, "passwordless_account",
+            "This account does not have a password. Use email code or contact an admin.",
         ) from exc
     if user is None:
-        raise HTTPException(status_code=401, detail="Invalid username/email or password")
+        raise api_error(401, "invalid_credentials", "Invalid username/email or password")
 
     # If MFA is enabled, stop here and hand the client a short-lived mfa_token.
     # No cookies are set until /auth/verify-mfa succeeds, so a stolen password
@@ -627,7 +656,7 @@ async def login(request: Request, body: LoginRequest, db: DBSession, response: R
     }
 
 
-@router.post("/verify-mfa")
+@router.post("/verify-mfa", summary="Complete MFA second factor")
 @limiter.limit("5/minute")
 async def verify_mfa(
     request: Request, body: VerifyMFARequest, db: DBSession, response: Response
@@ -639,17 +668,29 @@ async def verify_mfa(
     """
     user_id = _decode_mfa_token(body.mfa_token)
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+        raise api_error(401, "invalid_mfa_token", "Invalid or expired MFA token")
 
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None or not user.is_active or not user.mfa_enabled or not user.totp_secret:
-        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+        raise api_error(401, "invalid_mfa_token", "Invalid or expired MFA token")
 
     code = body.code.strip()
     ok = False
     used_backup = False
     if len(code) == 6 and code.isdigit():
         ok = verify_totp(user.totp_secret, code)
+        if ok:
+            # Replay protection: reject if this exact code was already accepted
+            # within the last 90 seconds (pyotp valid_window=1 → ±30s window).
+            now = datetime.now(timezone.utc)
+            if (
+                user.totp_last_code == code
+                and user.totp_last_code_used_at is not None
+                and (now - user.totp_last_code_used_at).total_seconds() < 90
+            ):
+                raise HTTPException(status_code=401, detail="Invalid code")
+            user.totp_last_code = code
+            user.totp_last_code_used_at = now
     if not ok:
         ok, updated = consume_backup_code(user.backup_codes_hashed, code)
         if ok:
@@ -696,7 +737,7 @@ async def verify_mfa(
     }
 
 
-@router.post("/totp/setup")
+@router.post("/totp/setup", summary="Generate a TOTP secret for MFA setup")
 async def totp_setup(user: CurrentUser, db: DBSession):
     """Generate a fresh TOTP secret for the user. Does not enable MFA yet.
 
@@ -716,7 +757,7 @@ async def totp_setup(user: CurrentUser, db: DBSession):
     }
 
 
-@router.post("/totp/verify")
+@router.post("/totp/verify", summary="Confirm TOTP setup and enable MFA")
 async def totp_verify(body: TOTPVerifyRequest, user: CurrentUser, db: DBSession):
     """Confirm the pending secret by verifying a 6-digit code.
 
@@ -740,7 +781,7 @@ async def totp_verify(body: TOTPVerifyRequest, user: CurrentUser, db: DBSession)
     return {"message": "MFA enabled", "backup_codes": plaintext_codes}
 
 
-@router.post("/totp/disable")
+@router.post("/totp/disable", summary="Disable MFA for the current user")
 async def totp_disable(body: TOTPDisableRequest, user: CurrentUser, db: DBSession):
     """Turn off MFA after verifying account password, when present, and a current code.
 
@@ -774,7 +815,7 @@ async def totp_disable(body: TOTPDisableRequest, user: CurrentUser, db: DBSessio
     return {"message": "MFA disabled"}
 
 
-@router.get("/bootstrap-status")
+@router.get("/bootstrap-status", summary="Check if initial admin setup is needed")
 async def bootstrap_status(db: DBSession):
     """Open endpoint telling the login page whether any users exist yet.
 
@@ -785,7 +826,7 @@ async def bootstrap_status(db: DBSession):
     return {"needs_bootstrap": user_count == 0}
 
 
-@router.post("/bootstrap-admin")
+@router.post("/bootstrap-admin", summary="Create the first admin user on a fresh deployment")
 @limiter.limit("5/minute")
 async def bootstrap_admin(
     request: Request, body: BootstrapAdminRequest, db: DBSession, response: Response
@@ -863,8 +904,9 @@ async def bootstrap_admin(
     }
 
 
-@router.post("/logout")
+@router.post("/logout", summary="Log out and clear session cookies")
 async def logout(request: Request, db: DBSession, response: Response):
+    """Revoke the refresh token and clear all auth cookies."""
     refresh = request.cookies.get("refresh_token")
     if refresh:
         svc = AuthService(db)
@@ -873,9 +915,10 @@ async def logout(request: Request, db: DBSession, response: Response):
     return {"message": "Logged out"}
 
 
-@router.post("/refresh")
+@router.post("/refresh", summary="Rotate the refresh token and issue a new access token")
 @limiter.limit("10/minute")
 async def refresh(request: Request, db: DBSession, response: Response):
+    """Exchange a valid refresh token cookie for a new access + refresh token pair."""
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
         raise HTTPException(status_code=401, detail="No refresh token")
@@ -891,8 +934,9 @@ async def refresh(request: Request, db: DBSession, response: Response):
     return {"message": "Token refreshed"}
 
 
-@router.get("/me")
+@router.get("/me", summary="Get the current authenticated user")
 async def me(user: CurrentUser, db: DBSession):
+    """Return the profile and permissions of the currently authenticated user."""
     onboarding_completed, tour_completed = await _onboarding_flags(db, user.id)
     return UserResponse(
         id=user.id,

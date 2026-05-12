@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Query, Request
+
+from src.api.errors import api_error
 
 from sqlalchemy import func, select
 
@@ -10,11 +14,12 @@ from src.db.models import Document
 from src.rbac.permissions import get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
 from src.schemas import DocumentListResponse, DocumentResponse
+from src.services.audit_service import AuditService
 
 router = APIRouter(tags=["documents"])
 
 
-@router.get("/documents", response_model=DocumentListResponse)
+@router.get("/documents", response_model=DocumentListResponse, summary="List documents with RBAC filtering")
 async def list_documents(
     db: DBSession,
     user: CurrentUser,
@@ -25,8 +30,8 @@ async def list_documents(
     project_ids = await get_user_project_ids(user, db)
 
     # Build base queries with optional project filter
-    count_query = select(func.count(Document.id))
-    list_query = select(Document).order_by(Document.created_at.desc())
+    count_query = select(func.count(Document.id)).where(Document.deleted_at.is_(None))
+    list_query = select(Document).where(Document.deleted_at.is_(None)).order_by(Document.created_at.desc())
 
     if project_ids is not None:
         # Non-admin: only documents from assigned projects
@@ -58,7 +63,7 @@ async def list_documents(
     )
 
 
-@router.delete("/documents/{document_id}", status_code=204)
+@router.delete("/documents/{document_id}", status_code=204, summary="Delete a document and its vectors")
 @limiter.limit("10/minute")
 async def delete_document(
     request: Request,
@@ -68,13 +73,28 @@ async def delete_document(
     user: CurrentUser,
 ) -> None:
     """Delete a document and its Qdrant vectors."""
-    result = await db.execute(select(Document).where(Document.id == document_id))
+    result = await db.execute(
+        select(Document).where(Document.id == document_id, Document.deleted_at.is_(None))
+    )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise api_error(404, "not_found", "Document not found")
 
-    # Remove vectors from Qdrant
+    user_project_ids = await get_user_project_ids(user, db)
+    if user_project_ids is not None and doc.project_id not in user_project_ids:
+        raise api_error(403, "forbidden", "No access to this project")
+
+    # Remove vectors from Qdrant (hard delete — content must not remain searchable)
     await delete_document_points(qdrant, document_id)
 
-    # Remove from database
-    await db.delete(doc)
+    # Soft-delete the DB row — row is preserved for audit/recovery
+    doc.deleted_at = datetime.now(timezone.utc)
+    await AuditService(db).log(
+        user_id=user.id,
+        username=user.username,
+        action="document_deleted",
+        resource_type="document",
+        resource_id=str(document_id),
+        details={"filename": doc.filename, "project_id": doc.project_id},
+        ip_address=request.client.host if request.client else None,
+    )

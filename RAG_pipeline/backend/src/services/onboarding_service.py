@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import datetime
+import io
 import logging
+import re
+import zipfile
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -150,27 +153,145 @@ class OnboardingService:
 
 
 async def run_background_setup(user_id: int, session_factory) -> None:
-    """Stub background processor for uploaded sources.
+    """Background processor for onboarding source setup.
 
-    TODO: wire up to real ingest pipeline (clone repo / extract ZIP, run scan,
-    ingest docs). For now just simulates work then marks complete + notifies.
+    ZIP sources: ProvisioningStep (frontend) already ran the MCP pipeline before
+    the wizard completed, so we just mark setup complete.
+
+    GitHub sources: download the repo archive, extract supported text files, and
+    ingest them into RAG directly.
     """
     from src.services.notification_service import NotificationService
 
-    await asyncio.sleep(3)  # simulate work — replace with real pipeline
+    try:
+        async with session_factory() as db:
+            result = await db.execute(
+                select(UserOnboarding).where(UserOnboarding.user_id == user_id)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                logger.warning("run_background_setup: no onboarding row for user %s", user_id)
+                return
 
-    async with session_factory() as db:
-        try:
             svc = OnboardingService(db)
+            source_type = row.source_type
+
+            if source_type == "github":
+                project_id = _derive_project_id(row.workspace_name, user_id)
+                await _ingest_github_source(
+                    source_url=row.source_url or "",
+                    project_id=project_id,
+                    user_id=user_id,
+                    db=db,
+                )
+            # ZIP: frontend ProvisioningStep → MCP → /ingest/md already handled it.
+            # None/unknown: no source was provided, nothing to ingest.
+
             await svc.mark_setup_completed(user_id)
             notif = NotificationService(db)
             await notif.create(
                 user_id=user_id,
                 type="setup_complete",
-                title="Workspace setup complete",
-                message="Your source has been ingested and is ready to query.",
+                title="Workspace ready",
+                message="Your workspace is set up and ready to query.",
             )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Background onboarding setup failed for user %s", user_id)
+    except Exception as e:
+        logger.exception("Background onboarding setup failed for user %s", user_id)
+        async with session_factory() as db:
             svc = OnboardingService(db)
             await svc.mark_setup_failed(user_id, str(e))
+
+
+def _derive_project_id(workspace_name: str | None, user_id: int | None) -> str:
+    """Derive a stable, URL-safe project_id from the workspace name."""
+    fallback = f"workspace_{user_id}" if user_id is not None else "workspace"
+    base = (workspace_name or fallback).lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", base).strip("_")
+    return slug[:50] or fallback
+
+
+_INGEST_EXTENSIONS = {
+    ".md", ".txt", ".rst",
+    ".py", ".js", ".ts",
+    ".sql",
+    ".yaml", ".yml",
+    ".json", ".xml",
+}
+_SKIP_DIRS = {"node_modules", "__pycache__", "vendor", ".git", ".github", "dist", "build"}
+_MAX_FILE_BYTES = 500_000  # 500 KB per file
+_MAX_FILES = 200
+
+
+async def _ingest_github_source(
+    source_url: str,
+    project_id: str,
+    user_id: int,
+    db: AsyncSession,
+) -> None:
+    """Download a public GitHub repo archive and ingest supported text files into RAG."""
+    import httpx
+    from qdrant_client import AsyncQdrantClient
+
+    from src.config import settings
+    from src.ingestion.pipeline import ingest_text
+
+    url = source_url.rstrip("/").removesuffix(".git")
+    if "github.com" not in url:
+        raise ValueError(f"Only GitHub URLs are supported, got: {url!r}")
+
+    archive_bytes: bytes | None = None
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        for branch in ("main", "master"):
+            archive_url = f"{url}/archive/refs/heads/{branch}.zip"
+            response = await client.get(archive_url)
+            if response.status_code == 200:
+                archive_bytes = response.content
+                logger.info("Downloaded GitHub archive (%d bytes) from %s", len(archive_bytes), archive_url)
+                break
+            logger.debug("Branch %s not found at %s (HTTP %d)", branch, archive_url, response.status_code)
+
+    if archive_bytes is None:
+        raise ValueError(f"Could not download archive from {url} (tried main and master branches)")
+
+    qdrant = AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
+        candidates = [
+            name for name in zf.namelist()
+            if not name.endswith("/")
+            and Path(name).suffix.lower() in _INGEST_EXTENSIONS
+            and not any(part in _SKIP_DIRS or part.startswith(".") for part in Path(name).parts[1:])
+        ][:_MAX_FILES]
+
+        logger.info("Ingesting %d files from GitHub repo for user %s", len(candidates), user_id)
+        ingested = 0
+
+        for zip_path in candidates:
+            info = zf.getinfo(zip_path)
+            if info.file_size > _MAX_FILE_BYTES:
+                logger.debug("Skipping oversized file %s (%d bytes)", zip_path, info.file_size)
+                continue
+            try:
+                text = zf.read(zip_path).decode("utf-8", errors="replace")
+                if not text.strip():
+                    continue
+                # Strip the top-level archive directory prefix (e.g. "repo-main/")
+                parts = Path(zip_path).parts
+                filename = str(Path(*parts[1:])) if len(parts) > 1 else zip_path
+                await ingest_text(
+                    text=text,
+                    filename=filename,
+                    source=f"github:{source_url}",
+                    project_id=project_id,
+                    metadata={},
+                    db=db,
+                    qdrant=qdrant,
+                )
+                ingested += 1
+            except Exception:
+                logger.warning("Failed to ingest %s, skipping", zip_path, exc_info=True)
+
+    logger.info(
+        "GitHub ingest complete: %d/%d files ingested for user %s project %s",
+        ingested, len(candidates), user_id, project_id,
+    )

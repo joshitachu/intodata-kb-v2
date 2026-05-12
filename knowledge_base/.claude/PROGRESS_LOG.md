@@ -3,6 +3,108 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-05-11 — EP-001 Deployment Foundation Sweep
+
+### [Fix/Docs]: EP-001 backlog refresh + nginx security headers
+
+- **Files changed**:
+  - `deploy/nginx/nexus-client.conf.template` — added 4 security `add_header` directives (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy) inside the HTTP server block so certbot `--nginx` copies them to the generated HTTPS block
+  - `backlog/stories/US-001-*.md` — status Draft → Done; DoD items ticked
+  - `backlog/stories/US-002-*.md` — status Draft → In Progress (awaiting VPS)
+  - `backlog/stories/US-003-*.md` — status Draft → Done; DoD items ticked; VPS-dependent items noted
+  - `backlog/stories/US-004-*.md` — status Draft → Done; DoD items ticked; VPS-dependent items noted
+  - `backlog/stories/US-005-*.md` — status Draft → Done; DoD items ticked; VPS-dependent items noted
+  - `backlog/stories/US-006-*.md` — status Draft → In Progress (repo still under joshitachu; org transfer pending)
+  - `backlog/epics/EP-001-*.md` — status Refined → In Progress; story table statuses updated
+- **Problem**: Security response headers (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy) were absent from the nginx template. The smoke test checklist explicitly verifies all four.
+- **Root cause**: Template was written with only proxy_set_header (backend-facing), no add_header (client-facing).
+- **Change**: Added 4 `add_header` directives in the HTTP server block. certbot --nginx duplicates the server block to the 443 block, so the headers land on HTTPS responses automatically.
+- **Why this approach**: Simplest and idiomatic for certbot --nginx; no extra includes or post-certbot patching required.
+- **Verification**: Template lint passes (`nginx -t` on VPS after certbot run; confirmed by `curl -I https://...` showing all four headers in smoke-test section 2).
+
+### EP-001 Status Summary (2026-05-11)
+
+| Story | Code done | VPS required |
+|-------|-----------|--------------|
+| US-001 Runbook | Done | PO review |
+| US-002 VPS validation | — | Yes — blocker |
+| US-003 nginx/certbot + headers | Done | certbot/DNS |
+| US-004 Smoke test doc | Done | Execution |
+| US-005 IP allowlisting | Done | UFW verification |
+| US-006 GitHub org migration | — | Org transfer (ops) |
+
+EP-001 cannot be fully accepted until US-002 passes on a real VPS and US-006 is closed (repo transfer).
+
+---
+
+## Session: 2026-05-11 — EP-000 Completion (US-103, US-104, US-105, US-106)
+
+### [Feature]: Model-agnostic foundation remaining stories — pack pinning, auto-verdict, regression detection, review comparison
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/db/models.py` — `Project.instruction_pack_dir` (String 500, nullable); `GenerateRun.auto_verdict` (String 10), `auto_baseline_run_id` (Integer)
+  - `mcp-server/alembic/versions/010_add_instruction_pack_dir.py` — new migration
+  - `mcp-server/alembic/versions/011_add_generate_run_verdict.py` — new migration
+  - `mcp-server/src/mcp_server/schemas.py` — `ProjectResponse`/`UpdateProjectRequest` + `instruction_pack_dir`; `GenerateRunResponse` + `auto_verdict`/`auto_baseline_run_id`
+  - `mcp-server/src/mcp_server/services/pack_loader.py` — `InstructionPack.questions` field; loads `questionnaire.json` from pack dir
+  - `mcp-server/src/mcp_server/providers/custom/harness.py` — `instruction_pack_dir` param; per-project pack dir resolution
+  - `mcp-server/src/mcp_server/providers/__init__.py` — threads `instruction_pack_dir` through `get_provider`
+  - `mcp-server/src/mcp_server/services/claude_service.py` — `instruction_pack_dir` param passed to `get_provider`
+  - `mcp-server/src/mcp_server/services/project_registry.py` — `update_project` handles `instruction_pack_dir`
+  - `mcp-server/src/mcp_server/services/validation_service.py` — `generate_questionnaire` loads questions from pack; falls back to DEFAULT_QUESTIONNAIRE
+  - `mcp-server/src/mcp_server/api/routes/projects.py` — `_run_generate_background` passes pack dir + triggers `_auto_compare_run`; new `_auto_compare_run` function; `get_quality_history` adds cost/duration regression fields; `get_questionnaire` passes instruction_pack_dir
+  - `mcp-server/src/mcp_server/api/routes/generate_runs.py` — `_run_summary` exposes `auto_verdict` and `auto_baseline_run_id`
+  - `mcp-server/packs/default/questionnaire.json` — new; 5 questions matching previous hardcoded list
+  - `dashboard/src/types.ts` — `Project.instruction_pack_dir`; `GenerateRun.auto_verdict`/`auto_baseline_run_id`; `RunComparisonRun.auto_verdict`/`auto_baseline_run_id`; `QualityHistoryEntry` cost/duration regression fields
+  - `dashboard/src/api/client.ts` — `updateProject` data type extended with `instruction_pack_dir`
+  - `dashboard/src/hooks/useProjects.ts` — `useUpdateProject` mutation data type extended
+  - `dashboard/src/components/ProjectSettings.tsx` — Instruction Pack Dir text input; wired to save payload
+  - `dashboard/src/components/RunHistory.tsx` — Verdict column with PASS/FAIL badge; badge links to ABComparison via `onCompare` prop
+  - `dashboard/src/components/QualityHistoryPanel.tsx` — Cost Delta and Duration Delta columns with amber regression indicator
+  - `dashboard/src/components/templates/ABComparison.tsx` — `preloadRunA`/`preloadRunB` props; Human Review side-by-side section using `useReviews`
+  - `dashboard/src/App.tsx` — `compareRunA`/`compareRunB` state; `handleCompare` switches tab + pre-loads ABComparison; `onCompare` wired to RunHistory
+  - `dashboard/src/tests/ep000-ui.test.tsx` — fixtures updated with new required fields
+  - `backlog/stories/US-102-*.md` — marked Done; notes added
+  - `backlog/stories/US-105-*.md` — scope narrowed to dashboard reviewers + pack-based questions
+- **Problem**: EP-000 was ~75% done; US-103/104/105/106 stories remained unimplemented
+- **Root cause**: Model-agnostic harness needed per-project pack pinning, post-run auto-comparison, regression signalling, and review-from-pack — none of these existed
+- **Change**: Implemented all four remaining stories. Pack dir now flows from project record through the entire harness chain. Auto-comparison fires after every successful run and stores PASS/FAIL verdict. Quality-history endpoint computes cost/duration regressions with configurable thresholds (5% quality, 20% cost/duration). Questionnaire questions come from `questionnaire.json` in the pack. ABComparison shows side-by-side human review scores.
+- **Why this approach**: Kept all threshold constants in `projects.py` as named module-level constants for easy tuning. `_auto_compare_run` uses a separate DB session from `build_run_comparison` since the latter opens its own session. Pack-questions fallback to hardcoded list keeps backward compatibility when no `questionnaire.json` exists.
+- **Verification**: TypeScript build passes clean. Run `alembic upgrade head` for migrations 010/011. Set `instruction_pack_dir` on a project in dashboard, trigger generation, confirm harness picks up alternate pack. Complete two runs; verify second run has `auto_verdict` in RunHistory. Check `/quality-history` for cost/duration regression flags. Edit `packs/default/questionnaire.json`, reload questionnaire endpoint, confirm new question appears.
+
+---
+
+## Session: 2026-05-08 — GitHub Private Repo Support + Auto Webhook Registration
+
+### [Feature]: Private GitHub repo support and automatic webhook registration via PAT
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/db/models.py` — added `github_token_enc` (String 500, nullable) and `github_webhook_id` (Integer, nullable) to `Project`
+  - `mcp-server/alembic/versions/009_add_github_token_and_webhook_id.py` — new migration (down_revision: 008_git_update_summary)
+  - `mcp-server/src/mcp_server/utils/encryption.py` — new: Fernet encrypt/decrypt + inject_token (injects PAT into HTTPS URL in-memory)
+  - `mcp-server/src/mcp_server/utils/github_api.py` — new: register_webhook, delete_webhook, check_webhook via GitHub REST API (httpx)
+  - `mcp-server/src/mcp_server/utils/__init__.py` — new package init
+  - `mcp-server/src/mcp_server/config.py` — added `token_encryption_key` (MCP_TOKEN_ENCRYPTION_KEY) and `public_url` (MCP_PUBLIC_URL)
+  - `mcp-server/src/mcp_server/schemas.py` — added `github_token` to AddRepoRequest, new UpdateGithubTokenRequest, added `has_github_token`/`webhook_status` to ProjectResponse
+  - `mcp-server/src/mcp_server/api/routes/projects.py` — inject token into git clone; store token_enc; auto-register webhook; 4 new endpoints (PATCH github-token, POST/DELETE/GET github-webhook)
+  - `mcp-server/src/mcp_server/api/routes/webhook.py` — no change needed (token is loaded from DB inside run_webhook_diff_update)
+  - `mcp-server/src/mcp_server/services/git_diff_patcher.py` — run_webhook_diff_update reads github_token_enc; _run_diff_patch accepts token_enc; injects into remote URL before git fetch
+  - `mcp-server/src/mcp_server/services/git_poller.py` — _fetch_remote accepts token_enc; sets remote URL with token before fetch
+  - `dashboard/src/types.ts` — added `has_github_token`, `webhook_status` to Project interface
+  - `dashboard/src/api/client.ts` — extended addRepo, added updateGithubToken/registerWebhook/deleteWebhook/getWebhookStatus
+  - `dashboard/src/hooks/useProjects.ts` — added useRegisterWebhook, useUpdateGithubToken
+  - `dashboard/src/components/AddRepoDialog.tsx` — PAT password field shown for github.com URLs; passed to addRepo mutation
+  - `dashboard/src/components/ProjectCard.tsx` — webhook_status badges (active/not_registered)
+  - `dashboard/src/components/ProjectSettings.tsx` — GitHub Integration section with webhook status, "Set up webhook" button, token update form
+  - `dashboard/src/tests/ep000-ui.test.tsx` — added missing has_github_token/webhook_status to mock fixture
+- **Problem**: Private GitHub repos couldn't be cloned/fetched (no credentials), and there was no way to set up a webhook from the dashboard — users had to do it manually or rely on 5-min polling
+- **Root cause**: git clone/fetch operations had no credential injection mechanism; no GitHub API client existed
+- **Change**: Single PAT per project. Encrypted at rest with Fernet (MCP_TOKEN_ENCRYPTION_KEY). Injected into remote URL in memory before each git operation. On project add, GitHub API auto-registers a push+pull_request webhook. Dashboard shows status and allows manual re-registration and token rotation.
+- **Why this approach**: PAT is the simplest credential model for enterprise setups — no OAuth server needed. Token encryption keeps secrets safe even if DB is read. Graceful fallback if webhook registration fails (project still registers, falls back to polling).
+- **Verification**: Run `alembic upgrade head`; set MCP_TOKEN_ENCRYPTION_KEY + MCP_PUBLIC_URL; add private repo with PAT; verify clone succeeds + webhook appears in GitHub repo settings; push commit and verify diff patch fires in seconds.
+
+---
+
 ## Session: 2026-05-08
 
 ### [Fix]: SMTP password update — invite email 502 resolved

@@ -12,6 +12,8 @@ from mcp_server.providers.custom.models import CoverageReport, FactsManifest, In
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
 from mcp_server.providers.custom.prompts import DOC_SECTION_REQUIREMENTS, REQUIRED_DOCS
 
+GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
+
 
 def _load_scan_result(scan_output_dir: Path) -> dict[str, Any]:
     mono = scan_output_dir / "scan_result.json"
@@ -379,15 +381,28 @@ def validate_analysis_guide_sections(
 
     if facts.platform != "talend":
         all_ids = {_unit_id(unit) for unit in facts.units}
+        for group in facts.groups:
+            group_files = [
+                p for p in sorted(analysis_dir.glob(f"{group}*.md"))
+                if not p.name.startswith("_bundle_")
+                and "_chunk_" not in p.name
+                and not p.name.endswith("_summary.md")
+            ]
+            if not group_files:
+                errors.append(f"Missing Phase 2 guide-section artifact for group {group}")
+                continue
+            text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in group_files)
+            if not re.search(rf"^###\s+{GROUP_SUMMARY_SECTION}\s*$", _model_analysis_text(text), re.MULTILINE):
+                errors.append(f"Phase 2 analysis for group {group} missing required sections: {GROUP_SUMMARY_SECTION}")
         return CoverageReport(
-            ok=True,
+            ok=not errors,
             covered_units=sorted(facts.unit_names()),
             covered_unit_ids=sorted(all_ids),
             missing_units=[],
             missing_unit_ids=[],
             coverage_count=facts.unit_count,
             expected_count=facts.unit_count,
-            errors=[],
+            errors=errors,
             warnings=_identity_report_warnings(facts),
         )
 
@@ -408,6 +423,8 @@ def validate_analysis_guide_sections(
             name for name in REQUIRED_SECTION_NAMES
             if not re.search(rf"^###\s+{re.escape(name)}\s*$", model_text, re.MULTILINE)
         ]
+        if not re.search(rf"^###\s+{GROUP_SUMMARY_SECTION}\s*$", model_text, re.MULTILINE):
+            missing_required.append(GROUP_SUMMARY_SECTION)
         if missing_required:
             errors.append(
                 f"Phase 2 analysis for group {group} missing required sections: "
@@ -434,7 +451,7 @@ def normalize_analysis_guide_headings(text: str, platform: str) -> str:
 
     if platform != "talend":
         return text
-    section_names = tuple(ANALYSIS_SECTION_NAMES)
+    section_names = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION,)
     pattern = re.compile(
         rf"^(?P<hashes>#{{1,6}})\s+(?P<name>{'|'.join(re.escape(n) for n in section_names)})\s*$",
         re.MULTILINE,
@@ -445,13 +462,14 @@ def normalize_analysis_guide_headings(text: str, platform: str) -> str:
 def missing_required_analysis_sections(text: str, platform: str) -> list[str]:
     """Return required guide sections absent from a Phase 2 model-analysis body."""
 
-    if platform != "talend":
-        return []
     model_text = _model_analysis_text(text)
+    missing_summary = [] if re.search(rf"^###\s+{GROUP_SUMMARY_SECTION}\s*$", model_text, re.MULTILINE) else [GROUP_SUMMARY_SECTION]
+    if platform != "talend":
+        return missing_summary
     return [
         name for name in REQUIRED_SECTION_NAMES
         if not re.search(rf"^###\s+{re.escape(name)}\s*$", model_text, re.MULTILINE)
-    ]
+    ] + missing_summary
 
 
 def _model_analysis_text(text: str) -> str:
@@ -463,13 +481,12 @@ def _model_analysis_text(text: str) -> str:
 
 def group_analysis_is_complete(analysis_path: Path, platform: str) -> bool:
     """Return True if a cached Phase 2 file has all required sections (Talend only)."""
-    if platform != "talend":
-        return True
     text = analysis_path.read_text(encoding="utf-8", errors="replace")
     model_text = _model_analysis_text(text)
+    required = (GROUP_SUMMARY_SECTION,) if platform != "talend" else (*REQUIRED_SECTION_NAMES, GROUP_SUMMARY_SECTION)
     return all(
         re.search(rf"^###\s+{re.escape(name)}\s*$", model_text, re.MULTILINE)
-        for name in REQUIRED_SECTION_NAMES
+        for name in required
     )
 
 
@@ -515,6 +532,10 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
     assistant_contract_errors = _assistant_doc_contract_errors(staging_dir, facts)
     if assistant_contract_errors:
         errors.extend(assistant_contract_errors)
+
+    pack_errors = _doc_evidence_pack_errors(staging_dir)
+    if pack_errors:
+        errors.extend(pack_errors)
 
     return CoverageReport(
         ok=not errors,
@@ -580,8 +601,28 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
 
     require_terms(
         "00_AGENT_BRIEF",
-        ["Onboarding", "Documentation Map", "Common Tasks", "Known Traps"],
+        ["Onboarding", "Documentation Map", "Common Tasks", "Known Traps", "Glossary"],
         "assistant onboarding sections",
+    )
+    require_terms(
+        "01_ARCHITECTURE_MAP",
+        ["Topology", "Boundaries", "Dependencies", "Entry Points", "External Systems"],
+        "architecture map obligations",
+    )
+    require_terms(
+        "03_DATA_FLOWS_AND_LINEAGE",
+        ["Source", "Target", "Transformation", "Schema", "Validation", "Scanner-Limited"],
+        "data flow obligations",
+    )
+    require_terms(
+        "04_BUSINESS_RULES_AND_TRANSFORMATIONS",
+        ["Expression", "Unit", "Domain", "Impact"],
+        "business-rule table obligations",
+    )
+    require_terms(
+        "05_RUNTIME_CONFIG_AND_EXTERNALS",
+        ["External Systems", "Config", "Redacted", "Scanner-Limited"],
+        "runtime/config obligations",
     )
     require_terms(
         "07_QUALITY_SECURITY_RISK_SCORECARD",
@@ -609,6 +650,11 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
         if unit.group and unit.group not in inventory:
             errors.append(f"Component inventory missing group for {unit.name}: {unit.group}")
 
+    runtime_doc = texts.get("05_RUNTIME_CONFIG_AND_EXTERNALS", "")
+    for system in facts.key_systems:
+        if system and system not in runtime_doc:
+            errors.append(f"Runtime/external systems doc missing external system row: {system}")
+
     obligation_map = build_documentation_obligation_map(facts)
     all_text = "\n".join(texts.values())
     platform_terms = obligation_map["platform_specific"]
@@ -620,6 +666,54 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
                 f"Generated docs missing platform-specific evidence category "
                 f"{facts.platform}.{category}: expected one of {', '.join(terms[:6])}"
             )
+    return errors
+
+
+def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
+    analysis_dir = staging_dir / "_analysis"
+    if not analysis_dir.exists():
+        return []
+    errors: list[str] = []
+    manifest_path = analysis_dir / "_doc_pack_manifest.json"
+    if not manifest_path.exists():
+        errors.append("Missing Phase 3 doc evidence pack manifest: _analysis/_doc_pack_manifest.json")
+    else:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = {}
+            errors.append("Phase 3 doc evidence pack manifest is invalid JSON")
+        packs = manifest.get("doc_packs") if isinstance(manifest, dict) else None
+        if not isinstance(packs, dict):
+            errors.append("Phase 3 doc evidence pack manifest missing doc_packs")
+        else:
+            for doc in REQUIRED_DOCS:
+                entry = packs.get(doc)
+                if not isinstance(entry, dict):
+                    errors.append(f"Phase 3 doc evidence pack manifest missing entry for {doc}")
+                    continue
+                for key in ("included", "omitted", "unclassified"):
+                    if key not in entry:
+                        errors.append(f"Phase 3 doc evidence pack manifest entry for {doc} missing {key}")
+    for doc in REQUIRED_DOCS:
+        pack_path = analysis_dir / f"_doc_pack_{doc}.md"
+        if not pack_path.exists():
+            errors.append(f"Missing Phase 3 doc evidence pack: _analysis/{pack_path.name}")
+            continue
+        text = pack_path.read_text(encoding="utf-8", errors="replace")
+        required = [
+            "## Shared Project Scope",
+            "## All Groups And Units",
+            "## Cross-Group Reference Index",
+            "## External Systems Summary",
+            "## Top Risks Summary",
+            "## Source Coverage And Scanner Limits",
+            "## Deep Evidence Pointers",
+            "## Doc-Specific Phase 2 Evidence",
+        ]
+        missing = [heading for heading in required if heading not in text]
+        if missing:
+            errors.append(f"Phase 3 doc evidence pack {pack_path.name} missing sections: {', '.join(missing)}")
     return errors
 
 

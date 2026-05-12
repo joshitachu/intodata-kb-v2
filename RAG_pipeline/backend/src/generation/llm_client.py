@@ -159,7 +159,7 @@ async def _ollama_generate(messages: list[dict], images: list[str] | None = None
     response = await client.chat(
         model=settings.ollama_llm_model,
         messages=_apply_images_ollama(messages, images),
-        options={"num_ctx": 16384, "temperature": 0.45},
+        options={"num_ctx": 32768, "temperature": 0.45},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
     usage = UsageStats(
@@ -179,7 +179,7 @@ async def _ollama_stream(messages: list[dict], images: list[str] | None = None) 
         model=settings.ollama_llm_model,
         messages=_apply_images_ollama(messages, images),
         stream=True,
-        options={"num_ctx": 16384, "temperature": 0.45},
+        options={"num_ctx": 32768, "temperature": 0.45},
     )
     acc = StreamUsageStats(provider="ollama", model=settings.ollama_llm_model)
     async for chunk in stream:

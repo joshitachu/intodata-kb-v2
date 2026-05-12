@@ -51,6 +51,8 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
   const [logOpen, setLogOpen] = useState(true);
   const [detailTab, setDetailTab] = useState<DetailTab>("generate");
   const [selectedLogFile, setSelectedLogFile] = useState<string | null>(null);
+  const [compareRunA, setCompareRunA] = useState<number | null>(null);
+  const [compareRunB, setCompareRunB] = useState<number | null>(null);
   const [topNav, setTopNav] = useState<TopNav>("projects");
   const [selectedTemplateSlug, setSelectedTemplateSlug] = useState<string | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
@@ -83,6 +85,12 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
       setSelectedLogFile(run.log_file);
       setLogOpen(true);
     }
+  }
+
+  function handleCompare(runAId: number, runBId: number) {
+    setCompareRunA(runAId);
+    setCompareRunB(runBId);
+    setDetailTab("compare");
   }
 
   const tabs: { key: DetailTab; label: string }[] = [
@@ -187,13 +195,13 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   </div>
 
                   {detailTab === "generate" && (
-                    <RunHistory projectId={activeProject} onViewLog={handleViewLog} />
+                    <RunHistory projectId={activeProject} onViewLog={handleViewLog} onCompare={handleCompare} />
                   )}
                   {detailTab === "scans" && <ScanHistory projectId={activeProject} />}
                   {detailTab === "docs" && <DocPreview projectId={activeProject} />}
                   {detailTab === "compare" && (
                     <div className="space-y-4">
-                      <ABComparison projectId={activeProject} />
+                      <ABComparison projectId={activeProject} preloadRunA={compareRunA} preloadRunB={compareRunB} />
                       <QualityHistoryPanel projectId={activeProject} />
                       <ValidationReviewPanel projectId={activeProject} />
                     </div>

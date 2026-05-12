@@ -134,7 +134,7 @@ export function useDocs(projectId: string | null) {
 export function useUpdateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, data }: { projectId: string; data: { display_name?: string; platform?: string; doc_generation_provider?: string | null } }) =>
+    mutationFn: ({ projectId, data }: { projectId: string; data: { display_name?: string; platform?: string; doc_generation_provider?: string | null; instruction_pack_dir?: string | null } }) =>
       api.updateProject(projectId, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
@@ -193,5 +193,22 @@ export function useInstructionPack() {
   return useQuery({
     queryKey: ["instruction-pack"],
     queryFn: api.getInstructionPack,
+  });
+}
+
+export function useRegisterWebhook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.registerWebhook(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useUpdateGithubToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, token }: { projectId: string; token: string }) =>
+      api.updateGithubToken(projectId, token),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }

@@ -1,6 +1,39 @@
 # Current State
 
-**Status** (2026-05-05): EP-002 is implemented as "secure existing/admin-created accounts" and passed Docker-stack API/BFF acceptance. MFA is mandatory for every active authenticated user before normal app/API use. Backend enforcement lives in `CurrentUser`: non-enrolled users can still call `/auth/me`, `/auth/logout`, `/auth/refresh`, `/auth/totp/setup`, and `/auth/totp/verify`, but normal protected APIs return `403` with `code: "mfa_required"`. Frontend auth guard redirects authenticated users with `mfa_enabled=false` to `/settings/security`; successful TOTP verify refreshes auth state so the app unlocks without a manual reload. Existing MFA-enabled users still see the password + MFA login screen, and backup-code login remains inside `/auth/verify-mfa`. Request Access, outbound email, invite tokens, questionnaire/self-service account creation, TOTP secret encryption, and strict TOTP replay tracking remain deferred. Acceptance uncovered and fixed two backend issues: backup-code JSONB mutation persistence now uses `flag_modified`, and refresh JWTs include a random `jti` so rapid repeated logins do not collide on `refresh_tokens.token_hash`.
+**Status** (2026-05-12): Sprint 4 complete. 279 tests passing.
+
+**Sprint 2 done**:
+- [x] Structured JSON logging + request ID middleware (`src/logging_config.py`, `src/api/middleware/request_id.py`, `main.py`)
+- [x] Account lockout — migration 023, User model columns, `authenticate_user` rewrite, 403 route handler, 3 new tests
+- [x] Soft deletes — migration 024, `deleted_at` on 3 models, 9 SELECT filters, cascade on conversation delete, 4 new tests
+- [ ] Integration test suite (real Postgres + Qdrant) — deferred to CI setup
+
+**Sprint 3 done**:
+- [x] DB indexes — migration 025: `(project_id, created_at DESC)` on documents, `created_at` on audit_logs, `conversation_id` on conversation_messages
+- [x] Error schema standardization — `src/api/errors.py` with `api_error()` helper, `ErrorDetail` in `schemas.py`, 12 priority raises converted in auth/documents/conversations/query
+- [x] RAG chain extraction — `_recall_memories`, `_execute_search`, `_persist_query` helpers extracted; orchestrator reduced to ~100 lines
+- [x] Prometheus metrics — `prometheus-client` dep, `src/api/metrics.py`, `src/api/middleware/metrics.py`, `GET /metrics` endpoint, `settings.metrics_enabled` gate
+
+**Sprint 4 done**:
+- [x] JWT key rotation — `jwt_previous_keys` env var, `decode_token()` tries all keys, `POST /admin/auth/rotate-key` advisory endpoint
+- [x] CSRF protection — `src/api/middleware/csrf.py` double-submit cookie; `csrf_token` cookie set at login; disabled via `CSRF_ENABLED=false`
+- [x] SSO/OIDC skeleton — migration 026 (`sso_provider`, `sso_subject`), `src/api/routes/sso.py`, `sso_enabled=False` default; no new library deps
+- [x] OpenAPI docstrings — `summary=` on all 69 routes across 8 files; docstrings on 32 previously missing
+
+---
+
+**Previous status** (2026-05-11): Sprint 1 complete. Three blocking issues fixed:
+1. **RBAC bug closed** — `DELETE /documents/{id}` now enforces project access check + logs `document_deleted` audit event. Test coverage added.
+2. **Onboarding ingest wired** — `run_background_setup()` stub replaced: ZIP path marks complete immediately (ProvisioningStep/MCP already handled it); GitHub URL path downloads the archive and ingests text files via `ingest_text()`.
+3. **EP-001 docs hardened** — RUNBOOK.md has Ollama model check + full Rollback Procedure section; SMOKE-TEST.md has explicit bootstrap-admin API test; `deploy/caddy-install.sh` moved to `deploy/legacy/`.
+
+**Next up**:
+- Wire `run_company_background_setup` in `system_config_service.py` (same stub pattern as the user-level one, now fixed)
+- Test full flow: fresh DB → bootstrap → admin wizard → invite user → user welcome wizard
+- Consider rendering `system_config.workspace_name` in app chrome (sidebar header)
+- Sprint 2: integration tests (real Postgres + Qdrant), structured logging, soft deletes, account lockout
+
+**Previous status** (2026-05-05): EP-002 is implemented as "secure existing/admin-created accounts" and passed Docker-stack API/BFF acceptance. MFA is mandatory for every active authenticated user before normal app/API use. Backend enforcement lives in `CurrentUser`: non-enrolled users can still call `/auth/me`, `/auth/logout`, `/auth/refresh`, `/auth/totp/setup`, and `/auth/totp/verify`, but normal protected APIs return `403` with `code: "mfa_required"`. Frontend auth guard redirects authenticated users with `mfa_enabled=false` to `/settings/security`; successful TOTP verify refreshes auth state so the app unlocks without a manual reload. Existing MFA-enabled users still see the password + MFA login screen, and backup-code login remains inside `/auth/verify-mfa`. Request Access, outbound email, invite tokens, questionnaire/self-service account creation, TOTP secret encryption, and strict TOTP replay tracking remain deferred. Acceptance uncovered and fixed two backend issues: backup-code JSONB mutation persistence now uses `flag_modified`, and refresh JWTs include a random `jti` so rapid repeated logins do not collide on `refresh_tokens.token_hash`.
 
 **Previous status** (2026-04-21 cont.): Post-onboarding source upload landed. Wizard no longer blocks on "must upload a ZIP per selected platform" — users declare their stack at onboarding and upload ZIPs from the new `/settings/sources` page whenever they have them ready. Page derives Uploaded/Pending status by cross-referencing `UserOnboarding.selected_platforms` against rows in the MCP `projects` table; pending rows reuse `lib/mcpClient` (uploadZip + subscribeToLogs) to drive the same upload → scan → generate → push pipeline as the wizard. Sidebar now has a top-level "Sources" entry. Bug fix earlier in the session: `KB_API_URL` promoted to a Docker build ARG because `next.config.ts` rewrites are resolved at `npm run build` time in standalone mode, not per-request — the wizard was 500'ing with `ECONNREFUSED ::1:8002` until this was fixed.
 

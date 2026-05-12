@@ -12,16 +12,24 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
 import { trackWizardEvent } from "@/lib/telemetry";
 
+interface SaveMutation {
+  mutateAsync: (arg: string[]) => Promise<unknown>;
+  isPending: boolean;
+  isError: boolean;
+}
+
 interface Props {
   initial: string[];
   onBack: () => void;
   onNext: () => void;
+  overrideSave?: SaveMutation;
 }
 
-export function CommToolSelectStep({ initial, onBack, onNext }: Props) {
+export function CommToolSelectStep({ initial, onBack, onNext, overrideSave }: Props) {
   const { data: config } = useOnboardingConfig();
   const [selected, setSelected] = useState<Set<string>>(new Set(initial));
-  const save = useSaveCommTools();
+  const defaultSave = useSaveCommTools();
+  const save = overrideSave ?? defaultSave;
 
   const categories = config?.tool_categories ?? [];
 

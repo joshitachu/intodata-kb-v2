@@ -8,6 +8,7 @@ export const DocumentSourceSchema = z.object({
   score: z.number(),
   text: z.string(),
   reference_number: z.number(),
+  chunk_indexes: z.array(z.number()).optional().default([]),
 });
 
 export type DocumentSource = z.infer<typeof DocumentSourceSchema>;

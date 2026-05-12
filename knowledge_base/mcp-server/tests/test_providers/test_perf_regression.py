@@ -122,7 +122,9 @@ class _FakeProvider:
             "datapill, formula, lookup table, property, connection, monitor, job history.\n"
             "Score: 3/5. Confidence: HIGH. Evidence: facts_manifest.json. Red Flags: HIGH risk. Quick Wins: add tests. Unknowns: runtime SLA.\n"
             "Change Impact: inspect source artifacts, Test changed flows, Verify outputs, Rollback if validation fails.\n"
-            "Documentation Map, Onboarding, Common Tasks, Known Traps. Debug and Recovery guidance with Testing evidence.\n"
+            "Documentation Map, Onboarding, Common Tasks, Known Traps, Glossary. Debug and Recovery guidance with Testing evidence.\n"
+            "Topology, Boundaries, Dependencies, Entry Points, External Systems. Source, Target, Transformation, Schema, Validation, Scanner-Limited.\n"
+            "Expression, Unit, Domain, Impact. Config, Redacted, Scanner-Limited.\n"
             "## Inventory and purpose\n"
             "Recipe One and Function One are covered as canonical units in the Recipes and Functions groups.\n"
             "| Unit | Group | Source Artifact | Type | Purpose | Dependencies | Confidence |\n"
@@ -155,6 +157,7 @@ class _FakeProvider:
                 f"{section} evidence for Recipe One and Function One includes component, data flow, "
                 "business, external, operation, security, migration, and scanner detail.\n"
             )
+        deep_text += "\n### GROUP_SUMMARY\nUnits covered: Recipe One, Function One. Top risks and flows summarized.\n"
         deep_text = deep_text + ("\nDetailed evidence paragraph for Recipe One and Function One. " * 260)
         return ModelResult(
             success=True,

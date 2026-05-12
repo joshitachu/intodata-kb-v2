@@ -263,7 +263,110 @@ async def search_and_rerank(
         )
 
     logger.info(f"Reranked: {len(candidates)} candidates → {len(result)} results")
-    return result
+    return await expand_neighbor_chunks(
+        client=client,
+        sources=result,
+        user_groups=user_groups,
+        project_ids=project_ids,
+    )
+
+
+def _build_neighbor_filter(
+    user_groups: list[str],
+    document_id: int,
+    chunk_indexes: list[int],
+    project_ids: list[str] | None = None,
+) -> Filter:
+    """Build a same-document/same-project filter for neighbor chunk fetches."""
+    base = _build_search_filter(user_groups, document_ids=[document_id], project_ids=project_ids)
+    conditions = list(base.must) if base and base.must else []
+    conditions.append(
+        FieldCondition(
+            key="chunk_index",
+            match=MatchAny(any=chunk_indexes),
+        )
+    )
+    return Filter(must=conditions)
+
+
+async def expand_neighbor_chunks(
+    client: AsyncQdrantClient,
+    sources: list[Source],
+    user_groups: list[str],
+    project_ids: list[str] | None = None,
+    window: int | None = None,
+) -> list[Source]:
+    """Add adjacent chunks around high-scoring retrieved chunks.
+
+    The generated project docs often split one logical flow across neighboring
+    chunks. Pulling immediate neighbors gives the LLM continuity while keeping
+    retrieval cheap and scoped by the same RBAC/project filters as search.
+    """
+    if not settings.neighbor_chunk_expansion_enabled or not sources:
+        return sources
+
+    span = window if window is not None else settings.neighbor_chunk_window
+    if span <= 0:
+        return sources
+
+    expanded: list[Source] = []
+    seen: set[tuple[int, int]] = set()
+
+    for src in sources:
+        wanted = [
+            idx
+            for idx in range(src.chunk_index - span, src.chunk_index + span + 1)
+            if idx >= 0
+        ]
+        missing = [
+            idx for idx in wanted
+            if (src.document_id, idx) not in seen
+        ]
+        fetched_by_index: dict[int, Source] = {}
+
+        if missing:
+            try:
+                points, _ = await client.scroll(
+                    collection_name=COLLECTION_NAME,
+                    scroll_filter=_build_neighbor_filter(
+                        user_groups,
+                        src.document_id,
+                        missing,
+                        project_ids=project_ids,
+                    ),
+                    limit=len(missing),
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for point in points:
+                    payload = point.payload
+                    chunk_index = payload["chunk_index"]
+                    fetched_by_index[chunk_index] = Source(
+                        document_id=payload["document_id"],
+                        filename=payload["filename"],
+                        chunk_index=chunk_index,
+                        score=round(src.score if chunk_index == src.chunk_index else src.score * 0.95, 4),
+                        text=payload["text"],
+                    )
+            except Exception as e:
+                logger.warning("Neighbor chunk expansion failed for doc=%s chunk=%s: %s",
+                               src.document_id, src.chunk_index, e)
+
+        for idx in wanted:
+            key = (src.document_id, idx)
+            if key in seen:
+                continue
+            neighbor = fetched_by_index.get(idx)
+            if neighbor is None and idx == src.chunk_index:
+                neighbor = src
+            if neighbor is None:
+                continue
+            expanded.append(neighbor)
+            seen.add(key)
+
+    logger.info("Neighbor expansion: %d retrieved chunks → %d context chunks",
+                len(sources), len(expanded))
+    return expanded
 
 
 async def search_multi_query(
@@ -348,7 +451,12 @@ async def search_multi_query(
                     text=src.text,
                 )
             )
-        return result
+        return await expand_neighbor_chunks(
+            client=client,
+            sources=result,
+            user_groups=user_groups,
+            project_ids=project_ids,
+        )
 
     # No reranker — sort by score and return top_k
     unique_sources.sort(key=lambda s: s.score, reverse=True)
@@ -426,6 +534,7 @@ def merge_sources_by_document(
                 score=best_score,
                 text=combined_text,
                 reference_number=0,  # assigned below
+                chunk_indexes=[c.chunk_index for c in chunks],
             )
         )
 

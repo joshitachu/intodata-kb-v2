@@ -9,13 +9,19 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
+from src.api.errors import api_error
 from src.api.routes.auth import limiter
 from src.config import settings
 from src.generation.conversational_rag import _build_memory_context
 from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
 from src.db.models import QueryUsage
 from src.generation.llm_client import generate_answer_stream, get_last_usage
-from src.generation.prompt_builder import build_messages, build_metadata_messages, build_no_results_messages
+from src.generation.prompt_builder import (
+    build_messages,
+    build_metadata_messages,
+    build_no_results_messages,
+    should_use_code_assistant,
+)
 from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
 from src.generation.rag_chain import run_rag_query
 from src.memory.hindsight_client import (
@@ -50,7 +56,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["query"])
 
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse, summary="Run a RAG query")
 @limiter.limit("30/minute")
 async def query(
     request: Request,
@@ -64,7 +70,7 @@ async def query(
     project_ids = await get_user_project_ids(user, db)
     if body.project_id:
         if project_ids is not None and body.project_id not in project_ids:
-            raise HTTPException(403, "No access to this project")
+            raise api_error(403, "forbidden", "No access to this project")
         project_ids = [body.project_id]
     try:
         return await run_rag_query(
@@ -83,7 +89,7 @@ async def query(
         )
 
 
-@router.post("/query/debug", response_model=DebugSearchResponse)
+@router.post("/query/debug", response_model=DebugSearchResponse, summary="Debug search scores without threshold")
 async def query_debug(
     body: DebugSearchRequest,
     user: CurrentUser,
@@ -133,7 +139,7 @@ async def query_debug(
     )
 
 
-@router.post("/query/stream")
+@router.post("/query/stream", summary="Run a RAG query with streaming SSE response")
 @limiter.limit("30/minute")
 async def query_stream(
     request: Request,
@@ -153,7 +159,7 @@ async def query_stream(
     project_ids = await get_user_project_ids(user, db)
     if body.project_id:
         if project_ids is not None and body.project_id not in project_ids:
-            raise HTTPException(403, "No access to this project")
+            raise api_error(403, "forbidden", "No access to this project")
         project_ids = [body.project_id]
     start = time.perf_counter()
     uid = str(user.id)
@@ -168,6 +174,7 @@ async def query_stream(
         recall_corrections(body.query),
     )
     memory_context = _build_memory_context(user_memories, quality_insights, corrections)
+    answer_style = "code" if should_use_code_assistant(body.query, project_ids) else "assistant"
     if memory_context:
         logger.info("Stream: Injecting %d user memories + %d quality insights + %d corrections",
                      len(user_memories), len(quality_insights), len(corrections))
@@ -217,7 +224,12 @@ async def query_stream(
             sources_data = []
 
     elif analysis.action == Action.RESPOND:
-        messages = build_no_results_messages(body.query, memory_context=memory_context, system_knowledge=system_knowledge)
+        messages = build_no_results_messages(
+            body.query,
+            memory_context=memory_context,
+            system_knowledge=system_knowledge,
+            answer_style=answer_style,
+        )
         sources_data = []
         document_sources = []
     elif analysis.query_type == QueryType.SUMMARY:
@@ -259,10 +271,22 @@ async def query_stream(
         if sources:
             document_sources = merge_sources_by_document(sources)
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_messages(body.query, sources, reference_numbers=ref_map, memory_context=memory_context, system_knowledge=system_knowledge)
+            messages = build_messages(
+                body.query,
+                sources,
+                reference_numbers=ref_map,
+                memory_context=memory_context,
+                system_knowledge=system_knowledge,
+                answer_style=answer_style,
+            )
             sources_data = [s.model_dump() for s in document_sources]
         else:
-            messages = build_no_results_messages(body.query, memory_context=memory_context, system_knowledge=system_knowledge)
+            messages = build_no_results_messages(
+                body.query,
+                memory_context=memory_context,
+                system_knowledge=system_knowledge,
+                answer_style=answer_style,
+            )
             sources_data = []
             document_sources = []
 

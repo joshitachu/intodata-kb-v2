@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.retrieval.search import (
+    expand_neighbor_chunks,
     merge_sources_by_document,
     search_similar,
     search_similar_hybrid,
@@ -16,6 +17,15 @@ def _make_point(score: float, payload: dict):
     point.score = score
     point.payload = payload
     return point
+
+
+def _payload(document_id: int, filename: str, chunk_index: int, text: str) -> dict:
+    return {
+        "document_id": document_id,
+        "filename": filename,
+        "chunk_index": chunk_index,
+        "text": text,
+    }
 
 
 @pytest.fixture
@@ -229,6 +239,28 @@ def test_merge_sources_multiple_chunks_same_doc():
     # Text should be sorted by chunk_index: A, B, C
     assert merged[0].text == "Part A\n\nPart B\n\nPart C"
     assert merged[0].reference_number == 1
+    assert merged[0].chunk_indexes == [0, 1, 2]
+
+
+async def test_expand_neighbor_chunks_fetches_adjacent_chunks(mock_qdrant):
+    mock_qdrant.scroll.return_value = (
+        [
+            _make_point(0.0, _payload(1, "doc.md", 4, "Previous")),
+            _make_point(0.0, _payload(1, "doc.md", 5, "Hit")),
+            _make_point(0.0, _payload(1, "doc.md", 6, "Next")),
+        ],
+        None,
+    )
+    sources = [
+        Source(document_id=1, filename="doc.md", chunk_index=5, score=0.9, text="Hit"),
+    ]
+
+    expanded = await expand_neighbor_chunks(mock_qdrant, sources, ["engineering"], window=1)
+
+    assert [s.chunk_index for s in expanded] == [4, 5, 6]
+    assert expanded[0].text == "Previous"
+    assert expanded[1].text == "Hit"
+    assert expanded[2].text == "Next"
 
 
 def test_merge_sources_multiple_documents_default():

@@ -36,6 +36,7 @@ class DocumentSource(BaseModel):
     score: float
     text: str
     reference_number: int
+    chunk_indexes: list[int] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
@@ -187,3 +188,8 @@ class ConversationUpdateRequest(BaseModel):
     """Request to update a conversation."""
 
     title: str = Field(..., min_length=1, max_length=200)
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str

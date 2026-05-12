@@ -21,11 +21,13 @@ class ExtractorRegistry:
 
 def default_registry() -> ExtractorRegistry:
     from mcp_server.providers.custom.engineering_facts.extractors.generic import GenericFactExtractor
+    from mcp_server.providers.custom.engineering_facts.extractors.lobster import LobsterFactExtractor
     from mcp_server.providers.custom.engineering_facts.extractors.talend import TalendFactExtractor
     from mcp_server.providers.custom.engineering_facts.extractors.workato import WorkatoFactExtractor
 
     registry = ExtractorRegistry()
     registry.register(GenericFactExtractor())
+    registry.register(LobsterFactExtractor())
     registry.register(TalendFactExtractor())
     registry.register(WorkatoFactExtractor())
     return registry

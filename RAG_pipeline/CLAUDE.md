@@ -11,7 +11,7 @@
 
 ## Project Structure
 ```
-intodata-kb/
+RAG_pipeline/
 ├── .claude/
 │   ├── context.md             # Current state, blockers, next steps
 │   ├── progress.md            # High-level phase tracking
@@ -19,18 +19,29 @@ intodata-kb/
 │   └── PROJECT_MEMORY.md      # Architecture decisions, patterns, gotchas
 ├── backend/
 │   ├── src/
-│   │   ├── api/routes/        # FastAPI endpoints (query, auth, admin, conversations, benchmark, ingest)
-│   │   ├── auth/              # JWT auth (service.py, security.py)
-│   │   ├── services/          # Audit service
-│   │   ├── db/models/         # User, Role, Permission, QueryUsage, BenchmarkRun, etc.
+│   │   ├── api/routes/        # FastAPI endpoints:
+│   │   │   # auth, query, ingest, admin, conversations, benchmark,
+│   │   │   # health, feedback, documents, notifications, telemetry,
+│   │   │   # projects_api, tenant, memory, usage,
+│   │   │   # onboarding, company_onboarding
+│   │   ├── auth/              # JWT auth (service.py, security.py, totp.py)
+│   │   ├── services/          # audit, email, notification, onboarding, system_config
+│   │   ├── db/models/         # user, access, benchmark, conversation, document,
+│   │   │   #                    feedback, ingestion_job, onboarding, query_log,
+│   │   │   #                    query_usage, system_config, wizard_event
 │   │   ├── ingestion/         # Document processing
-│   │   ├── retrieval/         # Vector search
-│   │   ├── generation/        # LLM client, usage tracking, RAG chain
+│   │   ├── retrieval/         # Vector search + embedder + reranker + query_expander
+│   │   ├── generation/        # LLM client, usage tracking, RAG chain, conversational RAG
+│   │   ├── memory/            # Hindsight long-context memory (hindsight_client.py)
 │   │   └── rbac/              # Access control (permissions.py, auth.py)
 │   ├── benchmark/             # Benchmarking framework (runner, judge, report, corpus)
 │   └── tests/
-└── frontend/
-    └── tests/
+└── frontend/                  # Next.js 15 app
+    ├── app/                   # Pages + API route handlers (app/api/* proxies to FastAPI)
+    ├── components/            # UI components (chat, onboarding, admin, layout)
+    ├── contexts/              # React contexts (auth, chat, onboarding, tenant)
+    ├── hooks/                 # Custom hooks (usePermissions, useSystemConfig, etc.)
+    └── types/                 # TypeScript type definitions
 ```
 
 ## Architecture
@@ -38,7 +49,7 @@ intodata-kb/
 **RAG Flow**: User Query → Embed (Ollama) → Search (Qdrant) → Context → LLM (Ollama) → Answer
 
 **Tech Choices**:
-- Local models (no API costs): `nomic-embed-text` + `llama3.1:8b`
+- Local models (no API costs): `nomic-embed-text` + `gemma3:12b`
 - No LangChain (direct implementation, full control)
 - React (not Streamlit) for production-ready UX
 
@@ -46,70 +57,11 @@ intodata-kb/
 
 ## MANDATORY: Logging & Documentation Rules
 
-**These rules are non-negotiable. Every session MUST follow them.**
+See root `CLAUDE.md` (section "Logging Rules") for the full logging format and rules. They apply here without exception — same format, same discipline.
 
-### 1. Read Before Working
+**Before coding**: read `.claude/context.md`, `.claude/PROGRESS_LOG.md`, `.claude/PROJECT_MEMORY.md`, `.claude/progress.md`.
 
-At the **start of every session**, before writing any code, read these files:
-- `.claude/context.md` — current state, blockers, what to work on next
-- `.claude/progress.md` — high-level progress tracker
-- `.claude/PROGRESS_LOG.md` — detailed session history
-- `.claude/PROJECT_MEMORY.md` — architecture decisions, patterns, lessons learned
-
-### 2. Log Every Change
-
-After **every change** (bug fix, feature, refactor, config change — no matter how small), immediately update:
-
-#### `.claude/PROGRESS_LOG.md` — Append a new entry with:
-- **Date & time** of the change
-- **What was changed**: exact file(s) modified, with paths
-- **What was the problem**: the bug, error message, or missing feature — be specific
-- **What was the fix/change**: describe the exact code change made
-- **Why**: the reasoning behind the approach
-- **Root cause** (for bugs): what caused the issue in the first place
-- **Verification**: how you confirmed the fix works (tests run, manual check, etc.)
-
-Format:
-```markdown
-## Session: YYYY-MM-DD
-
-### [Fix/Feature/Refactor]: Short description
-
-- **Files changed**: `path/to/file.py` (lines X-Y)
-- **Problem**: Describe the error or missing behavior
-- **Root cause**: Why the problem existed
-- **Change**: Describe exactly what was added/modified/removed
-- **Why this approach**: Reasoning for the chosen solution
-- **Verification**: How it was confirmed working
-```
-
-#### `.claude/context.md` — Update:
-- Current state / status
-- Any new blockers
-- What should be done next
-
-#### `.claude/PROJECT_MEMORY.md` — Update if applicable:
-- New architecture decisions (add to the decisions table)
-- New lessons learned / gotchas (add to the gotchas section)
-- New completed tasks (add to the completed tasks table)
-
-#### `.claude/progress.md` — Update:
-- Check off completed items
-- Add new items if scope changed
-
-### 3. Never Skip Logging
-
-- A "quick fix" still gets logged. There are no exceptions.
-- If you fix a typo, log it. If you add an import, log it. If you change a config value, log it.
-- If you're unsure whether to log something, log it.
-- The log is the project's memory. Without it, we lose context between sessions.
-
-### 4. Log Format Rules
-
-- Use **specific file paths**, not vague descriptions ("updated the backend")
-- Include **error messages** verbatim when fixing bugs
-- Include **before/after** for non-obvious changes
-- Reference **related issues** if the change connects to a previous log entry
+**After every change**: update `PROGRESS_LOG.md` (files changed, problem, root cause, fix, verification) and `context.md`.
 
 ---
 
@@ -178,13 +130,9 @@ return (
 7. **Context**: Read all `.claude/` files at session start, update them after every change
 8. **Specificity**: Always reference exact file paths, line numbers, and error messages in logs
 
-## Multi-Agent Workflow
+## Agent Workflow
 
-Work as ONE agent at a time. Each agent has its own folder with detailed instructions.
-
-**Start with**: Infrastructure Agent → then choose based on task
-
-See `.claude/agents/[agent-name]/instructions.md` for specific agent tasks.
+Work as ONE agent at a time. Read `.claude/context.md` to determine what to work on next.
 
 ## Common Commands
 ```bash
@@ -196,7 +144,7 @@ npm run dev                          # Frontend
 # Infra
 docker-compose up -d                 # Start Qdrant + PostgreSQL
 ollama pull nomic-embed-text         # Pull embeddings model
-ollama pull llama3.1:8b              # Pull LLM
+ollama pull gemma3:12b               # Pull LLM
 
 # DB
 alembic upgrade head                 # Run migrations
@@ -220,7 +168,7 @@ npm test                             # Frontend tests
 # backend/.env
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
-OLLAMA_LLM_MODEL=llama3.1:8b
+OLLAMA_LLM_MODEL=gemma3:12b
 QDRANT_URL=http://localhost:6333
 DATABASE_URL=postgresql://postgres:changeme@localhost:5432/intodata_kb
 
@@ -230,8 +178,8 @@ ADMIN_DEFAULT_PASSWORD=admin
 COOKIE_DOMAIN=                    # Empty for localhost, set for production domain
 COOKIE_SECURE=false               # Set true when behind HTTPS
 
-# frontend/.env
-VITE_API_URL=http://localhost:8000/api/v1
+# frontend/.env (Next.js — server-side only, no NEXT_PUBLIC_ prefix)
+FASTAPI_URL=http://localhost:8000
 ```
 
 ## Key Features
@@ -322,6 +270,42 @@ Admin UI elements are filtered by user permissions:
 - **Hook**: `usePermissions()` in `frontend/hooks/usePermissions.ts` — wraps `useAuthContext()`, provides `hasPermission(codename)`, `hasAnyAdminPermission`, convenience booleans
 - **Sidebar**: Admin sub-links filtered by required permission (Users→`manage_users`, Roles→`manage_roles`, Projects→`assign_projects`, Usage→`manage_users`, Benchmark→`manage_users`)
 - **Admin layout**: Checks `hasAnyAdminPermission` (any admin permission grants access, not just `manage_users`)
+
+## Onboarding System
+
+Two-tier onboarding guards app access. Both wizards must complete before the main app is accessible.
+
+**Flow**: Cold start → `OnboardingGuard` checks backend state → routes to appropriate wizard → app unlocks
+
+### Tier 1: Admin/Company Wizard (`AdminOnboardingWizard.tsx`)
+- Triggered on first boot when no system config exists
+- Steps: Welcome → Platform select → Source upload → Workspace → Communication tools → Provisioning → Complete
+- Backend: `POST /api/v1/company-onboarding/step/{step}`, `GET /api/v1/company-onboarding/status`
+- Persists to `system_config` table via `system_config_service.py`
+- Frontend API routes: `app/api/onboarding/company/` (complete, status, setup-status, step)
+
+### Tier 2: User Welcome Wizard (`UserWelcomeWizard.tsx`)
+- Triggered for each new user after company setup completes
+- Steps: UserWelcomeStep (intro, tour, preferences)
+- Backend: `POST /api/v1/onboarding/step/{step}`, `GET /api/v1/onboarding/status`
+- Persists to `onboarding` table per user
+
+### Guard (`OnboardingGuard.tsx`)
+- Wraps the entire app
+- Checks `/api/onboarding/setup-status` → if company not set up, shows `AdminOnboardingWizard`
+- Checks `/api/onboarding/status` → if user not onboarded, shows `UserWelcomeWizard`
+- Hook: `useSystemConfig.ts` for reading/updating system-wide config state
+
+### Key files
+- `src/api/routes/company_onboarding.py` — company setup endpoints
+- `src/api/routes/onboarding.py` — per-user onboarding endpoints
+- `src/db/models/system_config.py` — system-wide key/value config store
+- `src/db/models/onboarding.py` — per-user onboarding state
+- `src/services/system_config_service.py` — CRUD for system_config
+- `src/services/onboarding_service.py` — onboarding step progression logic
+- `frontend/components/onboarding/AdminOnboardingWizard.tsx`
+- `frontend/components/onboarding/UserWelcomeWizard.tsx`
+- `frontend/hooks/useSystemConfig.ts`
 
 ---
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +19,20 @@ from src.db.models import RefreshToken, User
 
 logger = logging.getLogger(__name__)
 
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_DURATION_MINUTES = 15
+
 
 class PasswordlessAccountError(Exception):
     """Raised when password auth is attempted for an account without a password."""
+
+
+class AccountLockedError(Exception):
+    """Raised when the account is temporarily locked due to repeated failures."""
+
+    def __init__(self, locked_until: datetime) -> None:
+        self.locked_until = locked_until
+        super().__init__(f"Account locked until {locked_until.isoformat()}")
 
 
 class AuthService:
@@ -29,7 +40,11 @@ class AuthService:
         self.db = db
 
     async def authenticate_user(self, identifier: str, password: str) -> User | None:
-        """Verify username/email + password. Returns User or None."""
+        """Verify username/email + password. Returns User or None.
+
+        Raises AccountLockedError if the account is temporarily locked.
+        Raises PasswordlessAccountError if the account has no password set.
+        """
         identifier = identifier.strip()
         result = await self.db.execute(
             select(User).where(
@@ -44,10 +59,35 @@ class AuthService:
             return None
         if user.password_hash is None:
             raise PasswordlessAccountError
+
+        now = datetime.now(timezone.utc)
+
+        # Check active lockout
+        if user.locked_until is not None and user.locked_until > now:
+            raise AccountLockedError(user.locked_until)
+
+        # Lockout window may have expired — clear stale state
+        if user.locked_until is not None and user.locked_until <= now:
+            user.locked_until = None
+            user.failed_login_attempts = 0
+
         if not verify_password(password, user.password_hash):
+            user.failed_login_attempts += 1
+            if user.failed_login_attempts >= LOCKOUT_THRESHOLD:
+                user.locked_until = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+                user.failed_login_attempts = 0
+                logger.warning(
+                    "Account locked after %d failed attempts",
+                    LOCKOUT_THRESHOLD,
+                    extra={"user_id": user.id, "locked_until": user.locked_until.isoformat()},
+                )
+                raise AccountLockedError(user.locked_until)
             return None
-        # Update last_login_at
-        user.last_login_at = datetime.now(timezone.utc)
+
+        # Successful auth — reset lockout state
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.last_login_at = now
         return user
 
     async def create_tokens(self, user: User) -> tuple[str, str]:

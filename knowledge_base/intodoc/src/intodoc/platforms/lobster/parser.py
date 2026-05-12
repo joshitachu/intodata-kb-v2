@@ -15,7 +15,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 from rich.console import Console
 
@@ -80,6 +80,36 @@ _DATAPROP_KEYS: frozenset[str] = frozenset({
     "filetype", "file_encoding", "xml_recordtag", "delim_row", "delim_column",
     "start_row", "end_row", "max_records", "use_xpath", "ignore_namespace",
     "empty_value_is_null", "trim_sql_values", "source_sql",
+})
+
+_AGENT_KEYS: tuple[str, ...] = (
+    "url", "host", "port", "dir", "filename", "mimetype", "mime_type",
+    "schedule_type", "interval", "ftp_client_type", "file_handling",
+    "http_method", "auth_type", "content_type", "service",
+    "accept_get", "accept_post", "accept_put", "accept_delete",
+    "accept_patch", "accept_all_subURI", "rest_placeholder",
+    "com_channel", "comm_channel_partner", "comm_channel_name",
+)
+
+_UNIT_KEYS: tuple[str, ...] = (
+    "host", "port", "dir", "filename", "encoding",
+    "comm_channel_partner", "comm_channel_name",
+    "comm_channel_id", "clienttype",
+)
+
+_REFERENCE_TAGS: frozenset[str] = frozenset({
+    "profile_after_run", "exception_profile", "forward_profile", "replace_profile",
+})
+
+_REFERENCE_TAG_HINTS: tuple[str, ...] = (
+    "profile_after", "exception_profile", "forward_profile", "replace_profile",
+    "next_profile", "success_profile", "error_profile", "target_profile",
+    "called_profile", "call_profile",
+)
+
+_EXTRA_SKIP_TAGS: frozenset[str] = frozenset({
+    "structuredefinition", "inputtree", "outputtree", "variables",
+    "responseunits", "realm", "note", "aiDoc", "aiDocumentation",
 })
 
 
@@ -174,14 +204,33 @@ class LobsterParser:
         profiles: list[Path] = []
         for xml_path in repo_root.rglob("*.xml"):
             try:
-                # Quick check: read first 500 bytes for root tag
-                with xml_path.open("r", encoding="utf-8", errors="replace") as f:
-                    head = f.read(500)
-                if "<datawizardprofile" in head:
+                if self._is_lobster_profile_xml(xml_path):
                     profiles.append(xml_path)
             except OSError:
                 continue
         return profiles
+
+    @staticmethod
+    def _is_lobster_profile_xml(path: Path) -> bool:
+        """Return True when an XML file's root is datawizardprofile.
+
+        ``iterparse`` stops after the first start event, so this handles long
+        XML declarations/comments without parsing the whole profile. The text
+        fallback keeps legacy malformed-but-obvious exports discoverable.
+        """
+        try:
+            parser = ET.iterparse(path, events=("start",))
+            _, root = next(parser)
+            close = getattr(parser, "close", None)
+            if close is not None:
+                close()
+            return _local_name(root.tag) == "datawizardprofile"
+        except (ET.ParseError, OSError, StopIteration):
+            try:
+                head = path.read_text(encoding="utf-8", errors="replace")[:8192]
+            except OSError:
+                return False
+            return "<datawizardprofile" in head or ":datawizardprofile" in head
 
     # ── Single profile parsing ───────────────────────────────────────
 
@@ -205,7 +254,7 @@ class LobsterParser:
         cross_refs: list[str] = []
 
         # 1. Agent component
-        agent_el = root.find("agent")
+        agent_el = self._child(root, "agent")
         if agent_el is not None:
             agent_comp, agent_conns, agent_refs = self._parse_agent(agent_el, profile_type)
             components.append(agent_comp)
@@ -213,53 +262,51 @@ class LobsterParser:
             cross_refs.extend(agent_refs)
 
         # 2. DataProperties component
-        dp_el = root.find("dataproperties")
+        dp_el = self._child(root, "dataproperties")
         if dp_el is not None:
             dp_comp = self._parse_dataproperties(dp_el)
             components.append(dp_comp)
 
         # 3. Structure definition (input/output trees, filters, variables)
-        sd_el = dp_el.find("structuredefinition") if dp_el is not None else None
+        sd_el = self._child(dp_el, "structuredefinition") if dp_el is not None else None
         context_groups: list[ContextGroup] = []
 
         if sd_el is not None:
             # Input tree
-            it_el = sd_el.find("inputtree")
+            it_el = self._child(sd_el, "inputtree")
             if it_el is not None:
                 it_comp = self._parse_tree(it_el, "LobsterSourceSchema", "input")
                 components.append(it_comp)
 
             # Output tree (includes filter chains)
-            ot_el = sd_el.find("outputtree")
+            ot_el = self._child(sd_el, "outputtree")
             if ot_el is not None:
                 ot_comp = self._parse_tree(ot_el, "LobsterMapping", "output")
                 components.append(ot_comp)
 
             # Variables
-            vars_el = sd_el.find("variables")
+            vars_el = self._child(sd_el, "variables")
             if vars_el is not None:
                 ctx_groups = self._parse_variables(vars_el)
                 context_groups.extend(ctx_groups)
 
         # 4. Integration settings
-        is_el = root.find("integrationsettings")
+        is_el = self._child(root, "integrationsettings")
         if is_el is not None:
             is_comp = self._parse_integration_settings(is_el)
             if is_comp.params:
                 components.append(is_comp)
 
         # 5. Response units
-        rs_el = root.find("responsesettings")
+        rs_el = self._child(root, "responsesettings")
         if rs_el is not None:
             ru_comps, ru_conns = self._parse_response_settings(rs_el)
             components.extend(ru_comps)
             connections.extend(ru_conns)
 
         # 6. Cross-profile references at root level
-        for ref_tag in ("exception_profile", "forward_profile", "replace_profile"):
-            ref_val = self._text(root, ref_tag)
-            if ref_val:
-                cross_refs.append(ref_val)
+        cross_refs.extend(self._discover_profile_refs(root, skip_tags={"profile_after_run"}))
+        cross_refs = _dedupe_preserve_order(cross_refs)
 
         # Build TRunJobRef from cross-profile references
         trunjob_refs = [TRunJobRef(child_job=ref) for ref in cross_refs]
@@ -306,14 +353,6 @@ class LobsterParser:
 
         # Extract meaningful params
         params: list[ComponentParam] = []
-        _AGENT_KEYS = (
-            "url", "host", "port", "dir", "filename", "mimetype", "mime_type",
-            "schedule_type", "interval", "ftp_client_type", "file_handling",
-            "http_method", "auth_type", "content_type", "service",
-            "accept_get", "accept_post", "accept_put", "accept_delete",
-            "accept_patch", "accept_all_subURI", "rest_placeholder",
-            "com_channel", "comm_channel_partner", "comm_channel_name",
-        )
         for key in _AGENT_KEYS:
             val = self._text(agent_el, key)
             if val:
@@ -325,6 +364,13 @@ class LobsterParser:
         if par:
             params.append(ComponentParam(name="profile_after_run", value=par))
             cross_refs.append(par)
+        cross_refs.extend(self._discover_profile_refs(agent_el, skip_tags={"profile_after_run"}))
+        self._append_extra_child_params(
+            agent_el,
+            params,
+            prefix="extra_agent",
+            known_tags=set(_AGENT_KEYS) | {"agent_class", "profile_after_run"},
+        )
 
         # Build connection from comm channel info
         connections: list[MetadataConnection] = []
@@ -364,6 +410,12 @@ class LobsterParser:
             val = self._text(dp_el, key)
             if val and val not in ("2147483647", "0", "false", ""):
                 params.append(ComponentParam(name=key, value=val))
+        self._append_extra_child_params(
+            dp_el,
+            params,
+            prefix="extra_dataproperties",
+            known_tags=set(_DATAPROP_KEYS) | {"structuredefinition"},
+        )
 
         return Component(
             unique_name="parser",
@@ -401,7 +453,7 @@ class LobsterParser:
         """Recursively build compact tree representation."""
         lines: list[str] = []
 
-        for node_el in tree_el.findall("node"):
+        for node_el in self._children(tree_el, "node"):
             name = node_el.get("name", "")
             is_node = node_el.get("is_node", "false") == "true"
             indent = "  " * depth
@@ -427,7 +479,7 @@ class LobsterParser:
             if is_node:
                 lines.append(f"{indent}+ {name}{attr_str}")
                 # Show fields directly under container nodes
-                for field_el in node_el.findall("field"):
+                for field_el in self._children(node_el, "field"):
                     fname = field_el.get("name", "")
                     ftype = field_el.get("type", "String")
                     fmandatory = field_el.get("mandatory", "false") == "true"
@@ -451,7 +503,7 @@ class LobsterParser:
                     lines.append(sub)
             else:
                 # Leaf node -- show fields
-                for field_el in node_el.findall("field"):
+                for field_el in self._children(node_el, "field"):
                     fname = field_el.get("name", "")
                     ftype = field_el.get("type", "String")
                     fmandatory = field_el.get("mandatory", "false") == "true"
@@ -482,7 +534,7 @@ class LobsterParser:
         """Extract all filter chains from an output tree."""
         params: list[ComponentParam] = []
 
-        for filter_el in tree_el.iter("filter"):
+        for filter_el in self._iter(tree_el, "filter"):
             fid = filter_el.get("id", "")
             desc = filter_el.get("description", "")
             if not desc:
@@ -490,12 +542,13 @@ class LobsterParser:
 
             # Build compact expression from filter parameters
             args: list[str] = []
-            for param_el in filter_el:
-                if param_el.tag in ("note", "aiDoc", "aiDocumentation"):
+            for param_el in list(filter_el):
+                tag = _local_name(param_el.tag)
+                if tag in ("note", "aiDoc", "aiDocumentation"):
                     continue
                 ptype = param_el.get("type", "")
                 pfc = param_el.get("fieldconstant", "")
-                value_text = param_el.findtext("value", "")
+                value_text = self._text(param_el, "value")
 
                 # Skip empty parameter slots
                 if ptype == "constant" and not pfc and not value_text:
@@ -515,6 +568,14 @@ class LobsterParser:
                     args.append(f'const:"{val}"')
                 elif ptype:
                     args.append(f"{ptype}:{pfc}")
+                elif tag != "value":
+                    extra_value = _element_value(param_el)
+                    if extra_value:
+                        params.append(ComponentParam(
+                            name=f"filter_{fid}_extra_{tag}",
+                            value=extra_value,
+                            field_type="FILTER_EXTRA",
+                        ))
 
             expr = f"{desc}({', '.join(args)})" if args else desc
             params.append(ComponentParam(
@@ -530,14 +591,14 @@ class LobsterParser:
         user_vars: list[ContextVariable] = []
         system_vars: list[ContextVariable] = []
 
-        for var_el in vars_el.findall("variable"):
-            key = var_el.findtext("key", "")
+        for var_el in self._children(vars_el, "variable"):
+            key = self._text(var_el, "key")
             if not key:
                 continue
 
-            description = var_el.findtext("description", "") or ""
-            vtype = var_el.findtext("type", "0")
-            value = var_el.findtext("value", "") or ""
+            description = self._text(var_el, "description") or ""
+            vtype = self._text(var_el, "type") or "0"
+            value = self._text(var_el, "value") or ""
 
             type_name = {"0": "String", "1": "Integer", "2": "Decimal",
                          "3": "Date", "4": "Boolean"}.get(vtype, "String")
@@ -585,12 +646,25 @@ class LobsterParser:
         if encoding:
             params.append(ComponentParam(name="output_encoding", value=encoding))
 
-        realm_el = is_el.find("realm")
+        self._append_extra_child_params(
+            is_el,
+            params,
+            prefix="extra_integration",
+            known_tags={"encoding", "realm"},
+        )
+
+        realm_el = self._child(is_el, "realm")
         if realm_el is not None:
             for key in ("xml_root_node", "pretty_print", "xml_declaration"):
                 val = self._text(realm_el, key)
                 if val and val not in ("false", ""):
                     params.append(ComponentParam(name=key, value=val))
+            self._append_extra_child_params(
+                realm_el,
+                params,
+                prefix="extra_realm",
+                known_tags={"xml_root_node", "pretty_print", "xml_declaration"},
+            )
 
         return Component(
             unique_name="output_format",
@@ -607,16 +681,16 @@ class LobsterParser:
         components: list[Component] = []
         connections: list[MetadataConnection] = []
 
-        units_el = rs_el.find("responseunits")
+        units_el = self._child(rs_el, "responseunits")
         if units_el is None:
             return components, connections
 
-        for idx, unit_el in enumerate(units_el):
-            tag = unit_el.tag  # e.g. unit_ftp, unit_mail, unit_http
+        for idx, unit_el in enumerate(list(units_el)):
+            tag = _local_name(unit_el.tag)  # e.g. unit_ftp, unit_mail, unit_http
             unit_type = tag.replace("unit_", "").upper()
-            label = unit_el.findtext("label", "") or f"response_{idx}"
-            active = unit_el.findtext("active", "true")
-            description = unit_el.findtext("description", "") or ""
+            label = self._text(unit_el, "label") or f"response_{idx}"
+            active = self._text(unit_el, "active") or "true"
+            description = self._text(unit_el, "description") or ""
 
             params: list[ComponentParam] = []
             params.append(ComponentParam(name="type", value=unit_type))
@@ -626,15 +700,16 @@ class LobsterParser:
             if description:
                 params.append(ComponentParam(name="description", value=description))
 
-            _UNIT_KEYS = (
-                "host", "port", "dir", "filename", "encoding",
-                "comm_channel_partner", "comm_channel_name",
-                "comm_channel_id", "clienttype",
-            )
             for key in _UNIT_KEYS:
-                val = unit_el.findtext(key, "")
+                val = self._text(unit_el, key)
                 if val:
                     params.append(ComponentParam(name=key, value=val))
+            self._append_extra_child_params(
+                unit_el,
+                params,
+                prefix="extra_response",
+                known_tags=set(_UNIT_KEYS) | {"label", "active", "description"},
+            )
 
             comp = Component(
                 unique_name=f"response_{idx}_{label}",
@@ -644,13 +719,13 @@ class LobsterParser:
             components.append(comp)
 
             # Build connection from response unit
-            partner = unit_el.findtext("comm_channel_partner", "") or ""
-            channel = unit_el.findtext("comm_channel_name", "") or ""
-            host = unit_el.findtext("host", "") or ""
-            port = unit_el.findtext("port", "") or ""
+            partner = self._text(unit_el, "comm_channel_partner") or ""
+            channel = self._text(unit_el, "comm_channel_name") or ""
+            host = self._text(unit_el, "host") or ""
+            port = self._text(unit_el, "port") or ""
             if partner or host:
                 connections.append(MetadataConnection(
-                    xmi_id=unit_el.findtext("comm_channel_id", "") or f"ru_{idx}",
+                    xmi_id=self._text(unit_el, "comm_channel_id") or f"ru_{idx}",
                     name=f"{partner}:{channel}" if partner else f"response_{host}:{port}",
                     connection_type=unit_type,
                     host=host,
@@ -731,7 +806,110 @@ class LobsterParser:
     @staticmethod
     def _text(el: ET.Element, tag: str) -> str:
         """Get text content of a child element, or empty string."""
-        child = el.find(tag)
+        child = LobsterParser._child(el, tag)
         if child is not None and child.text:
             return child.text.strip()
         return ""
+
+    @staticmethod
+    def _child(el: ET.Element | None, tag: str) -> ET.Element | None:
+        if el is None:
+            return None
+        for child in list(el):
+            if _local_name(child.tag) == tag:
+                return child
+        return None
+
+    @staticmethod
+    def _children(el: ET.Element | None, tag: str) -> list[ET.Element]:
+        if el is None:
+            return []
+        return [child for child in list(el) if _local_name(child.tag) == tag]
+
+    @staticmethod
+    def _iter(el: ET.Element, tag: str) -> Iterable[ET.Element]:
+        for child in el.iter():
+            if _local_name(child.tag) == tag:
+                yield child
+
+    def _discover_profile_refs(
+        self,
+        el: ET.Element,
+        *,
+        skip_tags: set[str] | None = None,
+    ) -> list[str]:
+        refs: list[str] = []
+        skipped = skip_tags or set()
+        for child in list(el):
+            tag = _local_name(child.tag)
+            if tag in skipped:
+                continue
+            if not _looks_like_profile_reference_tag(tag):
+                continue
+            value = (child.text or "").strip()
+            if value:
+                refs.append(value)
+        return refs
+
+    def _append_extra_child_params(
+        self,
+        el: ET.Element,
+        params: list[ComponentParam],
+        *,
+        prefix: str,
+        known_tags: set[str],
+    ) -> None:
+        existing = {p.name for p in params}
+        for child in list(el):
+            tag = _local_name(child.tag)
+            if tag in known_tags or tag in _EXTRA_SKIP_TAGS:
+                continue
+            value = _element_value(child)
+            if not value:
+                continue
+            name = f"{prefix}.{tag}"
+            if name in existing:
+                continue
+            params.append(ComponentParam(name=name, value=value))
+            existing.add(name)
+
+
+def _local_name(tag: str) -> str:
+    """Strip an XML namespace from a tag name."""
+    if "}" in tag:
+        return tag.rsplit("}", 1)[1]
+    if ":" in tag:
+        return tag.rsplit(":", 1)[1]
+    return tag
+
+
+def _element_value(el: ET.Element) -> str:
+    text = (el.text or "").strip()
+    attrs = {
+        key: value
+        for key, value in sorted(el.attrib.items())
+        if value not in ("", "false", "0", "2147483647")
+    }
+    if attrs and text:
+        attr_text = ", ".join(f"{_local_name(k)}={v}" for k, v in attrs.items())
+        return f"{text} ({attr_text})"
+    if attrs:
+        return ", ".join(f"{_local_name(k)}={v}" for k, v in attrs.items())
+    return text
+
+
+def _looks_like_profile_reference_tag(tag: str) -> bool:
+    lowered = tag.lower()
+    if lowered in _REFERENCE_TAGS:
+        return True
+    return any(hint in lowered for hint in _REFERENCE_TAG_HINTS)
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result

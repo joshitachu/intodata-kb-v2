@@ -21,11 +21,27 @@ def _reviews_dir(output_root: Path, project_id: str) -> Path:
     return output_root / project_id / "logs" / "reviews"
 
 
-def generate_questionnaire(project_id: str, run_id: int) -> dict:
+def generate_questionnaire(
+    project_id: str,
+    run_id: int,
+    instruction_pack_dir: str | None = None,
+) -> dict:
+    from mcp_server.config import config
+    from mcp_server.services.pack_loader import PackLoader
+
+    resolved_dir = instruction_pack_dir or config.instruction_pack_dir
+    pack_dir = config.project_root / resolved_dir
+    pack = PackLoader(pack_dir).load() if pack_dir.exists() else None
+
+    if pack and pack.questions:
+        questions = [ReviewQuestion(id=q["id"], question=q["question"]) for q in pack.questions]
+    else:
+        questions = DEFAULT_QUESTIONNAIRE
+
     return {
         "project_id": project_id,
         "run_id": run_id,
-        "questions": [q.model_dump() for q in DEFAULT_QUESTIONNAIRE],
+        "questions": [q.model_dump() for q in questions],
     }
 
 

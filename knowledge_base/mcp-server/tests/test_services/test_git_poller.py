@@ -2,9 +2,54 @@
 
 from __future__ import annotations
 
+import datetime
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 from mcp_server.services.project_registry import ProjectRegistry
+
+
+def test_next_git_poll_before_midday_uses_same_day_noon():
+    import mcp_server.services.git_poller as poller
+
+    now = datetime.datetime(2026, 5, 12, 8, 30, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+    next_run = poller.next_git_poll_at(
+        now,
+        timezone_name="Europe/Amsterdam",
+        raw_hours="0,12",
+    )
+
+    assert next_run == datetime.datetime(2026, 5, 12, 12, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+
+def test_next_git_poll_after_midday_uses_next_midnight():
+    import mcp_server.services.git_poller as poller
+
+    now = datetime.datetime(2026, 5, 12, 12, 1, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+    next_run = poller.next_git_poll_at(
+        now,
+        timezone_name="Europe/Amsterdam",
+        raw_hours="0,12",
+    )
+
+    assert next_run == datetime.datetime(2026, 5, 13, 0, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+
+def test_next_git_poll_uses_valid_amsterdam_time_across_dst_transition():
+    import mcp_server.services.git_poller as poller
+
+    now = datetime.datetime(2026, 3, 29, 1, 30, tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+    next_run = poller.next_git_poll_at(
+        now,
+        timezone_name="Europe/Amsterdam",
+        raw_hours="0,12",
+    )
+
+    assert next_run == datetime.datetime(2026, 3, 29, 12, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
+    assert next_run.utcoffset() == datetime.timedelta(hours=2)
 
 
 async def test_poller_ignores_non_git_projects(session_factory, monkeypatch, log_manager):

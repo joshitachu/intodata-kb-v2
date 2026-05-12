@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: intodata-nexus-backend
+    static_configs:
+      # Docker Compose: backend is reachable by service name on the compose network.
+      # Bare-metal / external Prometheus: change to localhost:8000 or the host IP.
+      - targets: ["backend:8000"]
+    metrics_path: /metrics

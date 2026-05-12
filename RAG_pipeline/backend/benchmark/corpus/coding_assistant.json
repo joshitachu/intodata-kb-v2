@@ -1,0 +1,167 @@
+{
+  "name": "Nexus Code Assistant Seed",
+  "description": "Seed evaluation set for fast RAG answers that should feel like a coding assistant while using indexed project documentation.",
+  "version": "1.0",
+  "entries": [
+    {
+      "id": "code01",
+      "question": "Where is streaming chat implemented, and what is the request flow?",
+      "expected_answer": "A strong answer identifies the frontend streaming hook or route, the conversation stream endpoint, the backend streaming generator, and explains the flow from user submit to SSE token rendering with source citations.",
+      "expected_sources": ["conversations", "stream", "chat"],
+      "category": "architecture",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code02",
+      "question": "Why might citation links not scroll to their source cards?",
+      "expected_answer": "A strong answer checks the markdown citation link rendering, the source card element ids, reference number consistency, and whether source cards are mounted or collapsed when the link is clicked.",
+      "expected_sources": ["MarkdownContent", "SourceCitation"],
+      "category": "debugging",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code03",
+      "question": "Which files would need changing to add syntax-highlighted code blocks?",
+      "expected_answer": "A strong answer names the markdown rendering component, relevant global prose styles, and any package or dependency changes if a highlighter is used.",
+      "expected_sources": ["MarkdownContent", "globals.css", "package.json"],
+      "category": "implementation",
+      "difficulty": "easy"
+    },
+    {
+      "id": "code04",
+      "question": "Explain the auth flow with file references.",
+      "expected_answer": "A strong answer cites the frontend auth calls, backend auth routes, token/security helpers, and request dependency checks, then explains login/session validation at a high level.",
+      "expected_sources": ["auth", "security", "dependencies"],
+      "category": "architecture",
+      "difficulty": "hard"
+    },
+    {
+      "id": "code05",
+      "question": "How does project-scoped retrieval work?",
+      "expected_answer": "A strong answer explains selected project id handling, user project access checks, Qdrant filters, allowed groups, and how project ids restrict search results.",
+      "expected_sources": ["project_id", "allowed_groups", "search_filter"],
+      "category": "architecture",
+      "difficulty": "hard"
+    },
+    {
+      "id": "code06",
+      "question": "What should I verify after changing reranking or retrieval thresholds?",
+      "expected_answer": "A strong answer lists retrieval debug checks, source count/score review, benchmark runs, no-results behavior, and regression coverage for hybrid/reranker paths.",
+      "expected_sources": ["reranker", "search", "benchmark"],
+      "category": "verification",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code07",
+      "question": "How is Deep Dive different from normal chat?",
+      "expected_answer": "A strong answer says normal chat uses indexed RAG documentation while Deep Dive routes to the MCP deep-dive service for direct repository inspection, with different cost/latency tradeoffs.",
+      "expected_sources": ["deep-dive", "RAG", "MCP"],
+      "category": "architecture",
+      "difficulty": "easy"
+    },
+    {
+      "id": "code08",
+      "question": "If the indexed docs do not mention a source file, how should the assistant respond?",
+      "expected_answer": "A strong answer refuses to invent the missing file details, states that indexed docs lack enough evidence, and suggests Deep Dive for direct codebase inspection.",
+      "expected_sources": ["prompt", "Deep Dive"],
+      "category": "missing_context",
+      "difficulty": "easy"
+    },
+    {
+      "id": "code09",
+      "question": "Where would I add a new field to conversation messages?",
+      "expected_answer": "A strong answer identifies schema/type definitions, backend conversation routes or models if persistence is needed, frontend types, and rendering/sending call sites.",
+      "expected_sources": ["schemas", "conversations", "types"],
+      "category": "implementation",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code10",
+      "question": "What is the likely cause if a project-specific answer includes sources from another project?",
+      "expected_answer": "A strong answer investigates project id propagation, access checks, Qdrant allowed_groups filtering, and admin project selection behavior.",
+      "expected_sources": ["project_id", "allowed_groups", "filter"],
+      "category": "debugging",
+      "difficulty": "hard"
+    },
+    {
+      "id": "code11",
+      "question": "How would you trace a failed document ingestion from upload to vector storage?",
+      "expected_answer": "A strong answer walks through upload/API handling, parsing, chunking, embedding, sparse embedding, Qdrant upsert, database job status, and failure logging.",
+      "expected_sources": ["ingest", "pipeline", "vector_store"],
+      "category": "debugging",
+      "difficulty": "hard"
+    },
+    {
+      "id": "code12",
+      "question": "Where is usage tracking recorded for streamed chat responses?",
+      "expected_answer": "A strong answer identifies streaming usage events, LLM usage collection, QueryUsage persistence, and interface labels.",
+      "expected_sources": ["usage", "stream", "QueryUsage"],
+      "category": "architecture",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code13",
+      "question": "What changes are needed to add a new assistant response style?",
+      "expected_answer": "A strong answer points to prompt construction, style selection heuristics, route/call-site plumbing, tests, and backward-compatible defaults.",
+      "expected_sources": ["prompt_builder", "conversational_rag", "tests"],
+      "category": "implementation",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code14",
+      "question": "How does the app decide whether to run metadata queries or document search?",
+      "expected_answer": "A strong answer explains intent classification, metadata intents, fallback behavior, and how hybrid metadata queries can also use retrieval.",
+      "expected_sources": ["intent_classifier", "metadata", "search"],
+      "category": "architecture",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code15",
+      "question": "What should I check if markdown tables render incorrectly in assistant answers?",
+      "expected_answer": "A strong answer checks remark-gfm usage, markdown component rendering, prose CSS, and whether the LLM emitted valid markdown table syntax.",
+      "expected_sources": ["MarkdownContent", "remark-gfm", "globals.css"],
+      "category": "debugging",
+      "difficulty": "easy"
+    },
+    {
+      "id": "code16",
+      "question": "How are previous conversation sources reused for follow-up questions?",
+      "expected_answer": "A strong answer explains retrieval of previous assistant sources, context-first answering, NEED_SEARCH fallback, and when fresh search is run.",
+      "expected_sources": ["previous_sources", "NEED_SEARCH", "conversational_rag"],
+      "category": "architecture",
+      "difficulty": "hard"
+    },
+    {
+      "id": "code17",
+      "question": "What is the verification plan after changing code block rendering?",
+      "expected_answer": "A strong answer includes frontend tests, manual markdown/code block checks, copy behavior, mobile overflow, and regression checks for inline code.",
+      "expected_sources": ["MarkdownContent", "frontend tests"],
+      "category": "verification",
+      "difficulty": "easy"
+    },
+    {
+      "id": "code18",
+      "question": "How would you investigate slow responses in conversational RAG?",
+      "expected_answer": "A strong answer breaks latency into intent classification, memory recall, embedding, Qdrant search, reranking, LLM generation, streaming, and database writes.",
+      "expected_sources": ["latency", "rerank", "generate_answer"],
+      "category": "debugging",
+      "difficulty": "hard"
+    },
+    {
+      "id": "code19",
+      "question": "What files are involved in selecting a project for chat?",
+      "expected_answer": "A strong answer identifies the project selector component/hook, selected project state, message request project_id, backend access validation, and retrieval filters.",
+      "expected_sources": ["ProjectSelector", "ChatContext", "project_id"],
+      "category": "architecture",
+      "difficulty": "medium"
+    },
+    {
+      "id": "code20",
+      "question": "How should the assistant answer when a user asks for code changes but only documentation is indexed?",
+      "expected_answer": "A strong answer provides safe guidance from indexed docs, avoids fabricating exact patches, identifies missing source context, and recommends Deep Dive for direct code edits.",
+      "expected_sources": ["prompt", "Deep Dive", "indexed docs"],
+      "category": "missing_context",
+      "difficulty": "medium"
+    }
+  ]
+}

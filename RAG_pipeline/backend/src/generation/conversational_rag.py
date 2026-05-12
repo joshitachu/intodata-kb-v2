@@ -18,7 +18,13 @@ from src.generation.prompt_builder import build_conversation_summary_messages
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
-from src.generation.prompt_builder import build_correction_extraction_messages, build_metadata_messages, build_no_results_messages
+from src.generation.prompt_builder import (
+    CODE_ASSISTANT_SYSTEM_PROMPT,
+    build_correction_extraction_messages,
+    build_metadata_messages,
+    build_no_results_messages,
+    should_use_code_assistant,
+)
 from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
 from src.config import settings
 from src.memory.hindsight_client import (
@@ -46,9 +52,9 @@ from src.schemas import DocumentSource, MessageResponse, Source
 logger = logging.getLogger(__name__)
 
 ENCODING_NAME = "cl100k_base"
-MAX_HISTORY_TOKENS = 8000
-MAX_CONTEXT_TOKENS = 8192
-MAX_HISTORY_MESSAGES = 20
+MAX_HISTORY_TOKENS = 24000
+MAX_CONTEXT_TOKENS = 16000
+MAX_HISTORY_MESSAGES = 40
 
 CONVERSATIONAL_SYSTEM_PROMPT = (
     "You are a helpful knowledge-base assistant for a company. "
@@ -200,6 +206,7 @@ def build_conversational_messages_with_context(
     context: str,
     history: list[ConversationMessage],
     memory_context: str | None = None,
+    answer_style: str = "assistant",
 ) -> list[dict[str, str]]:
     """Build chat messages for the context-first attempt.
 
@@ -207,7 +214,17 @@ def build_conversational_messages_with_context(
     so the LLM can signal when it needs fresh search results.
     """
     messages: list[dict[str, str]] = []
-    messages.append({"role": "system", "content": CONTEXT_FIRST_SYSTEM_PROMPT})
+    system_prompt = (
+        CODE_ASSISTANT_SYSTEM_PROMPT
+        if answer_style == "code"
+        else CONTEXT_FIRST_SYSTEM_PROMPT
+    )
+    if answer_style == "code":
+        system_prompt += (
+            "\n\nIf the previous context does not contain enough evidence, "
+            "respond with exactly [NEED_SEARCH] and nothing else."
+        )
+    messages.append({"role": "system", "content": system_prompt})
 
     if memory_context:
         messages.append({"role": "system", "content": memory_context})
@@ -314,6 +331,7 @@ def build_conversational_messages(
     history: list[ConversationMessage],
     reference_numbers: dict[int, int] | None = None,
     memory_context: str | None = None,
+    answer_style: str = "assistant",
 ) -> list[dict[str, str]]:
     """Build chat messages with system prompt, context, history, and current query.
 
@@ -327,7 +345,8 @@ def build_conversational_messages(
     messages: list[dict[str, str]] = []
 
     # 1. System prompt
-    messages.append({"role": "system", "content": CONVERSATIONAL_SYSTEM_PROMPT})
+    system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT if answer_style == "code" else CONVERSATIONAL_SYSTEM_PROMPT
+    messages.append({"role": "system", "content": system_prompt})
 
     # 2. Memory context
     if memory_context:
@@ -420,6 +439,7 @@ async def _prepare_rag_context(
         user_memories, quality_insights, corrections,
         project_memories=project_memories,
     )
+    answer_style = "code" if should_use_code_assistant(query, project_ids) else "assistant"
     if memory_context:
         logger.info(
             "Injecting %d user memories + %d quality insights + %d corrections + %d project memories",
@@ -595,6 +615,7 @@ async def _prepare_rag_context(
         llm_messages = build_conversational_messages_with_context(
             query, context, existing_messages,
             memory_context=memory_context,
+            answer_style=answer_style,
         )
         answer = await generate_answer(llm_messages)
 
@@ -617,6 +638,7 @@ async def _prepare_rag_context(
         llm_messages = build_conversational_messages_with_context(
             query, context, existing_messages,
             memory_context=memory_context,
+            answer_style=answer_style,
         )
         answer = await generate_answer(llm_messages)
         if not needs_new_search(answer):
@@ -691,6 +713,7 @@ async def _prepare_rag_context(
             llm_messages = build_conversational_messages(
                 query, sources, existing_messages, reference_numbers=ref_map,
                 memory_context=memory_context,
+                answer_style=answer_style,
             )
             return RAGContext(
                 llm_messages=llm_messages,
@@ -701,7 +724,13 @@ async def _prepare_rag_context(
         else:
             # No results — let LLM respond helpfully
             history = truncate_history(existing_messages) if has_history else None
-            llm_messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge)
+            llm_messages = build_no_results_messages(
+                query,
+                history=history,
+                memory_context=memory_context,
+                system_knowledge=system_knowledge,
+                answer_style=answer_style,
+            )
             if precompute:
                 answer = await generate_answer(llm_messages)
             else:

@@ -9,16 +9,22 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from src.api.middleware.csrf import CSRFMiddleware
 from src.api.middleware.ip_allowlist import IPAllowlistMiddleware
+from src.api.middleware.metrics import PrometheusMiddleware
+from src.api.middleware.request_id import RequestIDMiddleware
 from src.config import settings
+from src.logging_config import configure_logging
 from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
+from src.api.routes import sso as sso_routes
 from src.api.routes import onboarding as onboarding_routes
 from src.api.routes import notifications as notifications_routes
 from src.api.routes import telemetry as telemetry_routes
 from src.api.routes import tenant as tenant_routes
 from src.api.routes import feedback as feedback_routes
+from src.api.routes import company_onboarding as company_onboarding_routes
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +32,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown events."""
-    logging.basicConfig(level=getattr(logging, settings.log_level))
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    configure_logging(settings.log_level)
     logger.info("Starting IntoData KB API")
 
     # Ensure Qdrant collection and payload indexes exist
@@ -60,7 +65,7 @@ async def lifespan(app: FastAPI):
                 user = User(
                     id=1,
                     username="admin",
-                    email="admin@intodata.local",
+                    email="joshua.kabel@intodata.nl",
                     password_hash=hash_password(settings.admin_default_password),
                     is_superadmin=True,
                 )
@@ -153,9 +158,38 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "Cookie"],
 )
 
+# Registered last → outermost wrapper → runs first on every request.
+# Generates a UUID4 request ID (or propagates X-Request-ID from caller) and
+# stores it in a context var so all log calls within the request carry it.
+app.add_middleware(RequestIDMiddleware)
+
+# CSRF double-submit cookie validation. Registered after RequestIDMiddleware so
+# it runs before the request reaches route handlers. Disabled via CSRF_ENABLED=false
+# in test environments (avoids updating every existing test with a token header).
+if settings.csrf_enabled:
+    app.add_middleware(CSRFMiddleware)
+
+# PrometheusMiddleware wraps everything — registered after RequestIDMiddleware so
+# it's outermost and measures end-to-end latency including request-ID overhead.
+# No auth required on /metrics; rely on network-level access control (nginx allowlist).
+if settings.metrics_enabled:
+    app.add_middleware(PrometheusMiddleware)
+
+# Prometheus scrape endpoint — no auth, gate at network level
+if settings.metrics_enabled:
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint():
+        return Response(
+            content=generate_latest(),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+
 # Routes
 app.include_router(health.router)
 app.include_router(auth_routes.router, prefix="/api/v1")
+app.include_router(sso_routes.router, prefix="/api/v1")
 app.include_router(admin_routes.router, prefix="/api/v1")
 app.include_router(query.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
@@ -166,6 +200,7 @@ app.include_router(usage.router, prefix="/api/v1")
 app.include_router(projects_api.router, prefix="/api/v1")
 app.include_router(memory.router, prefix="/api/v1")
 app.include_router(onboarding_routes.router, prefix="/api/v1")
+app.include_router(company_onboarding_routes.router, prefix="/api/v1")
 app.include_router(notifications_routes.router, prefix="/api/v1")
 app.include_router(telemetry_routes.router, prefix="/api/v1")
 app.include_router(tenant_routes.router, prefix="/api/v1")

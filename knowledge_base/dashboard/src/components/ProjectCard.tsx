@@ -69,6 +69,20 @@ export default function ProjectCard({
           </span>
         </div>
 
+        {/* Webhook status badge */}
+        {project.source_type === "git" && project.webhook_status === "active" && (
+          <span className="inline-flex items-center gap-1 mt-2 text-xs px-1.5 py-0.5 rounded border border-emerald-500/30 text-emerald-400 bg-emerald-500/[0.07]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+            Webhook active
+          </span>
+        )}
+        {project.source_type === "git" && project.webhook_status === "not_registered" && (
+          <span className="inline-flex items-center gap-1 mt-2 text-xs px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-400 bg-amber-500/[0.07]">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+            Webhook not set up
+          </span>
+        )}
+
         {/* Error message */}
         {project.error_message && (
           <p

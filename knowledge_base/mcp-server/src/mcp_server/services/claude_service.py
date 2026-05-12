@@ -1079,6 +1079,7 @@ Required sections:
         write_model: str | None = None,
         resume: bool = True,
         doc_generation_provider: str | None = None,
+        instruction_pack_dir: str | None = None,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
@@ -1274,6 +1275,7 @@ Required sections:
             provider_type=resolved_provider,
             write_model=effective_write_model,
             log_manager=self.log_manager,
+            instruction_pack_dir=instruction_pack_dir,
         )
 
         resolved_main_model = getattr(provider, "model_provider", None)

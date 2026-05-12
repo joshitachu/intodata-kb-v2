@@ -169,7 +169,7 @@ def upgrade() -> None:
         "ON CONFLICT DO NOTHING"
     )
     op.execute(
-        "INSERT INTO users (id, username, email) VALUES (1, 'admin', 'admin@intodata.local') "
+        "INSERT INTO users (id, username, email) VALUES (1, 'admin', 'joshua.kabel@intodata.nl') "
         "ON CONFLICT DO NOTHING"
     )
     op.execute(

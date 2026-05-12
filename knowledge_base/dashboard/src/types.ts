@@ -18,6 +18,9 @@ export interface Project {
   auto_reingest_last_checked_at: string | null;
   auto_reingest_error: string | null;
   git_update_summary: Record<string, unknown> | null;
+  has_github_token: boolean;
+  webhook_status: "active" | "not_registered" | "unknown" | null;
+  instruction_pack_dir: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -88,6 +91,8 @@ export interface GenerateRun {
   quality_score: number | null;
   template_profile_id: number | null;
   template_snapshot: Record<string, number> | null;
+  auto_verdict: "PASS" | "FAIL" | null;
+  auto_baseline_run_id: number | null;
 }
 
 export interface ScanRun {
@@ -177,6 +182,8 @@ export interface RunComparisonRun {
   output_tokens: number | null;
   num_turns: number | null;
   metrics_found: boolean;
+  auto_verdict: "PASS" | "FAIL" | null;
+  auto_baseline_run_id: number | null;
 }
 
 export interface RunComparison {
@@ -203,6 +210,10 @@ export interface QualityHistoryEntry {
   duration_ms: number | null;
   regression: boolean;
   quality_delta_pct: number | null;
+  cost_regression: boolean;
+  cost_delta_pct: number | null;
+  duration_regression: boolean;
+  duration_delta_pct: number | null;
 }
 
 export interface QualityHistoryResponse {

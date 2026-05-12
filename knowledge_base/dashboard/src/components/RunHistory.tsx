@@ -4,6 +4,7 @@ import type { GenerateRun } from "../types";
 interface Props {
   projectId: string | null;
   onViewLog: (run: GenerateRun) => void;
+  onCompare?: (runAId: number, runBId: number) => void;
 }
 
 const statusColors: Record<string, string> = {
@@ -44,7 +45,7 @@ function formatDate(iso: string): string {
   });
 }
 
-export default function RunHistory({ projectId, onViewLog }: Props) {
+export default function RunHistory({ projectId, onViewLog, onCompare }: Props) {
   const { data, isLoading } = useGenerateRuns(projectId);
 
   if (!projectId) return null;
@@ -77,6 +78,7 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
               <tr className="border-b border-white/[0.04] text-left font-mono text-xs text-slate-600 uppercase tracking-wider">
                 <th className="px-4 py-2.5 font-medium">Date</th>
                 <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-4 py-2.5 font-medium">Verdict</th>
                 <th className="px-4 py-2.5 font-medium">Model</th>
                 <th className="px-4 py-2.5 font-medium">Profile</th>
                 <th className="px-4 py-2.5 font-medium">Duration</th>
@@ -102,6 +104,30 @@ export default function RunHistory({ projectId, onViewLog }: Props) {
                     >
                       {run.status.toUpperCase()}
                     </span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {run.auto_verdict ? (
+                      <button
+                        className={`status-chip text-xs ${
+                          run.auto_verdict === "PASS"
+                            ? "border-[#a0e06f]/40 text-[#a0e06f]"
+                            : "border-red-400/40 text-red-400"
+                        }`}
+                        title={
+                          run.auto_baseline_run_id
+                            ? `vs run #${run.auto_baseline_run_id} — click to compare`
+                            : `Auto verdict: ${run.auto_verdict}`
+                        }
+                        onClick={() =>
+                          run.auto_baseline_run_id && onCompare?.(run.auto_baseline_run_id, run.id)
+                        }
+                        disabled={!run.auto_baseline_run_id || !onCompare}
+                      >
+                        {run.auto_verdict}
+                      </button>
+                    ) : (
+                      <span className="text-slate-600 text-xs">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-xs font-mono">
                     {run.model_name ? (

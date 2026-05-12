@@ -1,0 +1,528 @@
+ ▐▛███▜▌   Claude Code v2.1.138
+▝▜█████▛▘  Sonnet 4.6 · Claude Team
+  ▘▘ ▝▝    ~/Documents/Source/intodata/intodata-kb-v2
+
+❯ if u are brutally honest and u like analyze this repo in DEPTH and veyr mcuh  
+  in depth , crawl every file and understand how it works, how close are we     
+  from being enterprise what am i missing? do we change the backend to          
+  different languageetc                                                         
+  ⎿  ⧉ Selected 1 lines from RAG_pipeline/backend/src/generation/intent_classifier.py in Visual Studio Code
+
+⏺ I'll do a deep codebase crawl across all areas in parallel before forming a
+  verdict.
+
+⏺ 3 Explore agents finished (ctrl+o to expand)
+   ├ Deep crawl: RAG pipeline backend architecture, security, and code quality · 54 tool uses · 81.4k tokens
+   │ ⎿  Done
+   ├ Deep crawl: Frontend, deployment, and infrastructure quality · 54 tool uses · 65.4k tokens
+   │ ⎿  Done
+   └ Deep crawl: auth, RBAC, multi-tenancy, and data models end-to-end · 40 tool uses · 87.7k tokens
+     ⎿  Done
+
+⏺ Now let me write the plan file with the full synthesized analysis.
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ Here's the full picture from crawling the entire codebase.
+
+  ---
+  Overall: ~55–60% enterprise-ready
+
+  The foundations are solid — async Python, JWT/bcrypt/TOTP, Pydantic v2, 22
+  Alembic migrations, Qdrant RBAC filtering. But the codebase has the classic
+  shape of fast MVP development: auth done well, observability absent, testing
+  shallow, and two backend workflows explicitly stubbed in code.
+
+  ---
+  Three Things Broken Right Now
+
+  1. Privilege escalation bug — HIGH severity
+  RAG_pipeline/backend/src/api/routes/documents.py:61–81 — the DELETE endpoint
+  checks CurrentUser but never verifies the document belongs to a project the
+  user has access to. A developer in Project A can delete documents from Project
+   B if they guess the ID.
+
+  2. Onboarding ingest is fake
+  src/services/onboarding_service.py and system_config_service.py both have
+  explicit TODOs: "TODO: wire up to real ingest pipeline. For now simulates work
+   then marks complete." The "add your documents" step in onboarding silently
+  pretends to work.
+
+  3. Deployment never validated on a clean machine
+  deploy/RUNBOOK.md + CLAUDE.md both say EP-001 is not accepted until tested on
+  a fresh VPS. That has never happened. The deployment is assumed to work, not
+  known to work.
+
+  ---
+  Scorecard
+
+  Area: Architecture
+  Score: 6/10
+  Key issue: rag_chain.py is a 400-line monolith
+  ────────────────────────────────────────
+  Area: Security
+  Score: 7/10
+  Key issue: One HIGH bug; missing lockout, CSRF, key rotation
+  ────────────────────────────────────────
+  Area: DB Schema
+  Score: 7/10
+  Key issue: No soft deletes, no CHECK constraints, 3 missing indexes
+  ────────────────────────────────────────
+  Area: API Design
+  Score: 6/10
+  Key issue: Inconsistent error shapes, no OpenAPI docs
+  ────────────────────────────────────────
+  Area: Testing
+  Score: 4/10
+  Key issue: Almost all mocks — real DB never touched
+  ────────────────────────────────────────
+  Area: Observability
+  Score: 5/10
+  Key issue: Unstructured logs, no metrics, no traces
+  ────────────────────────────────────────
+  Area: Performance
+  Score: 5/10
+  Key issue: Async correct; no caching, N+1 risks
+  ────────────────────────────────────────
+  Area: Multi-tenancy
+  Score: 6/10
+  Key issue: One-VPS-per-client is fine; data isolation at app layer only
+  ────────────────────────────────────────
+  Area: Enterprise features
+  Score: 2/10
+  Key issue: No SSO, no HA, no GDPR, no cost alerts
+
+  Testing and observability are the worst scores — a Fortune 500 client's
+  security team would reject the system on those two alone before even asking
+  about SSO.
+
+  ---
+  What's Actually Good
+
+  - JWT + refresh rotation + httpOnly cookies: properly done
+  - TOTP with replay protection (90-second window, last-code stored)
+  - Rate limiting on login (5/min) and query (30/min)
+  - Async throughout — no blocking I/O
+  - Resource limits in docker-compose (mem_limit, cpus)
+  - Credential filtering in intodoc scanner (regex + structural, paranoid mode)
+  - 22 sequential Alembic migrations — clean schema history
+
+  ---
+  Should You Change the Backend Language?
+
+  No. The Python/FastAPI stack is correct for this product. The entire AI/ML
+  ecosystem (embeddings, reranking, LLM clients, Qdrant SDK) is Python-native.
+  Switching to Go means reimplementing or wrapping all of it. The actual
+  performance ceiling is Qdrant query latency and Ollama inference — both are
+  I/O-bound and language-agnostic. A rewrite would cost 6–12 months with zero
+  feature delivery. The gaps are operational maturity and missing features, none
+   of which are solved by language change.
+
+  ---
+  Priority Roadmap
+
+  Sprint 1 — Non-negotiable:
+  - Fix document delete RBAC bug (30 min)
+  - Implement onboarding ingest (remove the TODO stubs)
+  - Execute RUNBOOK on clean Ubuntu VPS; update docs
+
+  Sprint 2 — Stability:
+  - Integration test suite hitting real Postgres + Qdrant
+  - Structured logging (python-json-logger + request ID middleware)
+  - Soft deletes on documents/conversations/messages
+  - Account lockout on password failures
+
+  Sprint 3 — Hardening:
+  - Extract RAG chain into discrete pipeline steps
+  - 3 missing DB indexes
+  - Standardize error response schema
+  - Prometheus metrics + Grafana template
+
+  Sprint 4 — Enterprise entry:
+  - SSO/SAML skeleton (most enterprise buyers block on this day 1)
+  - JWT key rotation
+  - CSRF protection
+  - OpenAPI route docstrings
+
+  Full detailed analysis with file paths, line numbers, and migration-level
+  specifics is in the plan file.
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Enterprise Readiness Audit — IntoData KB v2                             │
+     │                                                                         │
+     │ Deep crawl: 3 parallel agents across ~37,500 lines of code              │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Context                                                                 │
+     │                                                                         │
+     │ User asked for a brutal, honest, depth-first analysis of the entire     │
+     │ repo to answer:                                                         │
+     │ 1. How close is this to enterprise-ready?                               │
+     │ 2. What is missing?                                                     │
+     │ 3. Should the backend language change?                                  │
+     │                                                                         │
+     │ This is a research report, not a feature plan. Findings are organized   │
+     │ by severity.                                                            │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Verdict Up Front                                                        │
+     │                                                                         │
+     │ Overall enterprise readiness: ~55–60%.                                  │
+     │                                                                         │
+     │ The foundations are competent — async Python, proper JWT/bcrypt/TOTP,   │
+     │ Pydantic v2, Alembic migrations, Qdrant RBAC filtering, Docker Compose  │
+     │ with healthchecks. But the codebase has the signature shape of fast MVP │
+     │  development: auth is solid, observability is absent, testing is        │
+     │ shallow, and several backend workflows are explicitly stubbed (# TODO:  │
+     │ wire up to real ingest pipeline).                                       │
+     │                                                                         │
+     │ Do not change the backend language. Python/FastAPI is the correct       │
+     │ choice. The real gaps are operational maturity and missing features —   │
+     │ not runtime performance. Rewriting in Go or Rust would cost 6–12 months │
+     │  and deliver zero value against the actual gaps.                        │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Scorecard                                                               │
+     │                                                                         │
+     │ ┌───────────────────┬───────┬────────────────────────────────────────── │
+     │ ───┐                                                                    │
+     │ │       Area        │ Score │                   Verdict                 │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Architecture      │ 6/10  │ Functional but RAG chain is a 400-line    │
+     │    │                                                                    │
+     │ │                   │       │ monolith                                  │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Security          │ 7/10  │ Auth/RBAC solid; one HIGH                 │
+     │    │                                                                    │
+     │ │                   │       │ privilege-escalation bug                  │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ DB Schema         │ 7/10  │ 22 migrations; no soft deletes, no CHECK  │
+     │    │                                                                    │
+     │ │                   │       │ constraints                               │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ API Design        │ 6/10  │ Inconsistent error shapes; no OpenAPI     │
+     │ docs  │                                                                 │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Testing           │ 4/10  │ Mostly mocks; no integration tests; no    │
+     │    │                                                                    │
+     │ │                   │       │ coverage metrics                          │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Observability     │ 5/10  │ Unstructured logs; no metrics, no traces, │
+     │    │                                                                    │
+     │ │                   │       │ no dashboards                             │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Performance       │ 5/10  │ Async correct; N+1 risks; zero caching    │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Multi-tenancy     │ 6/10  │ One-VPS-per-client is fine; app-layer     │
+     │    │                                                                    │
+     │ │                   │       │ isolation weak                            │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Configuration     │ 7/10  │ Centralized Pydantic Settings; no secrets │
+     │    │                                                                    │
+     │ │                   │       │ vault                                     │
+     │    │                                                                    │
+     │ ├───────────────────┼───────┼────────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Enterprise        │ 2/10  │ No SSO, no HA, no GDPR compliance, no     │
+     │ cost  │                                                                 │
+     │ │ features          │       │ alerts                                    │
+     │    │                                                                    │
+     │ └───────────────────┴───────┴────────────────────────────────────────── │
+     │ ───┘                                                                    │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Critical Bugs (Fix Before Any Client Demo)                              │
+     │                                                                         │
+     │ 1. Privilege Escalation — Document Delete (HIGH)                        │
+     │                                                                         │
+     │ File: RAG_pipeline/backend/src/api/routes/documents.py:61–81            │
+     │                                                                         │
+     │ The DELETE endpoint checks only CurrentUser — it does not verify that   │
+     │ the document's project_id is in the user's allowed projects. A          │
+     │ developer assigned to Project A can delete documents from Project B if  │
+     │ they know or guess the document ID.                                     │
+     │                                                                         │
+     │ Fix: Add a project membership check before deletion, same pattern as    │
+     │ the ingest endpoint at lines 68–70.                                     │
+     │                                                                         │
+     │ 2. Onboarding Ingest is Simulated — Not Wired                           │
+     │                                                                         │
+     │ Files: RAG_pipeline/backend/src/services/system_config_service.py,      │
+     │ src/services/onboarding_service.py                                      │
+     │                                                                         │
+     │ Both files have explicit TODOs: "TODO: wire up to real ingest pipeline. │
+     │  For now simulates work then marks complete." The source upload step in │
+     │  the onboarding wizard silently pretends to ingest a ZIP but does       │
+     │ nothing. The entire onboarding flow's "add your docs" step is broken.   │
+     │                                                                         │
+     │ Fix: Implement the actual ingest call (clone repo or extract ZIP → run  │
+     │ scan → push to Qdrant pipeline).                                        │
+     │                                                                         │
+     │ 3. EP-001 Deployment Runbook Never Validated                            │
+     │                                                                         │
+     │ File: deploy/RUNBOOK.md, CLAUDE.md (root)                               │
+     │                                                                         │
+     │ CLAUDE.md explicitly states: "EP-001 is not accepted until the runbook  │
+     │ and smoke test pass on a clean reference VPS." This has never been      │
+     │ done. The deployment is assumed to work, not known to work.             │
+     │                                                                         │
+     │ Fix: Execute deploy/RUNBOOK.md on a fresh Ubuntu 22/24 VPS, log every   │
+     │ failure, update the doc.                                                │
+     │                                                                         │
+     │ ---                                                                     │
+     │ High-Priority Gaps (Enterprise Blocker)                                 │
+     │                                                                         │
+     │ Testing (4/10 — worst score in the codebase)                            │
+     │                                                                         │
+     │ - Nearly every test overrides get_db and get_qdrant with mocks — the    │
+     │ actual DB schema is never exercised                                     │
+     │ - No integration test suite marked or wired to run against Docker       │
+     │ services                                                                │
+     │ - No coverage measurement in CI (no pytest-cov config found)            │
+     │ - test_query.py: 3 tests total for the most critical path in the        │
+     │ product                                                                 │
+     │ - Action: Add a tests/integration/ suite that spins up real Postgres +  │
+     │ Qdrant (testcontainers or docker-compose.test.yml), covers auth flow    │
+     │ end-to-end, and runs in CI                                              │
+     │                                                                         │
+     │ Observability (5/10)                                                    │
+     │                                                                         │
+     │ - Logging is logger.info(f"Embedded query in {embed_ms}ms") strings —   │
+     │ no structured JSON fields, no request IDs propagated across calls       │
+     │ - No metrics (Prometheus, Datadog, CloudWatch — nothing)                │
+     │ - No distributed tracing                                                │
+     │ - Health endpoint at /health checks services but no SLO dashboards      │
+     │ - Action: Switch to structlog or python-json-logger; add request ID     │
+     │ middleware; instrument at least latency + error rate per endpoint       │
+     │                                                                         │
+     │ Soft Deletes — Compliance Risk                                          │
+     │                                                                         │
+     │ - Documents and conversations are hard-deleted with cascade. If a user  │
+     │ or admin deletes something, it is gone from the DB forever              │
+     │ - Compliance customers (finance, healthcare) require audit trails of    │
+     │ what was deleted and by whom                                            │
+     │ - Action: Add deleted_at TIMESTAMPTZ to documents, conversations,       │
+     │ conversation_messages; filter on IS NULL in all queries; keep physical  │
+     │ rows                                                                    │
+     │                                                                         │
+     │ RAG Chain Monolith                                                      │
+     │                                                                         │
+     │ - RAG_pipeline/backend/src/generation/rag_chain.py — run_rag_query() is │
+     │  400+ lines handling intent classification, memory recall, search       │
+     │ fallbacks, map-reduce, and LLM calls in one function                    │
+     │ - No clear sub-orchestration, hard to unit test individual steps, hard  │
+     │ to debug failures mid-chain                                             │
+     │ - Action: Extract into distinct pipeline steps (IntentStep, RecallStep, │
+     │  SearchStep, GenerationStep) each independently testable                │
+     │                                                                         │
+     │ Missing Indexes                                                         │
+     │                                                                         │
+     │ - No compound index on (project_id, created_at) for document pagination │
+     │ - No index on AuditLog.created_at — time-range queries will table-scan  │
+     │ as volume grows                                                         │
+     │ - No index on ConversationMessage.conversation_id                       │
+     │ - Action: Add these three indexes in the next migration                 │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Security Gaps                                                           │
+     │                                                                         │
+     │ ┌─────────────────────────────────────────────┬──────────┬───────────── │
+     │ ────┐                                                                   │
+     │ │                    Issue                    │ Severity │      File    │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ Document delete missing project RBAC check  │ HIGH     │              │
+     │ documents.py:61 │                                                       │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ No CSRF protection (relies on samesite=lax  │ MEDIUM   │ global       │
+     │     │                                                                   │
+     │ │ only)                                       │          │              │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ Email OTP not rate-limited per email, only  │ MEDIUM   │ auth.py      │
+     │     │                                                                   │
+     │ │ globally                                    │          │              │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ No account lockout on repeated password     │ MEDIUM   │ auth.py      │
+     │     │                                                                   │
+     │ │ login failures                              │          │              │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ JWT secret key never rotates (no rotation   │ MEDIUM   │ config.py:77 │
+     │     │                                                                   │
+     │ │ mechanism)                                  │          │              │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ No Content-Security-Policy header           │ LOW      │ middleware   │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ Weak password validation (8 char min, no    │ LOW      │ auth.py:96   │
+     │     │                                                                   │
+     │ │ complexity)                                 │          │              │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ No concurrent session limit (unlimited      │ LOW      │ session mgmt │
+     │     │                                                                   │
+     │ │ refresh tokens)                             │          │              │
+     │     │                                                                   │
+     │ ├─────────────────────────────────────────────┼──────────┼───────────── │
+     │ ────┤                                                                   │
+     │ │ MFA admin recovery flow missing (lose all   │ MEDIUM   │ auth.py:753  │
+     │     │                                                                   │
+     │ │ backup codes = locked out)                  │          │              │
+     │     │                                                                   │
+     │ └─────────────────────────────────────────────┴──────────┴───────────── │
+     │ ────┘                                                                   │
+     │                                                                         │
+     │ Not yet present (enterprise requirements):                              │
+     │ - SSO / SAML / OIDC — any enterprise buyer will ask for this on day 1   │
+     │ - Session management admin view (see active sessions, force logout)     │
+     │ - Login anomaly detection                                               │
+     │ - Compromised credential check (HaveIBeenPwned API)                     │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Schema Gaps                                                             │
+     │                                                                         │
+     │ - No CHECK constraints on status enums (e.g., IngestionJob.status       │
+     │ allows any string)                                                      │
+     │ - RefreshToken.revoked is boolean with no revoked_at timestamp          │
+     │ - No row partitioning on AuditLog, QueryUsage, ConversationMessage —    │
+     │ will degrade at scale                                                   │
+     │ - No DB-level encryption at rest for sensitive columns                  │
+     │ - Missing version column for optimistic locking on hot resources        │
+     │                                                                         │
+     │ ---                                                                     │
+     │ API Design Gaps                                                         │
+     │                                                                         │
+     │ - Error response shapes are inconsistent: some return {"detail":        │
+     │ "string"}, others {"detail": {"code": "...", "message": "..."}} —       │
+     │ client cannot reliably parse errors                                     │
+     │ - No OpenAPI docstrings on any route — autodocs are empty descriptions  │
+     │ - No Deprecation header mechanism for future versioning                 │
+     │ - No batch/bulk operations on admin endpoints                           │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Deployment Gaps                                                         │
+     │                                                                         │
+     │ - Qdrant healthcheck uses raw TCP port check, not /api/health — can     │
+     │ report healthy when API is broken                                       │
+     │ - Backend Dockerfile runs alembic upgrade head at startup with no       │
+     │ fail-fast on migration failure                                          │
+     │ - No Ollama systemd service file (host process, no restart policy —     │
+     │ crash = silent embedding failure)                                       │
+     │ - Caddy legacy files still in repo alongside nginx — confusing for      │
+     │ operators                                                               │
+     │ - No disaster recovery runbook (corrupt postgres data, deleted Qdrant   │
+     │ collection)                                                             │
+     │ - deploy/SMOKE-TEST.md doesn't test bootstrap-admin endpoint or IP      │
+     │ allowlist enforcement                                                   │
+     │                                                                         │
+     │ ---                                                                     │
+     │ What's Actually Good                                                    │
+     │                                                                         │
+     │ - JWT + refresh rotation + httpOnly cookies — properly implemented      │
+     │ - TOTP with replay protection (90-second window, last-code stored)      │
+     │ - Bcrypt password hashing throughout                                    │
+     │ - Rate limiting on login (slowapi, 5/min) and query (30/min)            │
+     │ - 22 sequential Alembic migrations — no schema drift                    │
+     │ - Async throughout (no blocking I/O)                                    │
+     │ - Resource limits in docker-compose (mem_limit, cpus) — won't OOM the   │
+     │ host                                                                    │
+     │ - Credential filtering in intodoc scanner (regex + structural, paranoid │
+     │  mode) — critical for consultancy data                                  │
+     │ - Hindsight long-context memory integration (rare to see this level of  │
+     │ sophistication in an MVP)                                               │
+     │ - Scanner IR: 99.4% expression parse rate on Talend — strong            │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Should You Change the Backend Language?                                 │
+     │                                                                         │
+     │ No.                                                                     │
+     │                                                                         │
+     │ Python/FastAPI is the right call. Reasons:                              │
+     │ - The entire AI/ML ecosystem (embeddings, reranking, LLM clients,       │
+     │ Qdrant SDK) is Python-native — switching to Go means reimplementing or  │
+     │ wrapping everything                                                     │
+     │ - FastAPI + async SQLAlchemy + Pydantic v2 is modern, performant, and   │
+     │ maintainable                                                            │
+     │ - The actual performance ceiling is Qdrant query latency and Ollama     │
+     │ inference time — both are I/O bound and language-agnostic               │
+     │ - The codebase is ~37,500 lines; a rewrite would take 6–12 months with  │
+     │ no feature delivery                                                     │
+     │ - The gaps are in testing depth, observability, and missing features —  │
+     │ none of those are solved by changing language                           │
+     │                                                                         │
+     │ If you hit a CPU-bound bottleneck (e.g., document parsing at scale),    │
+     │ extract that one component to a worker process. Don't rewrite the whole │
+     │  system.                                                                │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Priority Roadmap                                                        │
+     │                                                                         │
+     │ Sprint 1 — Non-Negotiable Fixes                                         │
+     │                                                                         │
+     │ 1. Fix document delete RBAC bug (documents.py:61)                       │
+     │ 2. Implement onboarding ZIP ingest (remove the TODO stubs)              │
+     │ 3. Validate EP-001 on clean VPS; update RUNBOOK.md                      │
+     │                                                                         │
+     │ Sprint 2 — Stability                                                    │
+     │                                                                         │
+     │ 4. Add integration test suite (real Postgres + Qdrant,                  │
+     │ docker-compose.test.yml)                                                │
+     │ 5. Structured logging (python-json-logger + request ID middleware)      │
+     │ 6. Add soft deletes to documents, conversations, messages               │
+     │ 7. Add account lockout on password login failures                       │
+     │                                                                         │
+     │ Sprint 3 — Hardening                                                    │
+     │                                                                         │
+     │ 8. Extract RAG chain into discrete pipeline steps                       │
+     │ 9. Add missing DB indexes (3 migrations)                                │
+     │ 10. Standardize error response schema across all routes                 │
+     │ 11. Add Prometheus metrics endpoint + Grafana dashboard template        │
+     │                                                                         │
+     │ Sprint 4 — Enterprise Entry                                             │
+     │                                                                         │
+     │ 12. SSO/SAML skeleton (most enterprise buyers block on this)            │
+     │ 13. JWT key rotation mechanism                                          │
+     │ 14. CSRF protection                                                     │
+     │ 15. OpenAPI docstrings on all routes                                    │
+     │                                                                         │
+     │ Deferred (post-revenue)                                                 │
+     │                                                                         │
+     │ - Row-level security in PostgreSQL                                      │
+     │ - Multi-tenant application layer (consolidate VPS deployments)          │
+     │ - GDPR right-to-erasure workflow                                        │
+     │ - HA for Qdrant (cluster or managed service)                            │
+     │ - Cost/budget alerting per project                                      │
+     │ - Document version history                                              │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+❯ /export                                                                       
+  ⎿  Export cancelled

@@ -20,6 +20,8 @@ REQUIRED_DOCS = [
     "08_CHANGE_PLAYBOOK",
 ]
 
+GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
+
 
 DOC_ASSIGNMENTS = {
     "core": [
@@ -465,7 +467,7 @@ def group_analysis_prompt(facts: FactsManifest, group: str, pack: InstructionPac
     unit_names = [u.name for u in facts.units if u.group == group or group.startswith(f"{u.group}_part")]
     if not unit_names:
         unit_names = [u.name for u in facts.units if u.group == group]
-    section_headings = "\n".join(f"- `### {name}`" for name in ANALYSIS_SECTION_NAMES)
+    section_headings = "\n".join(f"- `### {name}`" for name in (*ANALYSIS_SECTION_NAMES, GROUP_SUMMARY_SECTION))
     preamble = pack.preambles.get("phase2_preamble", _PHASE2_PREAMBLE_DEFAULT).rstrip() if pack else _PHASE2_PREAMBLE_DEFAULT
     return f"""\
 {preamble}
@@ -499,6 +501,16 @@ Write every section below in this exact order. Each section must be substantive.
 
 
 {_platform_section_depth(facts)}
+
+### GROUP_SUMMARY
+Finish with a concise index for Phase 3. Include:
+- Units covered and scanner-limited units
+- Top flows and entrypoints
+- External systems and runtime/config facts
+- Business rules and transformations with evidence pointers
+- Top risks, unknowns, and redacted vs missing vs scanner-limited distinctions
+- Deep evidence pointers to the sections above
+
 The supplied prompt pack contains the full platform analysis guide.
 It is the authoritative reference for platform-specific patterns, component behavior, and additional depth requirements.
 Follow all extraction rules, examples, and depth requirements defined there in addition to the instructions above.
@@ -650,6 +662,8 @@ FORMAT:
 - Reference scorecard dimension scores where relevant (e.g. "Security: 2/5 -- see Assessment Scorecard")
 - Mark evidence confidence as HIGH / MEDIUM / LOW where claims are inferred or scanner-limited
 - Use exact source artifact/path names where available
+- Use the preloaded `_analysis/_doc_pack_{doc_name}.md` evidence pack as the primary evidence source.
+- Include evidence pointers from the pack when a section depends on Phase 2 findings.
 
 MANDATORY HEADINGS for {doc_name} -- your response MUST contain each of these as a `##` markdown
 heading, using exactly this wording (do not rename, merge, or omit any of them):
@@ -680,7 +694,7 @@ SPECIFIC REQUIREMENTS:
         "01_ARCHITECTURE_MAP": """\
 SPECIFIC REQUIREMENTS:
 - Describe the system topology and execution/orchestration shape.
-- Identify entrypoints, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and boundaries.
+- Identify group boundaries, entry points, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and cross-system interactions.
 - Include per-group or per-domain architecture summary with exact unit examples.
 - Explain scanner-limited architecture gaps explicitly.
 """,
@@ -693,6 +707,7 @@ SPECIFIC REQUIREMENTS:
 """,
         "03_DATA_FLOWS_AND_LINEAGE": """\
 SPECIFIC REQUIREMENTS:
+- Include one subsection per major flow with source, target, transformations, schema/entity detail, validation/reject handling, and scanner limits.
 - Document source-to-target data journeys by group/domain and by critical path.
 - Include transformation/mapping expressions verbatim where present.
 - Include schemas/entities/fields, readers/writers, validation checkpoints, reject/error paths, and lineage confidence.
@@ -706,14 +721,14 @@ SPECIFIC REQUIREMENTS:
 """,
         "05_RUNTIME_CONFIG_AND_EXTERNALS": """\
 SPECIFIC REQUIREMENTS:
-- Catalog runtime configuration, environment selection, external systems, connection modes, endpoints, credentials/secret handling, and portability risks.
+- Catalog every external system/config source in rows with connection/config source, unit/artifact, purpose, redacted status, scanner-limited status, and portability risk.
 - Include config values only in sanitized form; identify redacted secrets as redacted, not missing.
 - Identify environment-specific behavior and deployment assumptions.
 """,
         "06_OPERATIONS_TESTING_AND_DEBUGGING": """\
 SPECIFIC REQUIREMENTS:
 - Explain how execution works, how to debug failures, what logs/monitors/checks exist, and how to verify success.
-- Include failure scenarios with symptom | likely cause | affected units | diagnosis | recovery | prevention.
+- Include failure scenario and verification tables per group/system: symptom | likely cause | affected units | diagnosis | recovery | prevention | verification.
 - Include test coverage gaps and concrete verification checks from supplied evidence.
 """,
         "07_QUALITY_SECURITY_RISK_SCORECARD": """\
@@ -721,7 +736,7 @@ SPECIFIC REQUIREMENTS:
 - Turn `_assessment/scorecard.md` into a readable deep review without losing numeric scores.
 - Include dimensions: architecture, data lineage, operations, reliability, security, maintainability, testability, and platform/tooling fit when evidence exists.
 - Every score requires confidence, evidence, unknowns, red flags, quick wins, and affected units.
-- Include risk register with severity, affected artifacts, evidence basis, remediation, and effort.
+- Include score table, risk register, evidence, confidence, unknowns, and quick wins.
 """,
         "08_CHANGE_PLAYBOOK": """\
 SPECIFIC REQUIREMENTS:

@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     default_threshold: float = 0.3
     prefetch_limit: int = 50
     max_result_documents: int = 6
+    neighbor_chunk_expansion_enabled: bool = True
+    neighbor_chunk_window: int = 1
 
     # Metadata queries
     metadata_queries_enabled: bool = True
@@ -73,6 +75,11 @@ class Settings(BaseSettings):
 
     # Auth
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
+    # Comma-separated keys that are no longer used for signing but are still
+    # accepted for token verification while existing tokens drain out after rotation.
+    # Example rotation procedure: generate a new key, move the current key here,
+    # set the new key as jwt_secret_key, then restart.
+    jwt_previous_keys: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
@@ -80,6 +87,17 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_domain: str = ""
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
+
+    # CSRF — double-submit cookie pattern. Disable in test environments so
+    # existing tests don't need to carry a CSRF token in every request.
+    csrf_enabled: bool = True
+
+    # SSO / OIDC — disabled by default, enabled per deployment via .env
+    sso_enabled: bool = False
+    oidc_discovery_url: str = ""    # e.g. https://accounts.google.com/.well-known/openid-configuration
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""     # must match the IdP application configuration
 
     # Deployment-local email/invite settings. Empty SMTP config is allowed in
     # development, where invite links are logged instead of sent.
@@ -101,6 +119,9 @@ class Settings(BaseSettings):
     # behind the reverse proxy.
     allowed_ips: str = ""
     trusted_proxies: str = "127.0.0.1"
+
+    # Metrics — set False in environments that don't scrape Prometheus
+    metrics_enabled: bool = True
 
     # App
     app_env: str = "development"

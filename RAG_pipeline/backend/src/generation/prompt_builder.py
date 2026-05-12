@@ -7,7 +7,7 @@ from src.schemas import Source
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTEXT_TOKENS = 10000
+MAX_CONTEXT_TOKENS = 16000
 ENCODING_NAME = "cl100k_base"
 
 SYSTEM_PROMPT = (
@@ -28,6 +28,28 @@ SYSTEM_PROMPT = (
     "- Use **markdown**: headings, bullet lists, bold, code blocks.\n"
     "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
     "- Do NOT cite sources for greetings or small talk."
+)
+
+CODE_ASSISTANT_SYSTEM_PROMPT = (
+    "You are Nexus Code, a practical coding assistant for company project documentation. "
+    "Answer the user's question based ONLY on the provided indexed project documentation.\n\n"
+    "## CRITICAL RULES\n"
+    "1. Use only the retrieved context, system data, and trusted memory/corrections. "
+    "Never invent files, functions, endpoints, SQL, configs, or implementation details that are not present.\n"
+    "2. Prefer concrete engineering evidence: filenames, modules, jobs, components, configs, schemas, "
+    "chunk references, data flows, and relationships between parts.\n"
+    "3. For debugging or failure-analysis questions, structure the answer with: "
+    "**Finding**, **Evidence**, **Likely Cause**, **Fix**, and **Verification**. "
+    "Skip sections only when the documents do not support them.\n"
+    "4. For architecture/how-it-works questions, explain the flow step by step and call out boundaries, "
+    "inputs, outputs, and operational impact when the context supports it.\n"
+    "5. If the indexed docs are incomplete, say exactly what is missing and suggest using Deep Dive "
+    "to inspect the codebase directly. Do not fill the gap with general knowledge.\n"
+    "6. Every factual claim must cite a source reference [N].\n\n"
+    "## Formatting rules\n"
+    "- Use concise markdown with headings, bullets, and code blocks when helpful.\n"
+    "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
+    "- Keep recommendations actionable and verification-oriented."
 )
 
 METADATA_SYSTEM_PROMPT = (
@@ -54,6 +76,15 @@ NO_RESULTS_PROMPT = (
     "NEVER make up information or answer from general knowledge. "
     "Keep your response concise (1-3 sentences). "
     "Do NOT mention 'sources', 'documents', or 'search results' — just respond naturally."
+)
+
+CODE_NO_RESULTS_PROMPT = (
+    "You are Nexus Code, a practical coding assistant for company project documentation. "
+    "No relevant indexed project documentation was found for the user's message.\n\n"
+    "Respond briefly and directly:\n"
+    "- Say that the indexed docs do not contain enough evidence to answer safely.\n"
+    "- Suggest switching to Deep Dive if the user wants direct codebase inspection.\n"
+    "- Do not answer from general knowledge or invent implementation details."
 )
 
 
@@ -126,10 +157,12 @@ def build_messages(
     reference_numbers: dict[int, int] | None = None,
     memory_context: str | None = None,
     system_knowledge: str | None = None,
+    answer_style: str = "assistant",
 ) -> list[dict[str, str]]:
     """Build the chat messages list: system prompt + knowledge + memory context + context + user query."""
     context = _build_context(sources, reference_numbers=reference_numbers)
-    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT if answer_style == "code" else SYSTEM_PROMPT
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if system_knowledge:
         messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
     if memory_context:
@@ -207,9 +240,11 @@ def build_no_results_messages(
     history: list[dict[str, str]] | None = None,
     memory_context: str | None = None,
     system_knowledge: str | None = None,
+    answer_style: str = "assistant",
 ) -> list[dict[str, str]]:
     """Build LLM messages for when search returns no results."""
-    messages: list[dict[str, str]] = [{"role": "system", "content": NO_RESULTS_PROMPT}]
+    prompt = CODE_NO_RESULTS_PROMPT if answer_style == "code" else NO_RESULTS_PROMPT
+    messages: list[dict[str, str]] = [{"role": "system", "content": prompt}]
 
     if system_knowledge:
         messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
@@ -222,6 +257,30 @@ def build_no_results_messages(
 
     messages.append({"role": "user", "content": query})
     return messages
+
+
+_CODE_QUERY_TERMS = (
+    "architecture", "data flow", "flow", "debug", "bug", "error", "exception",
+    "failure", "fix", "implement", "implementation", "function", "class",
+    "module", "endpoint", "api", "config", "configuration", "sql", "query",
+    "schema", "table", "job", "component", "talend", "auth", "authentication",
+    "permission", "stream", "route", "service", "pipeline",
+)
+
+
+def should_use_code_assistant(query: str, project_ids: list[str] | None = None) -> bool:
+    """Heuristic for selecting the Nexus Code answer contract.
+
+    This keeps the public API stable: project-scoped engineering questions get
+    code-assistant formatting, while general knowledge-base questions keep the
+    normal assistant persona.
+    """
+    lowered = query.lower()
+    if any(term in lowered for term in _CODE_QUERY_TERMS):
+        return True
+    if project_ids and any(token in lowered for token in ("how", "why", "where", "what changes", "which files")):
+        return True
+    return False
 
 
 def build_metadata_messages(

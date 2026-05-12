@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
+
+from src.api.errors import api_error
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
@@ -42,11 +45,12 @@ def _deserialize_sources(raw: list[dict]) -> list[DocumentSource]:
             score=s["score"],
             text=s["text"],
             reference_number=s.get("reference_number", i),
+            chunk_indexes=s.get("chunk_indexes", []),
         ))
     return result
 
 
-@router.get("", response_model=ConversationListResponse)
+@router.get("", response_model=ConversationListResponse, summary="List conversations")
 async def list_conversations(
     db: DBSession,
     user: CurrentUser,
@@ -56,14 +60,15 @@ async def list_conversations(
     """List user's conversations, sorted by most recently updated."""
     # Count total
     total_result = await db.execute(
-        select(func.count(Conversation.id)).where(Conversation.user_id == user.id)
+        select(func.count(Conversation.id))
+        .where(Conversation.user_id == user.id, Conversation.deleted_at.is_(None))
     )
     total = total_result.scalar_one()
 
     # Get conversations with message counts
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.user_id == user.id)
+        .where(Conversation.user_id == user.id, Conversation.deleted_at.is_(None))
         .order_by(Conversation.updated_at.desc())
         .offset(skip)
         .limit(limit)
@@ -86,7 +91,7 @@ async def list_conversations(
     )
 
 
-@router.post("", response_model=ConversationResponse, status_code=201)
+@router.post("", response_model=ConversationResponse, status_code=201, summary="Create a conversation")
 async def create_conversation(
     db: DBSession,
     user: CurrentUser,
@@ -107,7 +112,7 @@ async def create_conversation(
     )
 
 
-@router.get("/{conversation_id}", response_model=ConversationDetailResponse)
+@router.get("/{conversation_id}", response_model=ConversationDetailResponse, summary="Get a conversation with its messages")
 async def get_conversation(
     conversation_id: int,
     db: DBSession,
@@ -116,16 +121,16 @@ async def get_conversation(
     """Get a conversation with all messages."""
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
         .options(selectinload(Conversation.messages))
     )
     conversation = result.scalar_one_or_none()
 
     if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "not_found", "Conversation not found")
 
     if conversation.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise api_error(403, "forbidden", "Not authorized")
 
     return ConversationDetailResponse(
         id=conversation.id,
@@ -147,7 +152,7 @@ async def get_conversation(
     )
 
 
-@router.patch("/{conversation_id}", response_model=ConversationResponse)
+@router.patch("/{conversation_id}", response_model=ConversationResponse, summary="Rename a conversation")
 async def update_conversation(
     conversation_id: int,
     request: ConversationUpdateRequest,
@@ -157,16 +162,16 @@ async def update_conversation(
     """Update conversation title."""
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
         .options(selectinload(Conversation.messages))
     )
     conversation = result.scalar_one_or_none()
 
     if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "not_found", "Conversation not found")
 
     if conversation.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise api_error(403, "forbidden", "Not authorized")
 
     conversation.title = request.title
 
@@ -179,28 +184,39 @@ async def update_conversation(
     )
 
 
-@router.delete("/{conversation_id}", status_code=204)
+@router.delete("/{conversation_id}", status_code=204, summary="Delete a conversation and its messages")
 async def delete_conversation(
     conversation_id: int,
     db: DBSession,
     user: CurrentUser,
 ) -> None:
-    """Delete a conversation and all its messages."""
+    """Soft-delete a conversation and all its messages."""
     result = await db.execute(
-        select(Conversation).where(Conversation.id == conversation_id)
+        select(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
     )
     conversation = result.scalar_one_or_none()
 
     if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "not_found", "Conversation not found")
 
     if conversation.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise api_error(403, "forbidden", "Not authorized")
 
-    await db.delete(conversation)
+    now = datetime.now(timezone.utc)
+    conversation.deleted_at = now
+    # Cascade soft-delete to all messages
+    await db.execute(
+        update(ConversationMessage)
+        .where(
+            ConversationMessage.conversation_id == conversation_id,
+            ConversationMessage.deleted_at.is_(None),
+        )
+        .values(deleted_at=now)
+    )
 
 
-@router.post("/{conversation_id}/messages", response_model=MessageResponse)
+@router.post("/{conversation_id}/messages", response_model=MessageResponse, summary="Send a message and get a RAG response")
 async def send_message(
     conversation_id: int,
     request: ConversationMessageRequest,
@@ -212,23 +228,23 @@ async def send_message(
     # Load conversation with messages
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
         .options(selectinload(Conversation.messages))
     )
     conversation = result.scalar_one_or_none()
 
     if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "not_found", "Conversation not found")
 
     if conversation.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise api_error(403, "forbidden", "Not authorized")
 
     # Get user's groups and project access for RBAC filtering
     user_groups = [role.name for role in user.roles]
     project_ids = await get_user_project_ids(user, db)
     if request.project_id:
         if project_ids is not None and request.project_id not in project_ids:
-            raise HTTPException(403, "No access to this project")
+            raise api_error(403, "forbidden", "No access to this project")
         project_ids = [request.project_id]
 
     # Auto-title from first user message if conversation has no title yet
@@ -252,7 +268,7 @@ async def send_message(
     return response
 
 
-@router.post("/{conversation_id}/messages/stream")
+@router.post("/{conversation_id}/messages/stream", summary="Send a message and stream the RAG response via SSE")
 async def send_message_stream(
     conversation_id: int,
     request: ConversationMessageRequest,
@@ -270,23 +286,23 @@ async def send_message_stream(
     # Load conversation with messages
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.id == conversation_id)
+        .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
         .options(selectinload(Conversation.messages))
     )
     conversation = result.scalar_one_or_none()
 
     if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise api_error(404, "not_found", "Conversation not found")
 
     if conversation.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise api_error(403, "forbidden", "Not authorized")
 
     # Get user's groups and project access for RBAC filtering
     user_groups = [role.name for role in user.roles]
     project_ids = await get_user_project_ids(user, db)
     if request.project_id:
         if project_ids is not None and request.project_id not in project_ids:
-            raise HTTPException(403, "No access to this project")
+            raise api_error(403, "forbidden", "No access to this project")
         project_ids = [request.project_id]
 
     # Auto-title from first user message if conversation has no title yet

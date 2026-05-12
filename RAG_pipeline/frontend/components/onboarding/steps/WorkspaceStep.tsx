@@ -8,17 +8,24 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardBody, CardFooter, CardHeader } from "@/components/ui/card";
 
+interface SaveMutation {
+  mutateAsync: (arg: string) => Promise<unknown>;
+  isPending: boolean;
+}
+
 interface Props {
   initial: string | null | undefined;
   suggested?: string;
   onBack: () => void;
   onNext: () => void;
+  overrideSave?: SaveMutation;
 }
 
-export function WorkspaceStep({ initial, suggested, onBack, onNext }: Props) {
+export function WorkspaceStep({ initial, suggested, onBack, onNext, overrideSave }: Props) {
   const [name, setName] = useState(initial ?? suggested ?? "");
   const [error, setError] = useState<string | null>(null);
-  const save = useSaveWorkspace();
+  const defaultSave = useSaveWorkspace();
+  const save = overrideSave ?? defaultSave;
 
   async function handleNext() {
     const trimmed = name.trim();

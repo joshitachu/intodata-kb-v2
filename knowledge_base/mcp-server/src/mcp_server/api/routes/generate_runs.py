@@ -87,6 +87,8 @@ def _run_summary(run, metrics: dict | None) -> dict:
         "output_tokens": (metrics or {}).get("output_tokens", run.output_tokens),
         "num_turns": (metrics or {}).get("num_turns", run.num_turns),
         "metrics_found": metrics is not None,
+        "auto_verdict": getattr(run, "auto_verdict", None),
+        "auto_baseline_run_id": getattr(run, "auto_baseline_run_id", None),
     }
 
 

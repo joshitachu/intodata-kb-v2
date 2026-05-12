@@ -8,13 +8,15 @@ import {
   type ReactNode,
 } from "react";
 import { useOnboardingStatus } from "@/hooks/useOnboarding";
-import type { OnboardingStatus } from "@/types/onboarding";
+import { useCompanyStatus } from "@/hooks/useSystemConfig";
+import type { CompanyStatus, OnboardingStatus } from "@/types/onboarding";
 
 interface OnboardingContextValue {
   status: OnboardingStatus | null;
   isLoading: boolean;
   isError: boolean;
   refetch: () => void;
+  companyStatus: CompanyStatus | null;
   // Tour control (allows "Replay Tour" button to trigger from anywhere)
   tourActive: boolean;
   startTour: () => void;
@@ -33,6 +35,7 @@ const OnboardingContext = createContext<OnboardingContextValue>({
   isLoading: false,
   isError: false,
   refetch: () => {},
+  companyStatus: null,
   tourActive: false,
   startTour: () => {},
   stopTour: () => {},
@@ -43,6 +46,7 @@ const OnboardingContext = createContext<OnboardingContextValue>({
 
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const { data, isLoading, isError, refetch } = useOnboardingStatus();
+  const { data: companyData } = useCompanyStatus();
   const [tourActive, setTourActive] = useState(false);
   const [zipFiles, setZipFiles] = useState<Record<string, File>>({});
 
@@ -64,6 +68,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         isLoading,
         isError,
         refetch: () => refetch(),
+        companyStatus: companyData ?? null,
         tourActive,
         startTour: () => setTourActive(true),
         stopTour: () => setTourActive(false),

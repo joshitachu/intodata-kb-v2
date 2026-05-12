@@ -29,6 +29,7 @@ intodata-kb/
 ├── .env.production.template           -- Production env vars
 ├── knowledge_base/                    -- intodoc code intelligence platform
 │   ├── CLAUDE.md                      -- Sub-project docs (read for KB tasks)
+│   ├── .agent/                        -- Agent context docs (SOPs, system, decisions, tasks)
 │   ├── intodoc/                       -- Scanner CLI (Talend, Workato, Generic)
 │   ├── mcp-server/                    -- MCP + REST API (port 8001)
 │   ├── dashboard/                     -- React control panel (port 5173/8001)

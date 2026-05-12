@@ -107,6 +107,7 @@ def _assistant_doc_text(doc: str, facts, extra: str = "") -> str:
             "\n## Documentation Map\nRead 01_ARCHITECTURE_MAP then 02_COMPONENT_INVENTORY.\n"
             "## Onboarding\nStart with scanned artifacts.\n## Common Tasks\nTrace data, change config, debug runs.\n"
             "## Known Traps\nDo not ignore scanner-limited evidence.\n"
+            "## Glossary\nScanner-limited means evidence exists but detail is constrained.\n"
         ),
         "02_COMPONENT_INVENTORY": (
             "# Component Inventory\n\n## Canonical Unit Inventory\n"
@@ -133,7 +134,13 @@ def _assistant_doc_text(doc: str, facts, extra: str = "") -> str:
     }
     return bodies.get(
         doc,
-        f"# {doc.replace('_', ' ').title()}\n\n## Overview\n{common}\n## Evidence\n{unit_names}\n"
+        f"# {doc.replace('_', ' ').title()}\n\n## Overview\n{common}\n"
+        "## Topology\nTopology evidence. ## Boundaries\nBoundaries evidence. ## Dependencies\nDependencies evidence. "
+        "## Entry Points\nEntry Points evidence. ## External Systems\nExternal Systems evidence.\n"
+        "## Data Flow\nSource to Target with Transformation, Schema, Validation, and Scanner-Limited notes.\n"
+        "## Business Rules\nExpression | Unit | Domain | Impact.\n"
+        "## Runtime Config\nConfig rows include Redacted and Scanner-Limited status.\n"
+        f"## Evidence\n{unit_names}\n"
     ) + extra
 
 
@@ -475,7 +482,7 @@ def test_analysis_guide_section_gate_requires_talend_headings(tmp_path):
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
     (analysis_dir / "A.md").write_text(
-        "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n### COMPONENTS\ncontent\n",
+        "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n### COMPONENTS\ncontent\n### GROUP_SUMMARY\nsummary\n",
         encoding="utf-8",
     )
 
@@ -485,12 +492,28 @@ def test_analysis_guide_section_gate_requires_talend_headings(tmp_path):
     assert any("EXECUTION_FLOW" in error for error in report.errors)
 
 
+def test_analysis_guide_section_gate_requires_group_summary_for_generic(tmp_path):
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    (analysis_dir / "A.md").write_text(
+        "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n### COMPONENTS\ncontent\n",
+        encoding="utf-8",
+    )
+
+    report = validate_analysis_guide_sections(analysis_dir, facts)
+
+    assert not report.ok
+    assert any("GROUP_SUMMARY" in error for error in report.errors)
+
+
 def test_analysis_guide_section_gate_passes_with_all_talend_sections(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
-    body = "\n".join(f"### {name}\ncontent for {name} and a.\n" for name in ANALYSIS_SECTION_NAMES)
+    body = "\n".join(f"### {name}\ncontent for {name} and a.\n" for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY"))
     (analysis_dir / "A.md").write_text(
         "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n" + body,
         encoding="utf-8",
@@ -506,7 +529,7 @@ def test_normalize_analysis_guide_headings_accepts_model_heading_level(tmp_path)
     facts = build_facts_manifest("proj", tmp_path / "scan")
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
-    body = "\n".join(f"## {name}\ncontent for {name} and a.\n" for name in ANALYSIS_SECTION_NAMES)
+    body = "\n".join(f"## {name}\ncontent for {name} and a.\n" for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY"))
     normalized = normalize_analysis_guide_headings(body, "talend")
     (analysis_dir / "A.md").write_text(
         "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n" + normalized,
@@ -1035,7 +1058,9 @@ class _FakeProvider:
             "datapill, formula, lookup table, property, connection, monitor, job history.\n"
             "Score: 3/5. Confidence: HIGH. Evidence: facts_manifest.json. Red Flags: HIGH risk. Quick Wins: add tests. Unknowns: runtime SLA.\n"
             "Change Impact: inspect source artifacts, Test changed flows, Verify outputs, Rollback if validation fails.\n"
-            "Documentation Map, Onboarding, Common Tasks, Known Traps. Debug and Recovery guidance with Testing evidence.\n"
+            "Documentation Map, Onboarding, Common Tasks, Known Traps, Glossary. Debug and Recovery guidance with Testing evidence.\n"
+            "Topology, Boundaries, Dependencies, Entry Points, External Systems. Source, Target, Transformation, Schema, Validation, Scanner-Limited.\n"
+            "Expression, Unit, Domain, Impact. Config, Redacted, Scanner-Limited.\n"
             "## Inventory and purpose\n"
             "Recipe One and Function One are covered as canonical units in the Recipes and Functions groups.\n"
             "| Unit | Group | Source Artifact | Type | Purpose | Dependencies | Confidence |\n"
@@ -1068,6 +1093,7 @@ class _FakeProvider:
                 f"{section} evidence for Recipe One and Function One includes component, data flow, "
                 "business, external, operation, security, migration, and scanner detail.\n"
             )
+        deep_text += "\n### GROUP_SUMMARY\nUnits covered: Recipe One, Function One. Top risks and flows summarized.\n"
         deep_text = deep_text + ("\nDetailed evidence paragraph for Recipe One and Function One. " * 260)
         return ModelResult(
             success=True,
@@ -1112,7 +1138,7 @@ def test_deterministic_phase2_merge_preserves_canonical_sections():
     assert "Flow A" in merged
     assert "### RISK_FLAGS" in merged
     assert "Risk B" in merged
-    assert "### ADDITIONAL_FINDINGS" in merged
+    assert "### UNCLASSIFIED_OR_EXTRA_FINDINGS" in merged
     assert "Intro evidence" in merged
 
 
@@ -1136,6 +1162,80 @@ def test_targeted_analysis_bundle_keeps_relevant_exact_sections(tmp_path):
     assert "Exact lineage evidence" in bundle
     assert "Exact risk evidence" in bundle
     assert "Business rule should not be in lineage bundle" not in bundle
+
+
+def test_phase28_generates_doc_specific_evidence_packs_and_manifest(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_investigation").mkdir()
+    facts.write(staging / "facts_manifest.json")
+    (staging / "_analysis" / "A.md").write_text(
+        "# Phase 2 Analysis: A\n\n"
+        "### COMPONENTS\nUnit A component evidence\n\n"
+        "### GROUP_SUMMARY\nUnits covered: Unit A\n\n"
+        "### SURPRISE_SECTION\nUnexpected finding\n",
+        encoding="utf-8",
+    )
+    (staging / "_investigation" / "_summary.md").write_text("Investigation summary", encoding="utf-8")
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        template_snapshot={},
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase28_bundles(ctx, facts)
+
+    for doc in REQUIRED_DOCS:
+        assert (staging / "_analysis" / f"_doc_pack_{doc}.md").exists()
+    manifest = json.loads((staging / "_analysis" / "_doc_pack_manifest.json").read_text(encoding="utf-8"))
+    assert set(manifest["doc_packs"]) == set(REQUIRED_DOCS)
+    entry = manifest["doc_packs"]["02_COMPONENT_INVENTORY"]
+    assert entry["included"]["A.md"]
+    assert "UNCLASSIFIED_OR_EXTRA_FINDINGS" in entry["included"]["A.md"] or entry["unclassified"]["A.md"]
+
+
+def test_phase3_context_prefers_doc_pack_over_family_bundle(tmp_path):
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "_preprocess").mkdir()
+    doc_pack = staging / "_analysis" / "_doc_pack_02_COMPONENT_INVENTORY.md"
+    family_bundle = staging / "_analysis" / "_bundle_core.md"
+    doc_pack.write_text("doc specific evidence", encoding="utf-8")
+    family_bundle.write_text("family evidence", encoding="utf-8")
+    (staging / "_analysis" / "_doc_pack_manifest.json").write_text('{"doc_packs": {}}', encoding="utf-8")
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        template_snapshot={},
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    files = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase3_context_files(
+        ctx,
+        "02_COMPONENT_INVENTORY",
+    )
+
+    assert doc_pack in files
+    assert family_bundle not in files
 
 
 def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
@@ -2041,7 +2141,7 @@ async def test_phase2_section_repair_appends_missing_talend_sections(tmp_path):
         supports_tools = False
 
         async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
-            missing = [name for name in ANALYSIS_SECTION_NAMES if f"### {name}" in prompt]
+            missing = [name for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY") if f"### {name}" in prompt]
             return ModelResult(
                 success=True,
                 text="\n".join(f"### {name}\nrepaired evidence for a\n" for name in missing),

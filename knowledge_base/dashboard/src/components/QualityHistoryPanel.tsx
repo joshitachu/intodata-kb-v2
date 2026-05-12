@@ -8,6 +8,11 @@ function formatQuality(value: number | null) {
   return value == null ? "-" : value.toFixed(2);
 }
 
+function formatDeltaPct(pct: number | null) {
+  if (pct == null) return "-";
+  return `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
 export default function QualityHistoryPanel({ projectId }: Props) {
   const { data, isLoading, isError } = useQualityHistory(projectId);
   const history = data?.history ?? [];
@@ -31,9 +36,11 @@ export default function QualityHistoryPanel({ projectId }: Props) {
                 <tr className="border-b border-white/[0.04] text-left font-mono text-xs text-slate-600 uppercase">
                   <th className="px-3 py-2 font-medium">Run</th>
                   <th className="px-3 py-2 font-medium">Quality</th>
-                  <th className="px-3 py-2 font-medium">Delta</th>
+                  <th className="px-3 py-2 font-medium">Q Delta</th>
                   <th className="px-3 py-2 font-medium">Models</th>
                   <th className="px-3 py-2 font-medium">Cost</th>
+                  <th className="px-3 py-2 font-medium">Cost Delta</th>
+                  <th className="px-3 py-2 font-medium">Duration Delta</th>
                 </tr>
               </thead>
               <tbody>
@@ -57,6 +64,24 @@ export default function QualityHistoryPanel({ projectId }: Props) {
                     </td>
                     <td className="px-3 py-2 font-mono text-slate-500">
                       {entry.cost_usd == null ? "-" : `$${entry.cost_usd.toFixed(3)}`}
+                    </td>
+                    <td
+                      className="px-3 py-2 font-mono"
+                      title={entry.cost_regression ? "Cost increased >20% vs previous run" : undefined}
+                    >
+                      <span className={entry.cost_regression ? "text-amber-400" : "text-slate-500"}>
+                        {formatDeltaPct(entry.cost_delta_pct)}
+                        {entry.cost_regression && <span className="ml-1">!</span>}
+                      </span>
+                    </td>
+                    <td
+                      className="px-3 py-2 font-mono"
+                      title={entry.duration_regression ? "Duration increased >20% vs previous run" : undefined}
+                    >
+                      <span className={entry.duration_regression ? "text-amber-400" : "text-slate-500"}>
+                        {formatDeltaPct(entry.duration_delta_pct)}
+                        {entry.duration_regression && <span className="ml-1">!</span>}
+                      </span>
                     </td>
                   </tr>
                 ))}

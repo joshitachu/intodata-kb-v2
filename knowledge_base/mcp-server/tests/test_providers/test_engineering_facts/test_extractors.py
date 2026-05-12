@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from mcp_server.providers.custom.engineering_facts.extractors.generic import GenericFactExtractor
+from mcp_server.providers.custom.engineering_facts.extractors.lobster import LobsterFactExtractor
+from mcp_server.providers.custom.engineering_facts.extractors.registry import default_registry
 from mcp_server.providers.custom.engineering_facts.extractors.structured import StructuredScanFactExtractor
 from mcp_server.providers.custom.engineering_facts.extractors.talend import TalendFactExtractor
 from mcp_server.providers.custom.engineering_facts.extractors.workato import WorkatoFactExtractor
@@ -189,6 +191,78 @@ def test_workato_extractor_finds_steps_connections_lookup_usage_and_risks():
     assert any(use.usage_type == "queried" and use.name == "country_codes" for use in facts.usage)
     assert any(flow.transformation == "trigger.email.downcase" for flow in facts.data_flows)
     assert any(risk.risk_type == "silent_failure_path" for risk in facts.known_risks)
+
+
+def test_lobster_extractor_registered():
+    assert isinstance(default_registry().get("lobster"), LobsterFactExtractor)
+
+
+def test_lobster_extractor_finds_profiles_channels_mappings_responses_and_refs():
+    scan = {
+        "platform": "lobster",
+        "jobs": [
+            {
+                "name": "API_Orders",
+                "path": "API_Orders.xml",
+                "group": "Oracle JD Edwards",
+                "components": [
+                    {
+                        "unique_name": "agent",
+                        "component_type": "LobsterInputAgent_HTTP",
+                        "params": [
+                            {"name": "url", "value": "v1/orders"},
+                            {"name": "accept_post", "value": "true"},
+                            {"name": "comm_channel_partner", "value": "JDE"},
+                            {"name": "comm_channel_name", "value": "HTTP"},
+                        ],
+                    },
+                    {
+                        "unique_name": "parser",
+                        "component_type": "LobsterParser_JSON",
+                        "params": [{"name": "filetype", "value": "10"}],
+                    },
+                    {
+                        "unique_name": "input",
+                        "component_type": "LobsterSourceSchema",
+                        "params": [{"name": "input_tree", "value": "+ Order\n  - id (String)"}],
+                    },
+                    {
+                        "unique_name": "output",
+                        "component_type": "LobsterMapping",
+                        "params": [
+                            {"name": "output_tree", "value": "+ Out\n  - order_id (String)"},
+                            {"name": "filter_1", "value": "copy(field:id)"},
+                        ],
+                    },
+                    {
+                        "unique_name": "response_0_JDE",
+                        "component_type": "LobsterResponse_HTTP",
+                        "params": [
+                            {"name": "label", "value": "JDE Response"},
+                            {"name": "host", "value": "jde.example.com"},
+                        ],
+                    },
+                ],
+                "context_groups": [
+                    {"name": "user_variables", "variables": [{"name": "VAR_BATCH", "type": "Integer", "values": {"_default": "100"}}]}
+                ],
+                "trunjob_refs": [{"child_job": "HttpResponseHandler"}],
+            }
+        ],
+        "metadata_connections": [{"name": "JDE:HTTP", "connection_type": "HTTP", "host": "jde.example.com"}],
+        "manifest": {"job_calls": {"API_Orders": ["HttpResponseHandler"]}},
+    }
+
+    facts = LobsterFactExtractor().extract("proj", scan, _facts("lobster"))
+
+    assert any(entity.entity_type == "profile" and entity.name == "API_Orders" for entity in facts.entities)
+    assert any(entity.entity_type == "trigger" and entity.name == "API_Orders:HTTP" for entity in facts.entities)
+    assert any(api.route == "v1/orders" and api.method == "POST" for api in facts.api_surface)
+    assert any(flow.target == "API_Orders:filter_1" and flow.transformation == "copy(field:id)" for flow in facts.data_flows)
+    assert any(flow.target == "API_Orders:response:JDE Response" for flow in facts.data_flows)
+    assert any(cfg.config_type == "lobster_response" and cfg.key == "HTTP" for cfg in facts.config_runtime)
+    assert any(cfg.config_type == "context_var" and cfg.key == "VAR_BATCH" for cfg in facts.config_runtime)
+    assert any(dep.dependency_type == "calls_job" and dep.target == "HttpResponseHandler" for dep in facts.dependencies)
 
 
 def test_structured_extractor_handles_common_scan_primitives():

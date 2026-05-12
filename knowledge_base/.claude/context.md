@@ -1,7 +1,7 @@
 # Current State
 
-**Status**: EP-000 US-101 through US-106 complete (2026-05-05). Per-phase model routing, perf regression tests, doc quality comparison, human review API, and instruction pack loader all done. EP-000 is fully implemented.
-**Last session**: 2026-05-05
+**Status**: EP-000 fully complete (2026-05-11). All stories US-101 through US-106 implemented. US-102 closed as Done (cross-run A/B satisfies intent). US-105 scoped to dashboard reviewers with pack-based questionnaire.
+**Last session**: 2026-05-11
 **Last completed**:
 - 10-step doc gen reliability overhaul (2026-04-29): zero-doc=success fix, RAG push retry+propagate, 5 silent failure fixes (chunk defs, template resolution, quick scan, quality scoring, assessment), config centralization (11 new fields), SUPPORTED_PLATFORMS constant, platform validators in schemas+routes, concurrency guard (set-based), Phase 2 resume skip, RAG _read_md_files top-level-only filter, phase3_max_tokens raised to 32000, quality scorer scaled to unit_count, _JOB_RE extended for Workato.
 - Doc gen cleanup: deleted `orchestrator.py` + `tools.py` (dead code), removed `_adapt_legacy_text()` stripping from `prompt_packs.py`, slimmed `DocGenContext` (removed 8 cli-only fields), deleted `InvestigatorLoop`, simplified provider selection in `claude_service.py`. 46 provider+service tests pass (2026-04-28).

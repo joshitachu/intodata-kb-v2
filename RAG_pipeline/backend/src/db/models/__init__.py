@@ -15,6 +15,7 @@ from src.db.models.conversation import Conversation, ConversationMessage
 from src.db.models.query_usage import QueryUsage
 from src.db.models.benchmark import BenchmarkRun
 from src.db.models.onboarding import UserOnboarding, Notification
+from src.db.models.system_config import SystemConfig
 from src.db.models.wizard_event import WizardEvent
 from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
@@ -37,6 +38,7 @@ __all__ = [
     "BenchmarkRun",
     "UserOnboarding",
     "Notification",
+    "SystemConfig",
     "WizardEvent",
     "Feedback",
     "AccessRequest",

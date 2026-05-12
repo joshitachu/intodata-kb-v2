@@ -141,7 +141,7 @@ def _new_invite_token() -> str:
 
 # --- Access requests / invites ---
 
-@router.get("/access-requests")
+@router.get("/access-requests", summary="List access requests and pending invites")
 async def list_access_requests(
     admin: AdminUser,
     db: DBSession,
@@ -172,7 +172,7 @@ async def list_access_requests(
     }
 
 
-@router.post("/access-requests/{request_id}/approve")
+@router.post("/access-requests/{request_id}/approve", summary="Approve an access request and send an invite")
 async def approve_access_request(
     request: Request, request_id: int, admin: AdminUser, db: DBSession
 ):
@@ -222,7 +222,7 @@ async def approve_access_request(
     }
 
 
-@router.post("/access-requests/{request_id}/reject")
+@router.post("/access-requests/{request_id}/reject", summary="Reject an access request")
 async def reject_access_request(
     request_id: int,
     body: RejectAccessRequest,
@@ -251,8 +251,9 @@ async def reject_access_request(
     return {"message": "Access request rejected", "request": _access_request_payload(row)}
 
 
-@router.post("/invites/{invite_id}/resend")
+@router.post("/invites/{invite_id}/resend", summary="Resend an invite email")
 async def resend_invite(request: Request, invite_id: int, admin: AdminUser, db: DBSession):
+    """Regenerate and resend the invite token for a pending invite."""
     invite = (
         await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
     ).scalar_one_or_none()
@@ -282,8 +283,9 @@ async def resend_invite(request: Request, invite_id: int, admin: AdminUser, db: 
     }
 
 
-@router.post("/invites/{invite_id}/revoke")
+@router.post("/invites/{invite_id}/revoke", summary="Revoke a pending invite")
 async def revoke_invite(invite_id: int, admin: AdminUser, db: DBSession):
+    """Mark an invite as revoked so the token can no longer be used."""
     invite = (
         await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
     ).scalar_one_or_none()
@@ -297,8 +299,9 @@ async def revoke_invite(invite_id: int, admin: AdminUser, db: DBSession):
     return {"message": "Invite revoked", "invite": _invite_payload(invite)}
 
 
-@router.post("/email/test")
+@router.post("/email/test", summary="Send a test email to verify SMTP config")
 async def test_email(body: TestEmailRequest, admin: AdminUser, db: DBSession):
+    """Send a test email to the specified address to verify SMTP configuration."""
     try:
         send_test_email(body.to.strip().lower())
     except EmailSendError as exc:
@@ -308,8 +311,9 @@ async def test_email(body: TestEmailRequest, admin: AdminUser, db: DBSession):
 
 # --- User management ---
 
-@router.get("/users")
+@router.get("/users", summary="List all users")
 async def list_users(admin: AdminUser, db: DBSession, skip: int = 0, limit: int = Query(default=50, ge=1, le=100)):
+    """Return a paginated list of all users with their roles."""
     result = await db.execute(select(User).offset(skip).limit(limit))
     users = result.scalars().all()
     total_result = await db.execute(select(sa_func.count(User.id)))
@@ -331,8 +335,9 @@ async def list_users(admin: AdminUser, db: DBSession, skip: int = 0, limit: int 
     }
 
 
-@router.post("/users", status_code=201)
+@router.post("/users", status_code=201, summary="Create a new user")
 async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
+    """Create a new active user with a password and optional role assignments."""
     # Check uniqueness
     existing = await db.execute(
         select(User).where((User.username == body.username) | (User.email == body.email))
@@ -371,8 +376,9 @@ async def create_user(body: CreateUserRequest, admin: AdminUser, db: DBSession):
     )
 
 
-@router.put("/users/{user_id}")
+@router.put("/users/{user_id}", summary="Update a user's profile or role assignments")
 async def update_user(user_id: int, body: UpdateUserRequest, admin: AdminUser, db: DBSession):
+    """Update username, email, active status, or role list for a user."""
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -401,8 +407,9 @@ async def update_user(user_id: int, body: UpdateUserRequest, admin: AdminUser, d
     )
 
 
-@router.delete("/users/{user_id}")
+@router.delete("/users/{user_id}", summary="Deactivate a user and revoke all tokens")
 async def deactivate_user(user_id: int, admin: AdminUser, db: DBSession):
+    """Set a user to inactive and revoke all their refresh tokens."""
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -418,7 +425,7 @@ async def deactivate_user(user_id: int, admin: AdminUser, db: DBSession):
     return {"message": f"User {user.username} deactivated"}
 
 
-@router.post("/users/{user_id}/reset-password")
+@router.post("/users/{user_id}/reset-password", summary="Reset a user's password")
 @limiter.limit("5/minute")
 async def reset_password(
     request: Request, user_id: int, body: ResetPasswordRequest, admin: AdminUser, db: DBSession
@@ -450,15 +457,17 @@ def _role_to_response(r: Role) -> RoleResponse:
     )
 
 
-@router.get("/roles")
+@router.get("/roles", summary="List all roles with their permissions")
 async def list_roles(admin: AdminUser, db: DBSession):
+    """Return all roles with their associated permissions."""
     result = await db.execute(select(Role))
     roles = result.scalars().all()
     return {"roles": [_role_to_response(r) for r in roles]}
 
 
-@router.post("/roles", status_code=201)
+@router.post("/roles", status_code=201, summary="Create a new role")
 async def create_role(body: CreateRoleRequest, admin: AdminUser, db: DBSession):
+    """Create a new role with the specified permissions."""
     existing = await db.execute(select(Role).where(Role.name == body.name))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Role already exists")
@@ -555,7 +564,7 @@ class AuditLogResponse(BaseModel):
     created_at: str
 
 
-@router.post("/project-assignments", status_code=201)
+@router.post("/project-assignments", status_code=201, summary="Assign a project to a user")
 async def assign_project(
     request: Request,
     body: AssignProjectRequest,
@@ -608,7 +617,7 @@ async def assign_project(
     )
 
 
-@router.delete("/project-assignments/{assignment_id}")
+@router.delete("/project-assignments/{assignment_id}", summary="Remove a project assignment")
 async def unassign_project(
     request: Request,
     assignment_id: int,
@@ -640,7 +649,7 @@ async def unassign_project(
     return {"message": "Project unassigned"}
 
 
-@router.get("/project-assignments")
+@router.get("/project-assignments", summary="List project assignments")
 async def list_project_assignments(
     manager: ProjectManager,
     db: DBSession,
@@ -678,7 +687,7 @@ async def list_project_assignments(
     }
 
 
-@router.get("/users/{user_id}/projects")
+@router.get("/users/{user_id}/projects", summary="Get projects assigned to a user")
 async def get_user_projects(user_id: int, manager: ProjectManager, db: DBSession):
     """Get projects assigned to a specific user."""
     result = await db.execute(
@@ -693,7 +702,7 @@ async def get_user_projects(user_id: int, manager: ProjectManager, db: DBSession
 
 # --- Audit logs ---
 
-@router.get("/audit-logs")
+@router.get("/audit-logs", summary="List audit log entries")
 async def list_audit_logs(
     admin: AuditViewer,
     db: DBSession,
@@ -741,7 +750,7 @@ async def list_audit_logs(
 
 # --- Usage / Token tracking ---
 
-@router.get("/usage/summary")
+@router.get("/usage/summary", summary="Aggregated token usage summary")
 async def usage_summary(
     admin: AuditViewer,
     db: DBSession,
@@ -832,7 +841,7 @@ async def usage_summary(
     }
 
 
-@router.get("/usage/recent")
+@router.get("/usage/recent", summary="List recent query usage entries")
 async def usage_recent(
     admin: AuditViewer,
     db: DBSession,
@@ -871,7 +880,7 @@ async def usage_recent(
     }
 
 
-@router.get("/usage/by-user")
+@router.get("/usage/by-user", summary="Usage aggregated by user")
 async def usage_by_user(
     admin: AuditViewer,
     db: DBSession,
@@ -917,7 +926,7 @@ async def usage_by_user(
     }
 
 
-@router.get("/usage/user/{user_id}")
+@router.get("/usage/user/{user_id}", summary="Detailed usage breakdown for a single user")
 async def usage_user_detail(
     user_id: int,
     admin: AuditViewer,
@@ -1036,7 +1045,7 @@ async def usage_user_detail(
     }
 
 
-@router.get("/usage/daily-by-user")
+@router.get("/usage/daily-by-user", summary="Daily usage per top N users for stacked charts")
 async def usage_daily_by_user(
     admin: AuditViewer,
     db: DBSession,
@@ -1109,4 +1118,56 @@ async def usage_daily_by_user(
         "days": days,
         "users": [user_names[uid] for uid in top_user_ids],
         "daily": daily,
+    }
+
+
+# --- Security / Key management ---
+
+@router.post(
+    "/auth/rotate-key",
+    summary="Generate a JWT key rotation plan",
+)
+async def rotate_jwt_key(admin: AdminUser):
+    """Generate a new JWT signing key and return the exact env vars to set.
+
+    This endpoint is advisory — it generates the new key value and tells you
+    exactly what to set in your deployment environment. It does NOT mutate the
+    running process; you must update .env and restart for the rotation to take effect.
+
+    Rotation procedure:
+    1. Copy `new_key` → set as JWT_SECRET_KEY in .env
+    2. Copy `set_jwt_previous_keys` → set as JWT_PREVIOUS_KEYS in .env
+       (keeps the current key valid for in-flight token TTL drain)
+    3. Restart the backend.
+    4. After access_token_expire_minutes (default 60 min), all tokens signed
+       with the old key will have expired. You can then clear JWT_PREVIOUS_KEYS.
+
+    Requires superadmin.
+    """
+    if not admin.is_superadmin:
+        raise HTTPException(status_code=403, detail="Superadmin required")
+
+    new_key = secrets.token_hex(32)
+    current_key = settings.jwt_secret_key
+
+    # Build the new JWT_PREVIOUS_KEYS value: prepend the current key,
+    # keep any existing previous keys that haven't expired yet.
+    existing_previous = [k.strip() for k in settings.jwt_previous_keys.split(",") if k.strip()]
+    new_previous_keys = ", ".join([current_key] + existing_previous)
+
+    return {
+        "new_key": new_key,
+        "set_jwt_previous_keys": new_previous_keys,
+        "instructions": (
+            "1. Set JWT_SECRET_KEY={new_key} in your .env. "
+            "2. Set JWT_PREVIOUS_KEYS={set_jwt_previous_keys} in your .env. "
+            "3. Restart the backend. "
+            "4. After {ttl} minutes (access token TTL), clear JWT_PREVIOUS_KEYS."
+        ).format(
+            new_key=new_key,
+            set_jwt_previous_keys=new_previous_keys,
+            ttl=settings.access_token_expire_minutes,
+        ),
+        "current_key_preview": f"{current_key[:8]}...",
+        "access_token_ttl_minutes": settings.access_token_expire_minutes,
     }

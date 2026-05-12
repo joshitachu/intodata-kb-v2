@@ -31,6 +31,11 @@ def test_get_lobster_plugin():
     assert plugin.display_name == "Lobster Data"
 
 
+def test_lobster_plugin_uses_lobster_distiller():
+    plugin = get_platform("lobster")
+    assert isinstance(plugin.get_distiller(), LobsterDistiller)
+
+
 # ── File Classification ─────────────────────────────────────────────
 
 
@@ -101,6 +106,90 @@ class TestLobsterParser:
         assert groups["Sync_Orders_FTP"] == "Order Processing"
         assert groups["API_Products"] == "Product API"
         assert groups["Minimal_Test"] == "Test"
+
+    def test_profile_discovery_handles_long_xml_header(self, parser, tmp_path):
+        profile = tmp_path / "long_header.xml"
+        profile.write_text(
+            "<?xml version=\"1.0\"?>\n"
+            f"<!-- {'x' * 900} -->\n"
+            "<datawizardprofile name=\"Long Header\">\n"
+            "  <type>Man. upload</type>\n"
+            "  <path_of_group>Root</path_of_group>\n"
+            "  <dataproperties><filetype>10</filetype></dataproperties>\n"
+            "</datawizardprofile>\n",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+
+        assert result.stats["profiles"] == 1
+        assert result.jobs[0].name == "Long Header"
+
+    def test_parse_handles_namespaced_profile_xml(self, parser, tmp_path):
+        profile = tmp_path / "namespaced.xml"
+        profile.write_text(
+            "<?xml version=\"1.0\"?>\n"
+            "<dw:datawizardprofile xmlns:dw=\"urn:lobster\" name=\"Namespaced\">\n"
+            "  <dw:type>Man. upload</dw:type>\n"
+            "  <dw:path_of_group>Namespaced Group</dw:path_of_group>\n"
+            "  <dw:dataproperties>\n"
+            "    <dw:filetype>10</dw:filetype>\n"
+            "    <dw:structuredefinition>\n"
+            "      <dw:inputtree><dw:node name=\"Root\" is_node=\"true\"><dw:field name=\"id\" type=\"String\" /></dw:node></dw:inputtree>\n"
+            "      <dw:outputtree><dw:node name=\"Out\" is_node=\"true\"><dw:field name=\"out_id\" type=\"String\" /></dw:node></dw:outputtree>\n"
+            "    </dw:structuredefinition>\n"
+            "  </dw:dataproperties>\n"
+            "</dw:datawizardprofile>\n",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+
+        assert result.stats["profiles"] == 1
+        assert result.jobs[0].group == "Namespaced Group"
+        component_types = {c.component_type for c in result.jobs[0].components}
+        assert "LobsterParser_JSON" in component_types
+        assert "LobsterSourceSchema" in component_types
+        assert "LobsterMapping" in component_types
+
+    def test_unknown_fields_and_extra_profile_refs_are_preserved(self, parser, tmp_path):
+        profile = tmp_path / "extra.xml"
+        profile.write_text(
+            "<datawizardprofile name=\"Extra Profile\">\n"
+            "  <type>Cron:Http</type>\n"
+            "  <path_of_group>Extra</path_of_group>\n"
+            "  <success_profile>Next Profile</success_profile>\n"
+            "  <agent>\n"
+            "    <agent_class>com.ebd.hub.datawizard.data.CronSettings</agent_class>\n"
+            "    <url>/hook</url>\n"
+            "    <custom_retry_policy>three-times</custom_retry_policy>\n"
+            "  </agent>\n"
+            "  <dataproperties>\n"
+            "    <filetype>10</filetype>\n"
+            "    <custom_parser_flag>strict</custom_parser_flag>\n"
+            "    <structuredefinition>\n"
+            "      <inputtree><node name=\"Root\" is_node=\"true\"><field name=\"id\" type=\"String\" /></node></inputtree>\n"
+            "      <outputtree><node name=\"Out\" is_node=\"true\"><field name=\"out_id\" type=\"String\"><filter id=\"1\" description=\"copy\"><custom_arg>keep-me</custom_arg></filter></field></node></outputtree>\n"
+            "    </structuredefinition>\n"
+            "  </dataproperties>\n"
+            "  <responsesettings><responseunits><unit_file><label>File Out</label><dir>/tmp/out</dir><retention_days>7</retention_days></unit_file></responseunits></responsesettings>\n"
+            "</datawizardprofile>\n",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+        job = result.jobs[0]
+        params = {
+            p.name: p.value
+            for component in job.components
+            for p in component.params
+        }
+
+        assert "Next Profile" in {r.child_job for r in job.trunjob_refs}
+        assert params["extra_agent.custom_retry_policy"] == "three-times"
+        assert params["extra_dataproperties.custom_parser_flag"] == "strict"
+        assert params["filter_1_extra_custom_arg"] == "keep-me"
+        assert params["extra_response.retention_days"] == "7"
 
     # ── Agent extraction ─────────────────────────────────────────
 

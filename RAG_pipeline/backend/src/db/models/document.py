@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, String, Text
+import datetime
+
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -17,6 +19,9 @@ class Document(Base):
     department: Mapped[str | None] = mapped_column(String(255))
     chunk_count: Mapped[int] = mapped_column(default=0)
     project_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Foreign keys
     uploaded_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

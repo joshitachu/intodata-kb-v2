@@ -58,6 +58,7 @@ from mcp_server.schemas import (
     ScanRunListResponse,
     ScanRunResponse,
     StatusResponse,
+    UpdateGithubTokenRequest,
     UpdateProjectRequest,
 )
 from mcp_server.services.atomic_swap import swap_docs
@@ -75,6 +76,12 @@ router = APIRouter(tags=["projects"])
 
 
 def _project_to_response(p) -> ProjectResponse:
+    webhook_status: str | None = None
+    if p.source_type == "git" and p.repo_url:
+        if p.github_webhook_id:
+            webhook_status = "active"
+        else:
+            webhook_status = "not_registered"
     return ProjectResponse(
         id=p.id,
         display_name=p.display_name,
@@ -95,6 +102,9 @@ def _project_to_response(p) -> ProjectResponse:
         auto_reingest_last_checked_at=p.auto_reingest_last_checked_at,
         auto_reingest_error=p.auto_reingest_error,
         git_update_summary=p.git_update_summary,
+        has_github_token=bool(getattr(p, "github_token_enc", None)),
+        webhook_status=webhook_status,
+        instruction_pack_dir=getattr(p, "instruction_pack_dir", None),
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -115,13 +125,25 @@ async def add_repo(req: AddRepoRequest, request: Request):
         if not re.match(r"^https?://[^\s;|&]+$", url) and not re.match(r"^git@[^\s;|&]+$", url):
             raise HTTPException(status_code=400, detail="Invalid git URL format")
         source_type = "git"
+        # Strip GitHub tree/blob browser suffixes so git clone gets the bare repo URL
+        url = re.sub(r"/(tree|blob)/[^/].*$", "", url.rstrip("/"))
         repo_url = url
         clone_dir = config.repos_dir / req.project_id
         if not clone_dir.exists():
             import subprocess
+            from mcp_server.utils.encryption import inject_token as _inject_token
+            # Encrypt token now so we can use it for clone; store enc form later
+            _token_enc_tmp: str | None = None
+            if req.github_token:
+                from mcp_server.utils.encryption import encrypt_token as _encrypt_token
+                try:
+                    _token_enc_tmp = _encrypt_token(req.github_token)
+                except Exception:
+                    _token_enc_tmp = None
+            clone_url = _inject_token(url, _token_enc_tmp)
             try:
                 subprocess.run(
-                    ["git", "clone", "--", url, str(clone_dir)],
+                    ["git", "clone", "--", clone_url, str(clone_dir)],
                     check=True,
                     capture_output=True,
                 )
@@ -135,6 +157,15 @@ async def add_repo(req: AddRepoRequest, request: Request):
     else:
         raise HTTPException(status_code=400, detail=f"Invalid URL/path: {url}")
 
+    # Encrypt and store the PAT if provided
+    token_enc: str | None = None
+    if source_type == "git" and req.github_token:
+        from mcp_server.utils.encryption import encrypt_token as _encrypt_token
+        try:
+            token_enc = _encrypt_token(req.github_token)
+        except Exception as exc:
+            logger.warning("Failed to encrypt GitHub token for %s: %s", req.project_id, exc)
+
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.add_project(
@@ -145,6 +176,9 @@ async def add_repo(req: AddRepoRequest, request: Request):
             platform=req.platform,
             source_type=source_type,
         )
+
+        if token_enc:
+            project.github_token_enc = token_enc
 
         # Auto-assign creator to the new project so they can see it
         auth_payload = getattr(request.state, "auth_payload", None)
@@ -162,6 +196,31 @@ async def add_repo(req: AddRepoRequest, request: Request):
 
         await db.commit()
         await db.refresh(project)
+
+    # Auto-register webhook after project is committed (best-effort, non-blocking)
+    if source_type == "git" and req.github_token and repo_url and config.public_url and config.github_webhook_secret:
+        webhook_url = config.public_url.rstrip("/") + "/webhook/github/webhook"
+        try:
+            from mcp_server.utils.github_api import register_webhook as _register_webhook
+            webhook_id = await _register_webhook(repo_url, req.github_token, webhook_url, config.github_webhook_secret)
+            async with async_session_factory() as db2:
+                from sqlalchemy import update as _update
+                from mcp_server.db.models import Project as _Project
+                await db2.execute(
+                    _update(_Project)
+                    .where(_Project.id == req.project_id)
+                    .values(github_webhook_id=webhook_id)
+                )
+                await db2.commit()
+        except Exception as exc:
+            logger.warning(
+                "Webhook auto-registration failed for %s (project registered without webhook): %s",
+                req.project_id, exc,
+            )
+
+    async with async_session_factory() as db3:
+        registry3 = ProjectRegistry(db3)
+        project = await registry3.get_project(req.project_id)
         return _project_to_response(project)
 
 
@@ -326,6 +385,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         write_model=req.write_model,
         resume=req.resume,
         doc_generation_provider=project.doc_generation_provider,
+        instruction_pack_dir=project.instruction_pack_dir,
     )
     return StatusResponse(
         status="generation_triggered",
@@ -365,6 +425,181 @@ async def repair_latest_git_update(project_id: str, request: Request, background
         status="repair_triggered",
         message=f"Diff-only repair started for {project_id}",
     )
+
+
+@router.patch("/projects/{project_id}/github-token", response_model=ProjectResponse)
+async def update_github_token(project_id: str, req: UpdateGithubTokenRequest, request: Request):
+    """Store a new GitHub PAT for a project and re-register the webhook."""
+    await require_project_access(request, project_id)
+    from mcp_server.utils.encryption import encrypt_token as _encrypt_token, decrypt_token as _decrypt_token
+    from sqlalchemy import update as _update
+    from mcp_server.db.models import Project as _Project
+
+    try:
+        token_enc = _encrypt_token(req.github_token)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Token encryption failed: {exc}")
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if project.source_type != "git":
+            raise HTTPException(status_code=400, detail="GitHub token is only applicable to git projects")
+
+        # Delete old webhook if we have one
+        if project.github_webhook_id and project.repo_url:
+            try:
+                from mcp_server.utils.github_api import delete_webhook as _delete_webhook
+                await _delete_webhook(project.repo_url, req.github_token, project.github_webhook_id)
+            except Exception as exc:
+                logger.warning("Failed to delete old webhook %s: %s", project.github_webhook_id, exc)
+
+        await db.execute(
+            _update(_Project)
+            .where(_Project.id == project_id)
+            .values(github_token_enc=token_enc, github_webhook_id=None)
+        )
+        await db.commit()
+
+    # Re-register webhook
+    repo_url = project.repo_url
+    if repo_url and config.public_url and config.github_webhook_secret:
+        webhook_url = config.public_url.rstrip("/") + "/webhook/github/webhook"
+        try:
+            from mcp_server.utils.github_api import register_webhook as _register_webhook
+            webhook_id = await _register_webhook(repo_url, req.github_token, webhook_url, config.github_webhook_secret)
+            async with async_session_factory() as db2:
+                await db2.execute(
+                    _update(_Project).where(_Project.id == project_id).values(github_webhook_id=webhook_id)
+                )
+                await db2.commit()
+        except Exception as exc:
+            logger.warning("Webhook re-registration failed for %s: %s", project_id, exc)
+
+    async with async_session_factory() as db3:
+        registry3 = ProjectRegistry(db3)
+        project = await registry3.get_project(project_id)
+        return _project_to_response(project)
+
+
+@router.post("/projects/{project_id}/github-webhook/register", response_model=ProjectResponse)
+async def register_github_webhook(project_id: str, request: Request):
+    """(Re-)register the GitHub webhook using the stored PAT."""
+    await require_project_access(request, project_id)
+    from mcp_server.utils.encryption import decrypt_token as _decrypt_token
+    from mcp_server.utils.github_api import register_webhook as _register_webhook
+    from sqlalchemy import update as _update
+    from mcp_server.db.models import Project as _Project
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if not project.github_token_enc:
+            raise HTTPException(status_code=400, detail="No GitHub token stored. Add one via PATCH /projects/{id}/github-token first.")
+        if not project.repo_url:
+            raise HTTPException(status_code=400, detail="Project has no repo URL")
+        if not config.public_url:
+            raise HTTPException(status_code=503, detail="MCP_PUBLIC_URL is not configured")
+        if not config.github_webhook_secret:
+            raise HTTPException(status_code=503, detail="MCP_GITHUB_WEBHOOK_SECRET is not configured")
+
+    try:
+        token = _decrypt_token(project.github_token_enc)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Token decryption failed: {exc}")
+
+    webhook_url = config.public_url.rstrip("/") + "/webhook/github/webhook"
+    try:
+        webhook_id = await _register_webhook(project.repo_url, token, webhook_url, config.github_webhook_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
+
+    async with async_session_factory() as db2:
+        from sqlalchemy import update as _update2
+        from mcp_server.db.models import Project as _Project2
+        await db2.execute(
+            _update2(_Project2).where(_Project2.id == project_id).values(github_webhook_id=webhook_id)
+        )
+        await db2.commit()
+
+    async with async_session_factory() as db3:
+        registry3 = ProjectRegistry(db3)
+        project = await registry3.get_project(project_id)
+        return _project_to_response(project)
+
+
+@router.delete("/projects/{project_id}/github-webhook", response_model=StatusResponse)
+async def delete_github_webhook(project_id: str, request: Request):
+    """Delete the GitHub webhook and clear the stored webhook ID."""
+    await require_project_access(request, project_id)
+    from mcp_server.utils.encryption import decrypt_token as _decrypt_token
+    from mcp_server.utils.github_api import delete_webhook as _delete_webhook
+    from sqlalchemy import update as _update
+    from mcp_server.db.models import Project as _Project
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+        if project.github_webhook_id and project.repo_url and project.github_token_enc:
+            try:
+                token = _decrypt_token(project.github_token_enc)
+                await _delete_webhook(project.repo_url, token, project.github_webhook_id)
+            except Exception as exc:
+                logger.warning("Failed to delete webhook from GitHub: %s", exc)
+
+        await db.execute(
+            _update(_Project).where(_Project.id == project_id).values(github_webhook_id=None)
+        )
+        await db.commit()
+
+    return StatusResponse(status="deleted", message=f"Webhook removed for project '{project_id}'")
+
+
+@router.get("/projects/{project_id}/github-webhook/status")
+async def get_github_webhook_status(project_id: str, request: Request):
+    """Check live webhook status against the GitHub API."""
+    await require_project_access(request, project_id)
+    from mcp_server.utils.encryption import decrypt_token as _decrypt_token
+    from mcp_server.utils.github_api import check_webhook as _check_webhook
+    from sqlalchemy import update as _update
+    from mcp_server.db.models import Project as _Project
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    if not project.github_webhook_id:
+        return {"project_id": project_id, "webhook_status": "not_registered", "webhook_id": None}
+
+    if not project.github_token_enc or not project.repo_url:
+        return {"project_id": project_id, "webhook_status": "unknown", "webhook_id": project.github_webhook_id}
+
+    try:
+        token = _decrypt_token(project.github_token_enc)
+        is_active = await _check_webhook(project.repo_url, token, project.github_webhook_id)
+        status = "active" if is_active else "not_registered"
+    except Exception as exc:
+        logger.warning("Failed to check webhook for %s: %s", project_id, exc)
+        status = "unknown"
+
+    # If GitHub says the hook is gone, clear our stored ID
+    if status == "not_registered":
+        async with async_session_factory() as db2:
+            await db2.execute(
+                _update(_Project).where(_Project.id == project_id).values(github_webhook_id=None)
+            )
+            await db2.commit()
+
+    return {"project_id": project_id, "webhook_status": status, "webhook_id": project.github_webhook_id}
 
 
 async def _push_with_retry(
@@ -423,6 +658,37 @@ def _read_public_doc_texts(docs_dir: Path) -> dict[str, str]:
     return docs
 
 
+async def _auto_compare_run(project_id: str, run_id: int) -> None:
+    """After a run completes, compare against previous completed run and store verdict."""
+    try:
+        from mcp_server.api.routes.generate_runs import build_run_comparison
+        from sqlalchemy import update as sa_update
+        from mcp_server.db.models import GenerateRun
+
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            runs = await registry.list_generate_runs(project_id)
+            baseline = next(
+                (r for r in runs if r.status == "completed" and r.id != run_id),
+                None,
+            )
+            if baseline is None:
+                return  # first ever completed run — nothing to compare against
+
+        comparison = await build_run_comparison(project_id, baseline.id, run_id)
+        verdict = comparison.get("verdict")
+
+        async with async_session_factory() as db:
+            await db.execute(
+                sa_update(GenerateRun)
+                .where(GenerateRun.id == run_id)
+                .values(auto_verdict=verdict, auto_baseline_run_id=baseline.id)
+            )
+            await db.commit()
+    except Exception as e:
+        logger.warning("Auto-comparison failed for run %s/%s: %s", project_id, run_id, e)
+
+
 def _diff_generated_docs(old_docs_dir: Path, new_docs_dir: Path) -> tuple[set[str], set[str]]:
     """Compare generated docs and return (added_or_changed, removed) filenames."""
     old_docs = _read_public_doc_texts(old_docs_dir)
@@ -447,6 +713,7 @@ async def _run_generate_background(
     write_model: str | None = None,
     resume: bool = True,
     doc_generation_provider: str | None = None,
+    instruction_pack_dir: str | None = None,
     partial_rag_sync: bool = False,
 ):
     """Background task: spawn Claude Code for doc generation.
@@ -460,6 +727,7 @@ async def _run_generate_background(
         project_id, template_profile_id=template_profile_id, model=model,
         write_model=write_model, resume=resume,
         doc_generation_provider=doc_generation_provider,
+        instruction_pack_dir=instruction_pack_dir,
     )
 
     success = result.get("success", False)
@@ -667,6 +935,7 @@ async def _run_generate_background(
                 template_snapshot=result.get("template_snapshot"),
             )
             await db.commit()
+        await _auto_compare_run(project_id, run_id)
     else:
         # Generation failed — preserve staging for resume (old docs/ remains intact)
         if staging_dir.exists():
@@ -885,6 +1154,7 @@ async def update_project(project_id: str, req: UpdateProjectRequest, request: Re
             display_name=req.display_name,
             platform=req.platform,
             doc_generation_provider=req.doc_generation_provider,
+            instruction_pack_dir=req.instruction_pack_dir,
         )
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
@@ -1114,6 +1384,8 @@ def _run_to_response(r) -> GenerateRunResponse:
         quality_score=getattr(r, "quality_score", None),
         template_profile_id=getattr(r, "template_profile_id", None),
         template_snapshot=getattr(r, "template_snapshot", None),
+        auto_verdict=getattr(r, "auto_verdict", None),
+        auto_baseline_run_id=getattr(r, "auto_baseline_run_id", None),
     )
 
 
@@ -1170,9 +1442,14 @@ async def compare_generate_runs(
     )
 
 
+_QUALITY_REGRESSION_THRESHOLD_PCT = 5.0
+_COST_REGRESSION_THRESHOLD_PCT = 20.0
+_DURATION_REGRESSION_THRESHOLD_PCT = 20.0
+
+
 @router.get("/projects/{project_id}/quality-history")
 async def get_quality_history(project_id: str):
-    """Return time-series quality scores for all completed runs of a project."""
+    """Return time-series quality/cost/duration metrics for all completed runs of a project."""
     metrics_dir = config.project_root / "output" / project_id / "logs"
     entries = []
     if metrics_dir.exists():
@@ -1191,17 +1468,37 @@ async def get_quality_history(project_id: str):
                 "duration_ms": m.get("duration_ms"),
                 "regression": False,
                 "quality_delta_pct": None,
+                "cost_regression": False,
+                "cost_delta_pct": None,
+                "duration_regression": False,
+                "duration_delta_pct": None,
             })
 
     for i, e in enumerate(entries):
         if i == 0:
             continue
-        prev_q = entries[i - 1]["quality"]
+        prev = entries[i - 1]
+
+        prev_q = prev["quality"]
         curr_q = e["quality"]
         if prev_q is not None and curr_q is not None and prev_q > 0:
             drop_pct = ((prev_q - curr_q) / prev_q) * 100
-            e["regression"] = drop_pct > 5.0
+            e["regression"] = drop_pct > _QUALITY_REGRESSION_THRESHOLD_PCT
             e["quality_delta_pct"] = round(-drop_pct, 2)
+
+        prev_c = prev["cost_usd"]
+        curr_c = e["cost_usd"]
+        if prev_c is not None and curr_c is not None and prev_c > 0:
+            cost_change_pct = ((curr_c - prev_c) / prev_c) * 100
+            e["cost_regression"] = cost_change_pct > _COST_REGRESSION_THRESHOLD_PCT
+            e["cost_delta_pct"] = round(cost_change_pct, 2)
+
+        prev_d = prev["duration_ms"]
+        curr_d = e["duration_ms"]
+        if prev_d is not None and curr_d is not None and prev_d > 0:
+            dur_change_pct = ((curr_d - prev_d) / prev_d) * 100
+            e["duration_regression"] = dur_change_pct > _DURATION_REGRESSION_THRESHOLD_PCT
+            e["duration_delta_pct"] = round(dur_change_pct, 2)
 
     return {"project_id": project_id, "history": entries, "total": len(entries)}
 
@@ -1210,7 +1507,11 @@ async def get_quality_history(project_id: str):
 
 @router.get("/projects/{project_id}/questionnaire")
 async def get_questionnaire(project_id: str, run_id: int = 0):
-    return validation_service.generate_questionnaire(project_id, run_id)
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+    pack_dir = getattr(project, "instruction_pack_dir", None) if project else None
+    return validation_service.generate_questionnaire(project_id, run_id, instruction_pack_dir=pack_dir)
 
 
 @router.post("/projects/{project_id}/reviews", status_code=201)

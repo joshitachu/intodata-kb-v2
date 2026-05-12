@@ -58,6 +58,9 @@ class Project(Base):
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=True,
     )
+    github_token_enc: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    github_webhook_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    instruction_pack_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Relationships
     scan_runs: Mapped[list[ScanRun]] = relationship(
@@ -138,6 +141,10 @@ class GenerateRun(Base):
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=True,
     )
+
+    # Auto-comparison verdict (US-104)
+    auto_verdict: Mapped[str | None] = mapped_column(String(10), nullable=True)  # "PASS" | "FAIL"
+    auto_baseline_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")

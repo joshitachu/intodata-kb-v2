@@ -34,9 +34,34 @@ export const OnboardingStatusSchema = z.object({
   source_type: SourceTypeSchema.optional(),
   source_url: z.string().nullable().optional(),
   source_filename: z.string().nullable().optional(),
+  // Company-level flag embedded by the backend so the guard needs only one call
+  company_wizard_completed: z.boolean().default(false),
 });
 
 export type OnboardingStatus = z.infer<typeof OnboardingStatusSchema>;
+
+// Company-level config (system_config table — admin wizard only)
+export const CompanyStatusSchema = z.object({
+  company_wizard_completed: z.boolean(),
+  wizard_current_step: z.number(),
+  workspace_name: z.string().nullable().optional(),
+  selected_platforms: z.array(z.string()).default([]),
+  selected_comm_tools: z.array(z.string()).default([]),
+  source_type: SourceTypeSchema.optional(),
+  source_url: z.string().nullable().optional(),
+  source_filename: z.string().nullable().optional(),
+  setup_status: SetupStatusSchema,
+  setup_error: z.string().nullable().optional(),
+});
+
+export type CompanyStatus = z.infer<typeof CompanyStatusSchema>;
+
+export const CompleteCompanyWizardResponseSchema = z.object({
+  company_wizard_completed: z.boolean(),
+  setup_status: SetupStatusSchema,
+});
+
+export type CompleteCompanyWizardResponse = z.infer<typeof CompleteCompanyWizardResponseSchema>;
 
 export const SetupStatusResponseSchema = z.object({
   setup_status: SetupStatusSchema,

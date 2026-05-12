@@ -50,6 +50,28 @@ class User(Base):
     backup_codes_hashed: Mapped[list | None] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), nullable=True
     )
+    # Replay protection: track the last accepted TOTP code so the same code
+    # cannot be used twice within the same 90-second validity window.
+    totp_last_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    totp_last_code_used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Account lockout: after LOCKOUT_THRESHOLD consecutive bad passwords the
+    # account is locked for LOCKOUT_DURATION_MINUTES. Counter resets on success
+    # or after the lockout window expires.
+    failed_login_attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    locked_until: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # SSO / OIDC — set when the user authenticates via an external IdP.
+    # sso_provider identifies the IdP (e.g. "google", "azure", "okta").
+    # sso_subject is the IdP's stable user identifier (the `sub` claim).
+    # A user can have both a password_hash (for local login) and SSO fields
+    # (for federated login) — they are not mutually exclusive.
+    sso_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    sso_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
     roles: Mapped[list[Role]] = relationship(

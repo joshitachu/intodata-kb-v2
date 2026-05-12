@@ -33,6 +33,9 @@ class ProjectResponse(BaseModel):
     auto_reingest_last_checked_at: datetime.datetime | None = None
     auto_reingest_error: str | None = None
     git_update_summary: dict | None = None
+    has_github_token: bool = False
+    webhook_status: str | None = None  # "active" | "not_registered" | "unknown" | None
+    instruction_pack_dir: str | None = None
     created_at: datetime.datetime | None = None
     updated_at: datetime.datetime | None = None
 
@@ -81,6 +84,7 @@ class AddRepoRequest(BaseModel):
     )
     platform: str = Field(default="talend", description="Integration platform (talend|workato|lobster|generic)")
     display_name: str | None = None
+    github_token: str | None = Field(None, description="GitHub PAT for private repos and webhook auto-registration")
 
     @field_validator("platform")
     @classmethod
@@ -91,6 +95,10 @@ class AddRepoRequest(BaseModel):
                 f"Unsupported platform: {v!r}. Must be one of {sorted(SUPPORTED_PLATFORMS)}"
             )
         return v
+
+
+class UpdateGithubTokenRequest(BaseModel):
+    github_token: str = Field(..., min_length=1, description="GitHub Personal Access Token")
 
 
 class ScanRequest(BaseModel):
@@ -118,6 +126,7 @@ class UpdateProjectRequest(BaseModel):
     display_name: str | None = None
     platform: str | None = None
     doc_generation_provider: str | None = None
+    instruction_pack_dir: str | None = None
 
     @field_validator("platform")
     @classmethod
@@ -212,6 +221,8 @@ class GenerateRunResponse(BaseModel):
     quality_score: float | None = None
     template_profile_id: int | None = None
     template_snapshot: dict | None = None
+    auto_verdict: str | None = None
+    auto_baseline_run_id: int | None = None
 
 
 class GenerateRunListResponse(BaseModel):

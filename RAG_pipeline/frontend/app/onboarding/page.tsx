@@ -20,8 +20,14 @@ function stepHeading(step: Step) {
 function InviteOnboarding() {
   const params = useSearchParams();
   const router = useRouter();
-  const { loginAs } = useAuthContext();
+  const { user, isLoading: authLoading, loginAs } = useAuthContext();
   const legacyToken = params.get("token") || "";
+
+  useEffect(() => {
+    if (!authLoading && user) router.replace("/");
+  }, [authLoading, user, router]);
+
+  if (authLoading || user) return null;
 
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");

@@ -39,7 +39,7 @@ ALLOWED_EXTENSIONS = {"pdf", "docx", "pptx", "xlsx"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
-@router.post("/ingest", response_model=IngestResponse)
+@router.post("/ingest", response_model=IngestResponse, summary="Ingest a document into Qdrant")
 @limiter.limit("10/minute")
 async def ingest(
     request: Request,
@@ -93,6 +93,7 @@ async def ingest(
 @router.delete(
     "/ingest/by-project/{project_id}",
     dependencies=[Depends(verify_ingest_api_key)],
+    summary="Delete all documents for a project",
 )
 async def delete_project_documents(
     project_id: str,
@@ -135,6 +136,7 @@ async def delete_project_documents(
 @router.delete(
     "/ingest/by-project/{project_id}/document/{filename}",
     dependencies=[Depends(verify_ingest_api_key)],
+    summary="Delete a single document from a project",
 )
 async def delete_project_document(
     project_id: str,
@@ -166,7 +168,7 @@ async def delete_project_document(
     return {"deleted": True, "project_id": project_id, "filename": filename}
 
 
-@router.post("/ingest/md", response_model=IngestResponse, dependencies=[Depends(verify_ingest_api_key)])
+@router.post("/ingest/md", response_model=IngestResponse, dependencies=[Depends(verify_ingest_api_key)], summary="Ingest pre-rendered markdown content")
 async def ingest_markdown(
     request: MarkdownIngestRequest,
     db: DBSession,
