@@ -130,7 +130,10 @@ export function Sidebar() {
   // ─── Collapsed sidebar ───────────────────────────────────────────
   if (!expanded) {
     return (
-      <aside className="w-14 border-r bg-card flex flex-col h-full transition-all duration-200">
+      <aside
+        className="w-14 border-r bg-card flex flex-col h-full transition-all duration-200"
+        data-tour="sidebar"
+      >
         {/* Tenant mark */}
         <div className="px-2 py-3 flex items-center justify-center border-b border-border/60">
           <TenantMark iconOnly size="md" />
@@ -221,7 +224,10 @@ export function Sidebar() {
 
   // ─── Expanded sidebar ────────────────────────────────────────────
   return (
-    <aside className="w-56 border-r bg-card flex flex-col h-full transition-all duration-200">
+    <aside
+      className="w-56 border-r bg-card flex flex-col h-full transition-all duration-200"
+      data-tour="sidebar"
+    >
       {/* Tenant mark + collapse */}
       <div className="px-3 py-3 border-b border-border/60 flex items-center gap-2">
         <TenantMark size="md" className="flex-1 min-w-0" />
@@ -235,7 +241,7 @@ export function Sidebar() {
       </div>
 
       {/* Nav items */}
-      <nav className="px-2 py-1 space-y-0.5" data-tour="sidebar-nav">
+      <nav className="px-2 py-1 space-y-0.5">
         <button
           onClick={handleNewChat}
           className={cn(

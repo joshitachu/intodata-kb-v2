@@ -151,7 +151,18 @@ export function useCompleteOnboarding() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: postComplete,
-    onSuccess: () => {
+    onSuccess: (data) => {
+      qc.setQueryData<OnboardingStatus | undefined>(
+        ["onboarding", "status"],
+        (prev) =>
+          prev
+            ? {
+                ...prev,
+                wizard_completed: data.wizard_completed,
+                setup_status: data.setup_status,
+              }
+            : prev,
+      );
       qc.invalidateQueries({ queryKey: ["onboarding", "status"] });
       qc.invalidateQueries({ queryKey: ["auth", "me"] });
     },

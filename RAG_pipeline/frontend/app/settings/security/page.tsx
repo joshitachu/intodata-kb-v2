@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import { useAuthContext } from "@/components/AuthProvider";
+import { useOnboardingContext } from "@/contexts/OnboardingContext";
+import { useCompleteOnboarding } from "@/hooks/useOnboarding";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,7 +18,10 @@ type SetupState =
   | { kind: "error"; message: string };
 
 export default function SecuritySettingsPage() {
+  const router = useRouter();
   const { user, refreshUser } = useAuthContext();
+  const { startTour } = useOnboardingContext();
+  const completeOnboarding = useCompleteOnboarding();
   const mfaEnabled = user?.mfa_enabled ?? false;
 
   const [state, setState] = useState<SetupState>({ kind: "idle" });
@@ -58,7 +64,27 @@ export default function SecuritySettingsPage() {
       }
       setState({ kind: "enabled", backupCodes: data.backup_codes });
       setCode("");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function finishRequiredSetup() {
+    setLoading(true);
+    setMessage(null);
+    try {
+      if (setupOnly) {
+        await completeOnboarding.mutateAsync();
+      }
       await refreshUser();
+      if (setupOnly) {
+        startTour();
+        router.push("/");
+      } else {
+        setState({ kind: "idle" });
+      }
+    } catch {
+      setMessage("Security setup finished, but the next step could not start. Please refresh and try again.");
     } finally {
       setLoading(false);
     }
@@ -222,6 +248,14 @@ export default function SecuritySettingsPage() {
               >
                 Copy to clipboard
               </Button>
+              <div className="flex justify-end pt-2">
+                <Button
+                  onClick={finishRequiredSetup}
+                  isLoading={loading || completeOnboarding.isPending}
+                >
+                  {setupOnly ? "I saved these codes, start walkthrough" : "I saved these codes"}
+                </Button>
+              </div>
             </div>
           ) : (
             <p className="text-sm text-destructive">{state.message}</p>
