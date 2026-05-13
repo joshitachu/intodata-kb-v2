@@ -36,9 +36,25 @@ export function useAuth(): UseAuthReturn {
   const router = useRouter();
   const queryClient = useQueryClient();
 
+  // Attempt a token refresh; returns true on success, false on failure.
+  const tryRefresh = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/refresh", { method: "POST" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const fetchUser = useCallback(async (): Promise<AuthUser | null> => {
     try {
-      const res = await fetch("/api/auth/me");
+      let res = await fetch("/api/auth/me");
+      if (res.status === 401) {
+        const refreshed = await tryRefresh();
+        if (refreshed) {
+          res = await fetch("/api/auth/me");
+        }
+      }
       if (res.ok) {
         const data = await res.json();
         setUser(data);
@@ -53,7 +69,7 @@ export function useAuth(): UseAuthReturn {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [tryRefresh]);
 
   const loginAs = useCallback(
     (u: AuthUser) => {
@@ -78,16 +94,6 @@ export function useAuth(): UseAuthReturn {
   useEffect(() => {
     fetchUser();
   }, [fetchUser]);
-
-  // Attempt a token refresh; returns true on success, false on failure.
-  const tryRefresh = useCallback(async (): Promise<boolean> => {
-    try {
-      const res = await fetch("/api/auth/refresh", { method: "POST" });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }, []);
 
   // Intercept a 401 response: try refreshing the token once.
   // If the refresh succeeds, returns true so the caller can retry.

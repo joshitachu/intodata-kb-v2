@@ -23,12 +23,6 @@ function InviteOnboarding() {
   const { user, isLoading: authLoading, loginAs } = useAuthContext();
   const legacyToken = params.get("token") || "";
 
-  useEffect(() => {
-    if (!authLoading && user) router.replace("/");
-  }, [authLoading, user, router]);
-
-  if (authLoading || user) return null;
-
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -39,6 +33,10 @@ function InviteOnboarding() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!authLoading && user) router.replace("/");
+  }, [authLoading, user, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +61,8 @@ function InviteOnboarding() {
       cancelled = true;
     };
   }, [legacyToken]);
+
+  if (authLoading || user) return null;
 
   async function sendCode(e?: React.FormEvent) {
     e?.preventDefault();

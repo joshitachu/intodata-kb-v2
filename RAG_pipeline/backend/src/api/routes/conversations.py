@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 
 from src.api.errors import api_error
 from fastapi.responses import StreamingResponse
@@ -331,3 +332,59 @@ async def send_message_stream(
             yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+class SaveExchangeRequest(BaseModel):
+    user_message: str
+    assistant_message: str
+    latency_ms: int | None = None
+
+
+@router.post("/{conversation_id}/messages/save", response_model=MessageResponse, summary="Save a pre-generated exchange")
+async def save_exchange(
+    conversation_id: int,
+    request: SaveExchangeRequest,
+    db: DBSession,
+    user: CurrentUser,
+) -> MessageResponse:
+    """Save a pre-generated Q&A exchange (e.g. Deep Dive) without running RAG."""
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.deleted_at.is_(None))
+        .options(selectinload(Conversation.messages))
+    )
+    conversation = result.scalar_one_or_none()
+
+    if conversation is None:
+        raise api_error(404, "not_found", "Conversation not found")
+
+    if conversation.user_id != user.id:
+        raise api_error(403, "forbidden", "Not authorized")
+
+    if not conversation.title and not conversation.messages:
+        conversation.title = request.user_message[:80].strip()
+
+    user_msg = ConversationMessage(
+        conversation_id=conversation_id,
+        role="user",
+        content=request.user_message,
+    )
+    db.add(user_msg)
+    await db.flush()
+
+    assistant_msg = ConversationMessage(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=request.assistant_message,
+        latency_ms=request.latency_ms,
+    )
+    db.add(assistant_msg)
+    await db.flush()
+    await db.commit()
+
+    return MessageResponse(
+        message_id=assistant_msg.id,
+        content=request.assistant_message,
+        sources=[],
+        latency_ms=request.latency_ms or 0,
+    )

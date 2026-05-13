@@ -1202,6 +1202,12 @@ def test_phase28_generates_doc_specific_evidence_packs_and_manifest(tmp_path):
     entry = manifest["doc_packs"]["02_COMPONENT_INVENTORY"]
     assert entry["included"]["A.md"]
     assert "UNCLASSIFIED_OR_EXTRA_FINDINGS" in entry["included"]["A.md"] or entry["unclassified"]["A.md"]
+    assert entry["included_obligations"]
+    assert "unmatched_obligations" in entry
+    assert "evidence_sources" in entry
+    pack = (staging / "_analysis" / "_doc_pack_02_COMPONENT_INVENTORY.md").read_text(encoding="utf-8")
+    assert "## Documentation Obligations" in pack
+    assert "shared.identity" in pack
 
 
 def test_phase3_context_prefers_doc_pack_over_family_bundle(tmp_path):
@@ -1349,6 +1355,53 @@ def test_phase3_repair_targets_uses_doc_named_in_validation_error(tmp_path):
     )]
 
 
+def test_validation_errors_route_canonical_obligations_to_owner_docs(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    facts.units[0].path = "src/unit_a.py"
+    facts.units[0].key_systems = ["External API"]
+    facts.key_systems = ["External API"]
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    _write_assistant_docs(staging, facts)
+    (staging / "02_COMPONENT_INVENTORY.md").write_text(
+        "# Component Inventory\n\n## Canonical Unit Inventory\n"
+        "| Unit | Group | Source Artifact | Type |\n"
+        "|------|-------|-----------------|------|\n"
+        "| Unit A | MissingGroup | missing.py | code_unit |\n",
+        encoding="utf-8",
+    )
+    (staging / "05_RUNTIME_CONFIG_AND_EXTERNALS.md").write_text(
+        "# Runtime Config And Externals\n\n## External Systems\nNo concrete system row.\n"
+        "## Runtime Config\nConfig includes Redacted and Scanner-Limited status.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_docs(staging, facts)
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/deepseek",
+        write_model="fake/deepseek",
+        template_snapshot={},
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    targets = CustomHarnessProvider._phase3_repair_targets(ctx, report.errors)
+
+    assert not report.ok
+    assert any("02_COMPONENT_INVENTORY.md missing source artifact" in error for error in report.errors)
+    assert any("05_RUNTIME_CONFIG_AND_EXTERNALS.md missing external system row" in error for error in report.errors)
+    assert {target.name for target, _ in targets} >= {
+        "02_COMPONENT_INVENTORY.md",
+        "05_RUNTIME_CONFIG_AND_EXTERNALS.md",
+    }
+
+
 @pytest.mark.asyncio
 async def test_core_generation_splits_context_and_excludes_large_json(tmp_path, monkeypatch):
     from mcp_server.config import config
@@ -1422,6 +1475,74 @@ async def test_core_generation_splits_context_and_excludes_large_json(tmp_path, 
     assert len(provider.calls) > 1
     assert all("engineering_facts.json" not in names for names in provider.calls)
     assert any("split decision" in message for message in logs)
+
+
+@pytest.mark.asyncio
+async def test_core_generation_writes_reviewable_model_input_snapshot(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    context_file = staging / "_analysis" / "_doc_pack_02_COMPONENT_INVENTORY.md"
+    context_file.parent.mkdir()
+    context_file.write_text("# Doc Pack\n\nUnit A source evidence.", encoding="utf-8")
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _FakeProvider:
+        model_name = "fake/model"
+        supports_tools = False
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            return ModelResult(
+                success=True,
+                text="# Component Inventory\n\nUnit A documented from source evidence.",
+                model_name=self.model_name,
+                input_tokens=12,
+                output_tokens=8,
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        template_snapshot={},
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    provider = _FakeProvider()
+    result = await CustomHarnessProvider(provider)._complete_core_generation(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        provider=provider,
+        phase="phase3",
+        target="02_COMPONENT_INVENTORY",
+        prompt="Write the inventory for Unit A.",
+        context_files=[context_file],
+        opts=ModelOptions(max_tokens=1234),
+        log_cb=log_cb,
+    )
+
+    assert result.success
+    snapshot_dir = staging / "_model_inputs" / "phase3" / "001_02_COMPONENT_INVENTORY"
+    manifest = json.loads((snapshot_dir / "manifest.json").read_text(encoding="utf-8"))
+    bundle = (snapshot_dir / "context_bundle.md").read_text(encoding="utf-8")
+    prompt = (snapshot_dir / "prompt.md").read_text(encoding="utf-8")
+
+    assert manifest["phase"] == "phase3"
+    assert manifest["target"] == "02_COMPONENT_INVENTORY"
+    assert manifest["options"]["max_tokens"] == 1234
+    assert manifest["context_files"][0]["path"] == "_analysis/_doc_pack_02_COMPONENT_INVENTORY.md"
+    assert "Write the inventory for Unit A." in prompt
+    assert "## Prompt" in bundle
+    assert "Unit A source evidence." in bundle
 
 
 @pytest.mark.asyncio
@@ -2187,6 +2308,120 @@ async def test_phase2_section_repair_appends_missing_talend_sections(tmp_path):
     assert "### RISK_FLAGS" in completed
     assert any("guide-section repair complete" in message for _, message, _ in logs)
     monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_phase2_section_repair_uses_configured_phase2_token_cap(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "phase2_max_tokens", 32_000)
+    monkeypatch.setattr(config, "phase3_max_tokens", 64_000)
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    group_file = staging / "_preprocess" / "A.md"
+    group_file.parent.mkdir(parents=True)
+    group_file.write_text("source evidence", encoding="utf-8")
+    seen_max_tokens: list[int] = []
+
+    class _RepairProvider:
+        model_name = "fake/model"
+        supports_tools = False
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            seen_max_tokens.append(options.max_tokens)
+            return ModelResult(
+                success=True,
+                text="\n".join(f"### {name}\nrepair evidence\n" for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY")),
+                model_name=self.model_name,
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        template_snapshot={},
+        platform="talend",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    await CustomHarnessProvider(_RepairProvider())._complete_phase2_sections(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        "A",
+        "### COMPONENTS\nUnit A evidence",
+        [],
+        [],
+        group_file,
+        ModelOptions(),
+        log_cb,
+    )
+
+    assert seen_max_tokens == [32_000]
+
+
+@pytest.mark.asyncio
+async def test_phase2_cross_chunk_synthesis_appends_findings(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "phase2_max_tokens", 32_000)
+    monkeypatch.setattr(config, "phase3_max_tokens", 64_000)
+    facts = build_facts_manifest_from_units("proj", ["Unit A", "Unit B"])
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+
+    class _SynthesisProvider:
+        model_name = "fake/model"
+        supports_tools = False
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            return ModelResult(
+                success=True,
+                text="### CROSS_CHUNK_FINDINGS\n\nUnit A and Unit B share External API risk.",
+                model_name=self.model_name,
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=2,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        template_snapshot={},
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    completed = await CustomHarnessProvider(_SynthesisProvider())._phase2_cross_chunk_synthesis(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        "A",
+        ["Unit A", "Unit B"],
+        ["### COMPONENTS\nUnit A calls External API", "### COMPONENTS\nUnit B calls External API"],
+        "### COMPONENTS\nmerged evidence",
+        [],
+        [],
+        ModelOptions(),
+        log_cb,
+    )
+
+    assert "### CROSS_CHUNK_FINDINGS" in completed
+    assert "External API risk" in completed
 
 
 @pytest.mark.asyncio

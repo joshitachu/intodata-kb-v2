@@ -178,13 +178,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     if (mode === "deep-dive") {
       try {
-        await deepDive.query({
+        const result = await deepDive.query({
           project_id: selectedProject,
           question: request.query,
           session_id: deepDive.state.sessionId ?? undefined,
         });
+        if (result?.content && conversationId) {
+          try {
+            await fetch(`/api/conversations/${conversationId}/messages/save`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                user_message: request.query,
+                assistant_message: result.content,
+                latency_ms: result.latency_ms ?? null,
+              }),
+            });
+          } catch (e) {
+            console.error("Failed to save deep dive exchange:", e);
+          }
+          queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        }
       } catch (error) {
         console.error("Deep dive failed:", error);
+      } finally {
+        setPendingUserMessage(null);
       }
     } else {
       try {

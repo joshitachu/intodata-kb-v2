@@ -31,6 +31,7 @@ type ZipStageId =
   | "uploading"
   | "scanning"
   | "generating"
+  | "background"
   | "pushing"
   | "complete"
   | "failed";
@@ -66,9 +67,21 @@ const ZIP_STAGE_LABELS: Record<ZipStageId, string> = {
   uploading: "Uploading",
   scanning: "Scanning",
   generating: "Generating docs",
+  background: "Generating in background",
   pushing: "Pushing to knowledge base",
   complete: "Complete",
   failed: "Failed",
+};
+
+const ZIP_STAGE_PROGRESS: Record<ZipStageId, number> = {
+  queued: 0,
+  uploading: 0,
+  scanning: 35,
+  generating: 75,
+  background: 100,
+  pushing: 90,
+  complete: 100,
+  failed: 100,
 };
 
 function slugify(input: string): string {
@@ -84,12 +97,30 @@ function slugify(input: string): string {
  * Returns `null` when the event doesn't change the stage.
  */
 function stageFromEvent(ev: LogEvent): ZipStageId | null {
-  const text = `${ev.type ?? ""} ${ev.data ?? ""}`.toLowerCase();
-  if (ev.type === "scan_complete" || text.includes("scan complete")) return "generating";
-  if (ev.type === "generate_complete" || text.includes("generate complete")) return "pushing";
-  if (ev.type === "push_complete" || text.includes("push complete") || text.includes("pushed to rag")) return "complete";
+  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
   if (ev.type === "error" || ev.level === "error") return "failed";
+  if (ev.type === "scan_complete" || text.includes("scan complete") || text.includes("scan completed")) return "generating";
+  if (ev.level === "done" || ev.type === "done") return "complete";
+  if (ev.type === "generate_complete" || text.includes("generate complete") || text.includes("generation complete")) return "pushing";
+  if (ev.type === "push_complete" || text.includes("push complete") || text.includes("pushed to rag")) return "complete";
   return null;
+}
+
+function progressFromEvent(ev: LogEvent, stage: ZipStageId): number {
+  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
+  if (ev.level === "done") return 100;
+  if (text.includes("pre-processing")) return 45;
+  if (text.includes("pre-processed")) return 55;
+  if (text.includes("resolved doc generation routing")) return 65;
+  if (text.includes("rag") || text.includes("push")) return 90;
+  return ZIP_STAGE_PROGRESS[stage];
+}
+
+function formatLogLine(ev: LogEvent): string {
+  const level = ev.level ?? "info";
+  const message = ev.message ?? ev.data ?? "";
+  const type = ev.type ? `${ev.type}: ` : "";
+  return `[${level}] ${type}${message}`;
 }
 
 export function ProvisioningStep({
@@ -153,11 +184,16 @@ function RealProcessing({
 
   const activeIdxRef = useRef(currentIdx);
   activeIdxRef.current = currentIdx;
+  const doneRef = useRef(false);
 
   // Process the current ZIP when it enters the "queued" slot
   useEffect(() => {
     if (currentIdx >= items.length) {
-      onDone();
+      if (!doneRef.current) {
+        doneRef.current = true;
+        const t = setTimeout(onDone, 700);
+        return () => clearTimeout(t);
+      }
       return;
     }
     const idx = currentIdx;
@@ -177,46 +213,93 @@ function RealProcessing({
           onProgress: (pct) => updateItem(idx, { progress: pct }),
         });
 
-        // upload-zip only unpacks + registers — scan must be triggered explicitly
-        updateItem(idx, { stage: "scanning", progress: 100 });
-        await scanProject(item.projectId);
-
-        // 2. Subscribe to logs; resolve on complete / reject on failure
+        // 2. Subscribe to logs, trigger scan, then trigger generation once scan completes.
+        // Onboarding advances after generation is accepted; the long generation/RAG work
+        // continues in the MCP server background.
         await new Promise<void>((resolve, reject) => {
           let generateTriggered = false;
+          let settled = false;
           unsubscribe = subscribeToLogs(
             item.projectId,
             (ev) => {
               appendLog(idx, ev);
               const next = stageFromEvent(ev);
-              if (!next) return;
+              if (!next) {
+                updateItem(idx, {
+                  progress: progressFromEvent(ev, generateTriggered ? "generating" : "scanning"),
+                });
+                return;
+              }
               if (next === "generating" && !generateTriggered) {
                 generateTriggered = true;
-                updateItem(idx, { stage: "generating" });
-                generateDocs(item.projectId).catch((err) => {
-                  updateItem(idx, {
-                    stage: "failed",
-                    error: err instanceof Error ? err.message : String(err),
-                  });
-                  reject(err);
+                updateItem(idx, {
+                  stage: "generating",
+                  progress: progressFromEvent(ev, "generating"),
                 });
+                generateDocs(item.projectId)
+                  .then(() => {
+                    if (settled) return;
+                    settled = true;
+                    appendLog(
+                      idx,
+                      {
+                        level: "info",
+                        message:
+                          "Documentation generation started. You can continue while it runs in the background.",
+                        raw: null,
+                      },
+                    );
+                    updateItem(idx, {
+                      stage: "background",
+                      progress: ZIP_STAGE_PROGRESS.background,
+                    });
+                    resolve();
+                  })
+                  .catch((err) => {
+                    if (settled) return;
+                    settled = true;
+                    updateItem(idx, {
+                      stage: "failed",
+                      progress: ZIP_STAGE_PROGRESS.failed,
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                    reject(err);
+                  });
               } else if (next === "pushing") {
-                updateItem(idx, { stage: "pushing" });
+                updateItem(idx, { stage: "pushing", progress: progressFromEvent(ev, "pushing") });
               } else if (next === "complete") {
+                if (settled) return;
+                settled = true;
                 updateItem(idx, { stage: "complete", progress: 100 });
                 resolve();
               } else if (next === "failed") {
+                if (settled) return;
+                settled = true;
                 updateItem(idx, {
                   stage: "failed",
-                  error: ev.data ?? "Pipeline reported an error",
+                  progress: ZIP_STAGE_PROGRESS.failed,
+                  error: ev.message ?? ev.data ?? "Pipeline reported an error",
                 });
-                reject(new Error(ev.data ?? "Pipeline error"));
+                reject(new Error(ev.message ?? ev.data ?? "Pipeline error"));
               }
             },
             () => {
               // SSE errors are expected on server restart — we only log, not fail
             },
           );
+
+          // upload-zip only unpacks + registers — scan must be triggered explicitly
+          updateItem(idx, { stage: "scanning", progress: ZIP_STAGE_PROGRESS.scanning });
+          scanProject(item.projectId).catch((err) => {
+            if (settled) return;
+            settled = true;
+            updateItem(idx, {
+              stage: "failed",
+              progress: ZIP_STAGE_PROGRESS.failed,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            reject(err);
+          });
         });
 
         setCurrentIdx((i) => i + 1);
@@ -251,7 +334,7 @@ function RealProcessing({
       const next = [...prev];
       const cur = next[idx];
       if (!cur) return prev;
-      const line = `[${ev.level ?? "info"}] ${ev.type ? `${ev.type}: ` : ""}${ev.data ?? ""}`;
+      const line = formatLogLine(ev);
       next[idx] = { ...cur, logs: [...cur.logs.slice(-199), line] };
       return next;
     });
@@ -262,7 +345,9 @@ function RealProcessing({
     if (idx < activeIdxRef.current) setCurrentIdx(idx);
   }
 
-  const allDone = items.every((i) => i.stage === "complete" || i.stage === "failed");
+  const allReadyToContinue = items.every(
+    (i) => i.stage === "background" || i.stage === "complete" || i.stage === "failed",
+  );
 
   return (
     <div className="w-full max-w-2xl mx-auto px-6">
@@ -277,8 +362,8 @@ function RealProcessing({
           Processing your sources
         </h2>
         <p className="text-sm text-muted-foreground max-w-md">
-          Each ZIP runs through upload, scan, doc generation, and knowledge-base
-          push in sequence. Expect roughly 2&ndash;5 minutes per archive.
+          Each ZIP uploads and scans here. Documentation generation starts in
+          the background so you can continue without waiting for the full run.
         </p>
       </div>
 
@@ -304,13 +389,22 @@ function RealProcessing({
                 )}
               </div>
 
-              {item.stage === "uploading" && (
+              {item.stage !== "queued" && (
                 <div className="h-1.5 w-full rounded-full bg-muted">
                   <div
-                    className="h-full rounded-full bg-primary transition-all"
-                    style={{ width: `${item.progress}%` }}
+                    className={cn(
+                      "h-full rounded-full transition-all",
+                      item.stage === "failed" ? "bg-destructive" : "bg-primary",
+                    )}
+                    style={{ width: `${Math.max(0, Math.min(100, item.progress))}%` }}
                   />
                 </div>
+              )}
+
+              {item.stage === "background" && (
+                <p className="text-xs text-muted-foreground">
+                  Generation is running in the background. You can check progress later in Settings &gt; Sources.
+                </p>
               )}
 
               {item.error && (
@@ -342,7 +436,7 @@ function RealProcessing({
         ))}
       </div>
 
-      {allDone && (
+      {allReadyToContinue && (
         <div className="flex justify-center">
           <Button onClick={onDone}>Continue</Button>
         </div>
@@ -352,7 +446,7 @@ function RealProcessing({
 }
 
 function StageIcon({ stage }: { stage: ZipStageId }) {
-  if (stage === "complete") {
+  if (stage === "complete" || stage === "background") {
     return (
       <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
         <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />

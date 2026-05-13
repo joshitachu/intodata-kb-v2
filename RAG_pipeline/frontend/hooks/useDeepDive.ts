@@ -65,11 +65,15 @@ export function useDeepDive() {
     setState((prev) => ({ ...prev, isStreaming: false }));
   }, []);
 
-  const query = useCallback(async (request: DeepDiveRequest) => {
+  const query = useCallback(async (request: DeepDiveRequest): Promise<{ content: string; sessionId: string | null; latency_ms: number | null } | null> => {
     // Abort any in-flight stream
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+
+    let finalContent = "";
+    let finalSessionId: string | null = request.session_id ?? null;
+    let finalLatencyMs: number | null = null;
 
     setState((prev) => ({
       isStreaming: true,
@@ -101,7 +105,7 @@ export function useDeepDive() {
           // ignore
         }
         setState((prev) => ({ ...prev, isStreaming: false, error: message }));
-        return;
+        return null;
       }
 
       const reader = res.body?.getReader();
@@ -111,7 +115,7 @@ export function useDeepDive() {
           isStreaming: false,
           error: "No response body",
         }));
-        return;
+        return null;
       }
 
       const decoder = new TextDecoder();
@@ -143,6 +147,7 @@ export function useDeepDive() {
             if (currentEvent === "token") {
               if (!isLeakedToolSyntax(textData)) {
                 acceptedAnswer = true;
+                finalContent += textData;
                 setState((prev) => ({
                   ...prev,
                   content: prev.content + textData,
@@ -162,6 +167,7 @@ export function useDeepDive() {
                 thinking: "",
               }));
             } else if (currentEvent === "session") {
+              finalSessionId = textData;
               setState((prev) => ({
                 ...prev,
                 sessionId: textData,
@@ -181,6 +187,9 @@ export function useDeepDive() {
               receivedDone = true;
               if (data && typeof data === "object") {
                 const doneData = data as DeepDiveState["usage"];
+                if (typeof doneData?.duration_ms === "number") {
+                  finalLatencyMs = doneData.duration_ms;
+                }
                 setState((prev) => ({
                   ...prev,
                   isStreaming: false,
@@ -237,15 +246,18 @@ export function useDeepDive() {
         }
         return prev;
       });
+
+      return { content: finalContent, sessionId: finalSessionId, latency_ms: finalLatencyMs };
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        return;
+        return null;
       }
       setState((prev) => ({
         ...prev,
         isStreaming: false,
         error: err instanceof Error ? err.message : "Stream failed",
       }));
+      return null;
     }
   }, []);
 

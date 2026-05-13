@@ -245,9 +245,35 @@ export interface LogEvent {
   type?: string;
   level?: string;
   data?: string;
+  message?: string;
   timestamp?: string;
+  logFile?: string;
   // Full raw JSON payload for UIs that want to show everything
   raw: unknown;
+}
+
+export function normalizeLogEvent(raw: unknown): LogEvent {
+  if (raw && typeof raw === "object") {
+    const value = raw as Record<string, unknown>;
+    const data =
+      typeof value.data === "string"
+        ? value.data
+        : typeof value.message === "string"
+          ? value.message
+          : undefined;
+    return {
+      type: typeof value.type === "string" ? value.type : undefined,
+      level: typeof value.level === "string" ? value.level : undefined,
+      data,
+      message: typeof value.message === "string" ? value.message : data,
+      timestamp: typeof value.timestamp === "string" ? value.timestamp : undefined,
+      logFile: typeof value.log_file === "string" ? value.log_file : undefined,
+      raw,
+    };
+  }
+
+  const message = typeof raw === "string" ? raw : undefined;
+  return { data: message, message, raw };
 }
 
 /**
@@ -263,16 +289,9 @@ export function subscribeToLogs(
   const es = new EventSource(url, { withCredentials: true });
   es.onmessage = (msg) => {
     try {
-      const raw = JSON.parse(msg.data);
-      onEvent({
-        type: typeof raw?.type === "string" ? raw.type : undefined,
-        level: typeof raw?.level === "string" ? raw.level : undefined,
-        data: typeof raw?.data === "string" ? raw.data : undefined,
-        timestamp: typeof raw?.timestamp === "string" ? raw.timestamp : undefined,
-        raw,
-      });
+      onEvent(normalizeLogEvent(JSON.parse(msg.data)));
     } catch {
-      onEvent({ data: msg.data, raw: msg.data });
+      onEvent(normalizeLogEvent(msg.data));
     }
   };
   es.onerror = (err) => {
