@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     jwt_previous_keys: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
-    refresh_token_expire_days: int = 7
+    refresh_token_expire_days: int = 365
     admin_default_password: str = "admin"
     cookie_secure: bool = False
     cookie_domain: str = ""

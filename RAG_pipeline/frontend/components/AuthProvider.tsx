@@ -40,10 +40,19 @@ const AuthContext = createContext<AuthContextValue>({
   refreshUser: async () => null,
 });
 
+const PUBLIC_PATHS = ["/login", "/onboarding"];
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+
+  useEffect(() => {
+    if (auth.isLoading || auth.user) return;
+    if (PUBLIC_PATHS.some((path) => pathname.startsWith(path))) return;
+
+    router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
+  }, [auth.isLoading, auth.user, pathname, router]);
 
   useEffect(() => {
     if (auth.isLoading || !auth.user) return;

@@ -75,7 +75,9 @@ CONVERSATIONAL_SYSTEM_PROMPT = (
     "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
     "- Do NOT cite sources for greetings or small talk.\n\n"
     "For follow-up questions, use conversation context to understand "
-    "references like 'it', 'that', 'the previous topic'."
+    "references like 'it', 'that', 'the previous topic'.\n\n"
+    "IMPORTANT: Any system message labeled '## Background knowledge from previous sessions' "
+    "contains facts from PAST sessions — do NOT describe that content as part of the current conversation."
 )
 
 CONTEXT_FIRST_SYSTEM_PROMPT = (
@@ -96,7 +98,9 @@ CONTEXT_FIRST_SYSTEM_PROMPT = (
     "- Cite sources with [1], [2], etc. Only cite sources you actually use.\n"
     "- Do NOT cite sources for greetings or small talk.\n\n"
     "For follow-up questions, use conversation context to understand "
-    "references like 'it', 'that', 'the previous topic'."
+    "references like 'it', 'that', 'the previous topic'.\n\n"
+    "IMPORTANT: Any system message labeled '## Background knowledge from previous sessions' "
+    "contains facts from PAST sessions — do NOT describe that content as part of the current conversation."
 )
 
 
@@ -110,25 +114,31 @@ def _build_memory_context(
 
     Returns None if no memories are available.
     """
-    parts: list[str] = []
+    has_any = bool(project_memories or user_memories or corrections or quality_insights)
+    if not has_any:
+        return None
+    parts: list[str] = [
+        "## Background knowledge from previous sessions",
+        "The following was learned in PAST sessions. "
+        "It is NOT part of the current conversation and should NOT be described as such.",
+    ]
     if project_memories:
-        parts.append("## Project knowledge")
+        parts.append("### Project knowledge (past sessions)")
         for mem in project_memories:
             parts.append(f"- {mem}")
     if user_memories:
-        parts.append("## What I remember about you")
+        parts.append("### Remembered facts about this user (past sessions)")
         for mem in user_memories:
             parts.append(f"- {mem}")
     if corrections:
-        parts.append("## Known corrections")
-        parts.append("These corrections come from users and override document content:")
+        parts.append("### Known corrections (override document content)")
         for corr in corrections:
             parts.append(f"- {corr}")
     if quality_insights:
-        parts.append("## Quality insights")
+        parts.append("### RAG quality signals (system-internal, not conversation)")
         for insight in quality_insights:
             parts.append(f"- {insight}")
-    return "\n".join(parts) if parts else None
+    return "\n".join(parts)
 
 
 def get_previous_sources(
@@ -610,11 +620,13 @@ async def _prepare_rag_context(
     if previous_doc_sources and precompute:
         # Try answering from previous context + history (non-streaming only)
         # Skipped when precompute=False (streaming) to avoid blocking non-streaming call
+        # memory_context excluded: this check only needs to know if prior docs cover the follow-up;
+        # injecting memory here causes a three-way topic collision that triggers hallucination.
         logger.info("Trying to answer from previous context (no search)")
         context = build_context_from_document_sources(previous_doc_sources)
         llm_messages = build_conversational_messages_with_context(
             query, context, existing_messages,
-            memory_context=memory_context,
+            memory_context=None,
             answer_style=answer_style,
         )
         answer = await generate_answer(llm_messages)
@@ -633,11 +645,12 @@ async def _prepare_rag_context(
             previous_doc_sources = []  # clear so we enter search below
     elif previous_doc_sources and not precompute:
         # Streaming path: run context-first check (same as non-streaming)
+        # memory_context excluded for the same reason as the non-streaming path above.
         logger.info("Streaming mode — running context-first check")
         context = build_context_from_document_sources(previous_doc_sources)
         llm_messages = build_conversational_messages_with_context(
             query, context, existing_messages,
-            memory_context=memory_context,
+            memory_context=None,
             answer_style=answer_style,
         )
         answer = await generate_answer(llm_messages)

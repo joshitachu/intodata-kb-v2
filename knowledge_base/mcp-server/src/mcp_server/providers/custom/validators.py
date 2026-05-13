@@ -568,17 +568,35 @@ def build_documentation_obligation_map(facts: FactsManifest) -> dict[str, Any]:
         "risk": ["risk", "confidence", "evidence"],
         "debug_testing": ["debug", "test", "verify"],
     }
+    doc_targets = {
+        "identity": ["02_COMPONENT_INVENTORY", "00_AGENT_BRIEF"],
+        "purpose": ["02_COMPONENT_INVENTORY", "00_AGENT_BRIEF"],
+        "dependencies": ["01_ARCHITECTURE_MAP", "02_COMPONENT_INVENTORY", "08_CHANGE_PLAYBOOK"],
+        "data_movement": ["03_DATA_FLOWS_AND_LINEAGE", "04_BUSINESS_RULES_AND_TRANSFORMATIONS"],
+        "runtime_config": ["05_RUNTIME_CONFIG_AND_EXTERNALS", "06_OPERATIONS_TESTING_AND_DEBUGGING"],
+        "error_handling": ["06_OPERATIONS_TESTING_AND_DEBUGGING", "07_QUALITY_SECURITY_RISK_SCORECARD"],
+        "risk": ["07_QUALITY_SECURITY_RISK_SCORECARD", "08_CHANGE_PLAYBOOK"],
+        "debug_testing": ["06_OPERATIONS_TESTING_AND_DEBUGGING", "08_CHANGE_PLAYBOOK"],
+        "units": ["02_COMPONENT_INVENTORY", "00_AGENT_BRIEF", "08_CHANGE_PLAYBOOK"],
+    }
+    platform_doc_targets = {
+        f"platform_specific.{category}": REQUIRED_DOCS
+        for category in platform_terms
+    }
     return {
         "platform": facts.platform,
         "canonical_unit_label": facts.canonical_unit_label,
         "shared": shared,
         "platform_specific": platform_terms,
+        "doc_targets": {**doc_targets, **platform_doc_targets},
         "units": [
             {
                 "name": unit.name,
                 "group": unit.group,
                 "path": unit.path,
                 "type": unit.unit_type,
+                "key_systems": unit.key_systems,
+                "doc_targets": doc_targets["units"],
             }
             for unit in facts.units
         ],
@@ -643,17 +661,17 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
     inventory = texts.get("02_COMPONENT_INVENTORY", "")
     for unit in facts.units:
         if unit.name not in inventory:
-            errors.append(f"Component inventory missing canonical unit obligation: {unit.name}")
+            errors.append(f"Generated doc 02_COMPONENT_INVENTORY.md missing canonical unit obligation: {unit.name}")
             continue
         if unit.path and unit.path not in inventory:
-            errors.append(f"Component inventory missing source artifact for {unit.name}: {unit.path}")
+            errors.append(f"Generated doc 02_COMPONENT_INVENTORY.md missing source artifact for {unit.name}: {unit.path}")
         if unit.group and unit.group not in inventory:
-            errors.append(f"Component inventory missing group for {unit.name}: {unit.group}")
+            errors.append(f"Generated doc 02_COMPONENT_INVENTORY.md missing group for {unit.name}: {unit.group}")
 
     runtime_doc = texts.get("05_RUNTIME_CONFIG_AND_EXTERNALS", "")
     for system in facts.key_systems:
         if system and system not in runtime_doc:
-            errors.append(f"Runtime/external systems doc missing external system row: {system}")
+            errors.append(f"Generated doc 05_RUNTIME_CONFIG_AND_EXTERNALS.md missing external system row: {system}")
 
     obligation_map = build_documentation_obligation_map(facts)
     all_text = "\n".join(texts.values())
@@ -692,7 +710,14 @@ def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
                 if not isinstance(entry, dict):
                     errors.append(f"Phase 3 doc evidence pack manifest missing entry for {doc}")
                     continue
-                for key in ("included", "omitted", "unclassified"):
+                for key in (
+                    "included",
+                    "omitted",
+                    "unclassified",
+                    "included_obligations",
+                    "unmatched_obligations",
+                    "evidence_sources",
+                ):
                     if key not in entry:
                         errors.append(f"Phase 3 doc evidence pack manifest entry for {doc} missing {key}")
     for doc in REQUIRED_DOCS:
@@ -708,6 +733,7 @@ def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
             "## External Systems Summary",
             "## Top Risks Summary",
             "## Source Coverage And Scanner Limits",
+            "## Documentation Obligations",
             "## Deep Evidence Pointers",
             "## Doc-Specific Phase 2 Evidence",
         ]

@@ -80,6 +80,16 @@ const STAGE_LABELS: Record<RowStage, string> = {
   failed: "Failed",
 };
 
+const STAGE_PROGRESS: Record<RowStage, number> = {
+  pending: 0,
+  uploading: 0,
+  scanning: 25,
+  generating: 55,
+  pushing: 90,
+  complete: 100,
+  failed: 100,
+};
+
 function slugify(input: string): string {
   return (
     input
@@ -117,17 +127,52 @@ function unitLabel(platform: string, count: number): string {
 }
 
 function stageFromEvent(ev: LogEvent): RowStage | null {
-  const text = `${ev.type ?? ""} ${ev.data ?? ""}`.toLowerCase();
-  if (ev.type === "scan_complete" || text.includes("scan complete")) return "generating";
-  if (ev.type === "generate_complete" || text.includes("generate complete")) return "pushing";
+  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
+  if (ev.type === "error" || ev.level === "error") return "failed";
   if (
-    ev.type === "push_complete" ||
-    text.includes("push complete") ||
-    text.includes("pushed to rag")
+    ev.type === "scan_complete" ||
+    text.includes("scan complete") ||
+    text.includes("scan completed")
+  )
+    return "generating";
+  if (
+    ev.level === "done" ||
+    ev.type === "done"
   )
     return "complete";
-  if (ev.type === "error" || ev.level === "error") return "failed";
+  if (
+    ev.type === "generate_complete" ||
+    ev.type === "push_complete" ||
+    text.includes("generation complete") ||
+    text.includes("generate complete") ||
+    text.includes("push complete") ||
+    text.includes("pushed to rag") ||
+    text.includes("pushing") ||
+    text.includes("rag push")
+  )
+    return "pushing";
   return null;
+}
+
+function progressFromEvent(ev: LogEvent, stage: RowStage): number {
+  const text = `${ev.type ?? ""} ${ev.data ?? ""} ${ev.message ?? ""}`.toLowerCase();
+  if (ev.level === "done") return 100;
+  if (stage === "scanning") return Math.max(STAGE_PROGRESS.scanning, 30);
+  if (text.includes("pre-processing")) return 45;
+  if (text.includes("pre-processed")) return 50;
+  if (text.includes("resolved doc generation routing")) return 58;
+  if (text.includes("phase 2") || text.includes("analysis")) return 68;
+  if (text.includes("phase 3") || text.includes("document")) return 78;
+  if (text.includes("assessment") || text.includes("quality score")) return 88;
+  if (text.includes("rag") || text.includes("push")) return 92;
+  return STAGE_PROGRESS[stage];
+}
+
+function formatLogLine(ev: LogEvent): string {
+  const level = ev.level ?? "info";
+  const message = ev.message ?? ev.data ?? "";
+  const type = ev.type ? `${ev.type}: ` : "";
+  return `[${level}] ${type}${message}`;
 }
 
 async function fetchSourceProjects(): Promise<{ projects: SourceProject[]; total: number }> {
@@ -207,7 +252,7 @@ export default function SourcesSettingsPage() {
     setRows((prev) => {
       const cur = prev[platformId];
       if (!cur) return prev;
-      const line = `[${ev.level ?? "info"}] ${ev.type ? `${ev.type}: ` : ""}${ev.data ?? ""}`;
+      const line = formatLogLine(ev);
       return {
         ...prev,
         [platformId]: { ...cur, logs: [...cur.logs.slice(-199), line] },
@@ -233,44 +278,80 @@ export default function SourcesSettingsPage() {
   async function runProjectPipeline(platformId: string, projectId: string) {
     const sub: { stop?: () => void } = {};
     try {
-      patchRow(platformId, { stage: "scanning", progress: 100, error: null });
-      await scanProject(projectId);
-
       await new Promise<void>((resolve, reject) => {
         let generateTriggered = false;
+        let settled = false;
         sub.stop = subscribeToLogs(
           projectId,
           (ev) => {
             pushLog(platformId, ev);
             const next = stageFromEvent(ev);
-            if (!next) return;
+            if (!next) {
+              const currentStage = generateTriggered ? "generating" : "scanning";
+              patchRow(platformId, { progress: progressFromEvent(ev, currentStage) });
+              return;
+            }
             if (next === "generating" && !generateTriggered) {
               generateTriggered = true;
-              patchRow(platformId, { stage: "generating" });
+              patchRow(platformId, {
+                stage: "generating",
+                progress: progressFromEvent(ev, "generating"),
+              });
               generateDocs(projectId).catch((err) => {
+                if (settled) return;
+                settled = true;
                 patchRow(platformId, {
                   stage: "failed",
+                  progress: STAGE_PROGRESS.failed,
                   error: err instanceof Error ? err.message : String(err),
                 });
                 reject(err);
               });
             } else if (next === "pushing") {
-              patchRow(platformId, { stage: "pushing" });
+              patchRow(platformId, {
+                stage: "pushing",
+                progress: progressFromEvent(ev, "pushing"),
+              });
             } else if (next === "complete") {
-              patchRow(platformId, { stage: "complete" });
+              if (settled) return;
+              settled = true;
+              patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
               resolve();
             } else if (next === "failed") {
+              if (settled) return;
+              settled = true;
               patchRow(platformId, {
                 stage: "failed",
-                error: ev.data ?? "Pipeline reported an error",
+                progress: STAGE_PROGRESS.failed,
+                error: ev.message ?? ev.data ?? "Pipeline reported an error",
               });
-              reject(new Error(ev.data ?? "Pipeline error"));
+              reject(new Error(ev.message ?? ev.data ?? "Pipeline error"));
+            } else {
+              patchRow(platformId, { progress: progressFromEvent(ev, next) });
             }
           },
           () => {
             // SSE errors are expected on server restart; don't fail the pipeline.
           },
         );
+
+        patchRow(platformId, {
+          stage: "scanning",
+          progress: STAGE_PROGRESS.scanning,
+          error: null,
+          logs: [],
+          logsOpen: true,
+        });
+        scanProject(projectId).catch((err) => {
+          if (settled) return;
+          settled = true;
+          patchRow(platformId, {
+            stage: "failed",
+            progress: STAGE_PROGRESS.failed,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          reject(err);
+        });
       });
 
       qc.invalidateQueries({ queryKey: ["source-projects"] });
@@ -284,17 +365,24 @@ export default function SourcesSettingsPage() {
     const projectName = rows[platformId]?.projectName.trim();
     const projectId = slugify(projectName || `${workspaceSlug}-${platformId}`);
     try {
-      patchRow(platformId, { stage: "uploading", progress: 0, error: null });
+      patchRow(platformId, {
+        stage: "uploading",
+        progress: 0,
+        error: null,
+        logs: [],
+        logsOpen: true,
+      });
       await uploadZip({
         file,
         projectId,
         platform: platformId,
-        onProgress: (pct) => patchRow(platformId, { progress: pct }),
+        onProgress: (pct) => patchRow(platformId, { progress: Math.round(pct * 0.2) }),
       });
       await runProjectPipeline(platformId, projectId);
     } catch (err) {
       patchRow(platformId, {
         stage: "failed",
+        progress: STAGE_PROGRESS.failed,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -316,7 +404,13 @@ export default function SourcesSettingsPage() {
 
     try {
       patchGithub(platformId, { busy: true, error: null });
-      patchRow(platformId, { stage: "uploading", progress: 0, error: null });
+      patchRow(platformId, {
+        stage: "uploading",
+        progress: 10,
+        error: null,
+        logs: [],
+        logsOpen: true,
+      });
       await addGithubSource({
         repoUrl,
         projectId,
@@ -330,7 +424,7 @@ export default function SourcesSettingsPage() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       patchGithub(platformId, { error: message });
-      patchRow(platformId, { stage: "failed", error: message });
+      patchRow(platformId, { stage: "failed", progress: STAGE_PROGRESS.failed, error: message });
     } finally {
       patchGithub(platformId, { busy: false });
     }
@@ -342,35 +436,110 @@ export default function SourcesSettingsPage() {
     } catch (err) {
       patchRow(platformId, {
         stage: "failed",
+        progress: STAGE_PROGRESS.failed,
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
   async function runExistingGenerate(platformId: string, projectId: string) {
+    const sub: { stop?: () => void } = {};
     try {
-      patchRow(platformId, { stage: "generating", progress: 100, error: null });
-      await generateDocs(projectId);
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        sub.stop = subscribeToLogs(
+          projectId,
+          (ev) => {
+            pushLog(platformId, ev);
+            const next = stageFromEvent(ev);
+            if (!next) {
+              patchRow(platformId, {
+                stage: "generating",
+                progress: Math.max(55, progressFromEvent(ev, "generating")),
+              });
+            } else if (next === "failed") {
+              if (settled) return;
+              settled = true;
+              patchRow(platformId, {
+                stage: "failed",
+                progress: STAGE_PROGRESS.failed,
+                error: ev.message ?? ev.data ?? "Generation failed",
+              });
+              reject(new Error(ev.message ?? ev.data ?? "Generation failed"));
+            } else if (next === "pushing") {
+              patchRow(platformId, {
+                stage: "pushing",
+                progress: progressFromEvent(ev, "pushing"),
+              });
+            } else if (next === "complete") {
+              if (settled) return;
+              settled = true;
+              patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
+              resolve();
+            } else if (next === "generating") {
+              patchRow(platformId, {
+                stage: "generating",
+                progress: Math.max(55, progressFromEvent(ev, "generating")),
+              });
+            }
+          },
+          () => {
+            // Keep waiting for explicit completion/failure events.
+          },
+        );
+
+        patchRow(platformId, {
+          stage: "generating",
+          progress: STAGE_PROGRESS.generating,
+          error: null,
+          logs: [],
+          logsOpen: true,
+        });
+        generateDocs(projectId).catch((err) => {
+          if (settled) return;
+          settled = true;
+          patchRow(platformId, {
+            stage: "failed",
+            progress: STAGE_PROGRESS.failed,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          reject(err);
+        });
+      });
       qc.invalidateQueries({ queryKey: ["source-projects"] });
       qc.invalidateQueries({ queryKey: ["docs-projects"] });
     } catch (err) {
       patchRow(platformId, {
         stage: "failed",
+        progress: STAGE_PROGRESS.failed,
         error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      sub.stop?.();
     }
   }
 
   async function runExistingPush(platformId: string, projectId: string) {
     try {
-      patchRow(platformId, { stage: "pushing", progress: 100, error: null });
+      patchRow(platformId, {
+        stage: "pushing",
+        progress: STAGE_PROGRESS.pushing,
+        error: null,
+        logs: ["[info] Pushing generated documents to the knowledge base..."],
+        logsOpen: true,
+      });
       await pushProjectToRag(projectId);
-      patchRow(platformId, { stage: "complete" });
+      patchRow(platformId, {
+        stage: "complete",
+        progress: STAGE_PROGRESS.complete,
+        logs: ["[info] Pushing generated documents to the knowledge base...", "[done] Push complete"],
+      });
       qc.invalidateQueries({ queryKey: ["source-projects"] });
       qc.invalidateQueries({ queryKey: ["docs-projects"] });
     } catch (err) {
       patchRow(platformId, {
         stage: "failed",
+        progress: STAGE_PROGRESS.failed,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -885,6 +1054,15 @@ function SourceRow({
           {(row?.error || actionError) && (
             <p className="text-xs text-destructive">{row?.error ?? actionError}</p>
           )}
+          {(active || (row?.logs.length ?? 0) > 0 || stage === "failed") && (
+            <OperationProgress
+              stage={stage}
+              progress={row?.progress ?? STAGE_PROGRESS[stage]}
+              logs={row?.logs ?? []}
+              logsOpen={row?.logsOpen ?? false}
+              onToggleLogs={onToggleLogs}
+            />
+          )}
         </CardBody>
       ) : (
         <CardBody className="space-y-3">
@@ -1075,52 +1253,93 @@ function SourceRow({
             </>
             )
           ) : (
-            <>
-              <div className="flex items-center gap-2 text-sm">
-                <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                <span className="font-medium">{STAGE_LABELS[stage]}</span>
-                {stage === "uploading" && (
-                  <span className="text-muted-foreground">
-                    &mdash; {row?.progress ?? 0}%
-                  </span>
-                )}
-              </div>
-              {stage === "uploading" && (
-                <div className="h-1.5 w-full rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary transition-all"
-                    style={{ width: `${row?.progress ?? 0}%` }}
-                  />
-                </div>
-              )}
-            </>
-          )}
-
-          {(active || (row?.logs.length ?? 0) > 0) && (
-            <>
-              <button
-                type="button"
-                onClick={onToggleLogs}
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                {row?.logsOpen ? (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5" />
-                )}
-                {row?.logs.length ?? 0} log line
-                {(row?.logs.length ?? 0) === 1 ? "" : "s"}
-              </button>
-              {row?.logsOpen && (
-                <pre className="max-h-48 overflow-auto rounded bg-muted/40 p-2 text-[11px] leading-snug text-muted-foreground">
-                  {(row?.logs ?? []).join("\n") || "Waiting for log output…"}
-                </pre>
-              )}
-            </>
+            <OperationProgress
+              stage={stage}
+              progress={row?.progress ?? STAGE_PROGRESS[stage]}
+              logs={row?.logs ?? []}
+              logsOpen={row?.logsOpen ?? false}
+              onToggleLogs={onToggleLogs}
+            />
           )}
         </CardBody>
       )}
     </Card>
+  );
+}
+
+function OperationProgress({
+  stage,
+  progress,
+  logs,
+  logsOpen,
+  onToggleLogs,
+}: {
+  stage: RowStage;
+  progress: number;
+  logs: string[];
+  logsOpen: boolean;
+  onToggleLogs: () => void;
+}) {
+  const active = stage !== "pending" && stage !== "complete" && stage !== "failed";
+  const pct = Math.max(0, Math.min(100, Math.round(progress)));
+  const latestLog = logs.at(-1);
+
+  return (
+    <div className="rounded-md border border-border bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          {active ? (
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+          ) : stage === "failed" ? (
+            <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />
+          ) : (
+            <Check className="h-4 w-4 shrink-0 text-emerald-600" />
+          )}
+          <span className="font-medium">{STAGE_LABELS[stage]}</span>
+        </div>
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{pct}%</span>
+      </div>
+
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        className="mt-2 h-1.5 w-full rounded-full bg-background"
+      >
+        <div
+          className={cn(
+            "h-full rounded-full transition-all",
+            stage === "failed" ? "bg-destructive" : "bg-primary",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate text-xs text-muted-foreground">
+          {latestLog ?? "Waiting for log output..."}
+        </p>
+        <button
+          type="button"
+          onClick={onToggleLogs}
+          className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          {logsOpen ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+          {logs.length} log line{logs.length === 1 ? "" : "s"}
+        </button>
+      </div>
+
+      {logsOpen && (
+        <pre className="mt-2 max-h-48 overflow-auto rounded bg-background p-2 text-[11px] leading-snug text-muted-foreground">
+          {logs.join("\n") || "Waiting for log output..."}
+        </pre>
+      )}
+    </div>
   );
 }
 
@@ -1131,13 +1350,6 @@ function StatusBadge({
   stage: RowStage;
   uploaded: boolean;
 }) {
-  if (uploaded || stage === "complete") {
-    return (
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600">
-        <Check className="h-4 w-4" strokeWidth={3} aria-hidden />
-      </span>
-    );
-  }
   if (stage === "failed") {
     return (
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
@@ -1145,10 +1357,17 @@ function StatusBadge({
       </span>
     );
   }
-  if (stage !== "pending") {
+  if (stage !== "pending" && stage !== "complete") {
     return (
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+      </span>
+    );
+  }
+  if (uploaded || stage === "complete") {
+    return (
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600">
+        <Check className="h-4 w-4" strokeWidth={3} aria-hidden />
       </span>
     );
   }

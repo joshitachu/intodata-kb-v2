@@ -756,6 +756,18 @@ class CustomHarnessProvider(DocGenerationProvider):
                         f"[custom] Phase 2 deterministic merge complete: {group} ({len(chunk_outputs)} chunks)",
                         "info",
                     )
+                model_analysis = await self._phase2_cross_chunk_synthesis(
+                    ctx,
+                    state,
+                    group,
+                    group_units,
+                    chunk_outputs,
+                    model_analysis,
+                    shared_context,
+                    investigation_context,
+                    opts,
+                    log_cb,
+                )
             else:
                 model_analysis = "\n\n---\n\n".join(chunk_outputs)
             model_analysis = await self._complete_phase2_sections(
@@ -890,6 +902,67 @@ class CustomHarnessProvider(DocGenerationProvider):
             raise RuntimeError(f"Phase 2 merge failed for {group}: {task_result.result.raw_error}")
         return task_result.result.text.strip()
 
+    async def _phase2_cross_chunk_synthesis(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        group: str,
+        group_units: list[str],
+        chunk_outputs: list[str],
+        merged_analysis: str,
+        shared_context: list[Path],
+        investigation_context: list[Path],
+        opts: ModelOptions,
+        log_cb: LogCallback,
+    ) -> str:
+        """Append a bounded synthesis section for relationships only visible across chunks."""
+
+        synthesis_dir = ctx.staging_dir / "_analysis" / "_synthesis_inputs"
+        synthesis_dir.mkdir(parents=True, exist_ok=True)
+        synthesis_input = synthesis_dir / f"{self._safe_name(group)}_cross_chunk.md"
+        synthesis_input.write_text(
+            "# Merged Phase 2 Analysis\n\n"
+            f"{merged_analysis.strip()}\n\n"
+            + "\n\n--- CHUNK ANALYSIS ---\n\n".join(chunk_outputs),
+            encoding="utf-8",
+        )
+        prompt = (
+            f"Analyze the supplied merged and per-chunk Phase 2 evidence for group `{group}`. "
+            "Write only a concise markdown section headed exactly `### CROSS_CHUNK_FINDINGS`. "
+            "Cover shared systems, dependencies, repeated patterns, contradictions, risks, and "
+            "end-to-end flows that require comparing multiple chunks. Preserve exact canonical "
+            "unit names. Do not invent facts beyond the supplied evidence.\n\n"
+            "Canonical units:\n"
+            + "\n".join(f"- {name}" for name in group_units)
+        )
+        synthesis_opts = ModelOptions(
+            max_tokens=min(config.phase3_max_tokens, max(8_000, config.phase2_max_tokens // 2)),
+            temperature=0.1,
+            retries=1,
+            timeout_s=opts.timeout_s,
+            provider_options=opts.provider_options,
+        )
+        context_files = [*shared_context, *investigation_context, synthesis_input]
+        result = await self._complete_core_generation(
+            ctx,
+            state,
+            provider=self.model_provider,
+            phase="phase2.synthesis",
+            target=f"{group}_cross_chunk",
+            prompt=prompt,
+            context_files=context_files,
+            opts=synthesis_opts,
+            log_cb=log_cb,
+        )
+        if not result.success:
+            await log_cb(ctx.project_id, f"[custom] Phase 2 cross-chunk synthesis skipped for {group}: {result.raw_error}", "warning")
+            return merged_analysis
+        synthesis = result.text.strip()
+        if "CROSS_CHUNK_FINDINGS" not in synthesis:
+            synthesis = f"### CROSS_CHUNK_FINDINGS\n\n{synthesis}"
+        await log_cb(ctx.project_id, f"[custom] Phase 2 cross-chunk synthesis complete: {group}", "info")
+        return f"{merged_analysis.rstrip()}\n\n{synthesis}\n"
+
     async def _complete_phase2_sections(
         self,
         ctx: DocGenContext,
@@ -918,7 +991,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         )
         repair_prompt = phase2_section_repair_prompt(state.facts_manifest, group, missing)
         repair_opts = ModelOptions(
-            max_tokens=min(config.phase3_max_tokens, max(8_000, len(missing) * 2_000)),
+            max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, len(missing) * 8_000)),
             temperature=0.1,
             retries=1,
             timeout_s=opts.timeout_s,
@@ -1282,6 +1355,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         facts,
     ) -> tuple[str, dict[str, object]]:
         selected, manifest = self._targeted_analysis_bundle_parts(analysis_files, section_names)
+        included_obligations, unmatched_obligations, obligation_text = self._doc_obligation_context(facts, doc_name)
         groups = ", ".join(f"{group}={count}" for group, count in sorted(facts.groups.items())) or "none"
         units = "\n".join(
             f"- {unit.name} | group={unit.group} | path={unit.path or 'scanner-limited'} | "
@@ -1311,6 +1385,8 @@ class CustomHarnessProvider(DocGenerationProvider):
             "## Source Coverage And Scanner Limits\n\n"
             "Covered source files are evidence of record. Redacted values are intentionally hidden secrets, not missing files. "
             "Scanner-limited claims must name the limited artifact or section.\n\n"
+            "## Documentation Obligations\n\n"
+            f"{obligation_text}\n\n"
             "## Deep Evidence Pointers\n\n"
             + "\n".join(f"- `_analysis/{path.name}` full Phase 2 detail" for path in analysis_files)
             + "\n- `_assessment/scorecard.md` quantitative risk and quality scoring\n"
@@ -1320,7 +1396,75 @@ class CustomHarnessProvider(DocGenerationProvider):
             f"Included sections: {', '.join(sorted(section_names))}.\n\n"
             f"{selected}\n"
         )
+        manifest["included_obligations"] = included_obligations
+        manifest["unmatched_obligations"] = unmatched_obligations
+        manifest["evidence_sources"] = [
+            *[f"_analysis/{path.name}" for path in analysis_files],
+            "_investigation/*.md",
+            "_assessment/scorecard.md",
+            "facts_manifest.json",
+            "documentation_obligations.json",
+        ]
         return pack, manifest
+
+    @staticmethod
+    def _doc_obligation_context(facts, doc_name: str) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+        obligation_map = build_documentation_obligation_map(facts)
+        doc_targets = obligation_map.get("doc_targets", {}) if isinstance(obligation_map, dict) else {}
+        included: list[dict[str, object]] = []
+        unmatched: list[dict[str, object]] = []
+
+        for category, terms in obligation_map.get("shared", {}).items():
+            targets = doc_targets.get(category, REQUIRED_DOCS)
+            item = {
+                "scope": "shared",
+                "category": category,
+                "terms": terms,
+                "doc_targets": targets,
+            }
+            if doc_name in targets:
+                included.append(item)
+            else:
+                unmatched.append(item)
+
+        for category, terms in obligation_map.get("platform_specific", {}).items():
+            targets = doc_targets.get(f"platform_specific.{category}", REQUIRED_DOCS)
+            item = {
+                "scope": "platform_specific",
+                "category": category,
+                "terms": terms,
+                "doc_targets": targets,
+            }
+            if doc_name in targets:
+                included.append(item)
+            else:
+                unmatched.append(item)
+
+        unit_targets = doc_targets.get("units", ["02_COMPONENT_INVENTORY", "00_AGENT_BRIEF", "08_CHANGE_PLAYBOOK"])
+        unit_obligation = {
+            "scope": "units",
+            "category": "canonical_inventory",
+            "terms": ["name", "group", "source artifact", "type", "key systems"],
+            "doc_targets": unit_targets,
+        }
+        if doc_name in unit_targets:
+            included.append(unit_obligation)
+        else:
+            unmatched.append(unit_obligation)
+
+        lines = ["Included obligations for this document:"]
+        lines.extend(
+            f"- {item['scope']}.{item['category']}: {', '.join(str(term) for term in item['terms'])}"
+            for item in included
+        )
+        if not included:
+            lines.append("- None directly mapped; use shared project scope only.")
+        lines.append("\nObligations mapped to other documents:")
+        lines.extend(
+            f"- {item['scope']}.{item['category']} -> {', '.join(str(doc) for doc in item['doc_targets'])}"
+            for item in unmatched
+        )
+        return included, unmatched, "\n".join(lines)
 
     @classmethod
     def _targeted_analysis_bundle_text(cls, analysis_files: list[Path], section_names: set[str]) -> str:
@@ -1907,6 +2051,18 @@ Missing units:
             f"call_budget={current_calls + 1}/{budget}",
             "info",
         )
+        self._write_model_input_snapshot(
+            ctx,
+            provider=provider,
+            phase=phase,
+            target=target,
+            prompt=prompt,
+            context_files=context_files,
+            opts=opts,
+            estimated_tokens=estimated,
+            total_bytes=total_bytes,
+            call_index=current_calls + 1,
+        )
         if use_tools_for_core_generation(provider):
             result = await provider.complete_with_tools(
                 _with_tool_instructions(prompt, ctx.staging_dir),
@@ -1982,6 +2138,79 @@ Missing units:
                 state.calls.append(call)
         await self._log_call_metrics(ctx, target, result, log_cb)
         return result
+
+    def _write_model_input_snapshot(
+        self,
+        ctx: DocGenContext,
+        *,
+        provider: ModelProvider,
+        phase: str,
+        target: str,
+        prompt: str,
+        context_files: list[Path],
+        opts: ModelOptions,
+        estimated_tokens: int,
+        total_bytes: int,
+        call_index: int,
+    ) -> None:
+        """Persist the exact model-call inputs for offline review and no-AI tests."""
+
+        snapshot_dir = (
+            ctx.staging_dir
+            / "_model_inputs"
+            / self._safe_name(phase)
+            / f"{call_index:03d}_{self._safe_name(target)}"
+        )
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        context_entries: list[dict[str, object]] = []
+        bundle_parts = [
+            f"# Model Input Bundle: {phase} / {target}",
+            "",
+            "## Prompt",
+            "",
+            prompt.rstrip(),
+            "",
+            "## Context Files",
+        ]
+        for idx, path in enumerate(context_files, start=1):
+            exists = path.exists()
+            try:
+                rel_path = path.relative_to(ctx.staging_dir).as_posix()
+            except ValueError:
+                rel_path = str(path)
+            size = path.stat().st_size if exists else 0
+            context_entries.append({
+                "index": idx,
+                "path": rel_path,
+                "bytes": size,
+                "exists": exists,
+            })
+            bundle_parts.extend(["", f"### {idx}. {rel_path}", ""])
+            if exists:
+                bundle_parts.append(path.read_text(encoding="utf-8", errors="replace").rstrip())
+            else:
+                bundle_parts.append("[missing context file]")
+
+        (snapshot_dir / "prompt.md").write_text(prompt.rstrip() + "\n", encoding="utf-8")
+        (snapshot_dir / "context_bundle.md").write_text("\n".join(bundle_parts).rstrip() + "\n", encoding="utf-8")
+        manifest = {
+            "phase": phase,
+            "target": target,
+            "provider": self._describe_provider(provider),
+            "model": provider.model_name,
+            "call_index": call_index,
+            "estimated_input_tokens": estimated_tokens,
+            "context_bytes": total_bytes,
+            "context_file_count": len(context_files),
+            "options": {
+                "max_tokens": opts.max_tokens,
+                "temperature": opts.temperature,
+                "timeout_s": opts.timeout_s,
+                "retries": opts.retries,
+            },
+            "context_files": context_entries,
+        }
+        (snapshot_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     @staticmethod
     def _bounded_context_files(context_files: list[Path]) -> list[Path]:

@@ -76,9 +76,9 @@ describe("useAuth", () => {
   });
 
   it("sets null user on 401", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValueOnce(
-      new Response(null, { status: 401 })
-    );
+    vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
 
     const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
 
@@ -88,6 +88,29 @@ describe("useAuth", () => {
 
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.user).toBeNull();
+  });
+
+  it("refreshes an expired access token on startup", async () => {
+    const fetchMock = vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(mockUser()), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(result.current.isAuthenticated).toBe(true);
+    });
+
+    expect(result.current.user?.username).toBe("admin");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/auth/me");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/auth/refresh", { method: "POST" });
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/auth/me");
   });
 
   it("logout clears user and redirects to login", async () => {

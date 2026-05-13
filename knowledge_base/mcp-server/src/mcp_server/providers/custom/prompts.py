@@ -50,14 +50,20 @@ DOC_BUNDLE_MAP = {
 
 
 DOC_SECTION_REQUIREMENTS = {
-    "00_AGENT_BRIEF": ["Project Orientation", "Documentation Map", "Onboarding", "Common Tasks", "Known Traps"],
+    "00_AGENT_BRIEF": ["Project Orientation", "Documentation Map", "Onboarding", "Common Tasks", "Known Traps", "Glossary"],
     "01_ARCHITECTURE_MAP": ["Topology", "Entry Points", "Dependencies", "Boundaries"],
-    "02_COMPONENT_INVENTORY": ["Canonical Unit Inventory", "Source Artifacts", "Dependencies", "Scanner-Limited"],
+    "02_COMPONENT_INVENTORY": [
+        "Canonical Unit Inventory",
+        "Source Artifacts",
+        "Components",
+        "Dependencies",
+        "Scanner-Limited Evidence",
+    ],
     "03_DATA_FLOWS_AND_LINEAGE": ["Data Flow", "Lineage", "Transformation", "Validation"],
-    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": ["Business Rules", "Transformation", "Hardcoded", "Impact"],
+    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": ["Business Rules", "Transformation", "Hardcoded Values", "Impact"],
     "05_RUNTIME_CONFIG_AND_EXTERNALS": ["Runtime Config", "External Systems", "Credentials", "Environment"],
     "06_OPERATIONS_TESTING_AND_DEBUGGING": ["Run", "Debug", "Verify", "Recovery", "Testing"],
-    "07_QUALITY_SECURITY_RISK_SCORECARD": ["Score", "Confidence", "Evidence", "Red Flags", "Quick Wins"],
+    "07_QUALITY_SECURITY_RISK_SCORECARD": ["Score", "Confidence", "Evidence", "Red Flags", "Quick Wins", "Unknowns"],
     "08_CHANGE_PLAYBOOK": ["Change Impact", "Inspect", "Test", "Rollback"],
 }
 
@@ -458,7 +464,7 @@ CRITICAL / HIGH / MEDIUM / LOW with specific unit references and remediation.
 
 _PHASE2_PREAMBLE_DEFAULT = """\
 You are generating Phase 2 group analysis. Your output is the SOLE factual foundation for
-all 15 documentation files produced in Phase 3. If you omit a finding here, it will be absent
+every documentation file produced in Phase 3. If you omit a finding here, it will be absent
 from every document. Be EXHAUSTIVE. Include every expression, every rule, every column, every risk.
 Depth over brevity. Never summarize when you can enumerate."""
 
@@ -473,6 +479,9 @@ def group_analysis_prompt(facts: FactsManifest, group: str, pack: InstructionPac
 {preamble}
 
 Group: {group}
+Current Phase 3 document set ({len(REQUIRED_DOCS)} files):
+{chr(10).join(f"- {doc}.md" for doc in REQUIRED_DOCS)}
+
 Canonical units in this group -- mention EVERY one by exact name:
 {chr(10).join(f"- {name}" for name in unit_names)}
 
@@ -686,7 +695,7 @@ def _doc_specific_instructions(doc_name: str, facts: FactsManifest) -> str:
 SPECIFIC REQUIREMENTS:
 - Open with the canonical inventory count ({facts.unit_count} {facts.canonical_unit_label}) and platform.
 - Include an onboarding path for a new assistant/engineer: first docs to read, first artifacts to inspect, and safest first tasks.
-- Include a documentation map linking the other 8 docs to concrete task types.
+- Include a documentation map linking the other Phase 3 docs to concrete task types.
 - Include common tasks: trace data, change config, change a transformation/rule, debug a failed run, assess risk.
 - Include known traps and do-not-miss items with evidence references.
 - Include a glossary of project/platform terms found in evidence, not a generic platform glossary.

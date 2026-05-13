@@ -1,6 +1,6 @@
 # MCP Documentation Generation Workflow
 
-The Claude Code agent generates documentation from scan data exposed via MCP tools.
+The agent generates documentation from scan data exposed via MCP tools.
 This is a 4-phase process using parallel sub-agents for throughput.
 
 ## Workflow Overview

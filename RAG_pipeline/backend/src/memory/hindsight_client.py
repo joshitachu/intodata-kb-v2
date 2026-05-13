@@ -237,7 +237,7 @@ async def distill_interaction(
 def _structured_fallback(query: str, answer: str, sources: list[str]) -> str:
     """Structured format when distillation is disabled or fails."""
     source_str = ", ".join(sources[:3]) if sources else "none"
-    return f"RE: {query[:200]} -- {answer[:500]} (sources: {source_str})"
+    return f"[Knowledge from a past session] {answer[:500]} (topic: {query[:100]}, sources: {source_str})"
 
 
 # ---------------------------------------------------------------------------

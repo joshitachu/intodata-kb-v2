@@ -19,9 +19,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Check for access_token cookie
-  const token = request.cookies.get("access_token");
-  if (!token) {
+  // A missing access token does not necessarily mean the user is logged out:
+  // the client can rotate a valid refresh token into a new access token once
+  // the app loads.
+  const accessToken = request.cookies.get("access_token");
+  const refreshToken = request.cookies.get("refresh_token");
+  if (!accessToken && !refreshToken) {
     // Use X-Forwarded headers to build the correct external URL
     const proto = request.headers.get("x-forwarded-proto") || "https";
     const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost";
