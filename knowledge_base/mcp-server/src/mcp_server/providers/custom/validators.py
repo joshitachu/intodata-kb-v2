@@ -449,11 +449,11 @@ def validate_analysis_guide_sections(
 def normalize_analysis_guide_headings(text: str, platform: str) -> str:
     """Normalize known guide section headings to the canonical Phase 2 level."""
 
-    if platform != "talend":
-        return text
-    section_names = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION,)
+    section_names = (GROUP_SUMMARY_SECTION,)
+    if platform == "talend":
+        section_names = tuple(ANALYSIS_SECTION_NAMES) + section_names
     pattern = re.compile(
-        rf"^(?P<hashes>#{{1,6}})\s+(?P<name>{'|'.join(re.escape(n) for n in section_names)})\s*$",
+        rf"^#{{1,6}}\s+(?:#{{1,6}}\s+)?(?P<name>{'|'.join(re.escape(n) for n in section_names)})\s*$",
         re.MULTILINE,
     )
     return pattern.sub(lambda m: f"### {m.group('name')}", text)

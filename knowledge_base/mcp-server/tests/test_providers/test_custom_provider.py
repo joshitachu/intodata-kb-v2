@@ -542,6 +542,16 @@ def test_normalize_analysis_guide_headings_accepts_model_heading_level(tmp_path)
     assert missing_required_analysis_sections(normalized, "talend") == []
 
 
+def test_normalize_analysis_guide_headings_accepts_non_talend_group_summary():
+    body = "## Model Analysis\n\n## ### GROUP_SUMMARY\ncontent for group summary.\n"
+
+    normalized = normalize_analysis_guide_headings(body, "lobster")
+
+    assert "## ### GROUP_SUMMARY" not in normalized
+    assert "### GROUP_SUMMARY" in normalized
+    assert missing_required_analysis_sections(normalized, "lobster") == []
+
+
 def test_doc_depth_gate_fails_on_slim_docs_with_correct_counts(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a"), _job("b")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
