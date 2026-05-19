@@ -80,7 +80,6 @@ export default function RunHistory({ projectId, onViewLog, onCompare }: Props) {
                 <th className="px-4 py-2.5 font-medium">Status</th>
                 <th className="px-4 py-2.5 font-medium">Verdict</th>
                 <th className="px-4 py-2.5 font-medium">Model</th>
-                <th className="px-4 py-2.5 font-medium">Profile</th>
                 <th className="px-4 py-2.5 font-medium">Duration</th>
                 <th className="px-4 py-2.5 font-medium">Tokens In</th>
                 <th className="px-4 py-2.5 font-medium">Tokens Out</th>
@@ -141,19 +140,6 @@ export default function RunHistory({ projectId, onViewLog, onCompare }: Props) {
                       </span>
                     ) : (
                       <span className="text-slate-600">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 whitespace-nowrap text-xs">
-                    {run.template_profile_id ? (
-                      <span className="text-accent-primary/60 font-mono" title={
-                        run.template_snapshot
-                          ? `${Object.keys(run.template_snapshot).length} templates`
-                          : undefined
-                      }>
-                        P#{run.template_profile_id}
-                      </span>
-                    ) : (
-                      <span className="text-slate-600">default</span>
                     )}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-slate-400 font-mono">

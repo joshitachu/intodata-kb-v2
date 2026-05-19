@@ -204,12 +204,33 @@ class CustomHarnessProvider(DocGenerationProvider):
         investigation_provider: ModelProvider | None = None,
         fallback_provider: ModelProvider | None = None,
         pack: "InstructionPack | None" = None,
+        plugin_pack_dir: "Path | None" = None,
     ) -> None:
         self.model_provider = model_provider
         self.write_provider = write_provider or model_provider
         self.investigation_provider = investigation_provider or model_provider
         self.fallback_provider = fallback_provider
         self.pack = pack
+        self.plugin_pack_dir = plugin_pack_dir
+
+        self._required_docs: list[str] = list(REQUIRED_DOCS)
+        self._doc_assignments: dict[str, list[str]] = dict(DOC_ASSIGNMENTS)
+        self._doc_bundle_map: dict[str, str] = dict(DOC_BUNDLE_MAP)
+        self._doc_section_requirements_extra: dict[str, list[str]] = {}
+
+        if plugin_pack_dir:
+            from mcp_server.services.plugin_schema import load_plugin_manifest
+            try:
+                _manifest = load_plugin_manifest(plugin_pack_dir)
+                if _manifest.docs:
+                    self._required_docs = [d.name for d in _manifest.docs]
+                    self._doc_assignments = {"custom": list(self._required_docs)}
+                    self._doc_bundle_map = {d: "custom" for d in self._required_docs}
+                    self._doc_section_requirements_extra = {
+                        d.name: d.sections for d in _manifest.docs if d.sections
+                    }
+            except Exception:
+                pass
 
     @staticmethod
     def _describe_provider(provider: ModelProvider) -> str:
@@ -280,10 +301,9 @@ class CustomHarnessProvider(DocGenerationProvider):
             metadata={"phase": phase, "target": target, "failure_kind": kind.value},
         )
 
-    @staticmethod
-    def _run_model_call_budget(state: HarnessRunState) -> int:
+    def _run_model_call_budget(self, state: HarnessRunState) -> int:
         group_count = max(1, len(state.facts_manifest.groups))
-        required_doc_count = max(1, len(REQUIRED_DOCS))
+        required_doc_count = max(1, len(self._required_docs))
         allowed_slices = max(1, config.docgen_allowed_slices_per_doc)
         dynamic_budget = (
             config.docgen_call_budget_base
@@ -292,9 +312,8 @@ class CustomHarnessProvider(DocGenerationProvider):
         )
         return max(config.docgen_min_run_call_budget, dynamic_budget)
 
-    @staticmethod
-    def _doc_budget_key(target: str) -> str:
-        for doc_name in REQUIRED_DOCS:
+    def _doc_budget_key(self, target: str) -> str:
+        for doc_name in self._required_docs:
             if target == doc_name or target.startswith(f"{doc_name}_"):
                 return doc_name
         return target.split("_slice_", 1)[0].split("_retry_", 1)[0]
@@ -537,7 +556,6 @@ class CustomHarnessProvider(DocGenerationProvider):
                 for c in state.calls
             ),
             duration_ms=int(time.time() * 1000) - start_ms,
-            template_snapshot=ctx.template_snapshot,
         )
 
     async def _phase1_investigation(
@@ -683,7 +701,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             investigation_context = self._investigation_context(ctx, group)
             chunk_outputs: list[str] = []
             for idx, chunk_file in enumerate(chunks, start=1):
-                prompt = group_analysis_prompt(state.facts_manifest, group, pack=self.pack)
+                prompt = group_analysis_prompt(state.facts_manifest, group, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, required_docs=self._required_docs)
                 if len(chunks) > 1:
                     prompt += (
                         f"\n\nThis is chunk {idx} of {len(chunks)} for group {group}. "
@@ -1156,7 +1174,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             timeout_s=300.0,
             provider_options=self._provider_options(self.model_provider),
         )
-        scorecard_prompt_text = scorecard_prompt(state.facts_manifest, pack=self.pack)
+        scorecard_prompt_text = scorecard_prompt(state.facts_manifest, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir)
         context_files = []
         if scorecard_pack.exists():
             context_files.append(scorecard_pack)
@@ -1302,7 +1320,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             p for p in sorted(analysis_dir.glob("*.md"))
             if not p.name.startswith("_") and "_chunk_" not in p.name
         ]
-        for bundle_name, doc_names in DOC_ASSIGNMENTS.items():
+        for bundle_name, doc_names in self._doc_assignments.items():
             section_names = self._bundle_sections_for_docs(doc_names)
             analysis_text = self._targeted_analysis_bundle_text(analysis_files, section_names)
             (analysis_dir / f"_bundle_{bundle_name}.md").write_text(
@@ -1317,7 +1335,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                 encoding="utf-8",
             )
         manifest: dict[str, object] = {"source_analyses": [p.name for p in analysis_files], "doc_packs": {}}
-        for doc_name in REQUIRED_DOCS:
+        for doc_name in self._required_docs:
             section_names = self._bundle_sections_for_docs([doc_name])
             pack_text, pack_manifest = self._doc_evidence_pack_text(
                 ctx,
@@ -1514,7 +1532,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
 
         async def _write_one(doc_name: str) -> None:
-            doc_prompt_text = doc_prompt(state.facts_manifest, doc_name, pack=self.pack)
+            doc_prompt_text = doc_prompt(state.facts_manifest, doc_name, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, extra_section_requirements=self._doc_section_requirements_extra)
             context_files = self._phase3_context_files(ctx, doc_name)
             if scorecard.exists():
                 context_files.append(scorecard)
@@ -1564,9 +1582,9 @@ class CustomHarnessProvider(DocGenerationProvider):
             await log_cb(ctx.project_id, f"[custom] Phase 3 doc complete: {doc_name}", "info")
 
         _i = 0
-        while _i < len(REQUIRED_DOCS):
+        while _i < len(self._required_docs):
             batch_size = 1 if state.adaptive_serial_generation else max(1, config.agent_phase3_concurrency)
-            await asyncio.gather(*[_write_one(d) for d in REQUIRED_DOCS[_i : _i + batch_size]])
+            await asyncio.gather(*[_write_one(d) for d in self._required_docs[_i : _i + batch_size]])
             _i += batch_size
 
     def _final_doc_content(self, state: HarnessRunState, doc_name: str, body: str) -> str:
@@ -1611,7 +1629,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             provider_options=self._provider_options(self.write_provider),
         )
 
-        for family, doc_names in DOC_ASSIGNMENTS.items():
+        for family, doc_names in self._doc_assignments.items():
             critic_prompt_text = self._critic_prompt(state, family, doc_names)
             if getattr(self.write_provider, "supports_tools", False):
                 result = await self.write_provider.complete_with_tools(
@@ -1708,14 +1726,13 @@ class CustomHarnessProvider(DocGenerationProvider):
                 phase3_checkpoint.write_text(patched, encoding="utf-8")
             await log_cb(ctx.project_id, f"[custom] Phase 3 targeted repair applied to {target_doc.name}", "info")
 
-    @staticmethod
-    def _phase3_repair_targets(ctx: DocGenContext, errors: list[str]) -> list[tuple[Path, list[str]]]:
+    def _phase3_repair_targets(self, ctx: DocGenContext, errors: list[str]) -> list[tuple[Path, list[str]]]:
         grouped: dict[str, list[str]] = {}
         for error in errors:
             matches = re.findall(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
             matched_required = [
                 name for name in matches
-                if name.removesuffix(".md") in REQUIRED_DOCS
+                if name.removesuffix(".md") in self._required_docs
             ]
             if matched_required:
                 for name in matched_required:
@@ -1732,7 +1749,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             if not target_doc.exists():
                 existing_docs = [
                     ctx.staging_dir / f"{doc}.md"
-                    for doc in REQUIRED_DOCS
+                    for doc in self._required_docs
                     if (ctx.staging_dir / f"{doc}.md").exists()
                 ]
                 target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / "02_COMPONENT_INVENTORY.md"
@@ -1764,7 +1781,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             elif safe.exists():
                 analysis_files.append(safe)
         if not analysis_files:
-            bundle = DOC_BUNDLE_MAP.get(doc_name, "core")
+            bundle = self._doc_bundle_map.get(doc_name, "core")
             fallback = analysis_dir / f"_bundle_{bundle}.md"
             analysis_files = [fallback] if fallback.exists() else []
 
@@ -2039,7 +2056,7 @@ Missing units:
             message = (
                 f"model call budget exceeded before {phase} {target}: "
                 f"{current_calls}/{budget} calls; groups={len(state.facts_manifest.groups)} "
-                f"docs={len(REQUIRED_DOCS)}"
+                f"docs={len(self._required_docs)}"
             )
             await log_cb(ctx.project_id, f"[custom] {message}", "error")
             return self._failure_result(provider, phase, target, message, FailureKind.BUDGET_EXCEEDED)
@@ -2341,7 +2358,7 @@ Missing units:
             "groups": state.facts_manifest.groups,
             "unit_count": state.facts_manifest.unit_count,
             "canonical_unit_label": state.facts_manifest.canonical_unit_label,
-            "docs": REQUIRED_DOCS,
+            "docs": self._required_docs,
             "engineering_facts": archived_engineering_facts,
             "provider": "custom",
             "model": self.model_provider.model_name,
@@ -2654,7 +2671,7 @@ Allowed docs:
         preprocess_dir = ctx.staging_dir / "_preprocess"
         analysis_dir = ctx.staging_dir / "_analysis"
         pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
-        bundle = DOC_BUNDLE_MAP.get(doc_name, "core")
+        bundle = self._doc_bundle_map.get(doc_name, "core")
         files: list[Path] = []
         obligations = ctx.staging_dir / "documentation_obligations.json"
         if obligations.exists():
@@ -2745,6 +2762,7 @@ def build_custom_provider(
     investigation_model_str: str | None = None,
     fallback_model_str: str | None = None,
     instruction_pack_dir: str | None = None,
+    plugin_pack_dir: Path | None = None,
 ) -> CustomHarnessProvider:
     def _build_secondary(secondary_str: str | None, *, skip_if_same: bool = True) -> ModelProvider | None:
         if not secondary_str or (skip_if_same and secondary_str == model_str):
@@ -2774,4 +2792,5 @@ def build_custom_provider(
         _build_secondary(investigation_model_str),
         _build_secondary(fallback_model_str, skip_if_same=False),
         pack=pack,
+        plugin_pack_dir=plugin_pack_dir,
     )

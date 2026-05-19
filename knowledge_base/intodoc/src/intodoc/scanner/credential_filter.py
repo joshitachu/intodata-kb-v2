@@ -82,6 +82,85 @@ class CredentialFilter:
         # FQDNs -- matched against known TLDs, safe domains excluded at runtime
         # This is a placeholder; actual FQDN filtering uses _filter_fqdns()
 
+        # ── HTTP authentication schemes ─────────────────────────────────────
+        # Full Authorization header value — must come before bare Bearer pattern
+        (re.compile(r"(?i)\bAuthorization\s*[:=]\s*\S+\s+[A-Za-z0-9._+/=\-]{10,}"),
+         "[AUTH_HEADER_REDACTED]", RedactionLevel.STANDARD),
+        # Bearer tokens (standalone, without Authorization prefix)
+        (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._+/=\-]{10,}"),
+         "[BEARER_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+        # Basic auth (base64 encoded user:pass)
+        (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/=]{10,}"),
+         "[BASIC_AUTH_REDACTED]", RedactionLevel.STANDARD),
+        # Custom API key header values
+        (re.compile(
+            r"(?i)\b(?:X-API-Key|X-Auth-Token|Api-Key|X-Access-Token|X-Token|X-Client-Secret)\s*[:=]\s*[A-Za-z0-9._+/=\-]{10,}"
+        ), "[API_KEY_REDACTED]", RedactionLevel.STANDARD),
+
+        # ── JWT tokens (three-part base64url) ────────────────────────────────
+        (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"),
+         "[JWT_REDACTED]", RedactionLevel.STANDARD),
+
+        # ── Source-control platform tokens ───────────────────────────────────
+        # GitHub PATs (ghp_, gho_, ghs_, ghr_, ghu_, ghx_) and fine-grained PATs
+        (re.compile(r"\bgh[phosrux]_[A-Za-z0-9_]{10,}\b|\bgithub_pat_[A-Za-z0-9_]{10,}\b"),
+         "[GITHUB_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+        # GitLab PATs / project tokens
+        (re.compile(r"\bglpat-[A-Za-z0-9_\-]{10,}\b|\bglptt-[A-Za-z0-9_\-]{10,}\b"),
+         "[GITLAB_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+        # NPM access tokens
+        (re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b"),
+         "[NPM_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+        # PyPI API tokens
+        (re.compile(r"\bpypi-[A-Za-z0-9_\-]{40,}\b"),
+         "[PYPI_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+
+        # ── Cloud provider credentials ────────────────────────────────────────
+        # AWS access key IDs (AKIA, ASIA, AROA, ANPA, ANVA, AIDA prefixes)
+        (re.compile(r"\b(?:AKIA|ASIA|AROA|ANPA|ANVA|AIDA)[0-9A-Z]{16}\b"),
+         "[AWS_ACCESS_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # AWS secret access keys (keyword-anchored to avoid false positives)
+        (re.compile(
+            r"(?i)\baws[_\-]?secret[_\-]?access[_\-]?key\s*[:=]\s*[\"']?[A-Za-z0-9+/]{40}[\"']?"
+        ), "[AWS_SECRET_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # GCP / Google API keys (AIzaSy prefix)
+        (re.compile(r"\bAIzaSy[A-Za-z0-9_\-]{33}\b"),
+         "[GCP_API_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # Firebase server keys (AAAA prefix)
+        (re.compile(r"\bAAAA[A-Za-z0-9_\-]{7}:[A-Za-z0-9_\-]{140}\b"),
+         "[FIREBASE_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # Azure storage account keys
+        (re.compile(r"(?i)\bAccountKey\s*=\s*[A-Za-z0-9+/]{40,}={0,2}"),
+         "[AZURE_ACCOUNT_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # Databricks personal access tokens
+        (re.compile(r"\bdapi[a-f0-9]{32}\b"),
+         "[DATABRICKS_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+
+        # ── AI / LLM provider keys ────────────────────────────────────────────
+        # OpenAI / Anthropic / generic sk- keys
+        (re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}\b"),
+         "[LLM_API_KEY_REDACTED]", RedactionLevel.STANDARD),
+
+        # ── Communication & SaaS provider keys ───────────────────────────────
+        # Slack bot/user/app tokens
+        (re.compile(r"\bxox[bpaos]-[0-9A-Za-z\-]{10,}\b"),
+         "[SLACK_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+        # Stripe keys (live and test, secret and publishable)
+        (re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b"),
+         "[STRIPE_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # SendGrid API keys
+        (re.compile(r"\bSG\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"),
+         "[SENDGRID_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # Twilio SIDs / auth tokens
+        (re.compile(r"\b(?:AC|SK)[a-f0-9]{32}\b"),
+         "[TWILIO_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # Mailgun API keys
+        (re.compile(r"\bkey-[a-f0-9]{32}\b"),
+         "[MAILGUN_KEY_REDACTED]", RedactionLevel.STANDARD),
+        # HubSpot private app tokens
+        (re.compile(r"\bpat-[a-z]{2}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"),
+         "[HUBSPOT_TOKEN_REDACTED]", RedactionLevel.STANDARD),
+
         # ── Lobster-specific patterns ────────────────────────────────
         # OBF-encoded passwords (Lobster obfuscation format)
         (re.compile(r"OBF:[a-zA-Z0-9+/=]+"),
@@ -111,6 +190,7 @@ class CredentialFilter:
     _SENSITIVE_KEYS = frozenset({
         "password", "secret", "token", "apikey", "api_key",
         "bearer", "client_secret", "private_key", "access_key",
+        "authorization", "x-api-key", "x-auth-token", "x-access-token",
     })
 
     # Pattern for XML-style key=value where key is sensitive

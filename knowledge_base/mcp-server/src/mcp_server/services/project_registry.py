@@ -314,8 +314,6 @@ class ProjectRegistry:
         quality_score: float | None = None,
         error_message: str | None = None,
         log_file: str | None = None,
-        template_profile_id: int | None = None,
-        template_snapshot: dict | None = None,
     ) -> None:
         values = dict(
             status=status,
@@ -334,10 +332,6 @@ class ProjectRegistry:
             log_file=log_file,
             completed_at=datetime.datetime.now(datetime.timezone.utc),
         )
-        if template_profile_id is not None:
-            values["template_profile_id"] = template_profile_id
-        if template_snapshot is not None:
-            values["template_snapshot"] = template_snapshot
         await self.db.execute(
             update(GenerateRun)
             .where(GenerateRun.id == run_id)

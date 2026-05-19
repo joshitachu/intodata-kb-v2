@@ -100,7 +100,7 @@ async def test_preprocess_generic_direct_redacted_source_mode(claude_svc, monkey
         lambda self, platform: {"content": "phase 3 guide"},
     )
 
-    groups, _ = await claude_svc._preprocess_scan_data(project_id, tmp_path / "staging", platform="generic")
+    groups = await claude_svc._preprocess_scan_data(project_id, tmp_path / "staging", platform="generic")
 
     assert groups == ["src"]
     bundle = (tmp_path / "staging" / "_preprocess" / "src.md").read_text(encoding="utf-8")
@@ -183,7 +183,6 @@ async def test_claude_cli_command_uses_resolved_cli_model(monkeypatch, tmp_path)
         total_groups=1,
         effective_model="sonnet",
         write_model="openai/deepseek-v4-pro",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_prompts.md",
     )

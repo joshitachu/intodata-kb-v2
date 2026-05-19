@@ -412,20 +412,15 @@ class ClaudeService:
         project_id: str,
         staging_dir: Path,
         platform: str = "talend",
-        template_profile_id: int | None = None,
         total_jobs: int = 0,
-    ) -> tuple[list[str], dict[str, int]]:
+    ) -> list[str]:
         """Pre-process raw job JSONs into structured markdown summaries.
 
         Reads scan data via ScannerService and writes per-group markdown files
         to staging_dir/_preprocess/{group}.md. Also bundles analysis prompts,
         reference docs, and scoring templates for sub-agents.
 
-        When template_profile_id is set, reads templates from DB via
-        TemplateResolver. Otherwise falls back to filesystem.
-
-        Returns (group_names, template_snapshot) where template_snapshot maps
-        slug -> version_id for templates resolved from the DB.
+        Returns list of group names.
         """
         preprocess_dir = staging_dir / "_preprocess"
         preprocess_dir.mkdir(parents=True, exist_ok=True)
@@ -680,94 +675,7 @@ class ClaudeService:
         # --- Write doc templates for Phase 3 agents ---
         self._write_doc_templates(preprocess_dir)
 
-        # --- Override with DB templates if profile is set ---
-        template_snapshot: dict[str, int] = {}
-        if template_profile_id is not None:
-            try:
-                from mcp_server.db.session import async_session_factory as _sf
-                from mcp_server.services.template_resolver import TemplateResolver
-
-                async with _sf() as db:
-                    resolver = TemplateResolver(db)
-                    resolved = await resolver.resolve_all(
-                        profile_id=template_profile_id,
-                        project_id=project_id,
-                        platform=platform,
-                    )
-                    template_snapshot = resolver.snapshot
-
-                    # Overwrite files with DB content where available
-                    slug_to_file: dict[str, str] = {
-                        "orchestration/phase3_guide": "_phase3_guide.md",
-                        "assessment/scoring_rubric": "_scoring_rubric.md",
-                        "assessment/anti_patterns": "_anti_patterns.md",
-                        "assessment/red_flags": "_red_flags.md",
-                        "assessment/security_checklist": "_security_checklist.md",
-                        "pattern/pattern_library": "_pattern_library.md",
-                    }
-                    for slug, filename in slug_to_file.items():
-                        if slug in resolved:
-                            (preprocess_dir / filename).write_text(
-                                resolved[slug], encoding="utf-8",
-                            )
-                            logger.info(
-                                "DB template override: %s -> %s (%d bytes)",
-                                slug, filename, len(resolved[slug]),
-                            )
-
-                    # Analysis guide override -- use only the consolidated guide,
-                    # not individual p01-p22 dimension prompts
-                    guide_slug = f"analysis/{platform}_guide"
-                    if guide_slug in resolved:
-                        guide = resolved[guide_slug]
-                        (preprocess_dir / "_analysis_guide.md").write_text(
-                            guide, encoding="utf-8",
-                        )
-                        logger.info(
-                            "DB template override: %s -> _analysis_guide.md (%d bytes)",
-                            guide_slug, len(guide),
-                        )
-
-                    # Reference doc overrides
-                    ref_map = {
-                        "_ref_core": ["output/00_executive_summary", "output/01_project_overview",
-                                      "output/02_architecture_inventory", "output/03_data_flows_lineage"],
-                        "_ref_business_ops": [
-                        "output/04_business_logic",
-                        "output/05a_operations", "output/05b_security",
-                        "output/05c_risk", "output/05d_change_management",
-                        "output/06_environment_external",
-                    ],
-                        "_ref_patterns": ["output/07_security_performance", "output/08_patterns_standards"],
-                        "_ref_user": ["output/09_runbook", "output/10_onboarding_faq",
-                                      "output/11_migration_assessment"],
-                    }
-                    for bundle_name, slugs in ref_map.items():
-                        entries = []
-                        for slug in slugs:
-                            if slug in resolved:
-                                entries.append(f"---\n## {slug}\n\n{resolved[slug]}\n\n")
-                        if entries:
-                            header = f"# Reference Docs Bundle: {bundle_name}\n\n"
-                            bundle = header + "".join(entries)
-                            (preprocess_dir / f"{bundle_name}.md").write_text(
-                                bundle, encoding="utf-8",
-                            )
-                            logger.info(
-                                "DB template override: %s (%d docs, %d bytes)",
-                                bundle_name, len(entries), len(bundle),
-                            )
-
-                logger.info(
-                    "Template resolution complete: %d templates from profile %d",
-                    len(template_snapshot), template_profile_id,
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Template resolution failed for profile {template_profile_id}: {e}"
-                ) from e
-
-        return processed_groups, template_snapshot
+        return processed_groups
 
     # ------------------------------------------------------------------ #
     # Phase 1.5 — lightweight quick scan (no LLM, Python regex only)
@@ -1074,7 +982,6 @@ Required sections:
     async def generate_docs(
         self,
         project_id: str,
-        template_profile_id: int | None = None,
         model: str | None = None,
         write_model: str | None = None,
         resume: bool = True,
@@ -1120,6 +1027,7 @@ Required sections:
         from mcp_server.db.session import async_session_factory
         from mcp_server.services.project_registry import ProjectRegistry
 
+        plugin_pack_dir: Path | None = None
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
             project = await registry.get_project(project_id)
@@ -1128,6 +1036,16 @@ Required sections:
                     f"Project {project_id!r} not found in database — cannot determine platform"
                 )
             platform = project.platform
+            if getattr(project, "plugin_pack_id", None) is not None:
+                from sqlalchemy import select
+                from mcp_server.db.models import PluginPack
+                pack_row = (
+                    await db.execute(
+                        select(PluginPack).where(PluginPack.id == project.plugin_pack_id)
+                    )
+                ).scalar_one_or_none()
+                if pack_row:
+                    plugin_pack_dir = Path(pack_row.path)
 
         # Compute project metrics early (needed for preprocessing decisions)
         scanner = ScannerService()
@@ -1182,20 +1100,12 @@ Required sections:
                 f.stem for f in preprocess_dir.glob("*.md")
                 if not f.name.startswith("_")
             )
-            template_snapshot: dict[str, int] = {}
-            # Try to recover template_snapshot from manifest
-            if manifest_path.exists():
-                try:
-                    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    template_snapshot = manifest_data.get("template_snapshot", {})
-                except (json.JSONDecodeError, OSError):
-                    pass
         else:
             await self.log_manager.emit(
                 project_id, "Pre-processing scan data...", level="info",
             )
-            preprocess_groups, template_snapshot = await self._preprocess_scan_data(
-                project_id, staging_dir, platform, template_profile_id,
+            preprocess_groups = await self._preprocess_scan_data(
+                project_id, staging_dir, platform,
                 total_jobs=total_jobs,
             )
 
@@ -1214,8 +1124,6 @@ Required sections:
             "groups": preprocess_groups,
             "total_jobs": total_jobs,
             "model": model or config.doc_generation_model,
-            "template_profile_id": template_profile_id,
-            "template_snapshot": template_snapshot,
             "scan_mtime": scan_manifest_path.stat().st_mtime if scan_manifest_path.exists() else 0,
             "created_at": time.time(),
         }, indent=2), encoding="utf-8")
@@ -1265,7 +1173,6 @@ Required sections:
             total_groups=total_groups,
             effective_model=effective_model,
             write_model=effective_write_model,
-            template_snapshot=template_snapshot,
             platform=platform,
             analysis_guide_file=analysis_guide_file,
             resume_state=resume_state,
@@ -1276,7 +1183,21 @@ Required sections:
             write_model=effective_write_model,
             log_manager=self.log_manager,
             instruction_pack_dir=instruction_pack_dir,
+            plugin_pack_dir=plugin_pack_dir,
         )
+
+        if plugin_pack_dir is not None:
+            from mcp_server.services.plugin_runner import build_plugin_runner
+            provider = build_plugin_runner(
+                plugin_pack_dir,
+                inner_provider=provider,
+                model_provider=getattr(provider, "model_provider", None),
+            )
+            await self.log_manager.emit(
+                project_id,
+                f"Using plugin pack: {plugin_pack_dir.name} (v{provider.manifest.version})",
+                level="info",
+            )
 
         resolved_main_model = getattr(provider, "model_provider", None)
         resolved_write_model_obj = getattr(provider, "write_provider", None)

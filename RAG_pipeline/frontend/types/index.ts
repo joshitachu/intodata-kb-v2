@@ -199,6 +199,7 @@ export const SourceProjectSchema = z.object({
   auto_reingest_last_checked_at: z.string().nullable().optional(),
   auto_reingest_error: z.string().nullable().optional(),
   last_ingested_commit_sha: z.string().nullable().optional(),
+  git_update_summary: z.record(z.string(), z.unknown()).nullable().optional(),
   has_github_token: z.boolean().optional().default(false),
   webhook_status: z.string().nullable().optional(),
 });

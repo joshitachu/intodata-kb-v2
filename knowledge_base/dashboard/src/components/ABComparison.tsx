@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useGenerateRuns, useReviews } from "../../hooks/useProjects";
-import { api } from "../../api/client";
-import type { RunComparisonRun } from "../../types";
+import { useGenerateRuns, useReviews } from "../hooks/useProjects";
+import { api } from "../api/client";
+import type { RunComparisonRun } from "../types";
 
 interface Props {
   projectId: string;
@@ -55,7 +55,7 @@ export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Pr
   if (runs.length < 2) {
     return (
       <div className="card-dark p-6 text-sm text-slate-500 font-mono">
-        Need at least 2 completed runs to compare. Run generation with different profiles to compare.
+        Need at least 2 completed runs to compare.
       </div>
     );
   }
@@ -75,7 +75,6 @@ export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Pr
             {runs.map((r) => (
               <option key={r.id} value={r.id}>
                 #{r.id} - {new Date(r.started_at).toLocaleDateString()} ({r.doc_count} docs)
-                {r.template_profile_id ? ` [P#${r.template_profile_id}]` : " [default]"}
               </option>
             ))}
           </select>
@@ -92,7 +91,6 @@ export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Pr
             {runs.map((r) => (
               <option key={r.id} value={r.id}>
                 #{r.id} - {new Date(r.started_at).toLocaleDateString()} ({r.doc_count} docs)
-                {r.template_profile_id ? ` [P#${r.template_profile_id}]` : " [default]"}
               </option>
             ))}
           </select>
@@ -190,20 +188,6 @@ export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Pr
                     </tr>
                   );
                 })}
-                <tr className="border-b border-white/[0.04]">
-                  <td className="px-4 py-2 text-slate-400">Profile</td>
-                  <td className="px-4 py-2 font-mono text-slate-400">
-                    {comparison.run_a.template_profile_id ?? "default"}
-                  </td>
-                  <td className="px-4 py-2 font-mono text-slate-400">
-                    {comparison.run_b.template_profile_id ?? "default"}
-                  </td>
-                  <td className="px-4 py-2 font-mono text-slate-600">
-                    {comparison.run_a.template_profile_id === comparison.run_b.template_profile_id
-                      ? "same"
-                      : "different"}
-                  </td>
-                </tr>
               </tbody>
             </table>
           </div>
@@ -235,27 +219,6 @@ export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Pr
               })}
             </div>
           </div>
-
-          {/* Template diffs */}
-          {comparison.total_template_diffs > 0 && (
-            <div className="px-4 pb-4">
-              <h4 className="text-xs font-mono text-slate-500 uppercase mb-2">
-                Template Differences ({comparison.total_template_diffs})
-              </h4>
-              <div className="space-y-1">
-                {comparison.template_diffs.map((d: { slug: string; version_a: number | null; version_b: number | null }) => (
-                  <div key={d.slug} className="flex items-center justify-between px-3 py-1.5 bg-white/[0.02] rounded text-xs">
-                    <span className="font-mono text-slate-400">{d.slug}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-500">v{d.version_a ?? "?"}</span>
-                      <span className="text-slate-600">-&gt;</span>
-                      <span className="text-accent-primary/60">v{d.version_b ?? "?"}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* Human review side-by-side */}
           <div className="px-4 pb-4 border-t border-white/[0.05] pt-4">

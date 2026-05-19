@@ -44,6 +44,9 @@ packages = ["src/mcp_server"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: end-to-end tests that exercise real plugin packs with mocked providers",
+]
 
 [tool.ruff]
 line-length = 100

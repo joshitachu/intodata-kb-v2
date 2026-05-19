@@ -234,7 +234,6 @@ def _make_staging(tmp_path: Path, project_id: str, jobs: list[dict], platform: s
         total_groups=len(groups),
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform=platform,
         analysis_guide_file="_analysis_guide.md",
     )

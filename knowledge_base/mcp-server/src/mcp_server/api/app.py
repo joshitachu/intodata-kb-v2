@@ -20,7 +20,6 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from mcp_server.api.middleware import IPAllowlistMiddleware
 from mcp_server.config import config
 from mcp_server.db.models import Base
-import mcp_server.db.template_models  # noqa: F401 -- register with Base.metadata
 from mcp_server.db.session import engine
 from mcp_server.services.atomic_swap import (
     gc_abandoned_staging,
@@ -167,7 +166,7 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import discovery, generate_runs, health, logs, projects, templates, webhook  # noqa: E402
+from mcp_server.api.routes import discovery, generate_runs, health, logs, plugins, projects, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(
@@ -181,17 +180,12 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
-    templates.router,
-    prefix="/mcp",
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
-    templates.profile_router,
-    prefix="/mcp",
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
     generate_runs.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    plugins.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

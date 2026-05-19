@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from mcp_server.providers.base import DocGenerationProvider
 
 
@@ -10,6 +12,7 @@ def get_provider(
     write_model: str | None = None,
     log_manager=None,
     instruction_pack_dir: str | None = None,
+    plugin_pack_dir: Path | None = None,
 ) -> DocGenerationProvider:
     """Return the configured doc generation provider.
 
@@ -59,6 +62,7 @@ def get_provider(
             investigation_model_str=config.doc_generation_investigation_model,
             fallback_model_str=config.doc_generation_fallback_model,
             instruction_pack_dir=instruction_pack_dir,
+            plugin_pack_dir=plugin_pack_dir,
         )
 
     raise ValueError(

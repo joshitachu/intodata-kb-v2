@@ -1,0 +1,16 @@
+name: quick-summary
+version: "1.0.0"
+description: >
+  Minimal one-document pack for testing. Produces a single EXECUTIVE_SUMMARY
+  document instead of the full 9-doc set.
+
+docs:
+  - name: EXECUTIVE_SUMMARY
+    sections:
+      - Overview
+      - Key Integrations
+      - Risks and Recommendations
+
+steps:
+  - id: full_pipeline
+    type: harness

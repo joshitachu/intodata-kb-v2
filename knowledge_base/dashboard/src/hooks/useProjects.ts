@@ -40,17 +40,15 @@ export function useGenerate() {
   return useMutation({
     mutationFn: ({
       projectId,
-      templateProfileId,
       resume = true,
       model,
       writeModel,
     }: {
       projectId: string;
-      templateProfileId?: number;
       resume?: boolean;
       model?: string | null;
       writeModel?: string | null;
-    }) => api.generate(projectId, templateProfileId, resume, model, writeModel),
+    }) => api.generate(projectId, resume, model, writeModel),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }
@@ -102,6 +100,89 @@ export function useLogFiles(projectId: string | null) {
     queryFn: () => api.listLogFiles(projectId!),
     enabled: !!projectId,
     refetchInterval: 10_000,
+  });
+}
+
+export function usePluginPacks() {
+  return useQuery({
+    queryKey: ["plugin-packs"],
+    queryFn: api.listPluginPacks,
+    staleTime: 30_000,
+  });
+}
+
+export function useAssignPluginPack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, pluginPackId }: { projectId: string; pluginPackId: number | null }) =>
+      api.assignPluginPack(projectId, pluginPackId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function useRegisterPluginPack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { path?: string; repo_url?: string }) => api.registerPluginPack(body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["plugin-packs"] }),
+  });
+}
+
+export function useUploadPluginPackZip() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => api.uploadPluginPackZip(file),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["plugin-packs"] }),
+  });
+}
+
+export function usePullPluginPack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (packId: number) => api.pullPluginPack(packId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["plugin-packs"] }),
+  });
+}
+
+export function useDeletePluginPack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (packId: number) => api.deletePluginPack(packId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugin-packs"] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+export function usePluginPackFiles(packId: number | null) {
+  return useQuery({
+    queryKey: ["plugin-pack-files", packId],
+    queryFn: () => api.getPluginPackFiles(packId!),
+    enabled: packId !== null,
+    staleTime: 5_000,
+  });
+}
+
+export function usePluginPackFile(packId: number | null, filePath: string | null) {
+  return useQuery({
+    queryKey: ["plugin-pack-file", packId, filePath],
+    queryFn: () => api.getPluginPackFile(packId!, filePath!),
+    enabled: packId !== null && filePath !== null,
+    staleTime: 0,
+  });
+}
+
+export function useSavePluginPackFile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ packId, filePath, content }: { packId: number; filePath: string; content: string }) =>
+      api.savePluginPackFile(packId, filePath, content),
+    onSuccess: (_data, { packId, filePath }) => {
+      qc.invalidateQueries({ queryKey: ["plugin-pack-file", packId, filePath] });
+      qc.invalidateQueries({ queryKey: ["plugin-pack-files", packId] });
+      qc.invalidateQueries({ queryKey: ["plugin-packs"] });
+    },
   });
 }
 

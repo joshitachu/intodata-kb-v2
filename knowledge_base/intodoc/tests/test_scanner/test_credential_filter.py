@@ -349,3 +349,174 @@ def test_invalid_custom_config_ignored(tmp_path: Path):
     f = CredentialFilter(config_path=config)
     result = f.filter_text("normal text")
     assert result == "normal text"
+
+
+# ── New patterns: HTTP auth schemes ────────────────────────────────
+
+
+def test_bearer_token_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("Bearer ghp_abc1234567890abcdef")
+    assert "ghp_" not in result
+    assert "[BEARER_TOKEN_REDACTED]" in result
+
+
+def test_authorization_bearer_header_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("Authorization: Bearer 1fae930abc818def0123")
+    assert "1fae930abc818def" not in result
+    assert "[AUTH_HEADER_REDACTED]" in result
+
+
+def test_basic_auth_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("Basic dXNlcjpwYXNzd29yZA==")
+    assert "dXNlcjpwYXNzd29yZA" not in result
+    assert "[BASIC_AUTH_REDACTED]" in result
+
+
+def test_x_api_key_header_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("X-API-Key: sk_live_abc123def456ghi")
+    assert "sk_live_abc123" not in result
+    assert "[API_KEY_REDACTED]" in result
+
+
+# ── New patterns: JWT ───────────────────────────────────────────────
+
+
+def test_jwt_redacted():
+    f = CredentialFilter()
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    result = f.filter_text(jwt)
+    assert "eyJhbGciOiJIUzI1NiJ9" not in result
+    assert "[JWT_REDACTED]" in result
+
+
+# ── New patterns: Source-control tokens ────────────────────────────
+
+
+def test_github_pat_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ123456")
+    assert "ghp_" not in result
+    assert "[GITHUB_TOKEN_REDACTED]" in result
+
+
+def test_github_other_prefixes_redacted():
+    f = CredentialFilter()
+    for prefix in ("gho_", "ghs_", "ghr_", "ghu_"):
+        result = f.filter_text(f"{prefix}abc1234567890abcdef")
+        assert prefix not in result
+        assert "[GITHUB_TOKEN_REDACTED]" in result
+
+
+def test_github_fine_grained_pat_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("github_pat_abc1234567890abcdefghijklmno")
+    assert "github_pat_" not in result
+    assert "[GITHUB_TOKEN_REDACTED]" in result
+
+
+def test_gitlab_token_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("glpat-abcdefghijklmnopqrstu")
+    assert "glpat-" not in result
+    assert "[GITLAB_TOKEN_REDACTED]" in result
+
+
+def test_lobster_filter_bearer_redacted():
+    """Bearer token embedded in a Lobster filter expression must be caught."""
+    f = CredentialFilter()
+    result = f.filter_text('const:"Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"')
+    assert "eyJhbGciOiJIUzI1NiJ9" not in result
+
+
+# ── New patterns: Cloud credentials ────────────────────────────────
+
+
+def test_aws_access_key_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("AKIAIOSFODNN7EXAMPLE")
+    assert "AKIAIOSFODNN7EXAMPLE" not in result
+    assert "[AWS_ACCESS_KEY_REDACTED]" in result
+
+
+def test_gcp_api_key_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("AIzaSyB-9hPi6xyzABCDEFGHIJKLMNOPQRSTUVW")
+    assert "AIzaSy" not in result
+    assert "[GCP_API_KEY_REDACTED]" in result
+
+
+def test_databricks_token_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("dapi1234567890abcdef1234567890abcdef")
+    assert "dapi1234567890" not in result
+    assert "[DATABRICKS_TOKEN_REDACTED]" in result
+
+
+# ── New patterns: LLM / SaaS keys ──────────────────────────────────
+
+
+def test_openai_key_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("sk-proj-abcdefghij1234567890abcdefghij")
+    assert "sk-proj-" not in result
+    assert "[LLM_API_KEY_REDACTED]" in result
+
+
+def test_anthropic_key_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("sk-ant-api03-abc123def456ghi789jkl012")
+    assert "sk-ant-" not in result
+    assert "[LLM_API_KEY_REDACTED]" in result
+
+
+def test_slack_token_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("xoxb-12345-abcdefghijklmnopq")
+    assert "xoxb-" not in result
+    assert "[SLACK_TOKEN_REDACTED]" in result
+
+
+def test_stripe_key_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("sk_live_abcdefghijklmnopqrstu")
+    assert "sk_live_" not in result
+    assert "[STRIPE_KEY_REDACTED]" in result
+
+
+def test_sendgrid_key_redacted():
+    f = CredentialFilter()
+    result = f.filter_text("SG.abc123def456ghijk.xyz789abc012defghijklmno")
+    assert "SG.abc123" not in result
+    assert "[SENDGRID_KEY_REDACTED]" in result
+
+
+# ── XML sensitive_keys extended ────────────────────────────────────
+
+
+def test_authorization_xml_attribute_redacted():
+    """XML attribute name='Authorization' value='...' must be caught by _SENSITIVE_KV."""
+    f = CredentialFilter()
+    text = '<elementParameter name="authorization" value="Bearer ghp_abc123def456"/>'
+    result = f.filter_text(text)
+    assert "ghp_abc123" not in result
+
+
+# ── False positive safety for new patterns ─────────────────────────
+
+
+def test_short_bearer_not_redacted():
+    """'Bearer' followed by fewer than 10 chars should not trigger."""
+    f = CredentialFilter()
+    result = f.filter_text("Bearer short")
+    assert result == "Bearer short"
+
+
+def test_aws_key_prefix_too_short_not_redacted():
+    """AKIA with fewer than 16 chars after prefix should not match."""
+    f = CredentialFilter()
+    result = f.filter_text("AKIA123SHORT")
+    assert "AKIA123SHORT" in result

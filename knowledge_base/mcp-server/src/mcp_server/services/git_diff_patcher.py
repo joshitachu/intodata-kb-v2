@@ -112,6 +112,7 @@ async def run_webhook_diff_update(
     after_sha: str,
     log_mgr: LogManager,
     trigger: str = "webhook",
+    impact_plan: dict[str, Any] | None = None,
 ) -> bool:
     """Patch current docs from a small Git diff without running full generation."""
     async with async_session_factory() as db:
@@ -134,6 +135,7 @@ async def run_webhook_diff_update(
         log_mgr=log_mgr,
         trigger=trigger,
         github_token_enc=github_token_enc,
+        impact_plan=impact_plan,
     )
 
     async with async_session_factory() as db:
@@ -167,22 +169,42 @@ async def _run_diff_patch(
     log_mgr: LogManager,
     trigger: str,
     github_token_enc: str | None = None,
+    impact_plan: dict[str, Any] | None = None,
 ) -> DiffPatchResult:
     base_summary = {
         "trigger": trigger,
-        "mode": "diff_patch",
+        "mode": str(impact_plan.get("mode") or "tool_loop_agent") if impact_plan else "diff_patch",
         "before": before_sha,
         "after": after_sha,
         "received_at": datetime.now(timezone.utc).isoformat(),
         "changed_files": [],
+        "affected_docs": [],
+        "required_facts": [],
+        "stale_claims": [],
+        "strategy": impact_plan.get("strategy") if impact_plan else None,
+        "confidence": impact_plan.get("confidence") if impact_plan else None,
+        "fallback_used": False,
         "matched_docs": [],
         "patched_docs": [],
+        "touched_docs": [],
+        "validation_errors": [],
+        "repair_attempts": 0,
         "action": "unknown",
     }
+    if impact_plan:
+        base_summary["affected_docs"] = _coerce_string_list(impact_plan.get("affected_docs"))
+        base_summary["required_facts"] = _coerce_string_list(impact_plan.get("required_facts"))
+        base_summary["stale_claims"] = _coerce_string_list(impact_plan.get("stale_claims"))
+        base_summary["reason"] = str(impact_plan.get("reason") or "")
 
     try:
         if not before_sha or before_sha == "0" * 40:
             return _manual(base_summary, "First push requires initial manual scan/generate")
+
+        if impact_plan and impact_plan.get("strategy") == "manual_review":
+            return _manual(base_summary, str(impact_plan.get("reason") or "Impact agent requested manual review"))
+        if impact_plan and impact_plan.get("strategy") == "targeted_regen":
+            return _manual(base_summary, str(impact_plan.get("reason") or "Impact agent requested targeted regeneration"))
 
         if github_token_enc:
             try:
@@ -225,11 +247,6 @@ async def _run_diff_patch(
                 ("skipped", "No relevant changed hunks in push"),
                 log_mgr,
             )
-        if len(chunks) > config.git_diff_patch_max_chunks:
-            return _manual(
-                base_summary,
-                f"Diff requires {len(chunks)} chunks; max auto patch is {config.git_diff_patch_max_chunks}",
-            )
         obligations = _build_doc_obligations(changes, full_diff_text)
         base_summary["obligations"] = [obligation.to_prompt() for obligation in obligations]
 
@@ -241,7 +258,8 @@ async def _run_diff_patch(
             _match_doc_sections, docs_dir, changes, full_diff_text
         )
         base_summary["candidate_docs"] = sorted({s.filename for s in candidate_sections})
-        preferred_docs = _preferred_docs_for_diff(changes, full_diff_text)
+        planned_docs = _coerce_string_list(impact_plan.get("affected_docs") if impact_plan else None)
+        preferred_docs = planned_docs or _preferred_docs_for_diff(changes, full_diff_text)
         sections = await asyncio.to_thread(
             lambda: _select_doc_sections(
                 candidate_sections,
@@ -271,6 +289,35 @@ async def _run_diff_patch(
             )
 
         provider = _patch_provider(doc_generation_provider)
+        if len(chunks) > config.git_diff_patch_max_chunks:
+            if len(chunks) > config.git_diff_patch_max_summary_chunks:
+                return _manual(
+                    base_summary,
+                    f"Diff requires {len(chunks)} chunks; max summarized patch is {config.git_diff_patch_max_summary_chunks}",
+                )
+            summarized = await _summarize_chunks_for_patch(provider, chunks, obligations)
+            base_summary["summarized_patch"] = True
+            base_summary["summarized_patch_reason"] = (
+                f"Diff had {len(chunks)} chunks; compacted before patching"
+            )
+            base_summary["diff_summary_outputs"] = summarized["outputs"]
+            chunks = summarized["chunks"]
+
+        estimated_patch_tokens = _estimate_patch_tokens(chunks, sections, obligations)
+        if estimated_patch_tokens > config.git_diff_patch_max_input_tokens:
+            if len(chunks) > config.git_diff_patch_max_summary_chunks:
+                return _manual(
+                    {**base_summary, "estimated_input_tokens": estimated_patch_tokens},
+                    f"Patch prompts too large ({estimated_patch_tokens} estimated tokens)",
+                )
+            summarized = await _summarize_chunks_for_patch(provider, chunks, obligations)
+            base_summary["summarized_patch"] = True
+            base_summary["summarized_patch_reason"] = (
+                f"Estimated patch prompts were {estimated_patch_tokens} tokens; compacted before patching"
+            )
+            base_summary["diff_summary_outputs"] = summarized["outputs"]
+            chunks = summarized["chunks"]
+
         patches: list[dict[str, str]] = []
         agent_outputs: list[dict[str, Any]] = []
         obligations_satisfied: set[str] = set()
@@ -382,6 +429,7 @@ async def _run_diff_patch(
             "info",
         )
         summary = {**base_summary, "action": "patched", "patched_docs": patched_docs}
+        summary["touched_docs"] = patched_docs
         return DiffPatchResult(
             action="patched",
             summary=summary,
@@ -972,6 +1020,78 @@ def _build_patch_prompt(
         f"Changed hunks:\n{chunk.text}\n\n"
         f"Documentation obligations:\n{json.dumps(obligation_payload, ensure_ascii=False, indent=2)}\n\n"
         f"Current doc sections:\n{json.dumps(section_payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _estimate_patch_tokens(
+    chunks: list[DiffChunk],
+    sections: list[DocSection],
+    obligations: list[DocObligation],
+) -> int:
+    total = 0
+    for chunk in chunks:
+        for section in sections:
+            section_obligations = _obligations_for_section(obligations, section)
+            total += max(1, len(_build_patch_prompt(chunk, [section], section_obligations)) // 4)
+    return total
+
+
+async def _summarize_chunks_for_patch(
+    provider,
+    chunks: list[DiffChunk],
+    obligations: list[DocObligation],
+) -> dict[str, Any]:
+    """Compress large raw diffs into doc-update facts before section patching."""
+    summaries: list[str] = []
+    outputs: list[dict[str, Any]] = []
+    obligation_payload = [obligation.to_prompt() for obligation in obligations]
+    for chunk in chunks:
+        prompt = _build_diff_summary_prompt(chunk, obligation_payload)
+        result = await provider.complete(
+            prompt,
+            options=ModelOptions(
+                max_tokens=config.git_diff_patch_summary_output_tokens,
+                temperature=0.0,
+                timeout_s=240.0,
+                retries=1,
+            ),
+        )
+        if not result.success:
+            raise RuntimeError(f"Diff summarization failed: {result.raw_error}")
+        summary_text = result.text.strip()
+        summaries.append(
+            f"## Diff fact summary {chunk.index}\n"
+            f"Changed paths: {', '.join(chunk.paths)}\n\n"
+            f"{summary_text}"
+        )
+        outputs.append(
+            {
+                "chunk_index": chunk.index,
+                "paths": chunk.paths,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "model": result.model_name,
+            }
+        )
+    paths = sorted({path for chunk in chunks for path in chunk.paths})
+    compact_text = "\n\n".join(summaries)
+    return {
+        "chunks": [DiffChunk(index=1, paths=paths, text=compact_text)],
+        "outputs": outputs,
+    }
+
+
+def _build_diff_summary_prompt(chunk: DiffChunk, obligations: list[dict[str, Any]]) -> str:
+    return (
+        "You are compressing a Git diff for a documentation patch agent.\n"
+        "Summarize only facts visible in the diff. Do not write final documentation.\n"
+        "Keep names, paths, APIs, behavior changes, removed behavior, config changes, tests, "
+        "data flow changes, and stale claims that generated docs may need to update.\n"
+        "Use concise bullets grouped by changed path. Preserve exact identifiers and numbers.\n"
+        "If a detail is uncertain, mark it as uncertain instead of inventing.\n\n"
+        f"Documentation obligations:\n{json.dumps(obligations, ensure_ascii=False, indent=2)}\n\n"
+        f"Diff chunk {chunk.index}; changed paths: {json.dumps(chunk.paths)}\n"
+        f"Changed hunks:\n{chunk.text}"
     )
 
 

@@ -10,20 +10,16 @@ import QualityHistoryPanel from "./components/QualityHistoryPanel";
 import RunHistory from "./components/RunHistory";
 import ScanHistory from "./components/ScanHistory";
 import ValidationReviewPanel from "./components/ValidationReviewPanel";
-import TemplateCatalogue from "./components/templates/TemplateCatalogue";
-import TemplateEditor from "./components/templates/TemplateEditor";
-import VersionTimeline from "./components/templates/VersionTimeline";
-import ProfileManager from "./components/templates/ProfileManager";
-import ProfileDetail from "./components/templates/ProfileDetail";
-import ABComparison from "./components/templates/ABComparison";
-import DocumentCatalogue from "./components/templates/DocumentCatalogue";
+import ABComparison from "./components/ABComparison";
+import DocumentCatalogue from "./components/DocumentCatalogue";
+import PluginPacksPage from "./components/PluginPacksPage";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
 import type { AuthUser } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
-type TopNav = "projects" | "templates" | "profiles" | "docs";
+type TopNav = "projects" | "docs" | "packs";
 
 export default function App() {
   const auth = useAuth();
@@ -54,8 +50,6 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
   const [compareRunA, setCompareRunA] = useState<number | null>(null);
   const [compareRunB, setCompareRunB] = useState<number | null>(null);
   const [topNav, setTopNav] = useState<TopNav>("projects");
-  const [selectedTemplateSlug, setSelectedTemplateSlug] = useState<string | null>(null);
-  const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const { logs, clear, done, logFile } = useLogStream(activeProject);
   const { data: projectsData } = useProjects();
   const queryClient = useQueryClient();
@@ -112,7 +106,7 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
               <span className="text-sm font-medium text-slate-400 tracking-wide">Nexus</span>
             </div>
             <nav className="flex items-center gap-1">
-              {(["projects", "templates", "profiles", "docs"] as TopNav[]).map((nav) => (
+              {(["projects", "docs"] as TopNav[]).map((nav) => (
                 <button
                   key={nav}
                   className={`px-3 py-1.5 text-sm rounded transition-all ${
@@ -125,6 +119,18 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   {nav.charAt(0).toUpperCase() + nav.slice(1)}
                 </button>
               ))}
+              {user?.is_superadmin && (
+                <button
+                  className={`px-3 py-1.5 text-sm rounded transition-all ${
+                    topNav === "packs"
+                      ? "text-slate-200 bg-white/[0.06]"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                  onClick={() => setTopNav("packs")}
+                >
+                  Packs
+                </button>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -217,60 +223,11 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
             </>
           )}
 
-          {/* Templates page */}
-          {topNav === "templates" && (
-            <div className="grid grid-cols-12 gap-6">
-              <div className="col-span-4">
-                <TemplateCatalogue
-                  onSelect={setSelectedTemplateSlug}
-                  selectedSlug={selectedTemplateSlug}
-                />
-              </div>
-              <div className="col-span-8 space-y-4">
-                {selectedTemplateSlug ? (
-                  <>
-                    <TemplateEditor slug={selectedTemplateSlug} />
-                    <VersionTimeline slug={selectedTemplateSlug} />
-                  </>
-                ) : (
-                  <div className="card-dark p-12 text-center text-slate-500 text-sm">
-                    Select a template from the catalogue to view and edit.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Profiles page */}
-          {topNav === "profiles" && (
-            <div className="grid grid-cols-12 gap-6">
-              <div className="col-span-4">
-                <ProfileManager
-                  onSelect={setSelectedProfileId}
-                  selectedId={selectedProfileId}
-                />
-              </div>
-              <div className="col-span-8">
-                {selectedProfileId != null ? (
-                  <ProfileDetail profileId={selectedProfileId} />
-                ) : (
-                  <div className="card-dark p-12 text-center text-slate-500 text-sm">
-                    Select a profile to view and manage its template assignments.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Document catalogue page */}
-          {topNav === "docs" && (
-            <DocumentCatalogue
-              onNavigateToTemplate={(slug) => {
-                setSelectedTemplateSlug(slug);
-                setTopNav("templates");
-              }}
-            />
-          )}
+          {topNav === "docs" && <DocumentCatalogue />}
+
+          {/* Plugin packs page (superadmin only) */}
+          {topNav === "packs" && user?.is_superadmin && <PluginPacksPage />}
         </div>
       </main>
 

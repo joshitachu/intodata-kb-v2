@@ -224,7 +224,7 @@ async def _completed_run(session_factory, project_id: str, **kwargs) -> int:
         return result.scalar_one().id
 
 
-async def test_generate_run_compare_includes_models_quality_deltas_and_template_diffs(client, session_factory):
+async def test_generate_run_compare_includes_models_quality_deltas(client, session_factory):
     from mcp_server.config import config
 
     await client.post("/mcp/add-repo", json={"url": "zip", "project_id": "cmp", "platform": "talend"})
@@ -239,7 +239,6 @@ async def test_generate_run_compare_includes_models_quality_deltas_and_template_
         model_name="moonshot/kimi-k2.6",
         write_model_name="openai/deepseek-v4-pro",
         quality_score=4.5,
-        template_snapshot={"overview": 1, "runbook": 1},
     )
     run_b = await _completed_run(
         session_factory,
@@ -252,7 +251,6 @@ async def test_generate_run_compare_includes_models_quality_deltas_and_template_
         model_name="openai/gpt-4o",
         write_model_name="anthropic/claude-sonnet-4-6",
         quality_score=4.0,
-        template_snapshot={"overview": 2, "runbook": 1},
     )
 
     logs_dir = config.project_root / "output" / "cmp" / "logs"
@@ -289,7 +287,6 @@ async def test_generate_run_compare_includes_models_quality_deltas_and_template_
     assert data["delta"]["quality"] == -0.5
     assert data["verdict"] == "FAIL"
     assert data["run_a"]["doc_quality"]["source_alignment"] == 4.0
-    assert data["template_diffs"] == [{"slug": "overview", "version_a": 1, "version_b": 2}]
 
 
 async def test_generate_run_compare_warns_when_metrics_missing(client, session_factory):

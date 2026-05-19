@@ -149,9 +149,14 @@ def _filter_component_params(
     params: list[ComponentParam],
     cred_filter: CredentialFilter,
 ) -> None:
-    """Re-run text filter on component parameter values."""
+    """Redact component parameter values by name semantics then text patterns."""
     for param in params:
-        if param.value:
-            filtered = cred_filter.filter_text(param.value)
-            if filtered != param.value:
-                param.value = filtered
+        if not param.value:
+            continue
+        if cred_filter.is_sensitive_var_name(param.name):
+            cred_filter._record_redaction("component_param_sensitive", param.value)
+            param.value = "[REDACTED]"
+            continue
+        filtered = cred_filter.filter_text(param.value)
+        if filtered != param.value:
+            param.value = filtered

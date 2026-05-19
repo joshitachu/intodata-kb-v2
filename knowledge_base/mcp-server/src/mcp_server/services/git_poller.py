@@ -9,13 +9,30 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
-from mcp_server.services.git_diff_patcher import run_webhook_diff_update
+from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_HOURS = (0, 12)
+
+
+async def run_webhook_diff_update(
+    *,
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    log_mgr: LogManager,
+    trigger: str = "poller",
+) -> bool:
+    """Compatibility wrapper around the shared auto-doc update service."""
+    return await AutoDocUpdateService(log_mgr=log_mgr).run(
+        project_id=project_id,
+        before_sha=before_sha,
+        after_sha=after_sha,
+        trigger=trigger,
+    )
 
 
 async def _git_output(local_path: str, *args: str) -> str:
@@ -159,6 +176,50 @@ def next_git_poll_at(
     )
 
 
+async def poll_plugin_packs_once() -> None:
+    """Pull any plugin packs installed from a GitHub URL whose remote HEAD changed."""
+    from sqlalchemy import select
+    from mcp_server.db.models import PluginPack
+
+    async with async_session_factory() as db:
+        packs = (
+            await db.execute(
+                select(PluginPack).where(
+                    PluginPack.repo_url.isnot(None),
+                    PluginPack.auto_update.is_(True),
+                )
+            )
+        ).scalars().all()
+
+    for pack in packs:
+        try:
+            await _git_output(pack.path, "fetch", "--quiet")
+            remote_sha = await _remote_head_sha(pack.path)
+            if remote_sha == pack.last_commit_sha:
+                continue
+
+            logger.info("Plugin pack %r has new commits — pulling (%s)", pack.name, remote_sha[:8])
+            await _git_output(pack.path, "pull", "--ff-only")
+
+            async with async_session_factory() as db:
+                p = await db.get(PluginPack, pack.id)
+                if p:
+                    p.last_commit_sha = remote_sha
+                    # Reload version from manifest in case it changed
+                    from pathlib import Path
+                    from mcp_server.services.plugin_schema import load_plugin_manifest
+                    try:
+                        manifest = load_plugin_manifest(Path(p.path))
+                        p.version = manifest.version
+                        p.description = manifest.description or p.description
+                    except Exception:
+                        pass
+                    await db.commit()
+
+        except Exception:
+            logger.exception("Failed to poll plugin pack %r at %s", pack.name, pack.path)
+
+
 async def git_polling_loop(log_mgr: LogManager) -> None:
     while True:
         next_run = next_git_poll_at()
@@ -174,3 +235,9 @@ async def git_polling_loop(log_mgr: LogManager) -> None:
             raise
         except Exception:
             logger.exception("Git polling loop failed")
+        try:
+            await poll_plugin_packs_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Plugin pack polling loop failed")

@@ -1198,7 +1198,6 @@ def test_phase28_generates_doc_specific_evidence_packs_and_manifest(tmp_path):
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1240,7 +1239,6 @@ def test_phase3_context_prefers_doc_pack_over_family_bundle(tmp_path):
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1289,7 +1287,6 @@ def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1322,7 +1319,6 @@ def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1349,12 +1345,15 @@ def test_phase3_repair_targets_uses_doc_named_in_validation_error(tmp_path):
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
 
-    targets = CustomHarnessProvider._phase3_repair_targets(
+    from unittest.mock import MagicMock
+    mock_mp = MagicMock()
+    mock_mp.model_name = "test/model"
+    provider = CustomHarnessProvider(mock_mp)
+    targets = provider._phase3_repair_targets(
         ctx,
         ["Generated doc 06_OPERATIONS_TESTING_AND_DEBUGGING.md missing expected sections/terms: Debug"],
     )
@@ -1397,11 +1396,14 @@ def test_validation_errors_route_canonical_obligations_to_owner_docs(tmp_path):
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
-    targets = CustomHarnessProvider._phase3_repair_targets(ctx, report.errors)
+    from unittest.mock import MagicMock
+    mock_mp = MagicMock()
+    mock_mp.model_name = "test/model"
+    provider = CustomHarnessProvider(mock_mp)
+    targets = provider._phase3_repair_targets(ctx, report.errors)
 
     assert not report.ok
     assert any("02_COMPONENT_INVENTORY.md missing source artifact" in error for error in report.errors)
@@ -1458,7 +1460,6 @@ async def test_core_generation_splits_context_and_excludes_large_json(tmp_path, 
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1519,7 +1520,6 @@ async def test_core_generation_writes_reviewable_model_input_snapshot(tmp_path):
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1601,7 +1601,6 @@ async def test_core_generation_uses_complete_with_tools_for_tool_capable_provide
         total_groups=1,
         effective_model="fake/tool-model",
         write_model="fake/tool-model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1665,7 +1664,6 @@ def test_context_splitter_never_returns_oversized_fixed_remainder(tmp_path, monk
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1765,7 +1763,6 @@ async def test_empty_output_does_not_trigger_recursive_split_retry(tmp_path, mon
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1841,7 +1838,6 @@ async def test_context_length_failure_can_trigger_split_retry(tmp_path, monkeypa
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -1918,7 +1914,6 @@ async def test_core_generation_runs_split_slices_concurrently_in_order(tmp_path,
         total_groups=1,
         effective_model="fake/deepseek",
         write_model="fake/deepseek",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -2291,7 +2286,6 @@ async def test_phase2_section_repair_appends_missing_talend_sections(tmp_path):
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="talend",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -2355,7 +2349,6 @@ async def test_phase2_section_repair_uses_configured_phase2_token_cap(tmp_path, 
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="talend",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -2409,7 +2402,6 @@ async def test_phase2_cross_chunk_synthesis_appends_findings(tmp_path, monkeypat
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -2470,7 +2462,6 @@ async def test_phase3_targeted_repair_appends_validator_gap(tmp_path):
         total_groups=1,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_guide.md",
     )
@@ -2544,7 +2535,6 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
         total_groups=2,
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform="workato",
         analysis_guide_file="_analysis_guide.md",
     )

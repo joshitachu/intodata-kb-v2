@@ -50,6 +50,7 @@ class MCPServerConfig(BaseSettings):
     ingest_api_key: str = ""
     jwt_algorithm: str = "HS256"
     github_webhook_secret: str | None = None  # MCP_GITHUB_WEBHOOK_SECRET
+    dev_webhook_skip_signature: bool = False  # MCP_DEV_WEBHOOK_SKIP_SIGNATURE
     token_encryption_key: str = ""            # MCP_TOKEN_ENCRYPTION_KEY — Fernet key for PAT storage
     public_url: str = ""                      # MCP_PUBLIC_URL — public-facing base URL for webhook callbacks
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
@@ -115,9 +116,11 @@ class MCPServerConfig(BaseSettings):
     git_diff_patch_max_files: int = 5
     git_diff_patch_max_chars: int = 50_000
     git_diff_patch_max_docs: int = 3
-    git_diff_patch_max_input_tokens: int = 30_000
+    git_diff_patch_max_input_tokens: int = 80_000
     git_diff_patch_context_lines: int = 80
     git_diff_patch_max_chunks: int = 4
+    git_diff_patch_max_summary_chunks: int = 12
+    git_diff_patch_summary_output_tokens: int = 6_000
     git_diff_patch_min_confidence: float = 0.7
     git_diff_patch_output_tokens_small: int = 8_000
     git_diff_patch_output_tokens_medium: int = 16_000

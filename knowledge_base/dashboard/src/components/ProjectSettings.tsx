@@ -8,6 +8,8 @@ import {
   useRepairLatestGitUpdate,
   useRegisterWebhook,
   useUpdateGithubToken,
+  usePluginPacks,
+  useAssignPluginPack,
 } from "../hooks/useProjects";
 import { formatAbsoluteDate, timeAgo } from "../lib/timeago";
 import type { Project } from "../types";
@@ -31,6 +33,8 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const updateGithubToken = useUpdateGithubToken();
   const usage = useProjectUsage(project?.id ?? null);
   const instructionPack = useInstructionPack();
+  const { data: pluginPacks } = usePluginPacks();
+  const assignPluginPack = useAssignPluginPack();
   const { data: platformsData } = usePlatforms();
   const { data: modelsData } = useModels();
   const [displayName, setDisplayName] = useState("");
@@ -95,7 +99,34 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const gitPatchedDocs = Array.isArray(gitSummary?.patched_docs)
     ? gitSummary.patched_docs.filter((item): item is string => typeof item === "string")
     : [];
+  const gitTouchedDocs = Array.isArray(gitSummary?.touched_docs)
+    ? gitSummary.touched_docs.filter((item): item is string => typeof item === "string")
+    : [];
+  const gitAffectedDocs = Array.isArray(gitSummary?.affected_docs)
+    ? gitSummary.affected_docs.filter((item): item is string => typeof item === "string")
+    : [];
+  const gitRequiredFacts = Array.isArray(gitSummary?.required_facts)
+    ? gitSummary.required_facts.filter((item): item is string => typeof item === "string")
+    : [];
+  const gitStaleClaims = Array.isArray(gitSummary?.stale_claims)
+    ? gitSummary.stale_claims.filter((item): item is string => typeof item === "string")
+    : [];
   const gitReason = typeof gitSummary?.reason === "string" ? gitSummary.reason : null;
+  const gitManualReviewReason =
+    typeof gitSummary?.manual_review_reason === "string" ? gitSummary.manual_review_reason : null;
+  const gitStrategy = typeof gitSummary?.strategy === "string" ? gitSummary.strategy : null;
+  const gitConfidence = typeof gitSummary?.confidence === "number" ? gitSummary.confidence : null;
+  const gitFallbackUsed = gitSummary?.fallback_used === true;
+  const gitRepairAttempts =
+    typeof gitSummary?.repair_attempts === "number" ? gitSummary.repair_attempts : 0;
+  const gitToolCallCount = Array.isArray(gitSummary?.tool_calls)
+    ? gitSummary.tool_calls.length
+    : typeof gitSummary?.tool_call_count === "number"
+      ? gitSummary.tool_call_count
+      : typeof gitSummary?.tool_calls === "number"
+        ? gitSummary.tool_calls
+        : 0;
+  const gitDisplayDocs = gitTouchedDocs.length ? gitTouchedDocs : gitPatchedDocs.length ? gitPatchedDocs : gitAffectedDocs;
   const canRepairGitUpdate =
     project.source_type === "git" &&
     typeof gitSummary?.before === "string" &&
@@ -205,8 +236,13 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
                 <div className="text-sm bg-surface-raised rounded px-3 py-2 text-slate-400 border border-white/[0.07]">
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                     <span>Action: <span className="font-mono text-slate-300">{gitAction ?? "None"}</span></span>
+                    {gitStrategy && <span>Strategy: <span className="font-mono text-slate-300">{gitStrategy}</span></span>}
+                    {gitConfidence !== null && <span>Confidence: <span className="font-mono text-slate-300">{Math.round(gitConfidence * 100)}%</span></span>}
                     <span>Changed files: <span className="font-mono text-slate-300">{gitChangedFiles.length}</span></span>
-                    <span>Patched docs: <span className="font-mono text-slate-300">{gitPatchedDocs.length}</span></span>
+                    <span>Touched docs: <span className="font-mono text-slate-300">{gitDisplayDocs.length}</span></span>
+                    <span>Tools: <span className="font-mono text-slate-300">{gitToolCallCount}</span></span>
+                    <span>Repairs: <span className="font-mono text-slate-300">{gitRepairAttempts}</span></span>
+                    {gitFallbackUsed && <span className="text-amber-400">Fallback used</span>}
                     {canRepairGitUpdate && (
                       <button
                         type="button"
@@ -218,14 +254,19 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
                       </button>
                     )}
                   </div>
-                  {gitPatchedDocs.length > 0 && (
-                    <div className="mt-1 font-mono text-xs text-slate-500 truncate" title={gitPatchedDocs.join(", ")}>
-                      {gitPatchedDocs.join(", ")}
+                  {gitDisplayDocs.length > 0 && (
+                    <div className="mt-1 font-mono text-xs text-slate-500 truncate" title={gitDisplayDocs.join(", ")}>
+                      {gitDisplayDocs.join(", ")}
                     </div>
                   )}
-                  {gitReason && (
-                    <div className="mt-1 text-xs text-amber-400 truncate" title={gitReason}>
-                      {gitReason}
+                  {(gitRequiredFacts.length > 0 || gitStaleClaims.length > 0) && (
+                    <div className="mt-1 text-xs text-slate-500 truncate" title={[...gitRequiredFacts, ...gitStaleClaims].join(" | ")}>
+                      Facts {gitRequiredFacts.length} · stale claims {gitStaleClaims.length}
+                    </div>
+                  )}
+                  {(gitManualReviewReason || gitReason) && (
+                    <div className="mt-1 text-xs text-amber-400 truncate" title={gitManualReviewReason || gitReason || ""}>
+                      {gitManualReviewReason || gitReason}
                     </div>
                   )}
                 </div>
@@ -415,6 +456,45 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
               Override the instruction pack for this project. Leave blank to use the server default
               {instructionPack.data ? ` (${instructionPack.data.version})` : ""}.
             </p>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">
+              Plugin Pack
+            </label>
+            <select
+              className="input-dark"
+              value={project?.plugin_pack_id ?? ""}
+              onChange={(e) => {
+                if (!project) return;
+                const val = e.target.value;
+                assignPluginPack.mutate({
+                  projectId: project.id,
+                  pluginPackId: val === "" ? null : Number(val),
+                });
+              }}
+              disabled={assignPluginPack.isPending}
+            >
+              <option value="">— none (use default harness) —</option>
+              {(pluginPacks ?? []).map((pack) => (
+                <option key={pack.id} value={pack.id}>
+                  {pack.name} v{pack.version}
+                  {pack.last_commit_sha ? ` (${pack.last_commit_sha.slice(0, 7)})` : ""}
+                </option>
+              ))}
+            </select>
+            {project?.plugin_pack_id != null && (() => {
+              const selected = (pluginPacks ?? []).find((p) => p.id === project.plugin_pack_id);
+              return selected ? (
+                <p className="mt-1 text-xs text-slate-600">
+                  {selected.repo_url
+                    ? <>Auto-updates from <span className="font-mono">{selected.repo_url}</span></>
+                    : "Local pack — no auto-update"}
+                  {selected.last_commit_sha && (
+                    <> · SHA <span className="font-mono">{selected.last_commit_sha.slice(0, 7)}</span></>
+                  )}
+                </p>
+              ) : null;
+            })()}
           </div>
         </div>
 

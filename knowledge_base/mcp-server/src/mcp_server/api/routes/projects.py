@@ -64,7 +64,7 @@ from mcp_server.schemas import (
 from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.claude_service import ClaudeService
 from mcp_server.services.deep_dive_service import DeepDiveService
-from mcp_server.services.git_diff_patcher import run_webhook_diff_update
+from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_bridge import RagBridge
@@ -380,7 +380,6 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
     _currently_generating.add(req.project_id)
     background_tasks.add_task(
         _run_generate_background, req.project_id, run_id, log_mgr,
-        template_profile_id=req.template_profile_id,
         model=req.model,
         write_model=req.write_model,
         resume=req.resume,
@@ -414,11 +413,10 @@ async def repair_latest_git_update(project_id: str, request: Request, background
             raise HTTPException(status_code=400, detail="No stored Git diff is available to repair")
 
     background_tasks.add_task(
-        run_webhook_diff_update,
+        AutoDocUpdateService(log_mgr=log_mgr).run,
         project_id=project_id,
         before_sha=before_sha,
         after_sha=after_sha,
-        log_mgr=log_mgr,
         trigger="repair_latest",
     )
     return StatusResponse(
@@ -708,7 +706,6 @@ async def _run_generate_background(
     run_id: int,
     log_mgr,
     *,
-    template_profile_id: int | None = None,
     model: str | None = None,
     write_model: str | None = None,
     resume: bool = True,
@@ -724,7 +721,7 @@ async def _run_generate_background(
     claude = ClaudeService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
     result = await claude.generate_docs(
-        project_id, template_profile_id=template_profile_id, model=model,
+        project_id, model=model,
         write_model=write_model, resume=resume,
         doc_generation_provider=doc_generation_provider,
         instruction_pack_dir=instruction_pack_dir,
@@ -931,8 +928,6 @@ async def _run_generate_background(
                 quality_score=quality_score,
                 error_message=rag_error_message,
                 log_file=log_file,
-                template_profile_id=template_profile_id,
-                template_snapshot=result.get("template_snapshot"),
             )
             await db.commit()
         await _auto_compare_run(project_id, run_id)
@@ -1382,8 +1377,6 @@ def _run_to_response(r) -> GenerateRunResponse:
         model_name=getattr(r, "model_name", None),
         write_model_name=getattr(r, "write_model_name", None),
         quality_score=getattr(r, "quality_score", None),
-        template_profile_id=getattr(r, "template_profile_id", None),
-        template_snapshot=getattr(r, "template_snapshot", None),
         auto_verdict=getattr(r, "auto_verdict", None),
         auto_baseline_run_id=getattr(r, "auto_baseline_run_id", None),
     )

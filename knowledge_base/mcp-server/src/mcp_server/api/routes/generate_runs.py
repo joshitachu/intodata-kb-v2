@@ -69,8 +69,6 @@ def _run_summary(run, metrics: dict | None) -> dict:
         "status": run.status,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        "template_profile_id": getattr(run, "template_profile_id", None),
-        "template_snapshot": getattr(run, "template_snapshot", None),
         "doc_count": run.doc_count,
         "provider": (metrics or {}).get("provider"),
         "analysis_model": analysis_model,
@@ -113,15 +111,6 @@ async def build_run_comparison(
         metrics_b = _load_run_metrics(project_id, run_b_id)
         summary_a = _run_summary(run_a, metrics_a)
         summary_b = _run_summary(run_b, metrics_b)
-
-    snap_a = summary_a.get("template_snapshot") or {}
-    snap_b = summary_b.get("template_snapshot") or {}
-    all_slugs = sorted(set(list(snap_a.keys()) + list(snap_b.keys())))
-    template_diffs = [
-        {"slug": slug, "version_a": snap_a.get(slug), "version_b": snap_b.get(slug)}
-        for slug in all_slugs
-        if snap_a.get(slug) != snap_b.get(slug)
-    ]
 
     delta = {
         key: _metric_delta(summary_a, summary_b, key)
@@ -167,26 +156,7 @@ async def build_run_comparison(
         "quality_delta_pct": delta_pct["quality"],
         "verdict": verdict,
         "checks": checks,
-        "template_diffs": template_diffs,
-        "total_template_diffs": len(template_diffs),
     }
-
-
-@router.get("/generate-runs/{project_id}/{run_id}/template-snapshot")
-async def get_template_snapshot(project_id: str, run_id: int):
-    """View the exact template versions used in a generation run."""
-    async with async_session_factory() as db:
-        registry = ProjectRegistry(db)
-        runs = await registry.list_generate_runs(project_id)
-        run = next((r for r in runs if r.id == run_id), None)
-        if not run:
-            raise HTTPException(404, f"Run not found: {run_id}")
-        return {
-            "run_id": run_id,
-            "project_id": project_id,
-            "template_profile_id": getattr(run, "template_profile_id", None),
-            "template_snapshot": getattr(run, "template_snapshot", None),
-        }
 
 
 @router.get("/generate-runs/{project_id}/compare")

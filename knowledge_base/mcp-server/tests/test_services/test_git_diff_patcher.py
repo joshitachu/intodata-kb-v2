@@ -207,6 +207,116 @@ async def test_webhook_diff_update_patches_matched_doc_only(
         assert project.git_update_summary["patched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
 
 
+async def test_webhook_diff_update_summarizes_large_diff_before_patching(
+    session_factory,
+    monkeypatch,
+    tmp_path,
+    log_manager,
+):
+    import mcp_server.services.git_diff_patcher as patcher
+    from mcp_server.config import config
+    from mcp_server.providers.custom.models import ModelResult
+
+    monkeypatch.setattr(patcher, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "git_diff_patch_max_chunks", 1)
+    monkeypatch.setattr(config, "git_diff_patch_max_summary_chunks", 10)
+    monkeypatch.setattr(config, "git_diff_patch_max_chars", 180)
+    docs_dir = tmp_path / "output" / "proj" / "docs"
+    docs_dir.mkdir(parents=True)
+    doc = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
+    doc.write_text(
+        "# Business Logic\n\n"
+        "## PaymentService\n\n"
+        "Old payment behavior for PaymentServiceA.\n",
+        encoding="utf-8",
+    )
+
+    async def git_stub(local_path: str, *args: str) -> str:
+        if args[:2] == ("diff", "--name-status"):
+            return "M\tsrc/PaymentServiceA.ts\nM\tsrc/PaymentServiceB.ts\nM\tsrc/PaymentServiceC.ts\n"
+        if args and args[0] == "diff":
+            return (
+                "diff --git a/src/PaymentServiceA.ts b/src/PaymentServiceA.ts\n"
+                "@@ -1 +1 @@\n+export function validatePaymentA() { return true }\n"
+                "diff --git a/src/PaymentServiceB.ts b/src/PaymentServiceB.ts\n"
+                "@@ -1 +1 @@\n+export function validatePaymentB() { return true }\n"
+                "diff --git a/src/PaymentServiceC.ts b/src/PaymentServiceC.ts\n"
+                "@@ -1 +1 @@\n+export function validatePaymentC() { return true }\n"
+            )
+        return ""
+
+    monkeypatch.setattr(patcher, "_git", git_stub)
+
+    class ProviderStub:
+        def __init__(self):
+            self.summary_calls = 0
+
+        async def complete(self, prompt, context_files=None, options=None):
+            if "compressing a Git diff" in prompt:
+                self.summary_calls += 1
+                return ModelResult(
+                    success=True,
+                    model_name="test-model",
+                    input_tokens=100,
+                    output_tokens=30,
+                    text="- PaymentServiceA, PaymentServiceB, and PaymentServiceC validation behavior changed.",
+                )
+            assert self.summary_calls >= 1
+            return ModelResult(
+                success=True,
+                model_name="test-model",
+                input_tokens=120,
+                output_tokens=20,
+                text=(
+                    '{"change_summary":"payment validation changed",'
+                    '"inspected_context":["summarized diff facts"],'
+                    '"affected_docs":["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],'
+                    '"edits":[{"filename":"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md","heading":"PaymentService",'
+                    '"replacement_markdown":"## PaymentService\\n\\nNew summarized payment behavior for PaymentServiceA, PaymentServiceB, and PaymentServiceC via validatePaymentA, validatePaymentB, and validatePaymentC."}],'
+                    '"confidence":0.92}'
+                ),
+            )
+
+    provider = ProviderStub()
+    monkeypatch.setattr(patcher, "_patch_provider", lambda provider_type: provider)
+
+    class RagStub:
+        def __init__(self, log_manager=None):
+            self.log_manager = log_manager
+
+        async def push_docs(self, project_id, output_dir=None, filenames=None, docs=None):
+            return {"pushed": 1, "errors": []}
+
+    monkeypatch.setattr(patcher, "RagBridge", RagStub)
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project(
+            "proj",
+            str(tmp_path / "repo"),
+            repo_url="https://github.com/example/repo.git",
+            source_type="git",
+        )
+        await session.commit()
+
+    ok = await patcher.run_webhook_diff_update(
+        project_id="proj",
+        before_sha="a" * 40,
+        after_sha="b" * 40,
+        log_mgr=log_manager,
+    )
+
+    assert ok is True
+    assert provider.summary_calls >= 1
+    assert "New summarized payment behavior" in doc.read_text(encoding="utf-8")
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("proj")
+        assert project is not None
+        assert project.git_update_summary["action"] == "patched"
+        assert project.git_update_summary["summarized_patch"] is True
+
+
 async def test_webhook_diff_update_manual_review_when_no_doc_match(
     session_factory,
     monkeypatch,

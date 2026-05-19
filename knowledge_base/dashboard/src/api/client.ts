@@ -11,10 +11,14 @@ async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  // Don't set Content-Type for FormData — browser sets it with the correct boundary
+  const isFormData = options.body instanceof FormData;
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers as Record<string, string> },
-    credentials: "include",
     ...options,
+    headers: isFormData
+      ? { ...(options.headers as Record<string, string>) }
+      : { "Content-Type": "application/json", ...(options.headers as Record<string, string>) },
+    credentials: "include",
   });
 
   if (res.status === 401) {
@@ -26,6 +30,7 @@ async function request<T>(
     const detail = await res.text();
     throw new Error(`${res.status}: ${detail}`);
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -136,6 +141,54 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  listPluginPacks: () =>
+    request<import("../types").PluginPack[]>("/mcp/plugins"),
+
+  assignPluginPack: (projectId: string, pluginPackId: number | null) =>
+    request<{ project_id: string; plugin_pack_id: number | null }>(
+      `/mcp/projects/${projectId}/plugin`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ plugin_pack_id: pluginPackId }),
+      }
+    ),
+
+  registerPluginPack: (body: { path?: string; repo_url?: string }) =>
+    request<import("../types").PluginPack>("/mcp/plugins", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  uploadPluginPackZip: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<import("../types").PluginPack>("/mcp/plugins/upload", {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  pullPluginPack: (packId: number) =>
+    request<import("../types").PluginPack>(`/mcp/plugins/${packId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ pull: true }),
+    }),
+
+  deletePluginPack: (packId: number) =>
+    request<void>(`/mcp/plugins/${packId}`, { method: "DELETE" }),
+
+  getPluginPackFiles: (packId: number) =>
+    request<string[]>(`/mcp/plugins/${packId}/files`),
+
+  getPluginPackFile: (packId: number, filePath: string) =>
+    request<{ path: string; content: string }>(`/mcp/plugins/${packId}/files/${filePath}`),
+
+  savePluginPackFile: (packId: number, filePath: string, content: string) =>
+    request<{ path: string; content: string }>(`/mcp/plugins/${packId}/files/${filePath}`, {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    }),
+
   listScanRuns: (projectId: string) =>
     request<{ runs: import("../types").ScanRun[]; total: number }>(
       `/mcp/scan-runs/${projectId}`
@@ -203,7 +256,6 @@ export const api = {
 
   generate: (
     projectId: string,
-    templateProfileId?: number,
     resume = true,
     model?: string | null,
     writeModel?: string | null,
@@ -212,120 +264,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({
         project_id: projectId,
-        template_profile_id: templateProfileId ?? null,
         resume,
         model: model ?? null,
         write_model: writeModel ?? null,
       }),
     }),
-
-  // --- Templates ---
-
-  listTemplates: (params?: { category?: string; platform?: string; tier?: string }) => {
-    const qs = new URLSearchParams();
-    if (params?.category) qs.set("category", params.category);
-    if (params?.platform) qs.set("platform", params.platform);
-    if (params?.tier) qs.set("tier", params.tier);
-    const query = qs.toString();
-    return request<{ templates: import("../types").Template[]; total: number }>(
-      `/mcp/templates/${query ? `?${query}` : ""}`
-    );
-  },
-
-  getTemplate: (slug: string) =>
-    request<import("../types").Template>(`/mcp/templates/by-slug?slug=${encodeURIComponent(slug)}`),
-
-  createTemplate: (data: { slug: string; category: string; display_name: string; platform?: string; description?: string }) =>
-    request<import("../types").Template>("/mcp/templates/", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  updateTemplate: (slug: string, data: { display_name?: string; description?: string; is_active?: boolean }) =>
-    request<import("../types").Template>(`/mcp/templates/by-slug?slug=${encodeURIComponent(slug)}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    }),
-
-  listVersions: (slug: string) =>
-    request<{ versions: import("../types").TemplateVersion[]; total: number }>(
-      `/mcp/templates/versions?slug=${encodeURIComponent(slug)}`
-    ),
-
-  getVersion: (slug: string, versionNumber: number) =>
-    request<import("../types").TemplateVersion>(
-      `/mcp/templates/versions/detail?slug=${encodeURIComponent(slug)}&version_number=${versionNumber}`
-    ),
-
-  createVersion: (slug: string, data: { content: string; change_summary: string; created_by?: string }) =>
-    request<import("../types").TemplateVersion>(`/mcp/templates/versions?slug=${encodeURIComponent(slug)}`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  diffVersions: (slug: string, from: number, to: number) =>
-    request<{ slug: string; from_version: number; to_version: number; diff: string }>(
-      `/mcp/templates/diff?slug=${encodeURIComponent(slug)}&from=${from}&to=${to}`
-    ),
-
-  rollbackVersion: (slug: string, versionNumber: number) =>
-    request<import("../types").TemplateVersion>(
-      `/mcp/templates/rollback?slug=${encodeURIComponent(slug)}&version_number=${versionNumber}`,
-      { method: "POST" }
-    ),
-
-  // --- Profiles ---
-
-  listProfiles: (params?: { platform?: string; scope?: string }) => {
-    const qs = new URLSearchParams();
-    if (params?.platform) qs.set("platform", params.platform);
-    if (params?.scope) qs.set("scope", params.scope);
-    const query = qs.toString();
-    return request<{ profiles: import("../types").TemplateProfile[]; total: number }>(
-      `/mcp/profiles/${query ? `?${query}` : ""}`
-    );
-  },
-
-  getProfile: (id: number) =>
-    request<import("../types").ProfileDetail>(`/mcp/profiles/${id}`),
-
-  createProfile: (data: { name: string; platform?: string; description?: string; scope?: string }) =>
-    request<import("../types").TemplateProfile>("/mcp/profiles/", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  updateProfile: (id: number, data: { name?: string; description?: string }) =>
-    request<import("../types").TemplateProfile>(`/mcp/profiles/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(data),
-    }),
-
-  cloneProfile: (id: number, newName: string) =>
-    request<import("../types").TemplateProfile>(`/mcp/profiles/${id}/clone`, {
-      method: "POST",
-      body: JSON.stringify({ new_name: newName }),
-    }),
-
-  setDefaultProfile: (id: number) =>
-    request<import("../types").TemplateProfile>(`/mcp/profiles/${id}/set-default`, {
-      method: "POST",
-    }),
-
-  listAssignments: (profileId: number) =>
-    request<{ assignments: import("../types").ProfileAssignment[]; total: number }>(
-      `/mcp/profiles/${profileId}/assignments`
-    ),
-
-  setAssignment: (profileId: number, slug: string, versionId: number) =>
-    request<import("../types").ProfileAssignment>(
-      `/mcp/profiles/${profileId}/assignments?slug=${encodeURIComponent(slug)}`,
-      { method: "PATCH", body: JSON.stringify({ slug, version_id: versionId }) }
-    ),
-
-  deleteAssignment: (profileId: number, slug: string) =>
-    request<import("../types").StatusResponse>(
-      `/mcp/profiles/${profileId}/assignments?slug=${encodeURIComponent(slug)}`,
-      { method: "DELETE" }
-    ),
 };
