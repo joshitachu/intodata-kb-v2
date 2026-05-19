@@ -60,12 +60,11 @@ class OpenAIModelStrategy(ModelProviderStrategy):
         base_url: str | None = None,
         ollama_base_url: str | None = None,
     ):
-        from mcp_server.providers.custom.providers import OpenAICompatibleProvider
+        from mcp_server.providers.custom.providers import OpenAIOfficialProvider
 
-        return OpenAICompatibleProvider(
+        return OpenAIOfficialProvider(
             self.parse_model_name(model_id),
             api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-            base_url=base_url or "https://api.openai.com/v1",
         )
 
     def descriptors(self) -> list[ModelDescriptorData]:

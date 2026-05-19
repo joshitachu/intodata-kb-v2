@@ -211,6 +211,16 @@ STAGING_TOOLS_ANTHROPIC: list[dict[str, Any]] = [
     for tool in STAGING_TOOLS_OPENAI
 ]
 
+STAGING_TOOLS_OPENAI_RESPONSES: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": tool["function"]["name"],
+        "description": tool["function"]["description"],
+        "parameters": tool["function"]["parameters"],
+    }
+    for tool in STAGING_TOOLS_OPENAI
+]
+
 
 def _safe_limit(args: dict[str, Any], default: int) -> int:
     try:
@@ -279,6 +289,273 @@ def _execute_staging_tool(
 # ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
+
+def _sdk_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _model_dump(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _response_output_items(response: Any) -> list[Any]:
+    output = getattr(response, "output", None)
+    if output is None and isinstance(response, dict):
+        output = response.get("output")
+    return list(output or [])
+
+
+def _response_output_text(response: Any) -> str:
+    text = getattr(response, "output_text", None)
+    if text is None and isinstance(response, dict):
+        text = response.get("output_text")
+    if text:
+        return str(text)
+    chunks: list[str] = []
+    for item in _response_output_items(response):
+        data = _model_dump(item)
+        if data.get("type") == "message":
+            for content in data.get("content") or []:
+                if isinstance(content, dict):
+                    chunks.append(str(content.get("text") or ""))
+    return "".join(chunks)
+
+
+def _response_usage(response: Any) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    data = _model_dump(usage)
+    input_tokens = data.get("input_tokens") or data.get("prompt_tokens") or 0
+    output_tokens = data.get("output_tokens") or data.get("completion_tokens") or 0
+    return int(input_tokens or 0), int(output_tokens or 0)
+
+
+class OpenAIOfficialProvider:
+    """Adapter for OpenAI's official Python SDK and Responses API."""
+
+    supports_tools: bool = True
+
+    def __init__(self, model_name: str, api_key: str | None = None) -> None:
+        self.provider_name = "openai"
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.base_url = "https://api.openai.com/v1"
+
+    def _client(self, timeout_s: float):
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(api_key=self.api_key, timeout=timeout_s)
+
+    async def complete(
+        self,
+        prompt: str,
+        context_files: list[Path] | None = None,
+        options: ModelOptions | None = None,
+    ) -> ModelResult:
+        opts = options or ModelOptions()
+        context = _read_context(context_files)
+        full_prompt = prompt + context
+        estimated_tokens = _estimate_tokens(full_prompt)
+        ctx_limit = config.context_max_tokens
+        if estimated_tokens > ctx_limit:
+            raise RuntimeError(
+                f"Context too large: ~{estimated_tokens:,} estimated tokens exceeds "
+                f"MCP_CONTEXT_MAX_TOKENS={ctx_limit:,}. Reduce engineering facts or split the group."
+            )
+        metadata = {
+            "provider": self.provider_name,
+            "estimated_input_tokens": estimated_tokens,
+            **_context_metadata(context_files),
+        }
+        start = time.monotonic()
+        last_error: str | None = None
+
+        for attempt in range(opts.retries + 1):
+            try:
+                payload: dict[str, Any] = {
+                    "model": self.model_name,
+                    "input": full_prompt if not opts.prefill else [
+                        {"role": "user", "content": full_prompt},
+                        {"role": "assistant", "content": opts.prefill},
+                    ],
+                    "max_output_tokens": opts.max_tokens,
+                }
+                payload.update(opts.provider_options)
+                response = await self._client(opts.timeout_s).responses.create(**payload)
+                raw_text = _response_output_text(response)
+                text = _apply_prefill(opts.prefill, raw_text)
+                input_tokens, output_tokens = _response_usage(response)
+                return ModelResult(
+                    success=True,
+                    text=text,
+                    model_name=self.model_name,
+                    input_tokens=input_tokens or estimated_tokens,
+                    output_tokens=output_tokens or _estimate_tokens(text),
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    retries=attempt,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                last_error = _sdk_error(exc)
+                if attempt < opts.retries:
+                    await asyncio.sleep(min(2 ** attempt, 4))
+
+        return ModelResult(
+            success=False,
+            model_name=self.model_name,
+            input_tokens=estimated_tokens,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            retries=opts.retries,
+            raw_error=last_error,
+            metadata=metadata,
+        )
+
+    async def complete_with_tools(
+        self,
+        prompt: str,
+        staging_dir: Path,
+        options: ModelOptions | None = None,
+        max_turns: int = 30,
+        scoped_tools: Any | None = None,
+    ) -> ModelResult:
+        opts = options or ModelOptions()
+        start = time.monotonic()
+        total_in = total_out = 0
+        tool_call_count = 0
+        tool_result_bytes = 0
+        finish_reasons: list[str] = []
+        conversation_trace: list[dict[str, Any]] = []
+        tool_ledger: list[dict[str, Any]] = []
+        response_id: str | None = None
+        next_input: Any = prompt
+        last_error: str | None = None
+
+        for turn in range(max_turns):
+            payload: dict[str, Any] = {
+                "model": self.model_name,
+                "input": next_input,
+                "tools": STAGING_TOOLS_OPENAI_RESPONSES,
+                "max_output_tokens": opts.max_tokens,
+            }
+            if response_id:
+                payload["previous_response_id"] = response_id
+            payload.update(opts.provider_options)
+
+            try:
+                response = await self._client(opts.timeout_s).responses.create(**payload)
+                response_id = str(getattr(response, "id", "") or "")
+                in_tokens, out_tokens = _response_usage(response)
+                total_in += in_tokens
+                total_out += out_tokens
+                output_items = _response_output_items(response)
+                function_calls: list[dict[str, Any]] = []
+                for item in output_items:
+                    data = _model_dump(item)
+                    item_type = data.get("type")
+                    if item_type in {"function_call", "function_call_output"} and data.get("name"):
+                        function_calls.append(data)
+                finish_reason = str(getattr(response, "status", "") or "")
+                if finish_reason:
+                    finish_reasons.append(finish_reason)
+                conversation_trace.append({
+                    "turn": turn + 1,
+                    "role": "assistant",
+                    "finish_reason": finish_reason,
+                    "tool_calls": [
+                        {
+                            "id": fc.get("call_id", ""),
+                            "name": fc.get("name", ""),
+                            "arguments": fc.get("arguments", ""),
+                        }
+                        for fc in function_calls
+                    ],
+                    "content_bytes": len(_response_output_text(response).encode("utf-8")),
+                })
+
+                if not function_calls:
+                    text = _apply_prefill(opts.prefill, _response_output_text(response))
+                    return ModelResult(
+                        success=True,
+                        text=text,
+                        model_name=self.model_name,
+                        input_tokens=total_in or _estimate_tokens(prompt),
+                        output_tokens=total_out or _estimate_tokens(text),
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        retries=turn,
+                        metadata={
+                            "provider": self.provider_name,
+                            "turns": turn + 1,
+                            "tool_calls": tool_call_count,
+                            "tool_result_bytes": tool_result_bytes,
+                            "finish_reason": finish_reason,
+                            "finish_reasons": finish_reasons,
+                            "conversation_trace": conversation_trace,
+                            "tool_call_ledger": tool_ledger,
+                            "context_bytes": 0,
+                        },
+                    )
+
+                next_input = []
+                for call in function_calls:
+                    try:
+                        args = json.loads(call.get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    tool_name = str(call.get("name") or "")
+                    ok = True
+                    error = None
+                    try:
+                        result = _execute_staging_tool(tool_name, args, staging_dir, scoped_tools)
+                    except Exception as exc:
+                        ok = False
+                        error = str(exc)
+                        result = f"ERROR: {error}"
+                    tool_call_count += 1
+                    result_bytes = len(result.encode("utf-8"))
+                    tool_result_bytes += result_bytes
+                    tool_ledger.append({
+                        "turn": turn + 1,
+                        "tool": tool_name,
+                        "args": args,
+                        "ok": ok,
+                        "bytes": result_bytes,
+                        "error": error,
+                    })
+                    next_input.append({
+                        "type": "function_call_output",
+                        "call_id": call.get("call_id", ""),
+                        "output": result,
+                    })
+            except Exception as exc:
+                last_error = _sdk_error(exc)
+                if turn < max_turns - 1:
+                    await asyncio.sleep(min(2 ** turn, 8))
+
+        return ModelResult(
+            success=False,
+            model_name=self.model_name,
+            input_tokens=total_in,
+            output_tokens=total_out,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            retries=max_turns,
+            raw_error=last_error or "max_turns exceeded",
+            metadata={
+                "provider": self.provider_name,
+                "turns": max_turns,
+                "tool_calls": tool_call_count,
+                "tool_result_bytes": tool_result_bytes,
+                "finish_reasons": finish_reasons,
+                "conversation_trace": conversation_trace,
+                "tool_call_ledger": tool_ledger,
+                "incomplete_reason": "max_turns",
+            },
+        )
+
 
 class OpenAICompatibleProvider:
     """Adapter for OpenAI-compatible chat-completions APIs."""
@@ -611,19 +888,97 @@ class MoonshotKimiProvider(OpenAICompatibleProvider):
         )
 
 
-class GoogleGeminiProvider(OpenAICompatibleProvider):
-    """Gemini adapter using Google's OpenAI-compatible endpoint."""
+class GoogleGeminiProvider:
+    """Gemini adapter using Google's official Gen AI SDK."""
 
-    supports_tools: bool = True
+    supports_tools: bool = False
 
     def __init__(self, model_name: str, api_key: str | None, base_url: str | None = None) -> None:
-        super().__init__(
-            model_name,
-            api_key=api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"),
-            base_url=base_url or "https://generativelanguage.googleapis.com/v1beta/openai",
-            include_temperature=True,
-            provider_name="google",
+        self.provider_name = "google"
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        self.base_url = base_url or "https://generativelanguage.googleapis.com"
+
+    def _client(self):
+        from google import genai
+
+        return genai.Client(api_key=self.api_key)
+
+    async def complete(
+        self,
+        prompt: str,
+        context_files: list[Path] | None = None,
+        options: ModelOptions | None = None,
+    ) -> ModelResult:
+        opts = options or ModelOptions()
+        context = _read_context(context_files)
+        full_prompt = prompt + context
+        estimated_tokens = _estimate_tokens(full_prompt)
+        ctx_limit = config.context_max_tokens
+        if estimated_tokens > ctx_limit:
+            raise RuntimeError(
+                f"Context too large: ~{estimated_tokens:,} estimated tokens exceeds "
+                f"MCP_CONTEXT_MAX_TOKENS={ctx_limit:,}. Reduce engineering facts or split the group."
+            )
+        metadata = {
+            "provider": self.provider_name,
+            "estimated_input_tokens": estimated_tokens,
+            **_context_metadata(context_files),
+        }
+        start = time.monotonic()
+        last_error: str | None = None
+
+        for attempt in range(opts.retries + 1):
+            try:
+                client = self._client()
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=self.model_name,
+                    contents=full_prompt,
+                    config={
+                        "max_output_tokens": opts.max_tokens,
+                        "temperature": opts.temperature,
+                        **opts.provider_options,
+                    },
+                )
+                raw_text = str(getattr(response, "text", "") or "")
+                text = _apply_prefill(opts.prefill, raw_text)
+                usage = getattr(response, "usage_metadata", None)
+                usage_data = _model_dump(usage)
+                return ModelResult(
+                    success=True,
+                    text=text,
+                    model_name=self.model_name,
+                    input_tokens=int(usage_data.get("prompt_token_count") or estimated_tokens),
+                    output_tokens=int(usage_data.get("candidates_token_count") or _estimate_tokens(text)),
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    retries=attempt,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                last_error = _sdk_error(exc)
+                if attempt < opts.retries:
+                    await asyncio.sleep(min(2 ** attempt, 4))
+
+        return ModelResult(
+            success=False,
+            model_name=self.model_name,
+            input_tokens=estimated_tokens,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            retries=opts.retries,
+            raw_error=last_error,
+            metadata=metadata,
         )
+
+    async def complete_with_tools(
+        self,
+        prompt: str,
+        staging_dir: Path,
+        options: ModelOptions | None = None,
+        max_turns: int = 30,
+        scoped_tools: Any | None = None,
+    ) -> ModelResult:
+        raise NotImplementedError("GoogleGeminiProvider does not support harness tool-use")
 
 
 class OllamaCompatibleProvider(OpenAICompatibleProvider):
@@ -828,7 +1183,7 @@ class ClaudeCliModelProvider:
 
 
 class AnthropicProvider:
-    """Adapter for Anthropic's Messages API."""
+    """Adapter for Anthropic's official Python SDK and Messages API."""
 
     supports_tools: bool = True
 
@@ -836,6 +1191,12 @@ class AnthropicProvider:
         self.model_name = model_name
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.provider_name = "anthropic"
+        self.base_url = "https://api.anthropic.com"
+
+    def _client(self, timeout_s: float):
+        from anthropic import AsyncAnthropic
+
+        return AsyncAnthropic(api_key=self.api_key, timeout=timeout_s)
 
     async def complete(
         self,
@@ -871,24 +1232,13 @@ class AnthropicProvider:
                 messages: list[dict[str, str]] = [{"role": "user", "content": full_prompt}]
                 if opts.prefill:
                     messages.append({"role": "assistant", "content": opts.prefill})
-                payload: dict[str, Any] = {
-                    "model": self.model_name,
-                    "max_tokens": opts.max_tokens,
-                    "messages": messages,
-                }
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-api-key": self.api_key or "",
-                    "anthropic-version": "2023-06-01",
-                }
-                async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
-                    resp = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                response = await self._client(opts.timeout_s).messages.create(
+                    model=self.model_name,
+                    max_tokens=opts.max_tokens,
+                    messages=messages,
+                    **opts.provider_options,
+                )
+                data = response.model_dump()
                 raw_text = (data.get("content") or [{}])[0].get("text", "")
                 text = _apply_prefill(opts.prefill, raw_text)
                 usage = data.get("usage", {}) or {}
@@ -902,18 +1252,8 @@ class AnthropicProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
-            except httpx.HTTPStatusError as exc:
-                body = exc.response.text.strip()
-                last_error = (
-                    f"{type(exc).__name__}: {exc.response.status_code} "
-                    f"{exc.response.reason_phrase} for {exc.request.method} {exc.request.url}"
-                )
-                if body:
-                    last_error = f"{last_error} :: {body}"
-                if attempt < opts.retries:
-                    await asyncio.sleep(min(2**attempt, 4))
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = _sdk_error(exc)
                 if attempt < opts.retries:
                     await asyncio.sleep(min(2**attempt, 4))
 
@@ -946,28 +1286,16 @@ class AnthropicProvider:
         tool_ledger: list[dict[str, Any]] = []
         last_error: str | None = None
 
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key or "",
-            "anthropic-version": "2023-06-01",
-        }
-
         for turn in range(max_turns):
-            payload: dict[str, Any] = {
-                "model": self.model_name,
-                "max_tokens": opts.max_tokens,
-                "messages": messages,
-                "tools": STAGING_TOOLS_ANTHROPIC,
-            }
             try:
-                async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
-                    resp = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                response = await self._client(opts.timeout_s).messages.create(
+                    model=self.model_name,
+                    max_tokens=opts.max_tokens,
+                    messages=messages,
+                    tools=STAGING_TOOLS_ANTHROPIC,
+                    **opts.provider_options,
+                )
+                data = response.model_dump()
 
                 usage = data.get("usage") or {}
                 total_in += int(usage.get("input_tokens") or 0)
@@ -1080,18 +1408,8 @@ class AnthropicProvider:
                     })
                 messages.append({"role": "user", "content": tool_results})
 
-            except httpx.HTTPStatusError as exc:
-                body = exc.response.text.strip()
-                last_error = (
-                    f"{type(exc).__name__}: {exc.response.status_code} "
-                    f"{exc.response.reason_phrase} for {exc.request.method} {exc.request.url}"
-                )
-                if body:
-                    last_error = f"{last_error} :: {body}"
-                if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = _sdk_error(exc)
                 if turn < max_turns - 1:
                     await asyncio.sleep(min(2 ** turn, 8))
 

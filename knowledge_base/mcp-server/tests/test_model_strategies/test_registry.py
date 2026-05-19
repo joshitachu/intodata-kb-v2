@@ -9,6 +9,7 @@ from mcp_server.model_strategies import (
     resolve_generation_models,
     supported_model_ids,
 )
+from mcp_server.model_strategies.registry import create_model_provider
 
 
 def test_model_registry_exposes_current_discovery_models():
@@ -126,6 +127,28 @@ def test_deepseek_provider_is_distinct_from_openai():
     assert resolved.provider_type == "deepseek/deepseek-chat"
     assert resolved.analysis_model == "deepseek/deepseek-chat"
     assert resolved.write_model == "openai/gpt-5.4-mini"
+
+
+def test_first_party_providers_use_official_adapters(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    openai_provider = create_model_provider("openai/gpt-5.4-mini")
+    anthropic_provider = create_model_provider("anthropic/claude-sonnet-4-6")
+    google_provider = create_model_provider("google/gemini-2.5-flash")
+    deepseek_provider = create_model_provider("deepseek/deepseek-chat")
+
+    assert type(openai_provider).__name__ == "OpenAIOfficialProvider"
+    assert openai_provider.base_url == "https://api.openai.com/v1"
+    assert type(anthropic_provider).__name__ == "AnthropicProvider"
+    assert anthropic_provider.base_url == "https://api.anthropic.com"
+    assert type(google_provider).__name__ == "GoogleGeminiProvider"
+    assert google_provider.base_url == "https://generativelanguage.googleapis.com"
+    assert google_provider.supports_tools is False
+    assert type(deepseek_provider).__name__ == "OpenAICompatibleProvider"
+    assert deepseek_provider.base_url == "https://api.deepseek.com/v1"
 
 
 def test_legacy_openai_deepseek_id_normalizes_to_deepseek():
