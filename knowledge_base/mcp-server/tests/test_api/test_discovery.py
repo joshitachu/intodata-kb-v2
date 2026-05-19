@@ -20,31 +20,31 @@ async def test_list_models(client):
     data = resp.json()
     ids = {m["id"] for m in data["models"]}
     assert "custom" not in ids
-    assert "moonshot/kimi-k2.6" in ids
+    assert "google/gemini-2.5-flash" in ids
     assert "claude-cli" in ids
-    kimi = next(m for m in data["models"] if m["id"] == "moonshot/kimi-k2.6")
+    gemini = next(m for m in data["models"] if m["id"] == "google/gemini-2.5-flash")
     claude_cli = next(m for m in data["models"] if m["id"] == "claude-cli")
-    assert kimi["supports_analysis"] is True
-    assert kimi["supports_writing"] is True
+    assert gemini["supports_analysis"] is True
+    assert gemini["supports_writing"] is True
     assert claude_cli["supports_writing"] is True
 
 
 async def test_list_models_marks_effective_provider_default(client, monkeypatch):
     from mcp_server.config import config
 
-    monkeypatch.setattr(config, "doc_generation_provider", "openai/deepseek-v4-pro")
-    monkeypatch.setattr(config, "doc_generation_model", "moonshot/kimi-k2.6")
-    monkeypatch.setattr(config, "doc_generation_write_model", "moonshot/kimi-k2.6")
+    monkeypatch.setattr(config, "doc_generation_provider", "openai/gpt-5.4")
+    monkeypatch.setattr(config, "doc_generation_model", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setattr(config, "doc_generation_write_model", "google/gemini-2.5-flash")
 
     resp = await client.get("/mcp/models")
     assert resp.status_code == 200
     data = resp.json()
 
-    deepseek = next(m for m in data["models"] if m["id"] == "openai/deepseek-v4-pro")
-    kimi = next(m for m in data["models"] if m["id"] == "moonshot/kimi-k2.6")
-    assert deepseek["is_default_analysis"] is True
-    assert kimi["is_default_analysis"] is False
-    assert kimi["is_default_writing"] is True
+    openai_model = next(m for m in data["models"] if m["id"] == "openai/gpt-5.4")
+    gemini = next(m for m in data["models"] if m["id"] == "google/gemini-2.5-flash")
+    assert openai_model["is_default_analysis"] is True
+    assert gemini["is_default_analysis"] is False
+    assert gemini["is_default_writing"] is True
 
 
 async def test_invalid_platform_still_rejected(client):

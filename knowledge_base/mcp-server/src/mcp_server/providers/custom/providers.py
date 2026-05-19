@@ -611,6 +611,21 @@ class MoonshotKimiProvider(OpenAICompatibleProvider):
         )
 
 
+class GoogleGeminiProvider(OpenAICompatibleProvider):
+    """Gemini adapter using Google's OpenAI-compatible endpoint."""
+
+    supports_tools: bool = True
+
+    def __init__(self, model_name: str, api_key: str | None, base_url: str | None = None) -> None:
+        super().__init__(
+            model_name,
+            api_key=api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"),
+            base_url=base_url or "https://generativelanguage.googleapis.com/v1beta/openai",
+            include_temperature=True,
+            provider_name="google",
+        )
+
+
 class OllamaCompatibleProvider(OpenAICompatibleProvider):
     """Ollama adapter via its OpenAI-compatible `/v1` API."""
 

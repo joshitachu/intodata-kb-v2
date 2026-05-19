@@ -74,22 +74,24 @@ class MCPServerConfig(BaseSettings):
     # Doc generation
     doc_generation_provider: str = "custom"
     # Supported values:
-    #   "custom" | "moonshot/<model>" | "openai/<model>" | "ollama/<model>" | "anthropic/<model>"
+    #   "custom" | "openai/<model>" | "anthropic/<model>" | "google/<model>" | "ollama/<model>"
     #   "claude-cli" (legacy subprocess fallback)
 
     # "single_shot" — Python pre-reads files, model extracts evidence in one call (works with any model)
     # "agentic"     — multi-turn action loop (requires Claude-level instruction following)
     investigation_strategy: str = "single_shot"
 
-    doc_generation_model: str = "moonshot/kimi-k2.6"
+    doc_generation_model: str = "anthropic/claude-sonnet-4-6"
     # write_model for Phase 3 (doc writing) — use "provider/model" format or "claude-cli".
-    # Example: "anthropic/claude-sonnet-4-6", "openai/gpt-4o", "moonshot/kimi-k2.6", "claude-cli"
-    # Set to same value as doc_generation_provider to use one model for all phases.
-    doc_generation_write_model: str = "openai/deepseek-v4-pro"
+    # Example: "anthropic/claude-sonnet-4-6", "google/gemini-2.5-pro", "openai/gpt-4.1", "claude-cli"
+    # Set to same value as doc_generation_model to use one model for all phases.
+    doc_generation_write_model: str = "anthropic/claude-sonnet-4-6"
     # Phase 1 investigation model. Defaults to doc_generation_model if not set.
-    doc_generation_investigation_model: str | None = None   # MCP_DOC_GENERATION_INVESTIGATION_MODEL
+    doc_generation_investigation_model: str | None = (
+        "google/gemini-2.5-flash"
+    )  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
     # Fallback model on provider failure (rate-limit, network, auth). No fallback if not set.
-    doc_generation_fallback_model: str | None = None         # MCP_DOC_GENERATION_FALLBACK_MODEL
+    doc_generation_fallback_model: str | None = "openai/gpt-5.4"  # MCP_DOC_GENERATION_FALLBACK_MODEL
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
 
     # API-based providers (anthropic/, openai/, google/, ollama/)
@@ -177,7 +179,7 @@ class MCPServerConfig(BaseSettings):
 
     # Deep Dive repo-agent runtime
     deep_dive_engine: str = "repo_agent"               # MCP_DEEP_DIVE_ENGINE: repo_agent | claude_cli
-    deep_dive_model: str = "openai/deepseek-v4-pro"    # MCP_DEEP_DIVE_MODEL
+    deep_dive_model: str = "anthropic/claude-sonnet-4-6"  # MCP_DEEP_DIVE_MODEL
     deep_dive_api_key: str | None = None               # MCP_DEEP_DIVE_API_KEY
     deep_dive_base_url: str | None = None              # MCP_DEEP_DIVE_BASE_URL
     deep_dive_max_tool_calls: int = 40                 # MCP_DEEP_DIVE_MAX_TOOL_CALLS

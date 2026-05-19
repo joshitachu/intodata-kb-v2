@@ -19,10 +19,10 @@ def get_provider(
     The provider is selected by MCP_DOC_GENERATION_PROVIDER (default: custom).
     Supported values:
       - "custom"             — custom Python harness using MCP_DOC_GENERATION_MODEL
-      - "moonshot/<model>"   — custom harness + Moonshot/Kimi adapter
       - "openai/<model>"     — custom harness + OpenAI-compatible adapter
-      - "ollama/<model>"     — custom harness + Ollama-compatible adapter
       - "anthropic/<model>"  — custom harness + Anthropic API adapter
+      - "google/<model>"     — custom harness + Gemini OpenAI-compatible adapter
+      - "ollama/<model>"     — custom harness + Ollama-compatible adapter
       - "claude-cli"         — legacy Claude Code CLI subprocess fallback
 
     write_model: optional override for Phase 3 doc-writing model (must be "provider/model" format).
@@ -67,7 +67,6 @@ def get_provider(
 
     raise ValueError(
         f"Unknown doc generation provider: {provider_type or config.doc_generation_provider!r}. "
-        f"Supported: 'custom', 'moonshot/<model>', 'openai/<model>', 'ollama/<model>', "
-        f"'anthropic/<model>', or 'claude-cli'. "
-        f"'google/<model>' is not supported — change this project to a supported provider."
+        f"Supported: 'custom', 'openai/<model>', 'anthropic/<model>', "
+        f"'google/<model>', 'ollama/<model>', or 'claude-cli'."
     )

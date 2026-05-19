@@ -197,8 +197,10 @@ def test_provider_factory_defaults_to_custom(monkeypatch):
     from mcp_server.providers.custom import CustomHarnessProvider
 
     monkeypatch.setattr(config, "doc_generation_provider", "custom")
-    monkeypatch.setattr(config, "doc_generation_model", "moonshot/test-model")
-    monkeypatch.setattr(config, "doc_generation_write_model", "moonshot/test-model")
+    monkeypatch.setattr(config, "doc_generation_model", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setattr(config, "doc_generation_write_model", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setattr(config, "doc_generation_investigation_model", None)
+    monkeypatch.setattr(config, "doc_generation_fallback_model", None)
 
     provider = get_provider()
 

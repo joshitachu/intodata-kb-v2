@@ -8,9 +8,9 @@ from mcp_server.model_strategies.strategies import (
     AnthropicModelStrategy,
     ClaudeCliStrategy,
     CustomHarnessStrategy,
+    GoogleModelStrategy,
     ModelDescriptorData,
     ModelProviderStrategy,
-    MoonshotModelStrategy,
     OllamaModelStrategy,
     OpenAIModelStrategy,
 )
@@ -29,7 +29,7 @@ _STRATEGIES: tuple[ModelProviderStrategy, ...] = (
     CustomHarnessStrategy(),
     OpenAIModelStrategy(),
     AnthropicModelStrategy(),
-    MoonshotModelStrategy(),
+    GoogleModelStrategy(),
     OllamaModelStrategy(),
     ClaudeCliStrategy(),
 )
@@ -138,7 +138,6 @@ def resolve_generation_models(
 def _unsupported_model_message(model_id: str) -> str:
     return (
         f"Unsupported model/provider: {model_id!r}. "
-        "Supported: 'custom', 'moonshot/<model>', 'openai/<model>', 'ollama/<model>', "
-        "'anthropic/<model>', or 'claude-cli'. "
-        "'google/<model>' is not supported — change this project to a supported provider."
+        "Supported: 'custom', 'openai/<model>', 'anthropic/<model>', 'google/<model>', "
+        "'ollama/<model>', or 'claude-cli'."
     )

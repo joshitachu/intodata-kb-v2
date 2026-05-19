@@ -71,9 +71,44 @@ class OpenAIModelStrategy(ModelProviderStrategy):
     def descriptors(self) -> list[ModelDescriptorData]:
         return [
             ModelDescriptorData(
-                id="openai/deepseek-v4-pro",
+                id="openai/gpt-5.5",
                 provider=self.provider_id,
-                label="DeepSeek V4 Pro (recommended)",
+                label="OpenAI GPT-5.5",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="openai/gpt-5.4",
+                provider=self.provider_id,
+                label="OpenAI GPT-5.4",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="openai/gpt-5.4-mini",
+                provider=self.provider_id,
+                label="OpenAI GPT-5.4 Mini",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="openai/gpt-5",
+                provider=self.provider_id,
+                label="OpenAI GPT-5",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="openai/gpt-4.5",
+                provider=self.provider_id,
+                label="OpenAI GPT-4.5",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="openai/gpt-4.1",
+                provider=self.provider_id,
+                label="OpenAI GPT-4.1",
                 supports_analysis=True,
                 supports_writing=True,
             ),
@@ -87,8 +122,8 @@ class OpenAIModelStrategy(ModelProviderStrategy):
         ]
 
 
-class MoonshotModelStrategy(ModelProviderStrategy):
-    provider_id = "moonshot"
+class GoogleModelStrategy(ModelProviderStrategy):
+    provider_id = "google"
 
     def create_model_provider(
         self,
@@ -98,19 +133,44 @@ class MoonshotModelStrategy(ModelProviderStrategy):
         base_url: str | None = None,
         ollama_base_url: str | None = None,
     ):
-        from mcp_server.providers.custom.providers import MoonshotKimiProvider
+        from mcp_server.providers.custom.providers import GoogleGeminiProvider
 
-        return MoonshotKimiProvider(self.parse_model_name(model_id), api_key=api_key, base_url=base_url)
+        return GoogleGeminiProvider(
+            self.parse_model_name(model_id),
+            api_key=api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"),
+            base_url=base_url,
+        )
 
     def descriptors(self) -> list[ModelDescriptorData]:
         return [
             ModelDescriptorData(
-                id="moonshot/kimi-k2.6",
+                id="google/gemini-3.1-pro-preview",
                 provider=self.provider_id,
-                label="Kimi k2.6",
+                label="Gemini 3.1 Pro Preview",
                 supports_analysis=True,
                 supports_writing=True,
-            )
+            ),
+            ModelDescriptorData(
+                id="google/gemini-2.5-pro",
+                provider=self.provider_id,
+                label="Gemini 2.5 Pro",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="google/gemini-2.5-flash-lite",
+                provider=self.provider_id,
+                label="Gemini 2.5 Flash-Lite",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="google/gemini-2.5-flash",
+                provider=self.provider_id,
+                label="Gemini 2.5 Flash",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
         ]
 
 
