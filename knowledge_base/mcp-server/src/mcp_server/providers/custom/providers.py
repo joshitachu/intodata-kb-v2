@@ -302,6 +302,34 @@ def _model_dump(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _first_dict(value: Any) -> dict[str, Any]:
+    items = _as_list(value)
+    return _as_dict(items[0]) if items else {}
+
+
+def _message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            data = _as_dict(item)
+            if data:
+                chunks.append(str(data.get("text") or data.get("content") or ""))
+            elif isinstance(item, str):
+                chunks.append(item)
+        return "".join(chunks)
+    return ""
+
+
 def _response_output_items(response: Any) -> list[Any]:
     output = getattr(response, "output", None)
     if output is None and isinstance(response, dict):
@@ -333,6 +361,35 @@ def _response_usage(response: Any) -> tuple[int, int]:
     input_tokens = data.get("input_tokens") or data.get("prompt_tokens") or 0
     output_tokens = data.get("output_tokens") or data.get("completion_tokens") or 0
     return int(input_tokens or 0), int(output_tokens or 0)
+
+
+def _chat_completion_message_text(message: Any) -> str:
+    return _message_content_text(_as_dict(message).get("content"))
+
+
+def _chat_completion_usage(data: Any) -> dict[str, Any]:
+    return _as_dict(_as_dict(data).get("usage"))
+
+
+def _normalize_openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in _as_list(tool_calls):
+        call = _as_dict(item)
+        if not call:
+            continue
+        function = _as_dict(call.get("function"))
+        if not function:
+            # Some compatible providers flatten the function payload.
+            function = {
+                "name": call.get("name") or call.get("tool_name") or call.get("tool"),
+                "arguments": call.get("arguments") or call.get("args") or "{}",
+            }
+        normalized.append({
+            **call,
+            "id": str(call.get("id") or call.get("call_id") or ""),
+            "function": function,
+        })
+    return normalized
 
 
 class OpenAIOfficialProvider:
@@ -506,6 +563,7 @@ class OpenAIOfficialProvider:
                         args = json.loads(call.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    args = _as_dict(args)
                     tool_name = str(call.get("name") or "")
                     ok = True
                     error = None
@@ -634,11 +692,12 @@ class OpenAICompatibleProvider:
                         headers=headers,
                     )
                     resp.raise_for_status()
-                    data = resp.json()
-                choice = data.get("choices", [{}])[0]
-                raw_text = choice.get("message", {}).get("content", "")
+                    data = _as_dict(resp.json())
+                choice = _first_dict(_as_dict(data).get("choices"))
+                message = _as_dict(choice.get("message"))
+                raw_text = _chat_completion_message_text(message)
                 text = _apply_prefill(opts.prefill, raw_text)
-                usage = data.get("usage", {}) or {}
+                usage = _chat_completion_usage(data)
                 finish_reason = choice.get("finish_reason")
                 if finish_reason:
                     metadata["finish_reason"] = finish_reason
@@ -720,15 +779,15 @@ class OpenAICompatibleProvider:
                         headers=headers,
                     )
                     resp.raise_for_status()
-                    data = resp.json()
+                data = _as_dict(resp.json())
 
-                usage = data.get("usage") or {}
+                usage = _chat_completion_usage(data)
                 total_in += int(usage.get("prompt_tokens") or 0)
                 total_out += int(usage.get("completion_tokens") or 0)
 
-                choice = (data.get("choices") or [{}])[0]
-                message = choice.get("message") or {}
-                tool_calls = message.get("tool_calls") or []
+                choice = _first_dict(data.get("choices"))
+                message = _as_dict(choice.get("message"))
+                tool_calls = _normalize_openai_tool_calls(message.get("tool_calls"))
                 finish_reason = choice.get("finish_reason", "")
                 if finish_reason:
                     finish_reasons.append(finish_reason)
@@ -739,16 +798,16 @@ class OpenAICompatibleProvider:
                     "tool_calls": [
                         {
                             "id": tc.get("id", ""),
-                            "name": (tc.get("function") or {}).get("name", ""),
-                            "arguments": (tc.get("function") or {}).get("arguments", ""),
+                            "name": _as_dict(tc.get("function")).get("name", ""),
+                            "arguments": _as_dict(tc.get("function")).get("arguments", ""),
                         }
                         for tc in tool_calls
                     ],
-                    "content_bytes": len((message.get("content") or "").encode("utf-8")),
+                    "content_bytes": len(_chat_completion_message_text(message).encode("utf-8")),
                 })
 
                 if finish_reason == "length":
-                    text = _apply_prefill(opts.prefill, message.get("content") or "")
+                    text = _apply_prefill(opts.prefill, _chat_completion_message_text(message))
                     return ModelResult(
                         success=False,
                         text=text,
@@ -773,7 +832,7 @@ class OpenAICompatibleProvider:
                     )
 
                 if not tool_calls or finish_reason == "stop":
-                    text = _apply_prefill(opts.prefill, message.get("content") or "")
+                    text = _apply_prefill(opts.prefill, _chat_completion_message_text(message))
                     return ModelResult(
                         success=True,
                         text=text,
@@ -804,11 +863,12 @@ class OpenAICompatibleProvider:
                     assistant_msg["reasoning_content"] = message["reasoning_content"]
                 messages.append(assistant_msg)
                 for tc in tool_calls:
-                    fn = tc.get("function") or {}
+                    fn = _as_dict(tc.get("function"))
                     try:
                         args = json.loads(fn.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    args = _as_dict(args)
                     tool_name = fn.get("name", "")
                     ok = True
                     error = None

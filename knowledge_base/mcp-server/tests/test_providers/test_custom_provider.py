@@ -2140,6 +2140,84 @@ async def test_openai_tool_loop_accounts_turns_tokens_and_tool_results(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_openai_tool_loop_tolerates_deepseek_variant_tool_payloads(tmp_path, monkeypatch):
+    import httpx
+    import mcp_server.providers.custom.providers as provider_module
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    (staging / "engineering_facts.md").write_text("Unit A inventory evidence\n", encoding="utf-8")
+    calls = []
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json, headers):
+            calls.append(json)
+            if len(calls) == 1:
+                return httpx.Response(
+                    200,
+                    request=httpx.Request("POST", url),
+                    json={
+                        "choices": [
+                            {
+                                "finish_reason": "tool_calls",
+                                "message": {
+                                    "content": [{"type": "text", "text": ""}],
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "read_artifact",
+                                                "arguments": ["not", "an", "object"],
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 11, "completion_tokens": 3},
+                    },
+                )
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": [{"type": "text", "text": "Unit A final analysis"}]},
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 17, "completion_tokens": 9},
+                },
+            )
+
+    monkeypatch.setattr(provider_module.httpx, "AsyncClient", _FakeAsyncClient)
+    provider = OpenAICompatibleProvider(
+        "deepseek/deepseek-v4-pro",
+        api_key="test",
+        base_url="http://example.test/v1",
+        provider_name="deepseek",
+    )
+
+    result = await provider.complete_with_tools("Analyze Unit A", staging, ModelOptions())
+
+    assert result.success
+    assert result.text == "Unit A final analysis"
+    assert result.metadata["tool_calls"] == 1
+    assert result.metadata["tool_call_ledger"][0]["ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_openai_tool_loop_rejects_length_finish_reason(tmp_path, monkeypatch):
     import httpx
     import mcp_server.providers.custom.providers as provider_module
