@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from mcp_server.config import config
-from mcp_server.model_strategies.registry import create_model_provider
+from mcp_server.model_strategies.registry import create_model_provider, normalize_model_id
 from mcp_server.providers.custom.models import ModelOptions
 from mcp_server.services.quick_change_scanner import QuickScanReport
 
@@ -68,10 +68,12 @@ class DocImpactAgent:
             if doc_generation_provider and "/" in doc_generation_provider
             else config.doc_generation_write_model
         )
+        model_id = normalize_model_id(model_id)
+        provider_config = _provider_config(model_id)
         return create_model_provider(
             model_id,
-            api_key=config.doc_generation_api_key,
-            base_url=config.doc_generation_base_url,
+            api_key=provider_config["api_key"],
+            base_url=provider_config["base_url"],
             ollama_base_url=config.ollama_base_url,
         )
 
@@ -89,6 +91,22 @@ class DocImpactAgent:
             f"Quick scan:\n{json.dumps(quick_scan.to_dict(), ensure_ascii=False, indent=2)}\n\n"
             f"Diff chunk summary:\n{json.dumps(diff_chunks, ensure_ascii=False, indent=2)}"
         )
+
+
+def _provider_config(model_id: str) -> dict[str, str | None]:
+    model_id = normalize_model_id(model_id)
+    provider = model_id.partition("/")[0]
+    if provider == "deepseek":
+        return {
+            "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
+            "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
+        }
+    if provider in {"openai", "anthropic", "google"}:
+        return {"api_key": None, "base_url": None}
+    return {
+        "api_key": config.doc_generation_api_key,
+        "base_url": config.doc_generation_base_url,
+    }
 
 
 def parse_impact_plan(text: str) -> DocImpactPlan:

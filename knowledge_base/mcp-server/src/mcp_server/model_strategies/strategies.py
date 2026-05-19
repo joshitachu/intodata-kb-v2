@@ -122,6 +122,52 @@ class OpenAIModelStrategy(ModelProviderStrategy):
         ]
 
 
+class DeepSeekModelStrategy(ModelProviderStrategy):
+    provider_id = "deepseek"
+
+    def create_model_provider(
+        self,
+        model_id: str,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        ollama_base_url: str | None = None,
+    ):
+        from mcp_server.providers.custom.providers import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(
+            self.parse_model_name(model_id),
+            api_key=api_key or os.environ.get("DEEPSEEK_API_KEY"),
+            base_url=base_url or "https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+
+    def descriptors(self) -> list[ModelDescriptorData]:
+        return [
+            ModelDescriptorData(
+                id="deepseek/deepseek-chat",
+                provider=self.provider_id,
+                label="DeepSeek Chat",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="deepseek/deepseek-reasoner",
+                provider=self.provider_id,
+                label="DeepSeek Reasoner",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+            ModelDescriptorData(
+                id="deepseek/deepseek-v4-pro",
+                provider=self.provider_id,
+                label="DeepSeek V4 Pro",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
+        ]
+
+
 class GoogleModelStrategy(ModelProviderStrategy):
     provider_id = "google"
 

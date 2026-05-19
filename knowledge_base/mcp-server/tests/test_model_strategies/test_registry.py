@@ -5,6 +5,7 @@ import pytest
 from mcp_server.model_strategies import (
     get_model_strategy,
     list_model_descriptors,
+    normalize_model_id,
     resolve_generation_models,
     supported_model_ids,
 )
@@ -19,6 +20,9 @@ def test_model_registry_exposes_current_discovery_models():
         "openai/gpt-4.5",
         "openai/gpt-4.1",
         "openai/gpt-4o",
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-reasoner",
+        "deepseek/deepseek-v4-pro",
         "anthropic/claude-sonnet-4-6",
         "anthropic/claude-opus-4-7",
         "google/gemini-3.1-pro-preview",
@@ -36,6 +40,7 @@ def test_model_registry_exposes_current_discovery_models():
     [
         ("custom", "custom"),
         ("claude-cli", "claude-cli"),
+        ("deepseek/deepseek-chat", "deepseek"),
         ("google/gemini-2.5-flash", "google"),
         ("openai/gpt-4o", "openai"),
         ("anthropic/claude-sonnet-4-6", "anthropic"),
@@ -106,6 +111,38 @@ def test_write_model_override_is_preserved():
 
     assert resolved.analysis_model == "google/gemini-2.5-flash"
     assert resolved.write_model == "anthropic/claude-sonnet-4-6"
+
+
+def test_deepseek_provider_is_distinct_from_openai():
+    resolved = resolve_generation_models(
+        provider_type="deepseek/deepseek-chat",
+        model=None,
+        write_model="openai/gpt-5.4-mini",
+        default_provider="custom",
+        default_analysis_model="anthropic/claude-sonnet-4-6",
+        default_write_model="anthropic/claude-sonnet-4-6",
+    )
+
+    assert resolved.provider_type == "deepseek/deepseek-chat"
+    assert resolved.analysis_model == "deepseek/deepseek-chat"
+    assert resolved.write_model == "openai/gpt-5.4-mini"
+
+
+def test_legacy_openai_deepseek_id_normalizes_to_deepseek():
+    assert normalize_model_id("openai/deepseek-v4-pro") == "deepseek/deepseek-v4-pro"
+
+    resolved = resolve_generation_models(
+        provider_type="openai/deepseek-v4-pro",
+        model=None,
+        write_model="openai/deepseek-chat",
+        default_provider="custom",
+        default_analysis_model="anthropic/claude-sonnet-4-6",
+        default_write_model="anthropic/claude-sonnet-4-6",
+    )
+
+    assert resolved.provider_type == "deepseek/deepseek-v4-pro"
+    assert resolved.analysis_model == "deepseek/deepseek-v4-pro"
+    assert resolved.write_model == "deepseek/deepseek-chat"
 
 
 def test_claude_cli_write_model_override_is_allowed():

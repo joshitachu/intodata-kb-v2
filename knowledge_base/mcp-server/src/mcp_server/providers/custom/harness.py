@@ -2764,14 +2764,34 @@ def build_custom_provider(
     instruction_pack_dir: str | None = None,
     plugin_pack_dir: Path | None = None,
 ) -> CustomHarnessProvider:
+    from mcp_server.model_strategies import normalize_model_id
+
+    model_str = normalize_model_id(model_str)
+
+    def _provider_config(model_id: str) -> dict[str, str | None]:
+        model_id = normalize_model_id(model_id)
+        provider = model_id.partition("/")[0]
+        if provider == "deepseek":
+            return {
+                "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
+                "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
+            }
+        if provider in {"openai", "anthropic", "google"}:
+            return {"api_key": None, "base_url": None}
+        return {
+            "api_key": config.doc_generation_api_key,
+            "base_url": config.doc_generation_base_url,
+        }
+
     def _build_secondary(secondary_str: str | None, *, skip_if_same: bool = True) -> ModelProvider | None:
+        secondary_str = normalize_model_id(secondary_str) if secondary_str else None
         if not secondary_str or (skip_if_same and secondary_str == model_str):
             return None
-        same_provider = secondary_str.partition("/")[0] == model_str.partition("/")[0]
+        provider_config = _provider_config(secondary_str)
         return build_model_provider(
             secondary_str,
-            api_key=config.doc_generation_api_key if same_provider else None,
-            base_url=config.doc_generation_base_url if same_provider else None,
+            api_key=provider_config["api_key"],
+            base_url=provider_config["base_url"],
             ollama_base_url=config.ollama_base_url,
         )
 
@@ -2782,8 +2802,7 @@ def build_custom_provider(
 
     main = build_model_provider(
         model_str,
-        api_key=config.doc_generation_api_key,
-        base_url=config.doc_generation_base_url,
+        **_provider_config(model_str),
         ollama_base_url=config.ollama_base_url,
     )
     return CustomHarnessProvider(

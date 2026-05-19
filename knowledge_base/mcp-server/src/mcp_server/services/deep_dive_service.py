@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from mcp_server.config import config
+from mcp_server.model_strategies import normalize_model_id
 from mcp_server.providers.custom.models import ModelOptions, ModelResult
 from mcp_server.providers.custom.providers import ModelProvider, build_model_provider
 from mcp_server.services.token_refresh import ensure_token_fresh
@@ -340,16 +341,34 @@ class RepoToolbox:
         return ToolResult(False, f"generated markdown doc not found: {filename}")
 
 
+def _provider_config(model_id: str) -> dict[str, str | None]:
+    model_id = normalize_model_id(model_id)
+    provider = model_id.partition("/")[0]
+    if provider == "deepseek":
+        return {
+            "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
+            "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
+        }
+    if provider in {"openai", "anthropic", "google"}:
+        return {"api_key": None, "base_url": None}
+    return {
+        "api_key": config.doc_generation_api_key,
+        "base_url": config.doc_generation_base_url,
+    }
+
+
 class RepoAgentEngine:
     """Small OpenHarness-style read-only repo agent."""
 
     _sessions: dict[str, AgentState] = {}
 
     def __init__(self, provider: ModelProvider | None = None) -> None:
+        model_id = normalize_model_id(config.deep_dive_model)
+        provider_config = _provider_config(model_id)
         self.provider = provider or build_model_provider(
-            config.deep_dive_model,
-            api_key=config.deep_dive_api_key or config.doc_generation_api_key,
-            base_url=config.deep_dive_base_url or config.doc_generation_base_url,
+            model_id,
+            api_key=config.deep_dive_api_key or provider_config["api_key"],
+            base_url=config.deep_dive_base_url or provider_config["base_url"],
             ollama_base_url=config.ollama_base_url,
         )
 

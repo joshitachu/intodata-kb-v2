@@ -94,10 +94,13 @@ class MCPServerConfig(BaseSettings):
     doc_generation_fallback_model: str | None = "openai/gpt-5.4"  # MCP_DOC_GENERATION_FALLBACK_MODEL
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
 
-    # API-based providers (anthropic/, openai/, google/, ollama/)
+    # API-based providers. First-party providers read ANTHROPIC_API_KEY,
+    # OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY directly. Keep the generic
+    # override for custom OpenAI-compatible endpoints and legacy DeepSeek setups.
     doc_generation_api_key: str | None = None
-    # Overrides ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY env vars
     doc_generation_base_url: str | None = None
+    doc_generation_deepseek_api_key: str | None = None
+    doc_generation_deepseek_base_url: str | None = None
     # For Ollama or custom OpenAI-compatible endpoints: "http://localhost:11434"
     model_pricing_json: str = ""
     # JSON object mapping model names to USD-per-million-token rates.

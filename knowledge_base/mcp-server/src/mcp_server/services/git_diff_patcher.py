@@ -15,7 +15,7 @@ from json_repair import repair_json
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
-from mcp_server.model_strategies.registry import create_model_provider
+from mcp_server.model_strategies.registry import create_model_provider, normalize_model_id
 from mcp_server.providers.custom.models import ModelOptions
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
@@ -1101,12 +1101,30 @@ def _patch_provider(doc_generation_provider: str | None):
         if doc_generation_provider and "/" in doc_generation_provider
         else config.doc_generation_write_model
     )
+    model_id = normalize_model_id(model_id)
+    provider_config = _provider_config(model_id)
     return create_model_provider(
         model_id,
-        api_key=config.doc_generation_api_key,
-        base_url=config.doc_generation_base_url,
+        api_key=provider_config["api_key"],
+        base_url=provider_config["base_url"],
         ollama_base_url=config.ollama_base_url,
     )
+
+
+def _provider_config(model_id: str) -> dict[str, str | None]:
+    model_id = normalize_model_id(model_id)
+    provider = model_id.partition("/")[0]
+    if provider == "deepseek":
+        return {
+            "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
+            "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
+        }
+    if provider in {"openai", "anthropic", "google"}:
+        return {"api_key": None, "base_url": None}
+    return {
+        "api_key": config.doc_generation_api_key,
+        "base_url": config.doc_generation_base_url,
+    }
 
 
 def _parse_agent_json(text: str) -> dict[str, Any]:

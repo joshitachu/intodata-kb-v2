@@ -207,6 +207,47 @@ def test_provider_factory_defaults_to_custom(monkeypatch):
     assert isinstance(provider, CustomHarnessProvider)
 
 
+def test_custom_provider_does_not_apply_deepseek_override_to_openai(monkeypatch):
+    from mcp_server.config import config
+    from mcp_server.providers.custom.harness import build_custom_provider
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(config, "doc_generation_api_key", "deepseek-key")
+    monkeypatch.setattr(config, "doc_generation_base_url", "https://api.deepseek.com/v1")
+    monkeypatch.setattr(config, "doc_generation_deepseek_api_key", None)
+    monkeypatch.setattr(config, "doc_generation_deepseek_base_url", None)
+
+    provider = build_custom_provider(
+        "openai/gpt-5.4-mini",
+        fallback_model_str="openai/gpt-5.4",
+        investigation_model_str="google/gemini-2.5-flash",
+    )
+
+    assert provider.model_provider.provider_name == "openai"
+    assert provider.model_provider.base_url == "https://api.openai.com/v1"
+    assert provider.model_provider.api_key is None
+    assert provider.fallback_provider.provider_name == "openai"
+    assert provider.fallback_provider.base_url == "https://api.openai.com/v1"
+    assert provider.investigation_provider.provider_name == "google"
+
+
+def test_custom_provider_applies_legacy_override_to_deepseek(monkeypatch):
+    from mcp_server.config import config
+    from mcp_server.providers.custom.harness import build_custom_provider
+
+    monkeypatch.setattr(config, "doc_generation_api_key", "deepseek-key")
+    monkeypatch.setattr(config, "doc_generation_base_url", "https://api.deepseek.com/v1")
+    monkeypatch.setattr(config, "doc_generation_deepseek_api_key", None)
+    monkeypatch.setattr(config, "doc_generation_deepseek_base_url", None)
+
+    provider = build_custom_provider("deepseek/deepseek-chat")
+
+    assert provider.model_provider.provider_name == "deepseek"
+    assert provider.model_provider.model_name == "deepseek-chat"
+    assert provider.model_provider.api_key == "deepseek-key"
+    assert provider.model_provider.base_url == "https://api.deepseek.com/v1"
+
+
 def test_publish_gate_fails_on_missing_group_analysis(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A"), _job("b", "B")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
