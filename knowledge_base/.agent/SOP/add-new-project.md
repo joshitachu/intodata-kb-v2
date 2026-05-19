@@ -30,17 +30,16 @@ How to register and scan a new integration project for documentation generation.
    get_chunks(project_id)        -- Verify chunks were created
    ```
 
-5. **Run documentation generation** following `sop/run-doc-generation.md`.
+5. **Run documentation generation** -- trigger via dashboard "Generate" button or `POST /mcp/generate`.
 
 ## Platform Support
 
-Currently supported:
-- **Talend** (`--platform talend`) -- Parses Talend XML/XMI job definitions
-
-Planned (architecture supports extension):
-- MuleSoft
-- dbt
-- Other integration platforms
+| Platform | Value | Notes |
+|----------|-------|-------|
+| Talend | `talend` | XML/XMI job definitions |
+| Workato | `workato` | Recipe JSON exports |
+| Generic | `generic` | Flat file codebases |
+| Lobster | `lobster` | Lobster Data integration |
 
 Each platform has its own parser in `intodoc/src/intodoc/platforms/<name>/`.
 

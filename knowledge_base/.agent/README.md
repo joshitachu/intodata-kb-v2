@@ -5,7 +5,7 @@
 | You are...                        | Read these files                                    |
 |-----------------------------------|-----------------------------------------------------|
 | Starting any session              | This file + `.claude/PROGRESS_LOG.md`               |
-| Generating documentation          | `system/mcp-workflow.md`, `sop/run-doc-generation.md` |
+| Generating documentation          | `system/mcp-workflow.md`                              |
 | Understanding the architecture    | `system/architecture.md`, `system/tech-stack.md`    |
 | Adding a new project to scan      | `sop/add-new-project.md`                            |
 | Working on the scanner (intodoc)  | `intodoc/.agent/README.md`, `intodoc/CLAUDE.md`     |
@@ -26,7 +26,6 @@
 - `dashboard.md` -- Dashboard components, features, API integration
 
 ### sop/ -- How to do things
-- `run-doc-generation.md` -- End-to-end guide: scan -> analyze -> write docs -> RAG
 - `add-new-project.md` -- Register and scan a new project
 - `setup-dev-environment.md` -- Get the platform running locally
 - `troubleshooting.md` -- Common issues and fixes

@@ -3,6 +3,8 @@
 ## Status
 Accepted (Feb 2026)
 
+**Partially superseded**: The rationale "No API keys needed — Claude Code IS the LLM" no longer holds universally. A second provider (`custom`) was added (Apr 2026) supporting Anthropic API, OpenAI, Gemini, and DeepSeek directly. See `PROJECT_MEMORY.md` "Two-provider doc gen design" for the follow-on decision.
+
 ## Context
 The original intodoc architecture used a CLI-based LLM analyzer pipeline:
 - 21 analysis passes per chunk, each calling an external LLM API (via LiteLLM)

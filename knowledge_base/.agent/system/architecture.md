@@ -16,21 +16,21 @@ The platform operates in two modes:
 ### Mode 1: Scanner CLI (intodoc)
 
 - `intodoc scan` parses source code into structured scan cache JSON in `intodoc-output/`
-- 22 prompt files (p01-p22) define analysis dimensions
-- 25 reference docs define output format/depth
+- Analysis prompts: `ANALYSIS_GUIDE.md` and `PHASE_3_GUIDE.md` (consolidated from legacy 22 .txt files)
+- 9 reference docs in `intodoc/reference-docs/` define output format/depth
 - Read-only tool -- scans source code, does not generate documentation
-- Currently supports Talend; designed for multi-platform extension (MuleSoft, dbt, etc.)
+- Supported platforms: Talend, Workato, Generic, Lobster
 
-### Mode 2: Documentation Agent (Claude Code + MCP)
+### Mode 2: Documentation Agent (MCP + provider)
 
-- MCP server (`mcp-server/`) exposes scan data via tools (`get_chunks`, `fetch_chunk`, etc.)
-- Claude Code acts as the documentation agent following `.agent/system/mcp-workflow.md`
+- MCP server (`mcp-server/`) exposes scan data via 14 tools (`get_chunks`, `fetch_chunk`, etc.)
+- Two provider backends in `providers/`: `claude_cli` (Claude Code subprocess) and `custom` (API harness)
 - Phase 1: Setup (load scan data via MCP)
-- Phase 2: Group Analysis (parallel sub-agents read prompts + analyze chunks)
-- Phase 3: Write Docs (parallel sub-agents write .md files to `output/`)
-- Phase 4: Publish (`index.json` + run log; RAG push is handled server-side)
-- No LLM API keys needed -- Claude Code IS the LLM
-- No Jinja2 templates for doc generation -- docs written directly by agents
+- Phase 2: Group Analysis (parallel per-group tasks, configurable concurrency via `MCP_AGENT_PHASE2_CONCURRENCY`)
+- Phase 3: Write Docs (parallel per-document tasks via `MCP_AGENT_PHASE3_CONCURRENCY`)
+- Phase 4: Publish (`index.json` + run log; RAG push is handled server-side via `RagBridge.push_docs()`)
+- Task artifacts persisted in `docs_staging/_agent_tasks/{phase}/{target_id}/` (contract.json, output.md, validation_report.json)
+- Custom provider requires API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, etc.)
 
 ### Supporting Services
 
@@ -58,29 +58,18 @@ Source Code (XML, properties, configs, etc.)
     -> Platform Parser (platform-specific plugin)
     -> Scan Cache (intodoc-output/ JSON files)
     -> MCP Server (serves chunks, manifest, connections)
-    -> Claude Code Agent (reads prompts p01-p22, analyzes chunks)
-    -> Documentation (up to 25 markdown docs in output/{project_id}/docs_staging/)
+    -> Doc Generation Provider (claude_cli or custom API harness, analyzes chunks)
+    -> Documentation (12 markdown docs in output/{project_id}/docs_staging/)
     -> Server swaps docs_staging/ -> docs/ on success, then pushes to RAG via RagBridge
-```
-
-### Legacy CLI Path (still functional)
-
-```
-Source Code
-    -> Scanner + Parser
-    -> Chunker (groups by region, ~80K tokens/chunk)
-    -> Analyzer (21 LLM passes per chunk via LiteLLM API)
-    -> Generator (32 Jinja2 templates -> markdown)
-    -> Exporter (PDF / Qdrant)
 ```
 
 ## Project Structure
 
 ```
-vaxxinova/                          -- Platform root
+knowledge_base/                     -- Platform root
   .agent/                           -- Agent context docs
     system/                         -- Architecture, workflow, tech stack
-    sop/                            -- Standard operating procedures
+    SOP/                            -- Standard operating procedures
     tasks/                          -- Phase FRDs
     decisions/                      -- Architecture Decision Records
   .claude/                          -- Claude Code settings + session logs
@@ -88,24 +77,25 @@ vaxxinova/                          -- Platform root
   CLAUDE.md                         -- Platform rules and quick reference
   mcp-server/                       -- MCP + REST API server
     src/mcp_server/
-      mcp/server.py                 -- 8 MCP tools
-      api/                          -- REST API routes (FastAPI)
-      services/                     -- Business logic (registry, scanner, RAG bridge)
+      mcp/server.py                 -- 14 MCP tools
+      api/                          -- REST API routes (FastAPI, JWT auth on /mcp/*)
+      services/                     -- 25+ service files
+      providers/                    -- claude_cli + custom API harness
       db/                           -- SQLAlchemy models + session
   dashboard/                        -- React control panel
     src/
-      components/                   -- ProjectList, ActionButtons, LogPanel, etc.
-      hooks/                        -- useProjects, useLogStream
+      components/                   -- 16 components (ProjectList, ActionButtons, LogPanel,
+                                    --   RunHistory, QualityHistoryPanel, ABComparison, etc.)
+      hooks/                        -- useProjects, useLogStream, useAuth, useDiscovery
       api/client.ts                 -- REST API client
   intodoc/                          -- Scanner CLI
     src/intodoc/
       cli.py                        -- Click CLI entry point
       models.py                     -- 30+ Pydantic data models
       scanner/                      -- File walking, credential filter
-      platforms/talend/             -- Talend parser, prompts, best practices
-      chunker/                      -- Group jobs into LLM-sized chunks
+      platforms/                    -- talend, workato, generic, lobster plugins
       ir/                           -- Universal Intermediate Representation
-    reference-docs/                 -- 25 format/structure specifications
+    reference-docs/                 -- 9 format/structure specifications
   intodoc-output/                   -- Scan cache (read-only during doc generation)
   output/                           -- Agent output (docs + logs only)
 ```
@@ -123,5 +113,5 @@ vaxxinova/                          -- Platform root
 - Phase 0 complete (cleanup + knowledge base)
 - Phase 1 complete (21 analysis passes, 32 templates, 3 new passes P19-P21)
 - Phase 2 complete (Universal IR: 99.4% expression parse rate)
-- MCP-based doc generation operational (up to 25 output documents)
+- MCP-based doc generation operational (12 output documents)
 - Phase 3 (migration code generator) not yet started
