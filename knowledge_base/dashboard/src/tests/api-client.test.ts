@@ -80,6 +80,7 @@ describe("API client", () => {
           supports_analysis: true,
           supports_writing: true,
           is_default_analysis: true,
+          is_default_investigation: true,
           is_default_writing: true,
           is_local: false,
         },

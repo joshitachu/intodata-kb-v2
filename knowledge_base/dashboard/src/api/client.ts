@@ -257,6 +257,7 @@ export const api = {
   generate: (
     projectId: string,
     resume = true,
+    investigationModel?: string | null,
     model?: string | null,
     writeModel?: string | null,
   ) =>
@@ -265,6 +266,7 @@ export const api = {
       body: JSON.stringify({
         project_id: projectId,
         resume,
+        investigation_model: investigationModel ?? null,
         model: model ?? null,
         write_model: writeModel ?? null,
       }),

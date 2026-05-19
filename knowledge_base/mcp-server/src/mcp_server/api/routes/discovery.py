@@ -36,6 +36,7 @@ async def get_models() -> ModelListResponse:
             m.to_dict()
             for m in list_models(
                 default_analysis_model="claude-cli" if defaults.uses_claude_cli else defaults.analysis_model,
+                default_investigation_model=config.doc_generation_investigation_model or defaults.analysis_model,
                 default_writing_model=defaults.write_model,
             )
         ]

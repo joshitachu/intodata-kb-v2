@@ -9,6 +9,7 @@ from mcp_server.providers.base import DocGenerationProvider
 
 def get_provider(
     provider_type: str | None = None,
+    investigation_model: str | None = None,
     write_model: str | None = None,
     log_manager=None,
     instruction_pack_dir: str | None = None,
@@ -26,6 +27,7 @@ def get_provider(
       - "ollama/<model>"     — custom harness + Ollama-compatible adapter
       - "claude-cli"         — legacy Claude Code CLI subprocess fallback
 
+    investigation_model: optional override for Phase 1 investigation model.
     write_model: optional override for Phase 3 doc-writing model (must be "provider/model" format).
                  Falls back to MCP_DOC_GENERATION_WRITE_MODEL config value.
     """
@@ -60,7 +62,7 @@ def get_provider(
         return build_custom_provider(
             resolution.analysis_model,
             write_model_str,
-            investigation_model_str=config.doc_generation_investigation_model,
+            investigation_model_str=investigation_model or config.doc_generation_investigation_model,
             fallback_model_str=config.doc_generation_fallback_model,
             instruction_pack_dir=instruction_pack_dir,
             plugin_pack_dir=plugin_pack_dir,

@@ -13,6 +13,7 @@ class ModelDescriptor:
     supports_analysis: bool
     supports_writing: bool
     is_default_analysis: bool = False
+    is_default_investigation: bool = False
     is_default_writing: bool = False
     is_local: bool = False
 
@@ -23,6 +24,7 @@ class ModelDescriptor:
 def list_models(
     *,
     default_analysis_model: str,
+    default_investigation_model: str | None = None,
     default_writing_model: str,
 ) -> list[ModelDescriptor]:
     from mcp_server.model_strategies import list_model_descriptors
@@ -37,6 +39,7 @@ def list_models(
                 supports_analysis=descriptor.supports_analysis,
                 supports_writing=descriptor.supports_writing,
                 is_default_analysis=descriptor.id == default_analysis_model,
+                is_default_investigation=descriptor.id == default_investigation_model,
                 is_default_writing=descriptor.id == default_writing_model,
                 is_local=descriptor.is_local,
             )

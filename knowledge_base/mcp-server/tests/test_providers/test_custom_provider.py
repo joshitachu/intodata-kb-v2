@@ -13,6 +13,7 @@ from mcp_server.providers.custom.harness import CustomHarnessProvider, FailureKi
 from mcp_server.providers.custom.investigator import (
     EvidenceValidator,
     InvestigationError,
+    SingleShotInvestigator,
     StagingToolbox,
     parse_json_action,
     write_investigation_artifacts,
@@ -205,6 +206,22 @@ def test_provider_factory_defaults_to_custom(monkeypatch):
     provider = get_provider()
 
     assert isinstance(provider, CustomHarnessProvider)
+
+
+def test_provider_factory_uses_investigation_override(monkeypatch):
+    from mcp_server.config import config
+    from mcp_server.providers import get_provider
+
+    monkeypatch.setattr(config, "doc_generation_provider", "custom")
+    monkeypatch.setattr(config, "doc_generation_model", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setattr(config, "doc_generation_write_model", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setattr(config, "doc_generation_investigation_model", "google/gemini-2.5-flash")
+    monkeypatch.setattr(config, "doc_generation_fallback_model", None)
+
+    provider = get_provider(investigation_model="deepseek/deepseek-v4-pro")
+
+    assert provider.investigation_provider.provider_name == "deepseek"
+    assert provider.investigation_provider.model_name == "deepseek-v4-pro"
 
 
 def test_custom_provider_does_not_apply_deepseek_override_to_openai(monkeypatch):
@@ -804,6 +821,40 @@ def test_investigation_coverage_fails_when_unit_missing(tmp_path):
     assert report.coverage_count == 0
     assert "a" in report.missing_units
     assert "b" in report.missing_units
+
+
+@pytest.mark.asyncio
+async def test_single_shot_investigator_rejects_array_payload_without_attribute_error(
+    monkeypatch,
+    tmp_path,
+):
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    staging = tmp_path / "staging"
+    (staging / "_preprocess").mkdir(parents=True)
+    (staging / "_preprocess" / "A.md").write_text("a component detail", encoding="utf-8")
+
+    class _Provider:
+        async def complete(self, *args, **kwargs):
+            return ModelResult(
+                success=True,
+                text='{"evidence":[]}',
+                model_name="fake/model",
+            )
+
+    monkeypatch.setattr(
+        "mcp_server.providers.custom.investigator._extract_json_object",
+        lambda text: '[{"unit_name":"a"}]',
+    )
+    investigator = SingleShotInvestigator(_Provider(), staging, facts)
+
+    with pytest.raises(InvestigationError, match="list instead of an object"):
+        await investigator.run(
+            "A",
+            group_file=staging / "_preprocess" / "A.md",
+            context_files=[],
+            allowed_units=["a"],
+        )
 
 
 @pytest.mark.asyncio

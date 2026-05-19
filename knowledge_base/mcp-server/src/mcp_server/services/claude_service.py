@@ -982,6 +982,7 @@ Required sections:
     async def generate_docs(
         self,
         project_id: str,
+        investigation_model: str | None = None,
         model: str | None = None,
         write_model: str | None = None,
         resume: bool = True,
@@ -1180,6 +1181,7 @@ Required sections:
 
         provider = get_provider(
             provider_type=resolved_provider,
+            investigation_model=investigation_model,
             write_model=effective_write_model,
             log_manager=self.log_manager,
             instruction_pack_dir=instruction_pack_dir,
@@ -1200,11 +1202,18 @@ Required sections:
             )
 
         resolved_main_model = getattr(provider, "model_provider", None)
+        resolved_investigation_model = getattr(provider, "investigation_provider", None)
         resolved_write_model_obj = getattr(provider, "write_provider", None)
+        investigation_model_name = getattr(
+            resolved_investigation_model,
+            "model_name",
+            investigation_model or config.doc_generation_investigation_model or effective_model,
+        )
         main_model_name = getattr(resolved_main_model, "model_name", effective_model)
         write_model_name = getattr(resolved_write_model_obj, "model_name", effective_write_model)
         provider_details = (
             f"provider={resolved_provider} "
+            f"phase1={investigation_model_name} "
             f"phase2={main_model_name} "
             f"phase3={write_model_name}"
         )

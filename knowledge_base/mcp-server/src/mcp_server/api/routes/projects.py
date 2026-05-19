@@ -67,6 +67,7 @@ from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.services.project_paths import repair_project_repo_path
 from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.services.summary_service import SummaryService
@@ -298,6 +299,10 @@ async def scan_project(req: ScanRequest, request: Request, background_tasks: Bac
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
 
+        repaired_path = await repair_project_repo_path(project)
+        if repaired_path:
+            await db.flush()
+
         await registry.update_status(req.project_id, "scanning")
         run = await registry.create_scan_run(req.project_id, triggered_by="api")
         await db.commit()
@@ -380,6 +385,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
     _currently_generating.add(req.project_id)
     background_tasks.add_task(
         _run_generate_background, req.project_id, run_id, log_mgr,
+        investigation_model=req.investigation_model,
         model=req.model,
         write_model=req.write_model,
         resume=req.resume,
@@ -706,6 +712,7 @@ async def _run_generate_background(
     run_id: int,
     log_mgr,
     *,
+    investigation_model: str | None = None,
     model: str | None = None,
     write_model: str | None = None,
     resume: bool = True,
@@ -721,7 +728,7 @@ async def _run_generate_background(
     claude = ClaudeService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
     result = await claude.generate_docs(
-        project_id, model=model,
+        project_id, investigation_model=investigation_model, model=model,
         write_model=write_model, resume=resume,
         doc_generation_provider=doc_generation_provider,
         instruction_pack_dir=instruction_pack_dir,

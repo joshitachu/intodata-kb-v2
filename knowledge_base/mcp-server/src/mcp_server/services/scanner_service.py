@@ -58,6 +58,24 @@ class ScannerService:
                 "output_dir": str(out_dir),
             }
 
+        repo = Path(repo_path)
+        if not repo.exists():
+            expected = config.repos_dir / project_id
+            msg = (
+                f"Project repository path does not exist for {project_id!r}: "
+                f"{repo}. Expected managed projects under {expected}."
+            )
+            logger.error(msg)
+            if self.log_manager:
+                await self.log_manager.emit(project_id, msg, level="error")
+            return {
+                "success": False,
+                "error": msg,
+                "job_count": 0,
+                "scan_result_path": None,
+                "output_dir": str(out_dir),
+            }
+
         cmd = [
             resolved_cmd,
             "scan",

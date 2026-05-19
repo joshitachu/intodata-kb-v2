@@ -40,6 +40,7 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const [displayName, setDisplayName] = useState("");
   const [platform, setPlatform] = useState("");
   const [docProvider, setDocProvider] = useState("");
+  const [investigationModel, setInvestigationModel] = useState("");
   const [writeModel, setWriteModel] = useState("");
   const [packDir, setPackDir] = useState("");
   const [saved, setSaved] = useState(false);
@@ -51,6 +52,7 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
       setDisplayName(project.display_name);
       setPlatform(project.platform);
       setDocProvider(project.doc_generation_provider ?? "");
+      setInvestigationModel(localStorage.getItem(`project_investigation_model_${project.id}`) ?? "");
       setWriteModel(localStorage.getItem(`project_write_model_${project.id}`) ?? "");
       setPackDir(project.instruction_pack_dir ?? "");
       setSaved(false);
@@ -69,6 +71,17 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
     }
   }
 
+  function handleInvestigationModelChange(value: string) {
+    setInvestigationModel(value);
+    if (project) {
+      if (value) {
+        localStorage.setItem(`project_investigation_model_${project.id}`, value);
+      } else {
+        localStorage.removeItem(`project_investigation_model_${project.id}`);
+      }
+    }
+  }
+
   if (!project) return null;
 
   const hasChanges =
@@ -80,6 +93,7 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const analysisModels = modelsData?.models.filter((m) => m.supports_analysis) ?? [];
   const writingModels = modelsData?.models.filter((m) => m.supports_writing) ?? [];
   const defaultAnalysisModel = analysisModels.find((m) => m.is_default_analysis);
+  const defaultInvestigationModel = analysisModels.find((m) => m.is_default_investigation);
   const defaultWritingModel = writingModels.find((m) => m.is_default_writing);
   const defaultAnalysisLabel = defaultAnalysisModel
     ? `${defaultAnalysisModel.label} (${defaultAnalysisModel.id})`
@@ -87,8 +101,13 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
   const defaultWritingLabel = defaultWritingModel
     ? `${defaultWritingModel.label} (${defaultWritingModel.id})`
     : "server config";
+  const defaultInvestigationLabel = defaultInvestigationModel
+    ? `${defaultInvestigationModel.label} (${defaultInvestigationModel.id})`
+    : defaultAnalysisLabel;
   const hasKnownDocProvider =
     docProvider === "" || analysisModels.some(({ id }) => id === docProvider);
+  const hasKnownInvestigationModel =
+    investigationModel === "" || analysisModels.some(({ id }) => id === investigationModel);
   const hasKnownWriteModel =
     writeModel === "" || writingModels.some(({ id }) => id === writeModel);
   const gitSummary = project.git_update_summary ?? null;
@@ -405,6 +424,33 @@ export default function ProjectSettings({ project, onDeleted }: Props) {
             {!hasKnownDocProvider && (
               <p className="mt-1 text-xs text-amber-400">
                 This saved provider is from the old routing. Choose a supported analysis model or clear it.
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="block font-mono uppercase tracking-wider text-xs text-slate-600 mb-1">
+              Investigation Model
+              <span className="ml-1 text-slate-700 normal-case tracking-normal">(Phase 1 — Evidence)</span>
+            </label>
+            <select
+              value={investigationModel}
+              onChange={(e) => handleInvestigationModelChange(e.target.value)}
+              className="input-dark"
+            >
+              <option value="">Use server default -- {defaultInvestigationLabel}</option>
+              {analysisModels.map(({ id, label }) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+              {!hasKnownInvestigationModel && (
+                <option value={investigationModel}>Unsupported saved value — {investigationModel}</option>
+              )}
+            </select>
+            <p className="mt-1 text-xs text-slate-600">
+              The Generate button uses this model for Phase 1 chunk investigation.
+            </p>
+            {!hasKnownInvestigationModel && (
+              <p className="mt-1 text-xs text-amber-400">
+                This saved model is not in the current model registry. Choose a supported model or clear it.
               </p>
             )}
           </div>

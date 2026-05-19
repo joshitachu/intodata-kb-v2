@@ -20,7 +20,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from mcp_server.api.middleware import IPAllowlistMiddleware
 from mcp_server.config import config
 from mcp_server.db.models import Base
-from mcp_server.db.session import engine
+from mcp_server.db.session import async_session_factory, engine
 from mcp_server.services.atomic_swap import (
     gc_abandoned_staging,
     recover_stale_backups,
@@ -28,6 +28,7 @@ from mcp_server.services.atomic_swap import (
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.git_poller import git_polling_loop
 from mcp_server.services.ops_telemetry import telemetry_enabled, telemetry_loop
+from mcp_server.services.project_paths import repair_managed_project_repo_paths
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,12 @@ async def lifespan(app: FastAPI):
             logger.info("Created tables: %s", [t.name for t in tables_to_create])
         else:
             logger.info("All tables already exist, skipping create")
+    try:
+        repaired_paths = await repair_managed_project_repo_paths(async_session_factory)
+        if repaired_paths:
+            logger.warning("Repaired %d stale project repo path(s)", repaired_paths)
+    except Exception:
+        logger.exception("Startup project path repair failed")
     app.state.log_manager = log_manager
     app.state.git_poller_task = asyncio.create_task(git_polling_loop(log_manager))
     app.state.ops_telemetry_task = (

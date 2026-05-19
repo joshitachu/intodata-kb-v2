@@ -7,7 +7,6 @@ import json
 import zipfile
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from sqlalchemy import select
 
 
@@ -186,6 +185,46 @@ async def test_reset_status_not_generating(client):
     })
     resp = await client.post("/mcp/reset-status", json={"project_id": "resetproj"})
     assert resp.status_code == 400
+
+
+async def test_scan_repairs_stale_managed_repo_path(client, session_factory, tmp_path):
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    repo = config.repos_dir / "nexus"
+    repo.mkdir(parents=True)
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project(
+            project_id="nexus",
+            local_path="/home/intodata/intodata-kb/knowledge_base/data/repos/nexus",
+            platform="generic",
+            source_type="zip",
+        )
+        await session.commit()
+
+    with patch(
+        "mcp_server.api.routes.projects.ScannerService.run_scan",
+        new=AsyncMock(
+            return_value={
+                "success": True,
+                "job_count": 0,
+                "scan_result_path": str(tmp_path / "scan_result.json"),
+                "output_dir": str(tmp_path / "output"),
+            }
+        ),
+    ) as run_scan:
+        resp = await client.post("/mcp/scan", json={"project_id": "nexus"})
+
+    assert resp.status_code == 200
+    run_scan.assert_awaited_once()
+    assert run_scan.await_args.kwargs["repo_path"] == str(repo)
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.get_project("nexus")
+        assert project is not None
+        assert project.local_path == str(repo)
 
 
 # --- Logs ---

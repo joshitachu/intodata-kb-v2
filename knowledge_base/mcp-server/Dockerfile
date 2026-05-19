@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     libglib2.0-0 \
     fonts-dejavu-core \
+    gosu \
     ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
@@ -33,8 +34,10 @@ RUN addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 --ingroup appgroup appuser && \
     mkdir -p /app/data /app/intodoc-output /app/workspace/output /app/workspace/packs && \
     chown -R appuser:appgroup /app
-USER appuser
+COPY mcp-server/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8002
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "-m", "mcp_server", "--serve", "--host", "0.0.0.0", "--port", "8002"]

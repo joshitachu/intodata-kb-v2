@@ -305,6 +305,11 @@ class SingleShotInvestigator:
                 raise InvestigatorError(f"model call failed: {result.raw_error}")
             try:
                 payload = json.loads(_extract_json_object(result.text))
+                if not isinstance(payload, dict):
+                    raise InvestigatorError(
+                        f"model returned {type(payload).__name__} instead of an object "
+                        '- expected {"evidence": [...]}'
+                    )
                 report = self.validator.validate_report(group, payload, set(allowed_units))
                 report.tool_rounds = attempt + 1
                 report.invalid_retries = attempt

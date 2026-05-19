@@ -62,6 +62,7 @@ export interface ModelDescriptor {
   supports_analysis: boolean;
   supports_writing: boolean;
   is_default_analysis: boolean;
+  is_default_investigation: boolean;
   is_default_writing: boolean;
   is_local: boolean;
 }
@@ -259,4 +260,3 @@ export interface InstructionPackMetadata {
   supported: boolean;
   preambles: Array<{ key: string; bytes: number; chars: number }>;
 }
-

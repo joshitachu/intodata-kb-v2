@@ -41,14 +41,16 @@ export function useGenerate() {
     mutationFn: ({
       projectId,
       resume = true,
+      investigationModel,
       model,
       writeModel,
     }: {
       projectId: string;
       resume?: boolean;
+      investigationModel?: string | null;
       model?: string | null;
       writeModel?: string | null;
-    }) => api.generate(projectId, resume, model, writeModel),
+    }) => api.generate(projectId, resume, investigationModel, model, writeModel),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }

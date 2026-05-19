@@ -65,6 +65,7 @@ class ModelDescriptorResponse(BaseModel):
     supports_analysis: bool
     supports_writing: bool
     is_default_analysis: bool = False
+    is_default_investigation: bool = False
     is_default_writing: bool = False
     is_local: bool = False
 
@@ -108,6 +109,7 @@ class ScanRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
+    investigation_model: str | None = Field(None, description="Investigation model override (Phase 1) — 'provider/model' format")
     model: str | None = Field(None, description="Analysis model override (Phase 2) — 'provider/model' format")
     write_model: str | None = Field(None, description="Doc-writing model override (Phase 3) — 'provider/model' format")
     resume: bool = Field(True, description="Resume from staging checkpoint if available")

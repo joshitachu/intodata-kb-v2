@@ -52,11 +52,13 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
         disabled={busy || generate.isPending}
         title="Generate Docs"
         onClick={() => {
+          const investigationModel = localStorage.getItem(`project_investigation_model_${projectId}`) || null;
           const writeModel = localStorage.getItem(`project_write_model_${projectId}`) || null;
           onAction(projectId);
           generate.mutate({
             projectId,
             resume: resumeGenerate,
+            investigationModel,
             model: null,
             writeModel,
           });

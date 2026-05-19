@@ -26,6 +26,7 @@ async def test_list_models(client):
     claude_cli = next(m for m in data["models"] if m["id"] == "claude-cli")
     assert gemini["supports_analysis"] is True
     assert gemini["supports_writing"] is True
+    assert "is_default_investigation" in gemini
     assert claude_cli["supports_writing"] is True
 
 
@@ -34,6 +35,7 @@ async def test_list_models_marks_effective_provider_default(client, monkeypatch)
 
     monkeypatch.setattr(config, "doc_generation_provider", "openai/gpt-5.4")
     monkeypatch.setattr(config, "doc_generation_model", "anthropic/claude-sonnet-4-6")
+    monkeypatch.setattr(config, "doc_generation_investigation_model", "google/gemini-2.5-flash")
     monkeypatch.setattr(config, "doc_generation_write_model", "google/gemini-2.5-flash")
 
     resp = await client.get("/mcp/models")
@@ -44,6 +46,7 @@ async def test_list_models_marks_effective_provider_default(client, monkeypatch)
     gemini = next(m for m in data["models"] if m["id"] == "google/gemini-2.5-flash")
     assert openai_model["is_default_analysis"] is True
     assert gemini["is_default_analysis"] is False
+    assert gemini["is_default_investigation"] is True
     assert gemini["is_default_writing"] is True
 
 
