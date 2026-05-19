@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
-# WeasyPrint system dependencies
+# WeasyPrint plus runtime tools used by MCP scan, git, and repo-agent flows.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
     libcairo2 \
@@ -9,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     libglib2.0-0 \
     fonts-dejavu-core \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -27,9 +31,10 @@ RUN pip install --no-cache-dir .
 # Run as non-root user
 RUN addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 --ingroup appgroup appuser && \
+    mkdir -p /app/data /app/intodoc-output /app/workspace/output /app/workspace/packs && \
     chown -R appuser:appgroup /app
 USER appuser
 
-EXPOSE 8001
+EXPOSE 8002
 
-CMD ["python", "-m", "mcp_server", "--serve", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["python", "-m", "mcp_server", "--serve", "--host", "0.0.0.0", "--port", "8002"]

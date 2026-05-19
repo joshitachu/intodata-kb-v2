@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
                 user = User(
                     id=1,
                     username="admin",
-                    email="joshua.kabel@intodata.nl",
+                    email=settings.admin_initial_email,
                     password_hash=hash_password(settings.admin_default_password),
                     is_superadmin=True,
                 )

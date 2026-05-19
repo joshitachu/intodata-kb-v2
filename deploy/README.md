@@ -19,7 +19,7 @@ Each client stack is fully isolated:
 - Separate JWT secret, Postgres password, MCP ingest key, admin default
   password — all randomized by the deploy script on first run.
 - Separate nginx server block → separate TLS cert via certbot.
-- Separate MCP systemd instance (`mcp-server@<client>.service`).
+- Separate MCP API container in the client's Docker Compose project.
 
 Optional IntoData Ops telemetry is configured per client through the MCP env
 file. It is disabled by default and sends only operational metadata to the
@@ -30,13 +30,7 @@ scores, token/cost totals, and redacted error summaries.
 
 Once per VPS:
 
-```bash
-# Install the templated MCP systemd unit
-sudo cp deploy/mcp-server@.service /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# Make sure nginx, certbot, docker, envsubst, openssl are installed
-```
+Make sure nginx, certbot, docker, envsubst, and openssl are installed.
 
 ## Deploying a client
 
@@ -60,7 +54,7 @@ On first run the script:
 3. Brings up the Docker stack with
    `docker compose --env-file … -p <client> up -d`.
 4. Prints the remaining manual steps (`nginx -t && systemctl reload nginx`,
-   `certbot --nginx …`, `systemctl enable --now mcp-server@<client>.service`).
+   `certbot --nginx …`, and health checks).
 
 The script is idempotent — re-running with the same `--client-name` refreshes
 the nginx block and re-applies the compose stack without touching the
@@ -82,11 +76,11 @@ frontend container and operator SSH tunnels.
 
 | File | Purpose |
 |---|---|
-| `RUNBOOK.md` | Canonical EP-001 fresh VPS deployment runbook using Docker Compose, host Ollama, MCP systemd, and nginx/certbot. |
+| `RUNBOOK.md` | Canonical EP-001 fresh VPS deployment runbook using Docker Compose, host Ollama, and nginx/certbot. |
 | `SMOKE-TEST.md` | End-to-end deployment smoke checklist for health, HTTPS, auth, ingest, streaming, developer-route lockdown, and IP allowlisting. |
 | `deploy-client.sh` | Main deploy entry point. |
 | `docker-compose.yml` (root) | Compose file, ports parameterized via env vars. |
 | `nginx/nexus-client.conf.template` | Rendered per client by envsubst. |
-| `mcp-server@.service` | Systemd template unit (instance per client). |
-| `mcp-server.service` | Legacy single-tenant unit — superseded by the @ unit. |
+| `mcp-server@.service` | Legacy systemd template unit retained for reference. |
+| `mcp-server.service` | Legacy single-tenant systemd unit retained for reference. |
 | `.env.production.template` (root) | Reference for every env var a stack needs. |

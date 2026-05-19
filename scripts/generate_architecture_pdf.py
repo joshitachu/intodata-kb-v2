@@ -360,8 +360,8 @@ def s_arch(c, n, total):
             c.drawCentredString(sx + sw / 2, sy + bh_s - 24 - li * 11, line)
 
     # OPS LAYER
-    ops = ["Nginx + TLS", "Docker Compose (6 services)",
-           "systemd (MCP)", "deploy-client.sh", "RUNBOOK.md"]
+    ops = ["Nginx + TLS", "Docker Compose (7 services)",
+           "MCP container", "deploy-client.sh", "RUNBOOK.md"]
     ops_w = (content_w - (len(ops) - 1) * 6) / len(ops)
     for i, op in enumerate(ops):
         ox = lx + i * (ops_w + 6)
@@ -823,8 +823,8 @@ def s_tenant(c, n, total):
          "Separate server block per client\nIndividual certbot cert per domain"),
         (SLATE, "Docker Compose Project",
          "docker compose -p {client}\nPrefixes all containers, networks, volumes"),
-        (colors.HexColor("#4a3580"), "MCP systemd Instance",
-         "mcp-server@{client}.service\nInstance per client on host"),
+        (colors.HexColor("#4a3580"), "MCP Container",
+         "mcp-server compose service\nInstance per client stack"),
     ]
     bh_i = 44; gap_i = 6
     y = y0 - 16
@@ -855,8 +855,8 @@ def s_tenant(c, n, total):
          "envsubst on nexus-client.conf.template\nWrite /etc/nginx/sites-available/nexus-acme.conf\n(nginx -t to validate)"),
         (TEAL,  "4. Launch Stack",
          "docker compose --env-file acme.env -p acme up -d\nHealth checks gate service startup\ncertbot obtains Let's Encrypt cert"),
-        (GREEN, "5. Start MCP Service",
-         "systemctl enable/start mcp-server@acme\nREST API :8002 available on host\nClaude Code connects via stdio"),
+        (GREEN, "5. Verify MCP Service",
+         "docker compose ps mcp-server\nREST API :8002 available locally\nClaude Code stdio remains available separately"),
     ]
     bh_s = 48; gap_s = 6
     y2 = y0 - 16
@@ -934,11 +934,11 @@ def s_deploy(c, n, total):
     note_y = vps_y + 12
     note_w = (dc_w - 8) / 2
     rbox(c, dc_x, note_y, note_w, 40, fill=TEAL, stroke=TEAL, r=4)
-    t(c, "MCP Server  (host systemd service — not Docker)", dc_x + 8, note_y + 28,
+    t(c, "MCP Server  (Docker Compose service)", dc_x + 8, note_y + 28,
       "Helvetica-Bold", 8, WHITE)
-    t(c, "mcp-server@{client}.service  ·  stdio + REST :8002", dc_x + 8, note_y + 17,
+    t(c, "mcp-server container  ·  REST :8002", dc_x + 8, note_y + 17,
       "Helvetica", 7.5, colors.HexColor("#c8d4ee"))
-    t(c, "Host-level: direct filesystem + Claude Code CLI access", dc_x + 8, note_y + 7,
+    t(c, "Bind mounts: data, scan cache, docs, packs", dc_x + 8, note_y + 7,
       "Helvetica", 7, colors.HexColor("#c8d4ee"))
 
     rbox(c, dc_x + note_w + 8, note_y, note_w, 40, fill=NAVY, stroke=NAVY, r=4)

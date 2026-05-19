@@ -39,7 +39,7 @@ log_manager = LogManager()
 async def lifespan(app: FastAPI):
     """Startup / shutdown."""
     logging.basicConfig(level=getattr(logging, config.log_level))
-    logger.info("Starting intodoc MCP Server API on :8001")
+    logger.info("Starting intodoc MCP Server API")
     # Auto-create tables on first run, skip if they already exist
     async with engine.begin() as conn:
         existing = set(

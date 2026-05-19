@@ -1,5 +1,15 @@
 # Current State
 
+**Status** (2026-05-19): Config cleanup complete. Admin email parameterized; `.env.production.template` aligned with Anthropic as default provider.
+
+**Config cleanup done (2026-05-19)**:
+- [x] `ADMIN_INITIAL_EMAIL` env var added to Settings + wired into bootstrap admin + migration seed
+- [x] `.env.production.template` defaults to Anthropic (not DeepSeek); all provider API keys + model tiers documented
+- [x] `docker-compose.yml` — mcp-server service added, Hindsight LLM model parameterized, MCP_JWT_SECRET_KEY removed from dashboard service
+- [ ] Ansible Nexus-Infra repo still needs updating: `LLM_API_KEY` → `ANTHROPIC_API_KEY`, port name mismatches, `ADMIN_INITIAL_EMAIL` in env.j2
+
+---
+
 **Status** (2026-05-12): Sprint 4 complete. 279 tests passing.
 
 **Sprint 2 done**:

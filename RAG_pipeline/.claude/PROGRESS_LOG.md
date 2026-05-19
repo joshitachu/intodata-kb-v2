@@ -1,5 +1,21 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-05-19
+
+### [Fix]: Remove hardcoded personal email; add ADMIN_INITIAL_EMAIL config
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/config.py` (+3 lines) — added `admin_initial_email: str = "admin@localhost"` to Settings
+  - `RAG_pipeline/backend/src/api/main.py` (line 68) — `email="joshua.kabel@intodata.nl"` → `email=settings.admin_initial_email`
+  - `RAG_pipeline/backend/alembic/versions/001_initial_schema.py` (line 172) — seed SQL email changed from `joshua.kabel@intodata.nl` to `admin@localhost`
+  - `docker-compose.yml` — added `ADMIN_INITIAL_EMAIL: ${ADMIN_INITIAL_EMAIL:-admin@localhost}` to backend service env; parameterized `HINDSIGHT_API_LLM_MODEL`; removed `MCP_JWT_SECRET_KEY` from dashboard service; added mcp-server service; added `DEEPSEEK_API_KEY`
+  - `.env.production.template` — changed default doc generation provider from DeepSeek to Anthropic; added `ADMIN_INITIAL_EMAIL`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, `HINDSIGHT_LLM_MODEL`, all MCP model-tier vars; corrected MCP paths to container-internal paths; changed `SMTP_FROM_NAME` to `YOUR_COMPANY_NAME`
+- **Problem**: Every fresh deployment seeded admin account with `joshua.kabel@intodata.nl`. The `.env.production.template` defaulted to DeepSeek as doc generation provider with a hardcoded DeepSeek base URL, causing confusion when the intent is to use Anthropic. Several env vars (provider API keys, model tiers, admin email) were absent from the template entirely.
+- **Root cause**: Email was hardcoded when the bootstrap admin feature was first written. The production template was never updated after the provider switch from DeepSeek to Anthropic.
+- **Change**: `admin_initial_email` field added to Settings (maps to `ADMIN_INITIAL_EMAIL` env var, default `admin@localhost`). Bootstrap admin and migration seed both use the configurable value. Template now defaults to Anthropic with commented DeepSeek alternative block.
+- **Why this approach**: Minimal — one new field, two call sites updated, no migration needed (alembic seed only runs on fresh DBs; existing deployments already have admin email set). Template is the single reference a deployer reads.
+- **Verification**: Grep confirms no remaining `joshua.kabel` in source; template defaults are Anthropic; docker-compose passes `ADMIN_INITIAL_EMAIL` through to backend container.
+
 ## Session: 2026-05-12
 
 ### [Feature]: Sprint 4 — Enterprise Entry (JWT rotation, CSRF, SSO/OIDC, OpenAPI)

@@ -5,7 +5,7 @@
 #   ${NEXUS_BASE}           — base domain (e.g. "nexus.intodata.nl")
 #   ${BACKEND_PORT}         — host port for the RAG backend container
 #   ${FRONTEND_PORT}        — host port for the Next.js frontend container
-#   ${MCP_PORT}             — host port for the MCP server (systemd, not Docker)
+#   ${MCP_PORT}             — host port for the MCP server container
 #
 # SSL is provisioned by certbot --nginx after this file is in place, so the
 # template itself is HTTP-only until certbot adds the 443 block.

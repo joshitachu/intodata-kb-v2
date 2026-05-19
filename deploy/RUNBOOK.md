@@ -2,9 +2,8 @@
 
 This runbook is the canonical EP-001 deployment path for a clean Ubuntu VPS or staging host. It uses the current deployment architecture:
 
-- Docker Compose for the six application services: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `dashboard`
+- Docker Compose for the seven application services: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `mcp-server`, `dashboard`
 - Host-level Ollama exposed to containers through `host.docker.internal:11434`
-- Host-level MCP API via `mcp-server@<client>.service`
 - nginx + certbot for HTTPS
 - UFW and app-level allowlists for approved CIDRs
 
@@ -76,25 +75,9 @@ remote such as `git@github.com:intodata/intodata-kb-v2.git`, clone as the user
 that has the GitHub SSH key configured. Avoid `sudo git clone` unless root has
 its own GitHub credentials.
 
-Install the MCP/intodoc Python packages for the host-level MCP systemd service:
-
-```bash
-python3 -m venv "$REPO_ROOT/venv"
-"$REPO_ROOT/venv/bin/pip" install --upgrade pip
-"$REPO_ROOT/venv/bin/pip" install -e "$REPO_ROOT/knowledge_base/intodoc"
-"$REPO_ROOT/venv/bin/pip" install -e "$REPO_ROOT/knowledge_base/mcp-server"
-"$REPO_ROOT/venv/bin/intodoc" --help >/dev/null
-"$REPO_ROOT/venv/bin/python" -m mcp_server --help >/dev/null
-```
-
-If `REPO_ROOT` is under a home directory, ensure the `intodata` service user can
-traverse the parent directories. For example, `/home/nexus` with mode `750`
-will block the service even if the repo itself is readable. Use the narrowest
-fix that grants traverse permission, such as:
-
-```bash
-sudo chmod o+x /home/nexus
-```
+The MCP API and `intodoc` scanner are installed into the `mcp-server` image
+during the Docker build. No host Python virtualenv is required for the deployed
+stack.
 
 ## 4. Install Ollama On The Host
 
@@ -211,16 +194,14 @@ curl -fsS -X POST "https://${FQDN}/api/v1/admin/email/test" \
 
 If SMTP is not configured in development or staging, invite URLs and OTP codes are logged to the backend journal instead of sent.
 
-## 8. Enable MCP API Systemd Service
+## 8. Verify MCP API Container
 
 ```bash
 cd "$REPO_ROOT"
-sudo cp deploy/mcp-server@.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now "mcp-server@${CLIENT_SLUG}.service"
-sudo systemctl status "mcp-server@${CLIENT_SLUG}.service" --no-pager
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" ps mcp-server
 MCP_PORT="$(grep '^MCP_PORT=' "$ENV_FILE" | cut -d= -f2)"
 curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=100 mcp-server
 ```
 
 Optional: enable central IntoData Ops telemetry after the central Ops API has a
@@ -234,7 +215,7 @@ sudo sed -i "s|^MCP_OPS_ENVIRONMENT=.*|MCP_OPS_ENVIRONMENT=production|" "$ENV_FI
 sudo sed -i "s|^MCP_OPS_RELEASE_VERSION=.*|MCP_OPS_RELEASE_VERSION=$(git rev-parse --short HEAD)|" "$ENV_FILE"
 sudo sed -i "s|^MCP_OPS_TELEMETRY_URL=.*|MCP_OPS_TELEMETRY_URL=https://ops.nexus.intodata.nl|" "$ENV_FILE"
 sudo sed -i "s|^MCP_OPS_TELEMETRY_API_KEY=.*|MCP_OPS_TELEMETRY_API_KEY=<client-telemetry-key>|" "$ENV_FILE"
-sudo systemctl restart "mcp-server@${CLIENT_SLUG}.service"
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" up -d mcp-server
 ```
 
 ## 9. Enable HTTPS With nginx/certbot
@@ -332,7 +313,7 @@ curl -fsS http://127.0.0.1:11434/api/tags
 
 Expected:
 
-- Six Docker services are running and healthy.
+- Seven Docker services are running and healthy.
 - MCP API returns `{"status":"ok","service":"intodoc-mcp-server"}` on the VPS-local port.
 - Backend health is `healthy`, or `degraded` only if a non-core dependency is intentionally unavailable.
 - Ollama returns model tags.

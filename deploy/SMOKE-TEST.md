@@ -25,14 +25,13 @@ curl -fsS "https://${FQDN}/api/v1/auth/bootstrap-status"
 curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 curl -fsS http://127.0.0.1:11434/api/tags
 sudo docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:8.8.0 -fsS http://host.docker.internal:11434/api/tags
-sudo systemctl is-active "mcp-server@${CLIENT_SLUG}.service"
 ```
 
 Pass criteria:
 
-- `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, and `dashboard` are running.
+- `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `mcp-server`, and `dashboard` are running.
 - Docker healthchecks are healthy within two minutes of startup.
-- MCP API service is active locally and returns `status: ok`.
+- MCP API container is healthy locally and returns `status: ok`.
 - Ollama returns model tags from both the host and a temporary container.
 
 ## 2. HTTPS, Redirect, And Headers
@@ -100,7 +99,7 @@ Pass criteria for login:
 
 ```bash
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=200 backend
-sudo journalctl -u "mcp-server@${CLIENT_SLUG}.service" --no-pager -n 200
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=200 mcp-server
 ```
 
 Pass criteria:

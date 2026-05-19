@@ -1,18 +1,32 @@
-Determine which sub-project the current work is focused on (RAG_pipeline or knowledge_base, or both), then read and summarize the session context for that area.
+Load session context for the active sub-project and produce a concise brief.
 
-Steps:
-1. Check `git status` to see which files are currently modified — this tells you which sub-project is active.
-2. For each active sub-project, read:
-   - `.claude/context.md` — current state and blockers
-   - The last 5 entries in `.claude/PROGRESS_LOG.md`
-   - The "Blockers" section of `.claude/PROJECT_MEMORY.md`
-3. If knowledge_base work is active, also read `knowledge_base/.agent/README.md` to identify relevant SOPs.
+## Argument: $ARGUMENTS
 
-Output a concise brief (no more than 30 lines) with:
-- **Current state**: what was last worked on and where things stand
-- **Last 3 changes**: from PROGRESS_LOG, summarized in one line each
-- **Open blockers**: anything explicitly flagged as blocked
-- **Suggested next step**: based on context.md "next steps" section
-- **Modified files** (from git status): grouped by sub-project
+Accepted values: `kb` | `rag` | empty (default: both)
 
-This replaces the need to manually read all the context files at session start.
+## Steps
+
+1. Run `git status --short` to see modified files. Use this to confirm which sub-project
+   is active (regardless of $ARGUMENTS, flag if git status contradicts the argument).
+
+2. Load context based on $ARGUMENTS:
+   - **`kb`** (or git status shows only knowledge_base changes):
+     Read `knowledge_base/.claude/context.md` and the last 3 entries of
+     `knowledge_base/.claude/PROGRESS_LOG.md`. Also read `knowledge_base/.agent/README.md`
+     to identify relevant SOPs for the current work.
+   - **`rag`** (or git status shows only RAG_pipeline changes):
+     Read `RAG_pipeline/.claude/context.md` and the last 3 entries of
+     `RAG_pipeline/.claude/PROGRESS_LOG.md`.
+   - **empty / both**:
+     Read context.md and last 3 PROGRESS_LOG entries for both sub-projects.
+
+3. Output a brief (max 20 lines per active sub-project) with:
+   - **Status**: what was last completed and where things stand
+   - **Last 3 changes**: one line each from PROGRESS_LOG
+   - **Blockers**: anything flagged as blocked
+   - **Next step**: the single immediate priority from context.md
+   - **Modified files**: from git status, grouped by sub-project
+
+If the user asks about the backlog, deferred tasks, or future work, also read the
+relevant `knowledge_base/.claude/backlog.md` or `RAG_pipeline/.claude/backlog.md` --
+these are NOT loaded by default to keep startup context lean.

@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     hindsight_distill_before_retain: bool = False
     hindsight_max_project_memories: int = 5
 
+    # Admin bootstrap
+    admin_initial_email: str = "admin@localhost"
+
     # Auth
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
     # Comma-separated keys that are no longer used for signing but are still

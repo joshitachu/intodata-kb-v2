@@ -66,8 +66,8 @@ Two independent sub-systems sharing infrastructure:
 
 - EP-001 is now **Deployment Foundation**, generic rather than customer-specific.
 - Canonical deploy path is `deploy/deploy-client.sh` + `deploy/nginx/nexus-client.conf.template` + certbot. Caddy files remain legacy/deferred unless a future story revives them.
-- Six Docker services are still the Compose health boundary: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `dashboard`.
-- MCP API is a required host-level systemd service via `deploy/mcp-server@.service`, not a seventh Docker service.
+- Seven Docker services are the Compose health boundary: `postgres`, `qdrant`, `hindsight`, `backend`, `frontend`, `mcp-server`, `dashboard`.
+- MCP API runs as the `mcp-server` Compose service and publishes the VPS-local `${MCP_PORT:-8002}` port for nginx webhooks and operator SSH tunnels.
 - Deployment docs now live in `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`.
 - EP-001 is not accepted until the runbook and smoke test pass on a clean reference VPS.
 
@@ -109,82 +109,11 @@ Each sub-project has its own detailed CLAUDE.md. **Read the relevant one before 
 - **`RAG_pipeline/CLAUDE.md`** -- RAG backend/frontend, logging rules, code style, environment config
 - **`knowledge_base/intodoc/CLAUDE.md`** -- Scanner CLI internals (prompts, phases, IR format)
 
-## Code Conventions
+## Logging
 
-- **Python**: 3.11+, type hints, Pydantic v2, async/await for I/O, hatchling builds
-- **Frontend**: React 19, TypeScript 5 strict (never `any`), Tailwind CSS 3
-- **Testing**: pytest (Python), Vitest (frontend)
-- **Error handling**: Never swallow errors, always log + show user feedback
-- **RBAC**: Filter EVERY Qdrant query by user groups
-
-## Environment
-
-```bash
-# docker-compose defaults
-POSTGRES_DB=intodata_kb
-POSTGRES_USER=admin
-OLLAMA_BASE_URL=http://localhost:11434       # Host machine Ollama
-
-# RAG backend
-QDRANT_URL=http://localhost:6333
-DATABASE_URL=postgresql+asyncpg://admin:${POSTGRES_PASSWORD}@localhost:5432/intodata_kb
-
-# Models
-OLLAMA_EMBED_MODEL=nomic-embed-text
-OLLAMA_LLM_MODEL=gemma3:12b
-```
-
-## Logging Rules
-
-**These rules apply to ALL sub-projects. No exceptions.**
-
-### 1. Read Before Working
-
-At the **start of every session**, before writing any code, read:
-- `.claude/context.md` -- current state, blockers, what to work on next
-- `.claude/PROJECT_MEMORY.md` -- architecture decisions, patterns, lessons learned
-- `.claude/progress.md` -- high-level progress tracker
-- `.claude/PROGRESS_LOG.md` -- detailed session history
-
-### 2. Log Every Change
-
-After **every change** (bug fix, feature, refactor, config change -- no matter how small), immediately update:
-
-#### `.claude/PROGRESS_LOG.md` -- Append a new entry:
-
-```markdown
-## Session: YYYY-MM-DD
-
-### [Fix/Feature/Refactor]: Short description
-
-- **Files changed**: `path/to/file.py` (lines X-Y)
-- **Problem**: Describe the error or missing behavior
-- **Root cause**: Why the problem existed
-- **Change**: Describe exactly what was added/modified/removed
-- **Why this approach**: Reasoning for the chosen solution
-- **Verification**: How it was confirmed working
-```
-
-#### `.claude/context.md` -- Update:
-- Current state / status
-- Any new blockers
-- What should be done next
-
-#### `.claude/PROJECT_MEMORY.md` -- Update if applicable:
-- New architecture decisions (add to the decisions table)
-- New lessons learned / gotchas
-
-#### `.claude/progress.md` -- Update:
-- Check off completed items
-- Add new items if scope changed
-
-### 3. Never Skip Logging
-
-- A "quick fix" still gets logged. There are no exceptions.
-- If you fix a typo, log it. If you add an import, log it. If you change a config value, log it.
-- Use **specific file paths**, not vague descriptions ("updated the backend").
-- Include **error messages** verbatim when fixing bugs.
-- The log is the project's memory. Without it, we lose context between sessions.
+After every change run `/session-end` -- it reads git diff, pre-fills the log entry,
+and updates context.md. Format and field rules are embedded in that command.
+Never skip. Use specific file paths and verbatim error messages.
 
 ## Key Rules
 
@@ -194,10 +123,5 @@ After **every change** (bug fix, feature, refactor, config change -- no matter h
 4. **Credential safety** -- never send raw credentials to LLMs
 5. **No intermediate files** -- only final docs in output/{project_id}/docs/
 6. **Doc generation uses staging** -- Claude Code writes to `docs_staging/`, server swaps to `docs/` on success (see `knowledge_base/CLAUDE.md` for details)
-7. **ALWAYS document changes** -- After ANY code change (bug fix, feature, refactor, config -- no matter how small):
-   - **Log it** using the format in "Logging Rules" above (PROGRESS_LOG.md, context.md, PROJECT_MEMORY.md, progress.md)
-   - Update the **sub-project CLAUDE.md** (`knowledge_base/CLAUDE.md` or `RAG_pipeline/CLAUDE.md`) if the change affects architecture, conventions, or workflow
-   - Update **`.agent/` docs** (SOPs, architecture, lessons-learned, mcp-workflow) if the change affects documented processes or tool behavior
-   - Update **this root CLAUDE.md** if the change affects cross-project rules or the overall system
-   - If a change contradicts existing docs, **fix the docs immediately** -- stale docs are worse than no docs
-   - This is non-negotiable. Code changes without doc updates are incomplete.
+7. **ALWAYS document changes** -- run `/session-end` after every change; update sub-project CLAUDE.md and `.agent/` docs if architecture or workflow changed; stale docs are worse than no docs
+8. **Python builds**: hatchling not setuptools; **Testing**: pytest (Python), Vitest (frontend)

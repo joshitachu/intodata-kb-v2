@@ -11,22 +11,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="mcp_server")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--mcp", action="store_true", help="Run as MCP stdio server")
-    group.add_argument("--serve", action="store_true", help="Run as FastAPI REST API on :8001")
+    group.add_argument("--serve", action="store_true", help="Run as FastAPI REST API")
     group.add_argument(
         "--backfill-costs",
         action="store_true",
         help="Backfill GenerateRun.cost_usd from configured model pricing",
     )
-    # Default host stays 0.0.0.0 so Docker containers on the same host can reach
-    # MCP via host.docker.internal. Production deployments MUST restrict port 8002
-    # at the firewall or via the systemd template (--host 127.0.0.1 when MCP sits
-    # behind a same-host reverse proxy and no container needs direct access).
+    # Default host stays 0.0.0.0 so the Dockerized MCP API can bind inside its
+    # container. Production compose deployments publish the port on 127.0.0.1
+    # and expose public webhook traffic through the same-host reverse proxy.
     parser.add_argument("--host", default="0.0.0.0", help="API host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8002, help="API port (default: 8002)")
     parser.add_argument(
         "--static-dir",
         default=None,
         help="Path to dashboard dist/ directory to serve static files",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable Uvicorn auto-reload for local development",
     )
     parser.add_argument(
         "--project-id",
@@ -62,7 +66,7 @@ def main() -> None:
             "mcp_server.api.app:app",
             host=args.host,
             port=args.port,
-            reload=not args.static_dir,
+            reload=args.reload,
         )
 
 
