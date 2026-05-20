@@ -504,7 +504,10 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
         p.read_text(encoding="utf-8", errors="replace")
         for p in sorted(staging_dir.glob("*.md"))
     )
-    covered_ids = {_unit_id(unit) for unit in facts.units if unit.name in text}
+    covered_ids = {
+        _unit_id(unit) for unit in facts.units
+        if re.search(r"\b" + re.escape(unit.name) + r"\b", text, re.IGNORECASE)
+    }
     units_by_id = {_unit_id(unit): unit for unit in facts.units}
     duplicate_names = set(_duplicate_unit_names(facts))
     missing_ids = sorted(set(units_by_id) - covered_ids)

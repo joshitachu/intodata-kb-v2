@@ -101,6 +101,7 @@ class MCPServerConfig(BaseSettings):
     doc_generation_base_url: str | None = None
     doc_generation_deepseek_api_key: str | None = None
     doc_generation_deepseek_base_url: str | None = None
+    doc_generation_lock_stale_seconds: int = 7200
     # For Ollama or custom OpenAI-compatible endpoints: "http://localhost:11434"
     model_pricing_json: str = ""
     # JSON object mapping model names to USD-per-million-token rates.
@@ -223,6 +224,40 @@ config = MCPServerConfig()
 from mcp_server.platforms import supported_platform_ids  # noqa: E402
 
 SUPPORTED_PLATFORMS: frozenset[str] = supported_platform_ids()
+
+_PROVIDER_KEY_MAP: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+    "deepseek": "MCP_DOC_GENERATION_DEEPSEEK_API_KEY",
+}
+
+
+def check_provider_credentials() -> list[str]:
+    """Return missing-key warnings for all configured doc generation providers."""
+    import os as _os
+
+    model_fields = [
+        config.doc_generation_model,
+        config.doc_generation_write_model,
+        config.doc_generation_investigation_model,
+        config.doc_generation_fallback_model,
+    ]
+    warnings_out: list[str] = []
+    seen: set[str] = set()
+    for model_str in model_fields:
+        if not model_str or model_str == "claude-cli":
+            continue
+        prefix = model_str.split("/")[0].lower()
+        required_var = _PROVIDER_KEY_MAP.get(prefix)
+        if required_var and prefix not in seen and not _os.environ.get(required_var):
+            warnings_out.append(
+                f"provider '{prefix}' is configured (model: {model_str}) "
+                f"but {required_var} is not set — generation will fail"
+            )
+            seen.add(prefix)
+    return warnings_out
 
 
 def validate_production_secrets() -> None:

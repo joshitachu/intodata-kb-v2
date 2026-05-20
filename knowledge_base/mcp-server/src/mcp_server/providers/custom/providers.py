@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -13,12 +14,63 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from mcp_server.config import config
 from mcp_server.providers.custom.models import ModelOptions, ModelResult
 from mcp_server.services.token_refresh import ensure_token_fresh
 
 logger = logging.getLogger(__name__)
+
+
+class ProviderPayloadError(RuntimeError):
+    """Raised when an outbound provider request is structurally invalid."""
+
+
+class ChatMessagePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    role: str
+    content: Any = ""
+
+
+class OpenAIChatCompletionPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    messages: list[ChatMessagePayload] = Field(min_length=1)
+    max_tokens: int = Field(gt=0)
+    temperature: float | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+
+
+class GeminiGenerateContentPayload(BaseModel):
+    model: str
+    contents: str = Field(min_length=1)
+    config: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _has_max_output_tokens(self):
+        if int(self.config.get("max_output_tokens") or 0) <= 0:
+            raise ValueError("config.max_output_tokens must be positive")
+        return self
+
+
+class AnthropicMessagePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    max_tokens: int = Field(gt=0)
+    messages: list[ChatMessagePayload] = Field(min_length=1)
+    tools: list[dict[str, Any]] | None = None
+
+
+def _validated_payload(model: type[BaseModel], payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return model.model_validate(payload).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        raise ProviderPayloadError(str(exc)) from exc
 
 
 class ModelProvider(Protocol):
@@ -85,6 +137,33 @@ def _apply_prefill(prefill: str | None, raw_text: str) -> str:
     if raw_text.lstrip().startswith(prefill.lstrip()):
         return raw_text
     return prefill + raw_text
+
+
+def _retry_after_seconds(response: httpx.Response | None) -> float | None:
+    if response is None:
+        return None
+    value = response.headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {429, 500, 502, 503, 504}
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError))
+
+
+async def _sleep_for_retry(attempt: int, response: httpx.Response | None = None) -> None:
+    retry_after = _retry_after_seconds(response)
+    if retry_after is not None:
+        await asyncio.sleep(min(retry_after, 30.0))
+        return
+    delay = min(2 ** attempt, 12) + random.uniform(0, 0.5)
+    await asyncio.sleep(delay)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +373,23 @@ def _sdk_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _assert_contract(result: ModelResult, context: str = "") -> None:
+    tag = f" [{context}]" if context else ""
+    issues: list[str] = []
+    if result.success and not result.text:
+        issues.append(f"C1 violation: success=True but text is empty{tag}")
+    if not result.success and result.raw_error is None:
+        issues.append(f"C2 violation: success=False but raw_error is None{tag}")
+    if result.input_tokens < 0 or result.output_tokens < 0:
+        issues.append(f"C3 violation: token counts are negative{tag}")
+    if not issues:
+        return
+    for msg in issues:
+        if config.app_env != "production":
+            raise AssertionError(msg)
+        logger.warning("[provider-contract] %s", msg)
+
+
 def _model_dump(value: Any) -> dict[str, Any]:
     if hasattr(value, "model_dump"):
         return value.model_dump()
@@ -436,18 +532,17 @@ class OpenAIOfficialProvider:
             try:
                 payload: dict[str, Any] = {
                     "model": self.model_name,
-                    "input": full_prompt if not opts.prefill else [
-                        {"role": "user", "content": full_prompt},
-                        {"role": "assistant", "content": opts.prefill},
-                    ],
+                    "input": full_prompt,
                     "max_output_tokens": opts.max_tokens,
                 }
+                if opts.json_mode:
+                    payload["text"] = {"format": {"type": "json_object"}}
                 payload.update(opts.provider_options)
                 response = await self._client(opts.timeout_s).responses.create(**payload)
                 raw_text = _response_output_text(response)
-                text = _apply_prefill(opts.prefill, raw_text)
+                text = raw_text
                 input_tokens, output_tokens = _response_usage(response)
-                return ModelResult(
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
@@ -457,6 +552,8 @@ class OpenAIOfficialProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except Exception as exc:
                 last_error = _sdk_error(exc)
                 if attempt < opts.retries:
@@ -536,7 +633,7 @@ class OpenAIOfficialProvider:
 
                 if not function_calls:
                     text = _apply_prefill(opts.prefill, _response_output_text(response))
-                    return ModelResult(
+                    result = ModelResult(
                         success=True,
                         text=text,
                         model_name=self.model_name,
@@ -556,6 +653,8 @@ class OpenAIOfficialProvider:
                             "context_bytes": 0,
                         },
                     )
+                    _assert_contract(result, self.provider_name)
+                    return result
 
                 next_input = []
                 for call in function_calls:
@@ -591,6 +690,7 @@ class OpenAIOfficialProvider:
                     })
             except Exception as exc:
                 last_error = _sdk_error(exc)
+                response_id = None
                 if turn < max_turns - 1:
                     await asyncio.sleep(min(2 ** turn, 8))
 
@@ -680,8 +780,11 @@ class OpenAICompatibleProvider:
                 }
                 if self.include_temperature:
                     payload["temperature"] = opts.temperature
+                if opts.json_mode:
+                    payload["response_format"] = {"type": "json_object"}
                 payload.update(self.extra_body)
                 payload.update(opts.provider_options)
+                payload = _validated_payload(OpenAIChatCompletionPayload, payload)
                 headers = {"Content-Type": "application/json"}
                 if self.api_key:
                     headers["Authorization"] = f"Bearer {self.api_key}"
@@ -701,7 +804,7 @@ class OpenAICompatibleProvider:
                 finish_reason = choice.get("finish_reason")
                 if finish_reason:
                     metadata["finish_reason"] = finish_reason
-                return ModelResult(
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
@@ -711,6 +814,8 @@ class OpenAICompatibleProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except httpx.HTTPStatusError as exc:
                 body = exc.response.text.strip()
                 last_error = (
@@ -719,12 +824,16 @@ class OpenAICompatibleProvider:
                 )
                 if body:
                     last_error = f"{last_error} :: {body}"
-                if attempt < opts.retries:
-                    await asyncio.sleep(min(2 ** attempt, 4))
+                if attempt < opts.retries and _is_retryable_exception(exc):
+                    await _sleep_for_retry(attempt, exc.response)
+                else:
+                    break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                if attempt < opts.retries:
-                    await asyncio.sleep(min(2 ** attempt, 4))
+                if attempt < opts.retries and _is_retryable_exception(exc):
+                    await _sleep_for_retry(attempt)
+                else:
+                    break
 
         return ModelResult(
             success=False,
@@ -770,6 +879,8 @@ class OpenAICompatibleProvider:
             if self.include_temperature:
                 payload["temperature"] = opts.temperature
             payload.update(self.extra_body)
+            payload.update(opts.provider_options)
+            payload = _validated_payload(OpenAIChatCompletionPayload, payload)
 
             try:
                 async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
@@ -833,7 +944,7 @@ class OpenAICompatibleProvider:
 
                 if not tool_calls or finish_reason == "stop":
                     text = _apply_prefill(opts.prefill, _chat_completion_message_text(message))
-                    return ModelResult(
+                    result = ModelResult(
                         success=True,
                         text=text,
                         model_name=self.model_name,
@@ -853,6 +964,8 @@ class OpenAICompatibleProvider:
                             "context_bytes": 0,
                         },
                     )
+                    _assert_contract(result, self.provider_name)
+                    return result
 
                 assistant_msg: dict[str, Any] = {
                     "role": "assistant",
@@ -904,12 +1017,16 @@ class OpenAICompatibleProvider:
                 )
                 if body:
                     last_error = f"{last_error} :: {body}"
-                if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                if turn < max_turns - 1 and _is_retryable_exception(exc):
+                    await _sleep_for_retry(turn, exc.response)
+                else:
+                    break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                if turn < max_turns - 1 and _is_retryable_exception(exc):
+                    await _sleep_for_retry(turn)
+                else:
+                    break
 
         return ModelResult(
             success=False,
@@ -991,21 +1108,32 @@ class GoogleGeminiProvider:
         for attempt in range(opts.retries + 1):
             try:
                 client = self._client()
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=self.model_name,
-                    contents=full_prompt,
-                    config={
-                        "max_output_tokens": opts.max_tokens,
-                        "temperature": opts.temperature,
-                        **opts.provider_options,
+                gemini_config: dict[str, Any] = {
+                    "max_output_tokens": opts.max_tokens,
+                    "temperature": opts.temperature,
+                    **opts.provider_options,
+                }
+                if opts.json_mode:
+                    gemini_config["response_mime_type"] = "application/json"
+                payload = _validated_payload(
+                    GeminiGenerateContentPayload,
+                    {
+                        "model": self.model_name,
+                        "contents": full_prompt,
+                        "config": gemini_config,
                     },
                 )
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    **payload,
+                )
                 raw_text = str(getattr(response, "text", "") or "")
-                text = _apply_prefill(opts.prefill, raw_text)
+                # Gemini does not support server-side prefill; applying it would
+                # corrupt the output when the model returns a preamble before JSON.
+                text = raw_text
                 usage = getattr(response, "usage_metadata", None)
                 usage_data = _model_dump(usage)
-                return ModelResult(
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
@@ -1015,10 +1143,12 @@ class GoogleGeminiProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except Exception as exc:
                 last_error = _sdk_error(exc)
                 if attempt < opts.retries:
-                    await asyncio.sleep(min(2 ** attempt, 4))
+                    await _sleep_for_retry(attempt)
 
         return ModelResult(
             success=False,
@@ -1203,7 +1333,7 @@ class ClaudeCliModelProvider:
                 )
                 model_usage = data.get("modelUsage", {}) or {}
                 result_model = next(iter(model_usage.keys()), self.model_name or "claude")
-                return ModelResult(
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=result_model,
@@ -1213,6 +1343,8 @@ class ClaudeCliModelProvider:
                     retries=attempt,
                     metadata={**metadata, "session_id": data.get("session_id")},
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except subprocess.TimeoutExpired as exc:
                 last_error = f"Claude CLI timed out after {exc.timeout}s"
             except json.JSONDecodeError as exc:
@@ -1292,17 +1424,35 @@ class AnthropicProvider:
                 messages: list[dict[str, str]] = [{"role": "user", "content": full_prompt}]
                 if opts.prefill:
                     messages.append({"role": "assistant", "content": opts.prefill})
-                response = await self._client(opts.timeout_s).messages.create(
-                    model=self.model_name,
-                    max_tokens=opts.max_tokens,
-                    messages=messages,
-                    **opts.provider_options,
+                payload = _validated_payload(
+                    AnthropicMessagePayload,
+                    {
+                        "model": self.model_name,
+                        "max_tokens": opts.max_tokens,
+                        "messages": messages,
+                        **opts.provider_options,
+                    },
                 )
+                response = await self._client(opts.timeout_s).messages.create(**payload)
                 data = response.model_dump()
-                raw_text = (data.get("content") or [{}])[0].get("text", "")
-                text = _apply_prefill(opts.prefill, raw_text)
+                blocks = data.get("content") or []
+                raw_text = next((b.get("text", "") for b in blocks if b.get("type") == "text"), "")
+                stop_reason = data.get("stop_reason")
                 usage = data.get("usage", {}) or {}
-                return ModelResult(
+                if stop_reason == "max_tokens":
+                    return ModelResult(
+                        success=False,
+                        text=_apply_prefill(opts.prefill, raw_text),
+                        model_name=self.model_name,
+                        input_tokens=int(usage.get("input_tokens") or _estimate_tokens(full_prompt)),
+                        output_tokens=int(usage.get("output_tokens") or _estimate_tokens(raw_text)),
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        retries=attempt,
+                        raw_error="incomplete: stop_reason=max_tokens",
+                        metadata=metadata,
+                    )
+                text = _apply_prefill(opts.prefill, raw_text)
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
@@ -1312,10 +1462,12 @@ class AnthropicProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except Exception as exc:
                 last_error = _sdk_error(exc)
                 if attempt < opts.retries:
-                    await asyncio.sleep(min(2**attempt, 4))
+                    await _sleep_for_retry(attempt)
 
         return ModelResult(
             success=False,
@@ -1335,6 +1487,8 @@ class AnthropicProvider:
         max_turns: int = 30,
         scoped_tools: Any | None = None,
     ) -> ModelResult:
+        import anthropic as _anthropic
+
         opts = options or ModelOptions()
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
@@ -1348,13 +1502,17 @@ class AnthropicProvider:
 
         for turn in range(max_turns):
             try:
-                response = await self._client(opts.timeout_s).messages.create(
-                    model=self.model_name,
-                    max_tokens=opts.max_tokens,
-                    messages=messages,
-                    tools=STAGING_TOOLS_ANTHROPIC,
-                    **opts.provider_options,
+                payload = _validated_payload(
+                    AnthropicMessagePayload,
+                    {
+                        "model": self.model_name,
+                        "max_tokens": opts.max_tokens,
+                        "messages": messages,
+                        "tools": STAGING_TOOLS_ANTHROPIC,
+                        **opts.provider_options,
+                    },
                 )
+                response = await self._client(opts.timeout_s).messages.create(**payload)
                 data = response.model_dump()
 
                 usage = data.get("usage") or {}
@@ -1412,7 +1570,7 @@ class AnthropicProvider:
                     final_text = "".join(
                         b.get("text", "") for b in content_blocks if b.get("type") == "text"
                     )
-                    return ModelResult(
+                    result = ModelResult(
                         success=True,
                         text=_apply_prefill(opts.prefill, final_text),
                         model_name=self.model_name,
@@ -1432,6 +1590,8 @@ class AnthropicProvider:
                             "context_bytes": 0,
                         },
                     )
+                    _assert_contract(result, self.provider_name)
+                    return result
 
                 # Append full assistant turn (content blocks)
                 messages.append({"role": "assistant", "content": content_blocks})
@@ -1468,10 +1628,13 @@ class AnthropicProvider:
                     })
                 messages.append({"role": "user", "content": tool_results})
 
+            except (_anthropic.AuthenticationError, _anthropic.PermissionDeniedError) as exc:
+                last_error = _sdk_error(exc)
+                break
             except Exception as exc:
                 last_error = _sdk_error(exc)
                 if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                    await _sleep_for_retry(turn)
 
         return ModelResult(
             success=False,

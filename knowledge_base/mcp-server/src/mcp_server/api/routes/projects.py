@@ -20,11 +20,12 @@ _currently_generating: set[str] = set()
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 
 from mcp_server.api.permissions import require_project_access
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.db.models import GenerateRun, Project
 from mcp_server.schemas import (
     AddRepoRequest,
     AssessmentGenerateResponse,
@@ -374,9 +375,23 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
 
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
-        project = await registry.get_project(req.project_id)
+        result = await db.execute(
+            select(Project).where(Project.id == req.project_id).with_for_update()
+        )
+        project = result.scalar_one_or_none()
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {req.project_id}")
+        running_count = await db.scalar(
+            select(func.count(GenerateRun.id)).where(
+                GenerateRun.project_id == req.project_id,
+                GenerateRun.status == "running",
+            )
+        )
+        if project.status == "generating" or int(running_count or 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Generation is already running for project {req.project_id!r}.",
+            )
         await registry.update_status(req.project_id, "generating")
         run = await registry.create_generate_run(req.project_id, triggered_by="api")
         await db.commit()
@@ -389,6 +404,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         model=req.model,
         write_model=req.write_model,
         resume=req.resume,
+        run_id_for_lock=run_id,
         doc_generation_provider=project.doc_generation_provider,
         instruction_pack_dir=project.instruction_pack_dir,
     )
@@ -716,6 +732,7 @@ async def _run_generate_background(
     model: str | None = None,
     write_model: str | None = None,
     resume: bool = True,
+    run_id_for_lock: int | None = None,
     doc_generation_provider: str | None = None,
     instruction_pack_dir: str | None = None,
     partial_rag_sync: bool = False,
@@ -729,7 +746,7 @@ async def _run_generate_background(
     log_mgr.reset_log_file(project_id)
     result = await claude.generate_docs(
         project_id, investigation_model=investigation_model, model=model,
-        write_model=write_model, resume=resume,
+        write_model=write_model, resume=resume, run_id=run_id_for_lock or run_id,
         doc_generation_provider=doc_generation_provider,
         instruction_pack_dir=instruction_pack_dir,
     )

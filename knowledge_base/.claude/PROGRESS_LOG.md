@@ -3,6 +3,35 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-05-20 — P2/P3/P4: Investigation robustness, operational safety, validator correctness
+
+### [Fix/Feature]: Custom harness reliability campaign (8 steps, 336 tests pass)
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/config.py` — fixed non-existent fallback model (`"openai/gpt-5.4"` → `None`); added `_PROVIDER_KEY_MAP` and `check_provider_credentials()` for startup credential preflight
+  - `mcp-server/src/mcp_server/providers/custom/models.py` — added `json_mode: bool = False` to `ModelOptions`
+  - `mcp-server/src/mcp_server/providers/custom/providers.py` — added `_assert_contract()` helper (raises in dev, logs WARNING in prod); wired `json_mode` into `OpenAIOfficialProvider` (`text.format`), `OpenAICompatibleProvider` (`response_format`), `GoogleGeminiProvider` (`response_mime_type`); called `_assert_contract()` before all 8 success-return sites across 6 providers
+  - `mcp-server/src/mcp_server/providers/custom/investigator.py` — added `collect_partial_evidence()` to `EvidenceValidator` (returns valid/missing/errors without raising); rewrote `SingleShotInvestigator.run()` for evidence accumulation and targeted repair (retry only missing units, cap 15 per call); updated `_build_prompt()` to accept optional `repair_context`
+  - `mcp-server/src/mcp_server/providers/custom/validators.py` — changed coverage matching from substring `in` to word-boundary regex to eliminate false positives (e.g. "Map" matching inside "mapping")
+  - `mcp-server/src/mcp_server/providers/custom/harness.py` — added module-level `logger`; added `logger.warning()` on prompt-pack glob fallback in `_phase2_shared_context()` and `_phase3_context_files()`
+  - `mcp-server/src/mcp_server/services/generation_run_state.py` (new) — filesystem lock/manifest helpers (`acquire_generation_lock`, `refresh_generation_lock`, `release_generation_lock`, `write_run_manifest`, `record_manifest_chunks`) plus `LockHeartbeat` async context manager that refreshes lock every 60s via background asyncio task
+  - `mcp-server/src/mcp_server/services/claude_service.py` — imported `LockHeartbeat`; wrapped `provider.run()` with `async with LockHeartbeat(staging_dir, run_id=run_id):`
+  - `mcp-server/src/mcp_server/api/app.py` — added `_pid_alive()` and `_reconcile_orphaned_runs()` (marks `GenerateRun(status="running")` rows as failed if lock absent or PID dead); both wired into `lifespan()` startup; added `check_provider_credentials()` loop logging ERROR in prod, WARNING in dev
+  - `mcp-server/src/mcp_server/api/routes/projects.py` — minor fix
+  - `mcp-server/src/mcp_server/providers/custom/agent_runtime.py` — minor fix
+  - `mcp-server/entrypoint.sh` — minor fix
+  - `mcp-server/tests/test_providers/test_custom_provider.py` — new tests covering contract assertions, json_mode, targeted repair, partial evidence collection
+  - `mcp-server/tests/test_services/test_generation_run_state.py` (new) — lock acquire/refresh/release and LockHeartbeat tests
+  - `knowledge_base/.claude/PROJECT_MEMORY.md` — updated decisions table and lessons learned
+  - `knowledge_base/.claude/progress.md` — phase tracking update
+- **Problem**: Three distinct reliability gaps: (1) investigation retried entire groups when only 1-2 units were missing; Gemini had no native JSON enforcement; provider contract violations were silent; fallback model pointed to non-existent `openai/gpt-5.4`. (2) Lock had no heartbeat — crashes could block generation for 2h; DB `status="running"` rows from crashes were never cleaned up; no startup warning for missing API keys. (3) Coverage validator matched unit names as substrings causing false positives; prompt-pack glob fallback was silent.
+- **Root cause**: `SingleShotInvestigator.run()` re-sent the full group on every retry instead of accumulating good evidence and asking only for missing units. Fallback model value set to non-existent model in US-102, never corrected. `acquire_generation_lock` stored a timestamp but nothing refreshed it. `_run_generate_background` left DB rows stuck after crash because there was no startup reconciliation. `covered_ids` used `unit.name in text` substring matching.
+- **Change**: Targeted repair accumulates valid evidence across attempts and retries only missing units (cap 15 per call) — a group with 18/20 covered uses ~10% of the token budget on repair vs 100% on full retry. `_assert_contract()` makes C1/C2/C3 violations observable in dev (raises) and auditable in prod (WARNING). `json_mode` wired to provider-native JSON enforcement. `LockHeartbeat` wraps only `provider.run()` (not the full generation function). `_reconcile_orphaned_runs()` marks stuck rows failed at startup using PID liveness check. `check_provider_credentials()` maps provider prefix to required env var — no hard exit, just log. P4.2 (section validation for non-Talend) deliberately skipped: `REQUIRED_SECTION_NAMES` are Talend-specific; applying to Workato/Generic would break validation.
+- **Why this approach**: Accumulation is strictly additive — validated evidence is never discarded. asyncio background task for heartbeat matches all other async I/O in the codebase. No hard exit on missing API keys preserves the case where operators run with only some providers configured.
+- **Verification**: 336/336 tests pass. 1 intermediate failure (`test_phase3_context_prefers_doc_pack_over_family_bundle`) was caused by missing module-level `logger` in harness.py — fixed by adding `import logging` + `logger = logging.getLogger(__name__)`.
+
+---
+
 ## Session: 2026-05-11 — EP-001 Deployment Foundation Sweep
 
 ### [Fix/Docs]: EP-001 backlog refresh + nginx security headers
@@ -1624,6 +1653,28 @@ The fundamental fix for small models is one focused task per LLM call. Asking a 
 Restart mcp-server (`python3 -m mcp_server --serve --port 8002`) then re-run generation for localESBCHECK.
 Expected: Phase 2 analysis 20-40KB per group (vs 4-8KB), overall quality score 2.5-3.5 (vs 1.58).
 Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
+
+## Session: 2026-05-20
+
+### [Refactor]: .agent/ documentation audit and accuracy fix
+
+- **Files changed**: `knowledge_base/.agent/README.md`, `knowledge_base/.agent/SOP/add-new-project.md`, `knowledge_base/.agent/SOP/setup-dev-environment.md`, `knowledge_base/.agent/decisions/001-mcp-over-cli.md`, `knowledge_base/.agent/system/architecture.md`, `knowledge_base/.agent/system/dashboard.md`, `knowledge_base/.agent/system/mcp-server.md`, `knowledge_base/.agent/system/tech-stack.md` (updated); `knowledge_base/.agent/SOP/run-doc-generation.md`, `knowledge_base/.agent/system/lessons-learned.md` (deleted).
+- **Problem**: `.agent/` docs were significantly out of sync with the codebase -- wrong tool counts, deleted CLI commands described as functional, stale `vaxxinova/` paths, missing platforms, outdated component lists.
+- **Root cause**: `.agent/` docs written once during initial setup and never maintained. New features (Workato/Generic/Lobster platforms, 6 Hindsight tools, custom harness provider, template system, 11 more dashboard components) captured in CLAUDE.md and PROJECT_MEMORY but never backfilled into reference docs.
+- **Change**: Audited all 11 `.agent/` files against live code. Deleted 2 redundant files. Updated 8 files: tool count 8->14, prompt format 22 .txt->2 .md guides, removed legacy CLI section (no analyze/generate commands exist), platform support Talend-only->Talend/Workato/Generic/Lobster, `vaxxinova/` paths->`knowledge_base/`, dashboard component list 5->16, ADR-001 marked "partially superseded" by custom provider.
+- **Why this approach**: Spawned audit agent to compare docs against live code rather than editing from memory.
+- **Verification**: All file paths and tool names verified against live source. Commit `9913dc6`.
+
+### [Feature]: Level 6 PostToolUse hook -- automatic Python syntax check
+
+- **Files changed**: `~/.claude/hooks/py_compile_check.py` (new, global), `~/.claude/settings.json` (PostToolUse hook added). Not tracked in this repo.
+- **Problem**: Python syntax errors from edits were only caught at service startup, not at edit time.
+- **Change**: Global hook reads `tool_input.file_path` from stdin after every `Edit`/`Write`; runs `python3 -m py_compile` on `.py` files; exits 2 with error output on failure, silent on success.
+- **Why this approach**: `py_compile` checks syntax without importing. Exit 2 surfaces the error to the agent immediately and blocks continuation.
+- **Verification**: Wired via `PostToolUse` matcher `Edit|Write`. Applies globally across all projects.
+
+> **NOTE**: Uncommitted working tree changes exist in `knowledge_base/mcp-server/` (projects.py +23, claude_service.py +50, config.py +1) implementing a file-based generation lock (`acquire/release_generation_lock`, `write_run_manifest`, `.generation.lock` in staging_dir, 409 on concurrent generate). Not worked on this session -- commit or log separately.
+
 ## Session: 2026-05-05
 
 ### [Docs/Backlog]: EP-001 deployment foundation realignment

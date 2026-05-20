@@ -144,8 +144,7 @@ class ScopedEvidenceTools:
             text = func()
             raw = text.encode("utf-8")
             if len(raw) > self.contract.tool_budget.max_result_bytes:
-                text = raw[: self.contract.tool_budget.max_result_bytes].decode("utf-8", errors="ignore")
-                text += "\n\n[truncated by tool result byte budget]"
+                text = text[: self.contract.tool_budget.max_result_bytes] + "\n\n[truncated by tool result byte budget]"
             size = len(text.encode("utf-8"))
             if self.bytes_returned + size > self.contract.tool_budget.max_bytes:
                 raise RuntimeError("tool byte budget exceeded")

@@ -15,6 +15,14 @@ import time
 from pathlib import Path
 
 from mcp_server.config import config
+from mcp_server.services.generation_run_state import (
+    GenerationLockError,
+    LockHeartbeat,
+    acquire_generation_lock,
+    refresh_generation_lock,
+    release_generation_lock,
+    write_run_manifest,
+)
 from mcp_server.providers.custom.source_context import materialize_direct_redacted_source
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.scanner_service import ScannerService
@@ -986,6 +994,7 @@ Required sections:
         model: str | None = None,
         write_model: str | None = None,
         resume: bool = True,
+        run_id: int | None = None,
         doc_generation_provider: str | None = None,
         instruction_pack_dir: str | None = None,
     ) -> dict:
@@ -1000,6 +1009,29 @@ Required sections:
 
         # Use a staging directory so old docs survive if generation fails
         staging_dir = output_dir / "docs_staging"
+        try:
+            acquire_generation_lock(
+                staging_dir,
+                project_id=project_id,
+                run_id=run_id,
+                stale_after_seconds=config.doc_generation_lock_stale_seconds,
+            )
+        except GenerationLockError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "model_name": model or config.doc_generation_model,
+                "write_model_name": write_model or config.doc_generation_write_model,
+            }
+
+        write_run_manifest(
+            staging_dir,
+            run_id=run_id,
+            project_id=project_id,
+            phase="startup",
+            status="running",
+            extra={"resume_requested": resume},
+        )
 
         # Detect resume state before deciding whether to wipe staging
         resume_state: dict | None = None
@@ -1007,9 +1039,22 @@ Required sections:
             resume_state = self._detect_resume_state(staging_dir)
 
         if resume_state is None:
-            # Fresh run — wipe any leftover staging
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir, ignore_errors=True)
+            # Fresh run — wipe any leftover staging, preserving the active lock.
+            for child in list(staging_dir.iterdir()) if staging_dir.exists() else []:
+                if child.name == ".generation.lock":
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+            write_run_manifest(
+                staging_dir,
+                run_id=run_id,
+                project_id=project_id,
+                phase="startup",
+                status="running",
+                extra={"fresh_staging": True},
+            )
 
         for d in [
             staging_dir,
@@ -1226,5 +1271,42 @@ Required sections:
         async def _log_cb(pid: str, message: str, level: str = "info") -> None:
             await self.log_manager.emit(pid, message, level=level)
 
-        agent_result = await provider.run(ctx, _log_cb)
-        return agent_result.to_dict()
+        try:
+            refresh_generation_lock(staging_dir, run_id=run_id)
+            write_run_manifest(
+                staging_dir,
+                run_id=run_id,
+                project_id=project_id,
+                phase="provider",
+                status="running",
+                extra={"provider": resolved_provider, "model": effective_model, "write_model": effective_write_model},
+            )
+            async with LockHeartbeat(staging_dir, run_id=run_id):
+                agent_result = await provider.run(ctx, _log_cb)
+            result = agent_result.to_dict()
+            write_run_manifest(
+                staging_dir,
+                run_id=run_id,
+                project_id=project_id,
+                phase="provider",
+                status="completed" if result.get("success") else "failed",
+                extra={"error": result.get("error")},
+            )
+            return result
+        except Exception as exc:
+            write_run_manifest(
+                staging_dir,
+                run_id=run_id,
+                project_id=project_id,
+                phase="provider",
+                status="failed",
+                extra={"error": str(exc)},
+            )
+            return {
+                "success": False,
+                "error": str(exc),
+                "model_name": effective_model,
+                "write_model_name": effective_write_model,
+            }
+        finally:
+            release_generation_lock(staging_dir, run_id=run_id)

@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import time
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from mcp_server.config import config
 from mcp_server.providers.base import AgentResult, DocGenContext, DocGenerationProvider, LogCallback
@@ -67,6 +70,7 @@ from mcp_server.providers.custom.validators import (
     _strip_config_contradiction_sentences,
 )
 from mcp_server.services.model_pricing import calculate_total_cost
+from mcp_server.services.generation_run_state import record_manifest_chunks
 
 
 LARGE_CONTEXT_ARTIFACTS = {
@@ -579,8 +583,17 @@ class CustomHarnessProvider(DocGenerationProvider):
         for group in ctx.preprocess_groups:
             group_units = self._group_units(state, group)
             chunks = self._phase2_group_chunks(preprocess_dir / f"{group}.md", group_units, investigation_dir)
+            record_manifest_chunks(ctx.staging_dir, phase="investigation", group=group, chunks=chunks)
             chunk_reports = []
             for idx, chunk_file in enumerate(chunks, start=1):
+                if not chunk_file.exists():
+                    failed_groups.add(group)
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Investigation chunk missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
+                        "error",
+                    )
+                    break
                 chunk_name = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
                 cached = self._load_investigation_artifact(investigation_dir, chunk_name)
                 if cached is not None and ctx.resume_state is not None:
@@ -601,6 +614,17 @@ class CustomHarnessProvider(DocGenerationProvider):
                         provider_options=self._provider_options(self.investigation_provider),
                     )
                 except InvestigationError as exc:
+                    failure_kind = self._classify_failure(
+                        ModelResult(
+                            success=False,
+                            model_name=getattr(self.investigation_provider, "model_name", ""),
+                            raw_error=str(exc),
+                        )
+                    )
+                    if failure_kind == FailureKind.AUTH_ERROR:
+                        raise RuntimeError(
+                            f"Phase 1 investigation auth failed for {chunk_name}: {exc}"
+                        ) from exc
                     await log_cb(
                         ctx.project_id,
                         f"[custom] Investigation failed for {chunk_name} (partial, continuing): {exc}",
@@ -689,6 +713,8 @@ class CustomHarnessProvider(DocGenerationProvider):
 
             group_units = self._group_units(state, group)
             group_file = preprocess_dir / f"{group}.md"
+            if not group_file.exists():
+                raise RuntimeError(f"Phase 2 source group file missing: {group_file.relative_to(ctx.staging_dir).as_posix()}")
             file_bytes = group_file.stat().st_size if group_file.exists() else 0
             opts = ModelOptions(
                 max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, file_bytes // 4)),
@@ -698,9 +724,12 @@ class CustomHarnessProvider(DocGenerationProvider):
                 provider_options=self._provider_options(self.model_provider),
             )
             chunks = self._phase2_group_chunks(group_file, group_units, analysis_dir)
+            record_manifest_chunks(ctx.staging_dir, phase="phase2", group=group, chunks=chunks)
             investigation_context = self._investigation_context(ctx, group)
             chunk_outputs: list[str] = []
             for idx, chunk_file in enumerate(chunks, start=1):
+                if not chunk_file.exists():
+                    raise RuntimeError(f"Phase 2 chunk file missing: {chunk_file.relative_to(ctx.staging_dir).as_posix()}")
                 prompt = group_analysis_prompt(state.facts_manifest, group, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, required_docs=self._required_docs)
                 if len(chunks) > 1:
                     prompt += (
@@ -2068,7 +2097,7 @@ Missing units:
             f"call_budget={current_calls + 1}/{budget}",
             "info",
         )
-        self._write_model_input_snapshot(
+        snapshot_dir = self._write_model_input_snapshot(
             ctx,
             provider=provider,
             phase=phase,
@@ -2089,6 +2118,7 @@ Missing units:
             )
         else:
             result = await provider.complete(prompt, context_files, opts)
+        self._write_model_response_snapshot(snapshot_dir, result)
         failure_kind = self._classify_failure(result)
         if failure_kind is not None:
             raw_error = result.raw_error or (
@@ -2169,7 +2199,7 @@ Missing units:
         estimated_tokens: int,
         total_bytes: int,
         call_index: int,
-    ) -> None:
+    ) -> Path:
         """Persist the exact model-call inputs for offline review and no-AI tests."""
 
         snapshot_dir = (
@@ -2228,6 +2258,35 @@ Missing units:
             "context_files": context_entries,
         }
         (snapshot_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        request = {
+            "provider": self._describe_provider(provider),
+            "model": provider.model_name,
+            "phase": phase,
+            "target": target,
+            "uses_tools": use_tools_for_core_generation(provider),
+            "message_count": 1,
+            "context_file_count": len(context_files),
+            "max_tokens": opts.max_tokens,
+            "temperature": opts.temperature,
+            "provider_options": opts.provider_options,
+        }
+        (snapshot_dir / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
+        return snapshot_dir
+
+    @staticmethod
+    def _write_model_response_snapshot(snapshot_dir: Path, result: ModelResult) -> None:
+        response = {
+            "success": result.success,
+            "model_name": result.model_name,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "latency_ms": result.latency_ms,
+            "retries": result.retries,
+            "raw_error": result.raw_error,
+            "metadata": result.metadata,
+            "text_preview": result.text[:1000],
+        }
+        (snapshot_dir / "response.json").write_text(json.dumps(response, indent=2, default=str), encoding="utf-8")
 
     @staticmethod
     def _bounded_context_files(context_files: list[Path]) -> list[Path]:
@@ -2622,6 +2681,7 @@ Allowed docs:
             if guide.exists():
                 files.append(guide)
             else:
+                logger.warning("phase2 guide file missing, using glob fallback: %s", guide)
                 files.extend(sorted(preprocess_dir.glob("_analysis_prompts*.md")))
         return files
 
@@ -2680,6 +2740,7 @@ Allowed docs:
         if prompt_pack.exists():
             files.append(prompt_pack)
         else:
+            logger.warning("phase3 prompt pack missing, falling back to guide files: %s", prompt_pack)
             phase3_guide = preprocess_dir / "_phase3_guide.md"
             if phase3_guide.exists():
                 files.append(phase3_guide)

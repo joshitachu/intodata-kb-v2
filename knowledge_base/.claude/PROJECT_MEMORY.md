@@ -50,6 +50,11 @@
 | Phase B: native tool-use loop | list_artifacts/read_artifact tools on OpenAICompatibleProvider + AnthropicProvider; Ollama keeps single-shot fallback; supports_tools flag routes call sites in harness.py | Model pulls context on demand instead of Python front-loading; recovers from non-standard filenames; context_bytes=0 for tool-use paths eliminates context overflow risk | 2026-04 |
 | DeepSeek multi-turn reasoning_content | complete_with_tools() echoes reasoning_content back in assistant messages when present | DeepSeek thinking mode returns reasoning_content in every response; multi-turn loops must include it in history or API returns 400. Single-shot complete() unaffected. No-op for non-thinking models. | 2026-04 |
 | Platform-agnostic provider requirement | No Claude CLI dependency; all features must work with deepseek/kimi/Anthropic/Ollama swappable at runtime | Anthropic partnership (token resale) requires Claude support but architecture must not be Claude-only; tool-use implementation uses OpenAI function-calling format which all three cloud providers support | 2026-04 |
+| Fallback model default = None | `doc_generation_fallback_model` defaults to `None`, not a model string | `"openai/gpt-5.4"` (the previous default) doesn't exist — every fallback caused a 404. Operators opt in explicitly via `MCP_DOC_GENERATION_FALLBACK_MODEL`. | 2026-05 |
+| REQUIRED_SECTION_NAMES are Talend-only | Section validation (P4.2) skipped for non-Talend platforms | COMPONENTS, EXECUTION_FLOW, DATA_FLOWS, TRANSFORMATION_DETAIL are Talend concepts. Applying them to Workato/Generic would break validation. `group_analysis_is_complete()` already gates on `platform == "talend"`. | 2026-05 |
+| json_mode is set by the investigator, not by prefill | `ModelOptions.json_mode=True` is passed from `SingleShotInvestigator.run()`, not from the prefill proxy | prefill="{" and json_mode are complementary: prefill forces the model to start a JSON object, json_mode tells the provider to enforce JSON at the API level. Both are set. | 2026-05 |
+| LockHeartbeat wraps only provider.run() | `async with LockHeartbeat(staging_dir, run_id=run_id):` is placed around the single `provider.run(ctx, _log_cb)` call, not around the full generation function | The lock is acquired before the heartbeat starts and released in the `finally` block after the heartbeat exits. Heartbeat start and lock acquire are coordinated via this placement. | 2026-05 |
+| check_provider_credentials() never hard-exits | Returns a list of warnings, never raises or exits the process | Operators may intentionally run with only some providers configured (e.g. only Anthropic). Hard exit belongs only in `validate_production_secrets()` for auth/ingest keys, not API keys. | 2026-05 |
 
 ## Code Patterns
 
@@ -85,6 +90,7 @@
 | Template management system | 2026-03-24 | DB-backed templates, versioning, profiles, A/B comparison, dashboard UI |
 | Scoring pipeline (Phase 2.6) | 2026-03-24 | 8-dimension rubric, anti-patterns, red flags, security checklist, scorecard output |
 | Custom investigator loop | 2026-04-25 | `providers/custom/investigator.py`; JSON actions (`read_file`, `search_text`, `list_dir`, `finish`), validated `_investigation/` artifacts, Phase 2/3 evidence threading, critic/expander pass |
+| P2/P3/P4 harness reliability | 2026-05-20 | Targeted repair loop, provider contract assertions, json_mode, LockHeartbeat, startup orphaned-run reconciler, credential preflight, word-boundary coverage; 336 tests |
 | Documentation restructuring | 2026-02-19 | .agent pattern, SOPs, system docs |
 | Fix stuck status | 2026-03-03 | Reset endpoint, polling fallback, reset button |
 | JWT auth integration | 2026-03-04 | Shared JWT across all services |
@@ -112,6 +118,7 @@
 - Doc generation uses staging dir (`docs_staging/`). Server swaps to `docs/` on success, pushes to RAG automatically.
 - Do NOT add `insert_to_rag` to the Claude Code prompt -- RAG push is server-side.
 - Custom API provider has its own investigator loop now. The model never writes files directly in that phase. It returns JSON actions only; Python executes read-only tools inside `docs_staging/`, validates evidence, and writes `_investigation/{group}.json` + `.md`. If investigation coverage fails, Phase 2 must not start.
+- **`.agent/` docs drift silently.** CLAUDE.md and PROJECT_MEMORY get updated when features ship, but `.agent/system/` and `.agent/SOP/` are often forgotten. When working in this codebase after a significant feature (new tools, platforms, dashboard components), run a quick audit of affected `.agent/` files in the same commit -- not retroactively.
 - Very large docs (e.g. 17_DATA_QUALITY.md with 1,102 embedded rules) may fail RAG ingestion with 500 errors. Consider splitting.
 - SSE-only UI updates are fragile -- always pair with polling as a fallback.
 - Stuck states need an explicit user escape hatch (reset button) since disabling all actions locks the user out.

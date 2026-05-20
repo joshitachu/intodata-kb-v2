@@ -185,7 +185,62 @@ class EvidenceValidator:
         self.toolbox = toolbox
         self.unit_names = facts.unit_names()
 
-    def validate_report(self, group: str, payload: dict[str, Any], allowed_units: set[str]) -> InvestigationReport:
+    def collect_partial_evidence(
+        self,
+        payload: dict[str, Any],
+        units_needed: set[str],
+        *,
+        default_chunk_ref: str | None = None,
+    ) -> tuple[list[InvestigationEvidence], dict[str, str], list[str], list[str]]:
+        """Validate present evidence items without raising on missing units.
+
+        Returns (valid_evidence, valid_skipped, missing_units, item_errors).
+        Caller accumulates across attempts and retries only missing_units.
+        """
+        raw_items = payload.get("evidence")
+        if not isinstance(raw_items, list):
+            return [], {}, sorted(units_needed), ["finish action requires evidence list"]
+
+        skipped_raw = payload.get("skipped_units") or {}
+        if not isinstance(skipped_raw, dict):
+            skipped_raw = {}
+
+        valid_evidence: list[InvestigationEvidence] = []
+        item_errors: list[str] = []
+
+        for idx, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                item_errors.append(f"evidence[{idx}] must be an object")
+                continue
+            try:
+                normalized = dict(item)
+                if default_chunk_ref and not normalized.get("chunk_ref"):
+                    normalized["chunk_ref"] = default_chunk_ref
+                if default_chunk_ref and not normalized.get("source_file"):
+                    normalized["source_file"] = default_chunk_ref
+                ev = InvestigationEvidence.model_validate(normalized)
+                self._validate_item(ev, units_needed)
+                valid_evidence.append(ev)
+            except (ValidationError, InvestigatorError) as exc:
+                item_errors.append(f"evidence[{idx}]: {exc}")
+
+        valid_skipped: dict[str, str] = {}
+        for unit, reason in skipped_raw.items():
+            if unit in units_needed and str(reason).strip():
+                valid_skipped[str(unit)] = str(reason).strip()
+
+        covered = {ev.unit_name for ev in valid_evidence} | set(valid_skipped)
+        missing = sorted(units_needed - covered)
+        return valid_evidence, valid_skipped, missing, item_errors
+
+    def validate_report(
+        self,
+        group: str,
+        payload: dict[str, Any],
+        allowed_units: set[str],
+        *,
+        default_chunk_ref: str | None = None,
+    ) -> InvestigationReport:
         raw_items = payload.get("evidence")
         if not isinstance(raw_items, list):
             raise InvestigatorError("finish action requires evidence list")
@@ -200,7 +255,12 @@ class EvidenceValidator:
                 errors.append(f"evidence[{idx}] must be an object")
                 continue
             try:
-                ev = InvestigationEvidence.model_validate(item)
+                normalized = dict(item)
+                if default_chunk_ref and not normalized.get("chunk_ref"):
+                    normalized["chunk_ref"] = default_chunk_ref
+                if default_chunk_ref and not normalized.get("source_file"):
+                    normalized["source_file"] = default_chunk_ref
+                ev = InvestigationEvidence.model_validate(normalized)
                 self._validate_item(ev, allowed_units)
                 evidence.append(ev)
             except (ValidationError, InvestigatorError) as exc:
@@ -233,11 +293,16 @@ class EvidenceValidator:
             raise InvestigatorError(f"unknown canonical unit: {ev.unit_name}")
         if ev.unit_name not in allowed_units:
             raise InvestigatorError(f"unit is not assigned to this investigation: {ev.unit_name}")
-        source = self.toolbox.resolve_inside_staging(ev.source_file)
-        if not source.is_file():
-            raise InvestigatorError(f"source file does not exist: {ev.source_file}")
-        if self.toolbox.relative_path(source) != ev.source_file:
-            raise InvestigatorError(f"source_file must be staging-relative canonical path: {self.toolbox.relative_path(source)}")
+        if ev.source_file:
+            source = self.toolbox.resolve_inside_staging(ev.source_file)
+            if not source.is_file():
+                raise InvestigatorError(f"source file does not exist: {ev.source_file}")
+            if self.toolbox.relative_path(source) != ev.source_file:
+                raise InvestigatorError(f"source_file must be staging-relative canonical path: {self.toolbox.relative_path(source)}")
+        if ev.chunk_ref:
+            chunk = self.toolbox.resolve_inside_staging(ev.chunk_ref)
+            if not chunk.is_file():
+                raise InvestigatorError(f"chunk_ref file does not exist: {ev.chunk_ref}")
         if not (ev.line_range or ev.chunk_ref):
             raise InvestigatorError("line_range or chunk_ref is required")
         snippet = (ev.snippet or "").strip()
@@ -281,11 +346,19 @@ class SingleShotInvestigator:
     ) -> tuple[InvestigationReport, list[ProviderCallLog]]:
         content = group_file.read_text(encoding="utf-8", errors="replace")[:60_000]
         source_ref = self.toolbox.relative_path(group_file)
-        prompt = self._build_prompt(group, source_ref, content, allowed_units)
         calls: list[ProviderCallLog] = []
 
+        accumulated_evidence: list[InvestigationEvidence] = []
+        accumulated_skipped: dict[str, str] = {}
+        units_needed = list(allowed_units)
+        repair_context: str | None = None
+        last_exc: Exception | None = None
+
         for attempt in range(3):
-            result = await self.provider.complete(
+            prompt = self._build_prompt(
+                group, source_ref, content, units_needed, repair_context=repair_context
+            )
+            model_result = await self.provider.complete(
                 prompt,
                 options=ModelOptions(
                     max_tokens=config.investigation_max_tokens,
@@ -294,40 +367,70 @@ class SingleShotInvestigator:
                     timeout_s=180.0,
                     provider_options=provider_options or {},
                     prefill="{",
+                    json_mode=True,
                 ),
             )
             calls.append(ProviderCallLog(
                 phase="investigation",
                 target=f"{group}:attempt{attempt + 1}",
-                result=result,
+                result=model_result,
             ))
-            if not result.success:
-                raise InvestigatorError(f"model call failed: {result.raw_error}")
+            if not model_result.success:
+                raise InvestigatorError(f"model call failed: {model_result.raw_error}")
+
             try:
-                payload = json.loads(_extract_json_object(result.text))
+                payload = json.loads(_extract_json_object(model_result.text))
                 if not isinstance(payload, dict):
                     raise InvestigatorError(
                         f"model returned {type(payload).__name__} instead of an object "
                         '- expected {"evidence": [...]}'
                     )
-                report = self.validator.validate_report(group, payload, set(allowed_units))
-                report.tool_rounds = attempt + 1
-                report.invalid_retries = attempt
-                report.input_tokens = sum(c.result.input_tokens for c in calls)
-                report.output_tokens = sum(c.result.output_tokens for c in calls)
-                return report, calls
             except (InvestigatorError, json.JSONDecodeError, ValueError) as exc:
-                preview = result.text[:300].replace("\n", " ") if result.text else "<empty>"
+                last_exc = exc
+                preview = model_result.text[:300].replace("\n", " ") if model_result.text else "<empty>"
                 if attempt == 2:
                     raise InvestigatorError(
-                        f"evidence extraction failed after 3 attempts: {exc} | model response preview: {preview}"
+                        f"evidence extraction failed after 3 attempts: {exc} | preview: {preview}"
                     ) from exc
-                prompt += (
-                    f"\n\nPrevious attempt failed validation. Fix these errors and retry:\n{exc}"
-                    "\n\nReturn corrected JSON only."
-                )
+                # JSON parse failure — reset to full unit list and carry error context
+                units_needed = list(allowed_units)
+                repair_context = f"JSON parse failed: {exc}\nReturn corrected JSON only."
+                continue
 
-        raise InvestigatorError("unreachable")
+            new_evidence, new_skipped, missing, _ = self.validator.collect_partial_evidence(
+                payload,
+                set(units_needed),
+                default_chunk_ref=source_ref,
+            )
+            accumulated_evidence.extend(new_evidence)
+            accumulated_skipped.update(new_skipped)
+
+            if not missing:
+                report = InvestigationReport(
+                    group=group,
+                    source_groups=[group],
+                    evidence=accumulated_evidence,
+                    skipped_units=dict(sorted(accumulated_skipped.items())),
+                    tool_rounds=attempt + 1,
+                    invalid_retries=attempt,
+                    input_tokens=sum(c.result.input_tokens for c in calls),
+                    output_tokens=sum(c.result.output_tokens for c in calls),
+                )
+                return report, calls
+
+            # Targeted repair: retry only for missing units (cap at 15)
+            units_needed = missing[:15]
+            repair_context = (
+                f"Previous attempt missed these units: {', '.join(units_needed)}\n"
+                "Return evidence ONLY for the units listed above."
+            )
+            last_exc = InvestigatorError(
+                f"missing units after attempt {attempt + 1}: {', '.join(units_needed)}"
+            )
+
+        raise InvestigatorError(
+            f"evidence extraction failed after 3 attempts for group {group!r}: {last_exc}"
+        )
 
     def _build_prompt(
         self,
@@ -335,9 +438,11 @@ class SingleShotInvestigator:
         source_ref: str,
         content: str,
         allowed_units: list[str],
+        *,
+        repair_context: str | None = None,
     ) -> str:
         units_list = "\n".join(f"- {u}" for u in allowed_units)
-        return f"""\
+        base = f"""\
 You are extracting structured evidence from integration scan data.
 
 Scan data for group: {group}
@@ -361,6 +466,7 @@ Return ONLY a valid JSON object (no markdown fences, no explanation):
       "unit_name": "exact unit name from the list above",
       "category": "short label describing the evidence type (e.g. data flow, business logic, error handling, security, orchestration)",
       "source_file": "{source_ref}",
+      "chunk_ref": "{source_ref}",
       "line_range": "approximate line range e.g. 10-25",
       "snippet": "exact short excerpt from the scan data (minimum 8 chars)",
       "observation": "specific concrete finding about this unit (minimum 20 chars)"
@@ -375,10 +481,14 @@ Rules:
 - Every unit must appear in evidence OR skipped_units
 - snippet must be an exact excerpt from the scan data above
 - observation must be specific, not generic phrases like "needs review" or "no details available"
-- source_file must be exactly: {source_ref}
+- chunk_ref must be exactly: {source_ref}
+- source_file may be {source_ref} unless the scan data names a more specific original source artifact
 - line_range is required (approximate is fine)
 - Multiple evidence items per unit are encouraged
 """
+        if repair_context:
+            return base + f"\n\n{repair_context}"
+        return base
 
 
 def _extract_json_object(text: str) -> str:

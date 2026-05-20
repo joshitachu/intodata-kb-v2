@@ -35,7 +35,7 @@
 
 ## MCP Server
 
-- [x] 8 MCP tools for Claude Code (add_repo, fetch_json, trigger_scan, etc.)
+- [x] 14 MCP tools for Claude Code (add_repo, fetch_json, trigger_scan, get_analysis_prompts, get_reference_docs, recall/retain Hindsight tools, etc.)
 - [x] REST API (12 endpoints on port 8001)
 - [x] Dual mode: --mcp (stdio) and --serve (HTTP)
 - [x] Doc generation via Claude Code subprocess

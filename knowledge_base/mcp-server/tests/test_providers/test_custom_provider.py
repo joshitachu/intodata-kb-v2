@@ -770,6 +770,30 @@ def test_investigation_artifacts_and_coverage_validation(tmp_path):
     assert coverage.ok
 
 
+def test_investigation_accepts_chunk_ref_as_generated_provenance(tmp_path):
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    staging = tmp_path / "staging"
+    chunk = staging / "_investigation" / "_chunks" / "A_chunk_1.md"
+    chunk.parent.mkdir(parents=True)
+    chunk.write_text("a component detail from generated chunk", encoding="utf-8")
+    validator = EvidenceValidator(facts, StagingToolbox(staging))
+
+    report = validator.validate_report("A", {
+        "evidence": [{
+            "unit_name": "a",
+            "category": "inventory",
+            "line_range": "1-1",
+            "snippet": "component detail",
+            "observation": "The generated chunk contains concrete component detail for this unit.",
+        }],
+        "skipped_units": {},
+    }, {"a"}, default_chunk_ref="_investigation/_chunks/A_chunk_1.md")
+
+    assert report.evidence[0].chunk_ref == "_investigation/_chunks/A_chunk_1.md"
+    assert report.evidence[0].source_file == "_investigation/_chunks/A_chunk_1.md"
+
+
 def test_investigation_evidence_rejects_unknown_unit(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
