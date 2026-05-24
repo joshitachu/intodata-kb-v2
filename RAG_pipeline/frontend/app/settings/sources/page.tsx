@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type RowStage =
   | "pending"
@@ -837,6 +838,7 @@ function SourceRow({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [tokenDraft, setTokenDraft] = useState("");
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const stage: RowStage = row?.stage ?? "pending";
   const active = stage !== "pending" && stage !== "complete" && stage !== "failed";
@@ -1061,18 +1063,22 @@ function SourceRow({
               size="sm"
               variant="ghost"
               isLoading={actionBusy === "deleteProject"}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Delete source '${source.id}'? This removes its scan data and generated docs.`,
-                  )
-                ) {
-                  runAction("deleteProject", onDeleteProject);
-                }
-              }}
+              onClick={() => setConfirmDeleteOpen(true)}
             >
               <Trash2 className="h-3.5 w-3.5" /> Delete source
             </Button>
+            <ConfirmDialog
+              open={confirmDeleteOpen}
+              title="Delete source"
+              message={`Delete source '${source.id}'? This removes its scan data and generated docs.`}
+              confirmLabel="Delete"
+              confirmVariant="danger"
+              onConfirm={() => {
+                setConfirmDeleteOpen(false);
+                runAction("deleteProject", onDeleteProject);
+              }}
+              onCancel={() => setConfirmDeleteOpen(false)}
+            />
           </div>
           {source.source_type === "git" && (
             <div className="flex gap-2">

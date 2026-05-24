@@ -101,12 +101,12 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
         </button>
       )}
 
-      {/* Reset (only when busy) */}
+      {/* Stop / reset (only when busy) */}
       {busy && (
         <button
           className="btn-icon-danger"
           disabled={resetStatus.isPending}
-          title="Reset status"
+          title={status === "generating" ? "Stop generation" : "Reset status"}
           onClick={() => resetStatus.mutate(projectId)}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

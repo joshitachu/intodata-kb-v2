@@ -1,5 +1,73 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-05-21
+
+### [Config]: Allow slower Kimi Chat responses
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/config.py` - raise the default Kimi LLM timeout from 60s to 300s
+- **Problem**: Slow Chat responses can exceed the existing one-minute Kimi timeout before the stream yields a usable answer.
+- **Change**: Match Kimi's default timeout to the existing Ollama 300s timeout. Deployments can still override it with `KIMI_TIMEOUT`.
+- **Verification**: `uv run pytest tests/test_generation/test_llm_client.py` - 7/7 tests passed.
+
+### [Fix]: Keep failed streamed Chat responses visible
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/db/models/conversation.py`, `backend/src/schemas.py`, `backend/alembic/versions/027_add_conversation_message_status.py` - add persisted conversation message failure metadata
+  - `RAG_pipeline/backend/src/api/routes/conversations.py`, `backend/src/generation/conversational_rag.py` - persist failed streamed assistant rows, stop emitting success-shaped `done` after stream failure, and exclude failed assistant rows from later RAG history
+  - `RAG_pipeline/frontend/hooks/useStreamMessage.ts`, `frontend/contexts/ChatContext.tsx`, `frontend/components/MessageList.tsx`, `frontend/components/MessageBubble.tsx` - retain visible normal-chat errors, reject invalid stream completion payloads, and expose live Retry for the exact in-memory failed request
+  - `RAG_pipeline/backend/tests/test_api/test_conversations.py`, `backend/tests/test_generation/test_conversational_rag.py`, `frontend/tests/components/MessageList.test.tsx`, `frontend/tests/hooks/useStreamMessage.test.ts` - regression coverage for stream failure persistence, history filtering, visible error UI, and invalid `done` payloads
+- **Problem**: A normal Chat response that failed or timed out before text arrived could vanish from the UI without a visible failure message.
+- **Root cause**: The stream route emitted `error` and then `done {}` on exceptions. The frontend accepted any parsed `done` payload as success, reset stream state, and had no normal-chat error bubble. Failed attempt state was not persisted as assistant metadata.
+- **Change**: Failed streamed attempts now persist a failed assistant row with error metadata. Normal Chat renders persisted and live failed-response bubbles, keeps a Retry action while the original request snapshot is still in memory, and does not feed failed assistant rows into future RAG history.
+- **Verification**:
+  - `npm test -- MessageList useStreamMessage ChatInput` - 4/4 tests passed
+  - `npm run build` - passed
+  - `CSRF_ENABLED=false uv run pytest tests/test_api/test_conversations.py tests/test_generation/test_conversational_rag.py` - 55/55 passed
+  - `uv run pytest tests/test_db/test_conversation_models.py` - 9/9 passed
+
+### [Feature]: Submit uploaded chat images as standalone input
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/components/ChatInput.tsx` - allow the send action when the composer has image attachments but no typed text; send a default image-analysis prompt for the existing chat request contract; add labels to attachment and send icon buttons
+  - `RAG_pipeline/frontend/tests/components/ChatInput.test.tsx` - verify an uploaded image can be submitted without typed text
+- **Problem**: The chat composer already uploaded images and forwarded them to the backend, but the send button and submit handler still required non-empty text. An image could only be used when the user typed a question alongside it.
+- **Root cause**: `ChatInput` computed `canSend` and guarded `handleSubmit()` on `message.trim().length > 0` only.
+- **Change**: Image attachments now satisfy the composer send guard. Image-only sends use `Analyze the attached image.` as the query text so the existing backend RAG and persistence schema keep a non-empty user message while the image payload remains the model input.
+- **Verification**: `npm test -- ChatInput` - 1/1 test passed.
+
+### [Feature]: Nexus coding assistant — system prompt reasoning overhaul
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/generation/prompt_builder.py` (+151/-81 lines) — rewrote `SYSTEM_PROMPT`, `CODE_ASSISTANT_SYSTEM_PROMPT`, `NO_RESULTS_PROMPT`, `CODE_NO_RESULTS_PROMPT`
+  - `RAG_pipeline/backend/tests/test_generation/test_prompt_builder.py` (+1/-1 line) — updated assertion to match new prompt text
+- **Problem**: The LLM paraphrased the nearest chunk rather than reasoning across retrieved evidence. On debugging questions the response shape was inconsistent and shallow; the model never referenced cross-chunk relationships, never labelled inferences vs. direct evidence, and gave vague "not found" responses instead of actionable escalation.
+- **Root cause**: Prompts gave no guidance on how to use retrieved chunks — only rules on what not to fabricate. No integration-specific signals (field mappings, job deps, connections, error handling) were called out. Debugging structure existed only as a vague one-liner.
+- **Change**: All four prompts rewritten. Key additions to `CODE_ASSISTANT_SYSTEM_PROMPT`: (1) five-step chunk reasoning instruction (identify relevance, extract exact values, cross-reference chunks, label inferences, completeness check); (2) explicit integration signal list for Talend/Workato/MuleSoft/dbt (data flow, field mappings, connections, job deps, error handling, config, schema); (3) Finding/Evidence/Likely Cause/Fix/Verification debugging structure with explicit "skip if docs don't support" guard; (4) architecture question guidance (trace full flow, name every boundary); (5) incomplete-docs handling (say what's missing, suggest Deep Dive). All prompts now carry the Nexus persona so identity questions answer correctly.
+- **Why this approach**: Prompt-level guidance is the fastest lever for response quality without touching retrieval or chunking. The debugging structure is the highest-value change — it enforces consistent engineering-grade output instead of freeform prose. Integration signals tell the model what's meaningful in intodoc scan output specifically.
+- **Verification**: `uv run pytest tests/test_generation/test_prompt_builder.py` — 9/9 passed. Backend container rebuilt and restarted healthy.
+
+### [Fix]: CSRF prefix consolidation — eliminate manual auth route maintenance
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/middleware/csrf.py` (+13/-13 lines) — replaced 10-entry exact-path auth list with `_EXEMPT_PREFIXES = ("/api/v1/auth/", "/api/v1/ingest/", "/api/v1/usage/")`
+- **Problem**: Every new pre-auth route required manually adding an exact path to `_EXEMPT_PATHS`. Routes like `/api/v1/auth/request-access` returned 403 until someone added them.
+- **Root cause**: The original CSRF implementation used exact-path matching. There was no prefix concept, so each new auth route was a silent maintenance obligation.
+- **Change**: Consolidated auth exemptions into a single `/api/v1/auth/` prefix. Pre-auth flows never have a CSRF cookie (it hasn't been issued yet); post-auth flows are JWT-guarded. Server-to-server prefixes `/api/v1/ingest/` and `/api/v1/usage/` were already present from the prior session.
+- **Why this approach**: Prefix is correct here — auth routes divide cleanly at the prefix boundary, and the security argument holds for all of them (no cookie yet, or JWT guards it already). This is a maintenance fix, not a security loosening.
+- **Verification**: Middleware logic confirmed by reading final file state. Docker rebuild passed.
+
+## Session: 2026-05-20
+
+### [Fix]: Exempt internal service routes from CSRF middleware
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/middleware/csrf.py` (+11 lines) — added `_EXEMPT_PREFIXES = ("/api/v1/ingest/", "/api/v1/usage/")`; updated `dispatch()` to skip CSRF check for requests whose path starts with these prefixes
+- **Problem**: mcp-server's `RagBridge.push_docs()` POSTs to `http://backend:8000/api/v1/ingest/md` from inside Docker. The CSRF middleware was blocking every call with 403 `csrf_invalid` (no cookie exists on server-to-server requests). The backend then returned 500, causing all RAG doc pushes to fail silently. The mcp-server retried each doc 3× before failing.
+- **Root cause**: CSRF middleware was designed for browser-originated requests (double-submit cookie pattern). Server-to-server ingest calls from mcp-server never have a browser CSRF cookie and should never require one — they are already behind the private Docker network and authenticated at the project level.
+- **Why this approach**: Path-prefix exemption is the standard approach for internal API routes. These routes (`/api/v1/ingest/` and `/api/v1/usage/`) are not browser-accessible in the deployed Docker stack. A shared secret token would add operational complexity for no security benefit given the network isolation.
+- **Verification**: Fix validated by confirming the mcp-server `_push_with_retry` fast-fail change (permanent codes don't retry) and CSRF exemption together eliminate the 500 errors.
+
 ## Session: 2026-05-19
 
 ### [Fix]: Remove hardcoded personal email; add ADMIN_INITIAL_EMAIL config

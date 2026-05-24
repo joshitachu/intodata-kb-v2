@@ -130,9 +130,18 @@ return (
 7. **Context**: Read all `.claude/` files at session start, update them after every change
 8. **Specificity**: Always reference exact file paths, line numbers, and error messages in logs
 
-## Agent Workflow
+## Agent Docs
 
-Work as ONE agent at a time. Read `.claude/context.md` to determine what to work on next.
+Read `.agent/README.md` first — it tells you which docs to read for your task.
+
+| You are working on...           | Read                                     |
+|---------------------------------|------------------------------------------|
+| Auth, RBAC, Onboarding          | `.agent/system/subsystems.md`            |
+| An API endpoint                 | `.agent/system/api-reference.md`         |
+| System architecture             | `.agent/system/architecture.md`          |
+| A runtime failure               | `.agent/SOP/troubleshooting.md`          |
+| Adding a new route              | `.agent/SOP/add-route.md`                |
+| Architecture decisions          | `.agent/decisions/` + `.claude/PROJECT_MEMORY.md` |
 
 ## Common Commands
 ```bash

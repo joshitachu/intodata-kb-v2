@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import zipfile
@@ -154,7 +155,9 @@ async def test_list_projects_returns_added(client):
     })
     resp = await client.get("/mcp/projects")
     assert resp.status_code == 200
-    assert resp.json()["total"] == 1
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["projects"][0]["plugin_pack_id"] is None
 
 
 # --- Status ---
@@ -185,6 +188,53 @@ async def test_reset_status_not_generating(client):
     })
     resp = await client.post("/mcp/reset-status", json={"project_id": "resetproj"})
     assert resp.status_code == 400
+
+
+async def test_reset_status_cancels_live_generation_task(client, session_factory):
+    from mcp_server.api.routes import projects as project_routes
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    project_id = "cancelproj"
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project(
+            project_id=project_id,
+            local_path="/tmp/cancelproj",
+            platform="generic",
+            source_type="zip",
+        )
+        await registry.update_status(project_id, "generating")
+        run = await registry.create_generate_run(project_id, triggered_by="api")
+        await session.commit()
+
+    task = asyncio.create_task(asyncio.sleep(60))
+    project_routes._generation_tasks[project_id] = task
+    project_routes._currently_generating.add(project_id)
+
+    resp = await client.post("/mcp/reset-status", json={"project_id": project_id})
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+    assert task.cancelled() or task.cancelling()
+    assert project_id not in project_routes._generation_tasks
+    assert project_id not in project_routes._currently_generating
+
+    async with session_factory() as session:
+        from mcp_server.db.models import GenerateRun, Project
+
+        project = (await session.execute(select(Project).where(Project.id == project_id))).scalar_one()
+        saved_run = (await session.execute(select(GenerateRun).where(GenerateRun.id == run.id))).scalar_one()
+        assert project.status == "error"
+        assert project.error_message == "Generation cancelled by user"
+        assert saved_run.status == "failed"
+        assert saved_run.error_message == "Generation cancelled by user"
+        assert saved_run.run_verdict == "failed"
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def test_scan_repairs_stale_managed_repo_path(client, session_factory, tmp_path):

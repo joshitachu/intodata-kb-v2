@@ -10,9 +10,6 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from mcp_server.config import config as app_config
 from mcp_server.db.models import Base
 
-# Import template models so they register with Base.metadata
-import mcp_server.db.template_models  # noqa: F401
-
 # Alembic Config object
 config = context.config
 

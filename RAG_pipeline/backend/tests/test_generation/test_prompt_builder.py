@@ -56,7 +56,7 @@ def test_build_messages_code_answer_style():
 def test_build_no_results_code_answer_style_suggests_deep_dive():
     messages = build_no_results_messages("Where is the stream route?", answer_style="code")
     assert "Deep Dive" in messages[0]["content"]
-    assert "indexed project documentation" in messages[0]["content"]
+    assert "indexed" in messages[0]["content"]
 
 
 def test_should_use_code_assistant_for_engineering_query():

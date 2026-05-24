@@ -137,6 +137,11 @@ class GenerateRun(Base):
     # Auto-comparison verdict (US-104)
     auto_verdict: Mapped[str | None] = mapped_column(String(10), nullable=True)  # "PASS" | "FAIL"
     auto_baseline_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_verdict: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    gate_results: Mapped[dict | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=True,
+    )
 
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")

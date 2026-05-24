@@ -1,3 +1,5 @@
+export type DocSource = "published" | "staging";
+
 export interface Project {
   id: string;
   display_name: string;
@@ -104,6 +106,8 @@ export interface GenerateRun {
   quality_score: number | null;
   auto_verdict: "PASS" | "FAIL" | null;
   auto_baseline_run_id: number | null;
+  run_verdict: "draft" | "failed" | "published" | "published_with_rag_error" | "client_ready" | null;
+  gate_results: Record<string, unknown> | null;
 }
 
 export interface ScanRun {

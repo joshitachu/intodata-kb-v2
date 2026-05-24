@@ -298,13 +298,8 @@ export function computeGroupBoundingBoxes(
     const group = node.data.group as string;
     if (!group) continue;
 
-    const isConn = false;
-    const w = isConn
-      ? (compact ? CONN_NODE_WIDTH_COMPACT : CONN_NODE_WIDTH)
-      : (compact ? JOB_NODE_WIDTH_COMPACT : JOB_NODE_WIDTH);
-    const h = isConn
-      ? (compact ? CONN_NODE_HEIGHT_COMPACT : CONN_NODE_HEIGHT)
-      : (compact ? JOB_NODE_HEIGHT_COMPACT : JOB_NODE_HEIGHT);
+    const w = compact ? JOB_NODE_WIDTH_COMPACT : JOB_NODE_WIDTH;
+    const h = compact ? JOB_NODE_HEIGHT_COMPACT : JOB_NODE_HEIGHT;
 
     const x = node.position.x;
     const y = node.position.y;

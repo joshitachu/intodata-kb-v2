@@ -14,7 +14,14 @@ import time
 
 from pathlib import Path
 
+from sqlalchemy import select
+
 from mcp_server.config import config
+from mcp_server.db.models import PluginPack
+from mcp_server.db.session import async_session_factory
+from mcp_server.model_strategies import resolve_generation_models
+from mcp_server.providers import get_provider
+from mcp_server.providers.base import DocGenContext
 from mcp_server.services.generation_run_state import (
     GenerationLockError,
     LockHeartbeat,
@@ -25,13 +32,181 @@ from mcp_server.services.generation_run_state import (
 )
 from mcp_server.providers.custom.source_context import materialize_direct_redacted_source
 from mcp_server.services.log_manager import LogManager
+from mcp_server.services.plugin_runner import build_plugin_runner
+from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.scanner_service import ScannerService
 
 logger = logging.getLogger(__name__)
 
+_TALEND_NOISE_PARAMS: frozenset[str] = frozenset({
+    "PREVIEW",                          # .bmp thumbnail file path
+    "CONNECTION_FORMAT",                # always 'row'
+    "USE_SINGLEMODE", "USE_INTABLE", "USE_INLINECONTENT",
+    "LKUP_PARALLELIZE", "LEVENSHTEIN", "JACCARD",
+    "ENABLE_AUTO_CONVERT_TYPE", "ROWS_BUFFER_SIZE",
+    "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+    "LINK_STYLE", "TABLE_PRINT", "BASIC_MODE",
+    "JDK_VERSION", "JSON_PATH_VERSION", "USE_LOOP_AS_ROOT",
+    "CODEGENERATION",
+})
 
-class ClaudeService:
-    """Spawns `claude -p "..."` to generate documentation via Claude Code."""
+_WORKATO_DATAPILL_RE = re.compile(r"#\{_\('([^']+)'\)([^}]*)\}")
+
+
+def _render_component(comp: dict, platform: str, parts: list[str]) -> None:
+    params = comp.get("params", [])
+    regular_params: list[dict] = []
+    filter_params: list[dict] = []
+    if isinstance(params, list):
+        for p in params:
+            if p.get("field_type") == "FILTER":
+                filter_params.append(p)
+            else:
+                regular_params.append(p)
+
+    for p in regular_params:
+        pname = p.get("name", "")
+        pval = p.get("value", "")
+        if not pval or pname in ("UNIQUE_NAME",):
+            continue
+        if pname in _TALEND_NOISE_PARAMS:
+            continue
+        val_str = str(pval)
+        if len(val_str) > config.max_param_val_chars:
+            val_str = val_str[:config.max_param_val_chars] + f"... [{len(val_str)} chars]"
+        parts.append(f"- **{pname}**: `{val_str}`\n")
+
+    if filter_params and platform == "lobster":
+        parts.append("\n**Filter Chain (Transformation Logic)**\n\n")
+        parts.append("| Step | Filter ID | Expression |\n")
+        parts.append("|------|-----------|------------|\n")
+        for idx, fp in enumerate(filter_params, 1):
+            fid = fp.get("name", "").replace("filter_", "")
+            fexpr = fp.get("value", "").replace("|", "\\|")
+            parts.append(f"| {idx} | {fid} | `{fexpr}` |\n")
+        parts.append("\n")
+
+    if platform == "workato":
+        dp_rows: list[tuple[str, str, str]] = []
+        for src_param in (p for p in regular_params if p.get("name") in ("steps", "input")):
+            raw = str(src_param.get("value", ""))
+            for match in _WORKATO_DATAPILL_RE.finditer(raw):
+                ref_path = match.group(1)
+                formula = match.group(2).strip()
+                parts_ref = ref_path.split(".")
+                if len(parts_ref) >= 3:
+                    src_step, src_field = parts_ref[1], ".".join(parts_ref[2:])
+                elif len(parts_ref) == 2:
+                    src_step, src_field = parts_ref[0], parts_ref[1]
+                else:
+                    src_step, src_field = "", ref_path
+                dp_rows.append((src_step, src_field, formula))
+        if dp_rows:
+            parts.append("\n**Datapill Mappings (Transformation Logic)**\n\n")
+            parts.append("| Source Step | Source Field | Formula |\n")
+            parts.append("|------------|-------------|----------|\n")
+            seen: set[tuple[str, str, str]] = set()
+            for row in dp_rows:
+                if row in seen:
+                    continue
+                seen.add(row)
+                s_step, s_field, s_formula = row
+                s_formula_safe = s_formula.replace("|", "\\|") if s_formula else "--"
+                parts.append(f"| {s_step} | {s_field} | `{s_formula_safe}` |\n")
+            parts.append("\n")
+
+    for direction, key in [("Incoming", "incoming_connections"), ("Outgoing", "outgoing_connections")]:
+        conns = comp.get(key, [])
+        if conns:
+            parts.append(f"- {direction} connections: {json.dumps(conns)}\n")
+    ref = comp.get("metadata_connection_ref")
+    if ref:
+        parts.append(f"- Metadata connection: `{ref}`\n")
+
+
+def _render_tmap_data(tmap_data: list[dict], parts: list[str], extract_source_hint: object) -> None:
+    parts.append("\n### Transformation Detail (tMap Data)\n")
+    for tmap_idx, tmap in enumerate(tmap_data):
+        input_tables = tmap.get("input_tables", [])
+        output_tables = tmap.get("output_tables", [])
+        var_entries = tmap.get("var_entries", [])
+        entries = tmap.get("entries", [])
+
+        parts.append(f"\n**tMap #{tmap_idx + 1}**")
+        if input_tables:
+            parts.append(f" | Inputs: {', '.join(input_tables)}")
+        if output_tables:
+            parts.append(f" | Outputs: {', '.join(output_tables)}")
+        parts.append("\n")
+
+        if var_entries:
+            parts.append("\n**Var Table**\n\n")
+            parts.append("| Variable | Expression | Source Hint |\n")
+            parts.append("|----------|------------|-------------|\n")
+            for ve in var_entries:
+                col = ve.get("column_name", "")
+                expr = ve.get("expression", "")
+                hint = extract_source_hint(expr)  # type: ignore[operator]
+                expr_safe = expr.replace("|", "\\|")
+                parts.append(f"| {col} | `{expr_safe}` | {hint} |\n")
+            parts.append("\n")
+
+        tables_seen: dict[str, list[dict]] = {}
+        for entry in entries:
+            tbl = entry.get("table_name", "output")
+            tables_seen.setdefault(tbl, []).append(entry)
+        for tbl_name, tbl_entries in tables_seen.items():
+            parts.append(f"\n**Output: {tbl_name}**\n\n")
+            parts.append("| Target Column | Expression | Source Hint |\n")
+            parts.append("|---------------|------------|-------------|\n")
+            for te in tbl_entries:
+                col = te.get("column_name", "")
+                expr = te.get("expression", "")
+                hint = extract_source_hint(expr)  # type: ignore[operator]
+                expr_safe = expr.replace("|", "\\|")
+                parts.append(f"| {col} | `{expr_safe}` | {hint} |\n")
+            parts.append("\n")
+
+
+def _render_chunk_extras(chunk_data: dict, chunk_id: str, parts: list[str]) -> None:
+    related_conns = chunk_data.get("related_connections", [])
+    if related_conns:
+        parts.append(f"\n---\n## Connections (chunk {chunk_id})\n")
+        for conn in related_conns:
+            conn_name = conn.get("name", "?")
+            parts.append(f"\n### Connection: {conn_name}\n")
+            for k, v in conn.items():
+                if k == "name":
+                    continue
+                parts.append(f"- **{k}**: `{v}`\n")
+
+    related_ctx = chunk_data.get("related_contexts", [])
+    if related_ctx:
+        parts.append(f"\n---\n## Context Groups (chunk {chunk_id})\n")
+        for ctx in related_ctx:
+            ctx_name = ctx.get("name", "?")
+            parts.append(f"\n### Context Group: {ctx_name}\n")
+            for var in ctx.get("variables", ctx.get("items", [])):
+                vname = var.get("name", "?")
+                vval = var.get("value", "")
+                vtype = var.get("type", "")
+                vprompt = var.get("prompt_value", "")
+                line = f"- `{vname}` ({vtype}): `{vval}`"
+                if vprompt and vprompt != vval:
+                    line += f" (prompt: `{vprompt}`)"
+                parts.append(line + "\n")
+
+    manifest = chunk_data.get("manifest", {})
+    if manifest:
+        parts.append(f"\n---\n## Manifest (chunk {chunk_id})\n")
+        for section, data in manifest.items():
+            if data:
+                parts.append(f"\n### {section}\n```json\n{json.dumps(data, indent=2)}\n```\n")
+
+
+
+class DocGenerationCoordinator:
+    """Orchestrates multi-phase documentation generation: preprocessing, provider dispatch, staging swap, and RAG push."""
 
     def __init__(self, log_manager: LogManager) -> None:
         self.log_manager = log_manager
@@ -131,10 +306,8 @@ class ClaudeService:
 
             for job in chunk_data.get("jobs", []):
                 job_count += 1
-                job_name = job.get("name", "unknown")
-                parts.append(f"\n---\n## Job: {job_name}\n")
+                parts.append(f"\n---\n## Job: {job.get('name', 'unknown')}\n")
 
-                # Components inventory
                 components = job.get("components", [])
                 if components:
                     parts.append("\n### Components\n")
@@ -142,164 +315,12 @@ class ClaudeService:
                         ctype = comp.get("component_type", "?")
                         cname = comp.get("unique_name", "?")
                         parts.append(f"\n#### {cname} ({ctype})\n")
+                        _render_component(comp, platform, parts)
 
-                        # Separate FILTER params from regular params (Lobster)
-                        params = comp.get("params", [])
-                        regular_params: list[dict] = []
-                        filter_params: list[dict] = []
-                        if isinstance(params, list):
-                            for p in params:
-                                if p.get("field_type") == "FILTER":
-                                    filter_params.append(p)
-                                else:
-                                    regular_params.append(p)
-
-                        # Render regular params
-                        # Skip Talend UI/rendering noise that adds bulk without semantic value.
-                        _TALEND_NOISE_PARAMS = frozenset({
-                            "PREVIEW",                          # .bmp thumbnail file path
-                            "CONNECTION_FORMAT",                # always 'row'
-                            "USE_SINGLEMODE", "USE_INTABLE", "USE_INLINECONTENT",
-                            "LKUP_PARALLELIZE", "LEVENSHTEIN", "JACCARD",
-                            "ENABLE_AUTO_CONVERT_TYPE", "ROWS_BUFFER_SIZE",
-                            "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
-                            "LINK_STYLE", "TABLE_PRINT", "BASIC_MODE",
-                            "JDK_VERSION", "JSON_PATH_VERSION", "USE_LOOP_AS_ROOT",
-                            "CODEGENERATION",
-                        })
-                        for p in regular_params:
-                            pname = p.get("name", "")
-                            pval = p.get("value", "")
-                            if not pval or pname in ("UNIQUE_NAME",):
-                                continue
-                            if pname in _TALEND_NOISE_PARAMS:
-                                continue
-                            val_str = str(pval)
-                            if len(val_str) > config.max_param_val_chars:
-                                val_str = val_str[:config.max_param_val_chars] + f"... [{len(val_str)} chars]"
-                            parts.append(f"- **{pname}**: `{val_str}`\n")
-
-                        # Render Lobster filter chains as structured table
-                        if filter_params and platform == "lobster":
-                            parts.append("\n**Filter Chain (Transformation Logic)**\n\n")
-                            parts.append("| Step | Filter ID | Expression |\n")
-                            parts.append("|------|-----------|------------|\n")
-                            for idx, fp in enumerate(filter_params, 1):
-                                fid = fp.get("name", "").replace("filter_", "")
-                                fexpr = fp.get("value", "")
-                                # Escape pipe chars for table
-                                fexpr_safe = fexpr.replace("|", "\\|")
-                                parts.append(f"| {idx} | {fid} | `{fexpr_safe}` |\n")
-                            parts.append("\n")
-
-                        # Render Workato datapill mappings as structured table
-                        if platform == "workato":
-                            datapill_re = re.compile(r"#\{_\('([^']+)'\)([^}]*)\}")
-                            # Check the 'steps' param (JSON array of recipe steps)
-                            steps_param = next(
-                                (p for p in regular_params if p.get("name") == "steps"),
-                                None,
-                            )
-                            # Also check 'input' params on individual action components
-                            input_param = next(
-                                (p for p in regular_params if p.get("name") == "input"),
-                                None,
-                            )
-                            dp_rows: list[tuple[str, str, str]] = []
-                            for src_param in [steps_param, input_param]:
-                                if not src_param:
-                                    continue
-                                raw = str(src_param.get("value", ""))
-                                for match in datapill_re.finditer(raw):
-                                    ref_path = match.group(1)       # data.step_alias.field
-                                    formula = match.group(2).strip() # .to_s, .round(2), etc.
-                                    parts_ref = ref_path.split(".")
-                                    if len(parts_ref) >= 3:
-                                        src_step = parts_ref[1]
-                                        src_field = ".".join(parts_ref[2:])
-                                    elif len(parts_ref) == 2:
-                                        src_step = parts_ref[0]
-                                        src_field = parts_ref[1]
-                                    else:
-                                        src_step = ""
-                                        src_field = ref_path
-                                    formula_str = formula if formula else ""
-                                    dp_rows.append((src_step, src_field, formula_str))
-                            if dp_rows:
-                                parts.append("\n**Datapill Mappings (Transformation Logic)**\n\n")
-                                parts.append("| Source Step | Source Field | Formula |\n")
-                                parts.append("|------------|-------------|----------|\n")
-                                seen: set[tuple[str, str, str]] = set()
-                                for row in dp_rows:
-                                    if row in seen:
-                                        continue
-                                    seen.add(row)
-                                    s_step, s_field, s_formula = row
-                                    s_formula_safe = s_formula.replace("|", "\\|") if s_formula else "--"
-                                    parts.append(f"| {s_step} | {s_field} | `{s_formula_safe}` |\n")
-                                parts.append("\n")
-
-                        # Connections
-                        for direction, key in [("Incoming", "incoming_connections"),
-                                               ("Outgoing", "outgoing_connections")]:
-                            conns = comp.get(key, [])
-                            if conns:
-                                parts.append(f"- {direction} connections: {json.dumps(conns)}\n")
-
-                        # Metadata connection ref
-                        ref = comp.get("metadata_connection_ref")
-                        if ref:
-                            parts.append(f"- Metadata connection: `{ref}`\n")
-
-                # --- Talend: Render tmap_data as structured tables ---
                 tmap_data = job.get("tmap_data", [])
                 if tmap_data and platform == "talend":
-                    parts.append("\n### Transformation Detail (tMap Data)\n")
-                    for tmap_idx, tmap in enumerate(tmap_data):
-                        input_tables = tmap.get("input_tables", [])
-                        output_tables = tmap.get("output_tables", [])
-                        var_entries = tmap.get("var_entries", [])
-                        entries = tmap.get("entries", [])
+                    _render_tmap_data(tmap_data, parts, DocGenerationCoordinator._extract_source_hint)
 
-                        parts.append(f"\n**tMap #{tmap_idx + 1}**")
-                        if input_tables:
-                            parts.append(f" | Inputs: {', '.join(input_tables)}")
-                        if output_tables:
-                            parts.append(f" | Outputs: {', '.join(output_tables)}")
-                        parts.append("\n")
-
-                        # Var table
-                        if var_entries:
-                            parts.append("\n**Var Table**\n\n")
-                            parts.append("| Variable | Expression | Source Hint |\n")
-                            parts.append("|----------|------------|-------------|\n")
-                            for ve in var_entries:
-                                col = ve.get("column_name", "")
-                                expr = ve.get("expression", "")
-                                hint = ClaudeService._extract_source_hint(expr)
-                                expr_safe = expr.replace("|", "\\|")
-                                parts.append(f"| {col} | `{expr_safe}` | {hint} |\n")
-                            parts.append("\n")
-
-                        # Per-output-table entries
-                        tables_seen: dict[str, list[dict]] = {}
-                        for entry in entries:
-                            tbl = entry.get("table_name", "output")
-                            tables_seen.setdefault(tbl, []).append(entry)
-
-                        for tbl_name, tbl_entries in tables_seen.items():
-                            parts.append(f"\n**Output: {tbl_name}**\n\n")
-                            parts.append("| Target Column | Expression | Source Hint |\n")
-                            parts.append("|---------------|------------|-------------|\n")
-                            for te in tbl_entries:
-                                col = te.get("column_name", "")
-                                expr = te.get("expression", "")
-                                hint = ClaudeService._extract_source_hint(expr)
-                                expr_safe = expr.replace("|", "\\|")
-                                parts.append(f"| {col} | `{expr_safe}` | {hint} |\n")
-                            parts.append("\n")
-
-                # Context variables
                 ctx_vars = job.get("context_variables", [])
                 if ctx_vars:
                     parts.append("\n### Context Variables\n")
@@ -313,47 +334,11 @@ class ClaudeService:
                             line += f" (prompt: `{prompt_val}`)"
                         parts.append(line + "\n")
 
-                # Routines
                 routines = job.get("raw_routines", [])
                 if routines:
                     parts.append(f"\n### Routines used: {', '.join(routines)}\n")
 
-            # Related connections for this chunk
-            related_conns = chunk_data.get("related_connections", [])
-            if related_conns:
-                parts.append(f"\n---\n## Connections (chunk {chunk['chunk_id']})\n")
-                for conn in related_conns:
-                    conn_name = conn.get("name", "?")
-                    parts.append(f"\n### Connection: {conn_name}\n")
-                    for k, v in conn.items():
-                        if k == "name":
-                            continue
-                        parts.append(f"- **{k}**: `{v}`\n")
-
-            # Related contexts for this chunk
-            related_ctx = chunk_data.get("related_contexts", [])
-            if related_ctx:
-                parts.append(f"\n---\n## Context Groups (chunk {chunk['chunk_id']})\n")
-                for ctx in related_ctx:
-                    ctx_name = ctx.get("name", "?")
-                    parts.append(f"\n### Context Group: {ctx_name}\n")
-                    for var in ctx.get("variables", ctx.get("items", [])):
-                        vname = var.get("name", "?")
-                        vval = var.get("value", "")
-                        vtype = var.get("type", "")
-                        vprompt = var.get("prompt_value", "")
-                        line = f"- `{vname}` ({vtype}): `{vval}`"
-                        if vprompt and vprompt != vval:
-                            line += f" (prompt: `{vprompt}`)"
-                        parts.append(line + "\n")
-
-            # Manifest for this chunk
-            manifest = chunk_data.get("manifest", {})
-            if manifest:
-                parts.append(f"\n---\n## Manifest (chunk {chunk['chunk_id']})\n")
-                for section, data in manifest.items():
-                    if data:
-                        parts.append(f"\n### {section}\n```json\n{json.dumps(data, indent=2)}\n```\n")
+            _render_chunk_extras(chunk_data, chunk["chunk_id"], parts)
 
         return parts, job_count
 
@@ -432,7 +417,7 @@ class ClaudeService:
         """
         preprocess_dir = staging_dir / "_preprocess"
         preprocess_dir.mkdir(parents=True, exist_ok=True)
-        preprocess_dir.chmod(0o777)
+        preprocess_dir.chmod(0o755)
 
         scanner = ScannerService()
         output_dir = str(config.intodoc_output_dir / project_id)
@@ -697,8 +682,6 @@ class ClaudeService:
         findings per group.  Phase 2 agents read this to calibrate depth.
         This is intentionally fast — regex only, no model calls.
         """
-        import re as _re
-
         preprocess_dir = staging_dir / "_preprocess"
         assessment_dir = staging_dir / "_assessment"
         assessment_dir.mkdir(parents=True, exist_ok=True)
@@ -706,18 +689,18 @@ class ClaudeService:
         # Patterns: (flag_name, severity, regex_pattern)
         PATTERNS = [
             ("hardcoded_credential", "CRITICAL",
-             _re.compile(
+             re.compile(
                  r"(?:password|passwd|pwd|secret|api_?key|token)[^:\n]*:\s*[\"'` ]?(?!context\.|row\.|Var\.)[A-Za-z0-9!@#$%^&*_\-]{4,}",
-                 _re.IGNORECASE,
+                 re.IGNORECASE,
              )),
             ("literal_ip_address", "HIGH",
-             _re.compile(r"\b(?:192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)\b")),
+             re.compile(r"\b(?:192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)\b")),
             ("missing_error_handler", "HIGH",
              None),  # checked per-job via component count heuristic
             ("god_profile", "HIGH",
              None),  # checked per-job via component count heuristic
             ("hardcoded_env_value", "MEDIUM",
-             _re.compile(r'\b(?:localhost|127\.0\.0\.1|http://localhost)\b', _re.IGNORECASE)),
+             re.compile(r'\b(?:localhost|127\.0\.0\.1|http://localhost)\b', re.IGNORECASE)),
             ("missing_retry_logic", "MEDIUM",
              None),  # checked per-job
             ("no_context_vars", "LOW",
@@ -982,7 +965,8 @@ Required sections:
 - Risk severity: CRITICAL / HIGH / MEDIUM / LOW (all caps)
 - Job references: always include full job name, not just partial
 - Component references: include platform-specific identifiers where present
-- Include evidence confidence: HIGH / MEDIUM / LOW
+- Evidence Register confidence cells must start with plain unformatted HIGH / MEDIUM / LOW text;
+  do not bold, italicize, quote, or wrap that leading token in backticks; notes may follow it
 """
         (preprocess_dir / "_doc_templates.md").write_text(content, encoding="utf-8")
         logger.info("Wrote _doc_templates.md (%d bytes)", len(content))
@@ -997,6 +981,7 @@ Required sections:
         run_id: int | None = None,
         doc_generation_provider: str | None = None,
         instruction_pack_dir: str | None = None,
+        enterprise_mode: bool | None = None,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
@@ -1030,7 +1015,7 @@ Required sections:
             project_id=project_id,
             phase="startup",
             status="running",
-            extra={"resume_requested": resume},
+            extra={"resume_requested": resume, "enterprise_mode": config.doc_generation_enterprise_mode_default if enterprise_mode is None else enterprise_mode},
         )
 
         # Detect resume state before deciding whether to wipe staging
@@ -1070,9 +1055,6 @@ Required sections:
         logs_abs = str(output_dir / "logs")
 
         # Look up the project's platform from the DB
-        from mcp_server.db.session import async_session_factory
-        from mcp_server.services.project_registry import ProjectRegistry
-
         plugin_pack_dir: Path | None = None
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
@@ -1083,8 +1065,6 @@ Required sections:
                 )
             platform = project.platform
             if getattr(project, "plugin_pack_id", None) is not None:
-                from sqlalchemy import select
-                from mcp_server.db.models import PluginPack
                 pack_row = (
                     await db.execute(
                         select(PluginPack).where(PluginPack.id == project.plugin_pack_id)
@@ -1190,8 +1170,6 @@ Required sections:
             analysis_guide_file = "_analysis_prompts*.md"  # legacy fallback
 
         # Resolve provider and models through the shared model strategy registry.
-        from mcp_server.model_strategies import resolve_generation_models
-
         model_resolution = resolve_generation_models(
             provider_type=doc_generation_provider,
             model=model,
@@ -1206,9 +1184,6 @@ Required sections:
         effective_write_model = model_resolution.write_model
 
         # Build DocGenContext and hand off to the configured provider
-        from mcp_server.providers import get_provider
-        from mcp_server.providers.base import DocGenContext
-
         ctx = DocGenContext(
             project_id=project_id,
             staging_dir=staging_dir,
@@ -1221,6 +1196,7 @@ Required sections:
             write_model=effective_write_model,
             platform=platform,
             analysis_guide_file=analysis_guide_file,
+            enterprise_mode=config.doc_generation_enterprise_mode_default if enterprise_mode is None else enterprise_mode,
             resume_state=resume_state,
         )
 
@@ -1234,7 +1210,6 @@ Required sections:
         )
 
         if plugin_pack_dir is not None:
-            from mcp_server.services.plugin_runner import build_plugin_runner
             provider = build_plugin_runner(
                 plugin_pack_dir,
                 inner_provider=provider,

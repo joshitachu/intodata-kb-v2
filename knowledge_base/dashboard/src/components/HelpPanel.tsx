@@ -1,3 +1,6 @@
+// Static reference panel — no live data source exists for these doc type
+// definitions. This lists the 12 intodoc output document types so users
+// understand what the platform generates. Update if output types change.
 const DOC_TYPES: {
   index: string;
   name: string;
@@ -65,13 +68,18 @@ const DOC_TYPES: {
   },
 ];
 
-export default function DocumentCatalogue() {
+export default function HelpPanel() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-mono text-slate-400 uppercase tracking-wider">
-          Document Type Reference
-        </h2>
+        <div>
+          <span className="text-xs font-mono text-slate-600 uppercase tracking-wider border border-white/[0.08] px-2 py-0.5 rounded">
+            Reference
+          </span>
+          <h2 className="text-sm font-mono text-slate-400 uppercase tracking-wider mt-2">
+            Document Type Reference
+          </h2>
+        </div>
         <span className="text-xs text-slate-600 font-mono">
           {DOC_TYPES.length} doc types
         </span>

@@ -20,6 +20,7 @@ from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import (
     CODE_ASSISTANT_SYSTEM_PROMPT,
+    _build_context,
     build_correction_extraction_messages,
     build_metadata_messages,
     build_no_results_messages,
@@ -264,6 +265,7 @@ def truncate_history(
     Returns messages in chronological order.
     """
     enc = tiktoken.get_encoding(ENCODING_NAME)
+    messages = [m for m in messages if getattr(m, "status", "completed") != "failed"]
 
     if len(messages) <= 2:
         return [{"role": m.role, "content": m.content} for m in messages]
@@ -296,44 +298,6 @@ def truncate_history(
     return first_pair_msgs + selected
 
 
-def build_context(
-    sources: list[Source],
-    max_tokens: int = MAX_CONTEXT_TOKENS,
-    reference_numbers: dict[int, int] | None = None,
-) -> str:
-    """Concatenate source texts, truncating to stay within token budget."""
-    if not sources:
-        return ""
-
-    enc = tiktoken.get_encoding(ENCODING_NAME)
-    parts: list[str] = []
-    total_tokens = 0
-
-    for src in sources:
-        # Extract project name from scoped filename (format: project_id/filename)
-        fname_parts = src.filename.split("/", 1)
-        if len(fname_parts) == 2:
-            display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
-        else:
-            display_name = src.filename
-
-        if reference_numbers and src.document_id in reference_numbers:
-            ref_num = reference_numbers[src.document_id]
-            header = f"[Reference {ref_num}: {display_name}]"
-        else:
-            header = f"[Source: {display_name}, chunk {src.chunk_index}]"
-        block = f"{header}\n{src.text}\n"
-        block_tokens = len(enc.encode(block))
-
-        if total_tokens + block_tokens > max_tokens:
-            break
-        parts.append(block)
-        total_tokens += block_tokens
-
-    context = "\n".join(parts)
-    context += "\n\n---\nThe above is ALL available information. Do NOT add details beyond what is shown."
-    return context
-
 
 def build_conversational_messages(
     query: str,
@@ -364,7 +328,7 @@ def build_conversational_messages(
 
     # 3. Context from sources
     if sources:
-        context = build_context(sources, reference_numbers=reference_numbers)
+        context = _build_context(sources, reference_numbers=reference_numbers)
         messages.append({
             "role": "system",
             "content": f"Retrieved context:\n{context}",

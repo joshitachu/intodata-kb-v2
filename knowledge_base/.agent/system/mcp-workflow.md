@@ -1,7 +1,9 @@
 # MCP Documentation Generation Workflow
 
 The agent generates documentation from scan data exposed via MCP tools.
-This is a 4-phase process using parallel sub-agents for throughput.
+This is a 4-phase process using parallel sub-agents for throughput. The current
+custom harness defaults to enterprise mode: publish to `docs/` is blocked unless
+all enterprise gates pass. Use explicit draft mode only for exploratory runs.
 
 ## Workflow Overview
 
@@ -9,8 +11,38 @@ This is a 4-phase process using parallel sub-agents for throughput.
 Phase 1: Setup         -- check scan status, load chunks + manifest + prompts
 Phase 2: Group Analysis -- parallel sub-agents (one per group), return compact text
 Phase 3: Write Docs    -- parallel sub-agents by theme, write final .md files
-Phase 4: Publish       -- write index.json + run log
+Phase 4: Publish       -- enterprise gates, audit bundle, index.json + run log
 ```
+
+## Enterprise Publish Gates
+
+Enterprise mode is the default for publishable runs. The server must not swap
+`docs_staging/` into `docs/` or call final RAG sync unless the harness reports
+all required gates as passing.
+
+Required gate families:
+- Valid fresh scan (`scan_result.json` exists and is valid)
+- Complete evidence coverage
+- Phase 2 analysis depth
+- Phase 3 document coverage
+- Phase 3 document depth
+- Final redaction scan
+- Source provenance
+- Internal reviewer approval
+- Quality threshold
+- Usefulness rubric
+- RAG sync status
+
+Gate output is written to:
+
+```
+output/{project_id}/docs_staging/_assessment/enterprise_gates.json
+output/{project_id}/docs_staging/_audit/
+```
+
+Failed enterprise runs preserve `docs_staging/` for repair/resume. Never treat
+that directory as client-ready. Client-ready output requires a completed run with
+`generate_runs.run_verdict = "client_ready"`.
 
 ## Phase 1: Setup
 
@@ -198,7 +230,10 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
 
 ## Phase 4: Publish
 
-1. Write `output/{project_id}/docs_staging/index.json` mapping each document to its source groups:
+1. Run enterprise gates (or advisory gates for explicit draft mode).
+2. Preserve audit artifacts under `_audit/`, including facts, validation reports,
+   reviewer reports, gate report, provider call metadata, and final doc hashes.
+3. Write `output/{project_id}/docs_staging/index.json` mapping each document to its source groups:
    ```json
    {
      "project_id": "...",
@@ -209,9 +244,9 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
      ]
    }
    ```
-2. Call `retain_findings(project_id, run_summary, "run-summary")` to store the run results in Hindsight (if enabled).
-3. If any errors or warnings occurred, call `retain_process_lesson(lesson, "error-recovery")` to remember what went wrong and how it was handled (if Hindsight enabled).
-4. Write `output/{project_id}/logs/run_{project_id}_{timestamp}.log`:
+4. Call `retain_findings(project_id, run_summary, "run-summary")` to store the run results in Hindsight (if enabled).
+5. If any errors or warnings occurred, call `retain_process_lesson(lesson, "error-recovery")` to remember what went wrong and how it was handled (if Hindsight enabled).
+6. Write `output/{project_id}/logs/run_{project_id}_{timestamp}.log`:
    ```
    [INFO] Groups analyzed: {list}
    [INFO] Chunks processed: {n}
@@ -225,24 +260,24 @@ Match the quality and depth of reference docs in `intodoc/reference-docs/`.
 ```
 output/{project_id}/
   docs/
-    00_EXECUTIVE_SUMMARY.md
-    01_PROJECT_OVERVIEW.md
-    02_ARCHITECTURE_INVENTORY.md
-    03_DATA_FLOWS_LINEAGE.md
-    04_BUSINESS_LOGIC.md
-    05_OPERATIONS_RISK.md
-    06_ENVIRONMENT_EXTERNAL.md
-    07_SECURITY_PERFORMANCE.md      (if applicable)
-    08_PATTERNS_STANDARDS.md        (if applicable)
-    09_RUNBOOK.md
-    10_ONBOARDING_FAQ.md
-    11_MIGRATION_ASSESSMENT.md
+    00_AGENT_BRIEF.md
+    01_ARCHITECTURE_MAP.md
+    02_COMPONENT_INVENTORY.md
+    03_DATA_FLOWS_AND_LINEAGE.md
+    04_BUSINESS_RULES_AND_TRANSFORMATIONS.md
+    05_RUNTIME_CONFIG_AND_EXTERNALS.md
+    06_OPERATIONS_TESTING_AND_DEBUGGING.md
+    07_QUALITY_SECURITY_RISK_SCORECARD.md
+    08_CHANGE_PLAYBOOK.md
     index.json
+    _audit/
   logs/
     run_{project_id}_{timestamp}.log
 ```
 
-No `_scratch/` directory. No intermediate JSON files. Only final docs.
+No `_scratch/` directory. Internal validation/audit artifacts are allowed under
+`_assessment/`, `_investigation/`, `_facts/`, and `_audit/`; RAG push indexes
+only top-level public markdown docs.
 
 ## MCP Tools Available
 

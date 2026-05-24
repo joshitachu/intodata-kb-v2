@@ -20,6 +20,9 @@ interface AuthUser {
   onboarding_completed: boolean;
   tour_completed: boolean;
   mfa_enabled: boolean;
+  last_login_at: string | null;
+  has_password: boolean;
+  sso_provider: string | null;
 }
 
 interface AuthContextValue {

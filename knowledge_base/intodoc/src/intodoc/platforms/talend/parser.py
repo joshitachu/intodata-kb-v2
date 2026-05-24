@@ -25,6 +25,7 @@ from intodoc.models import (
     TMapEntry,
     TRunJobRef,
 )
+from intodoc.platforms.base_parser import BaseParser
 from intodoc.scanner.walker import walk_repo
 
 if TYPE_CHECKING:
@@ -138,29 +139,15 @@ NS = {
 }
 
 
-class TalendParser:
+class TalendParser(BaseParser):
     """Parse a Talend project into structured models."""
 
     def __init__(self, cred_filter: CredentialFilter) -> None:
-        self.cred_filter = cred_filter
+        super().__init__(cred_filter)
         # xmi:id → MetadataConnection lookup (built at scan start)
         self._xmi_id_index: dict[str, MetadataConnection] = {}
         # Property.id → Property.label lookup for resolving tRunJob XMI refs
         self._job_id_index: dict[str, str] = {}
-        # Non-fatal parse failures collected for the final ScanResult.
-        self._warnings: list[ScanWarning] = []
-        # Repo root used to make warning file paths relative.
-        self._warn_root: Path | None = None
-
-    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
-        """Record a non-fatal scan warning alongside the usual console output."""
-        try:
-            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
-        except ValueError:
-            rel = str(file)
-        self._warnings.append(
-            ScanWarning(kind=kind, file=rel, message=message, phase=phase)
-        )
 
     def parse(self, repo_root: Path) -> ScanResult:
         """Parse the entire Talend project."""
@@ -730,9 +717,9 @@ class TalendParser:
     # ── Helpers ───────────────────────────────────────────────────────
 
     def _read_filtered(self, path: Path) -> str:
-        """Read a file with credential filtering applied."""
+        """Read a file with credential filtering and XML Signature stripping."""
         text = path.read_text(encoding="utf-8", errors="replace")
-        text = self.cred_filter.filter_text(text)
+        text = self.cred_filter.filter_text(text, filename=str(path))
         # Strip XML Signature blocks (they break parsing and add no value)
         text = _strip_signature(text)
         return text

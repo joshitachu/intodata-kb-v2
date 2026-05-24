@@ -360,9 +360,8 @@ def _provider_config(model_id: str) -> dict[str, str | None]:
 class RepoAgentEngine:
     """Small OpenHarness-style read-only repo agent."""
 
-    _sessions: dict[str, AgentState] = {}
-
     def __init__(self, provider: ModelProvider | None = None) -> None:
+        self._sessions: dict[str, AgentState] = {}
         model_id = normalize_model_id(config.deep_dive_model)
         provider_config = _provider_config(model_id)
         self.provider = provider or build_model_provider(
@@ -461,7 +460,7 @@ class RepoAgentEngine:
 
                 state.tool_calls += 1
                 yield {"type": "tool_use", "data": f"{tool_name}({json.dumps(args, ensure_ascii=False)[:300]})"}
-                tool_result = toolbox.run(tool_name, args, state)
+                tool_result = await asyncio.to_thread(toolbox.run, tool_name, args, state)
                 tool_results.append(
                     {
                         "tool": tool_name,

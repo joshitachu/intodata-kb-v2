@@ -2,7 +2,9 @@
 
 import {
   createContext,
+  useCallback,
   useContext,
+  useMemo,
   useState,
   useEffect,
   useRef,
@@ -47,6 +49,7 @@ interface ChatContextValue {
   createConversation: () => Promise<void>;
   deleteConversation: (id: number) => Promise<void>;
   handleSendMessage: (request: ConversationMessageRequest) => Promise<void>;
+  retryFailedMessage: () => Promise<void>;
   isCreating: boolean;
 
   // Stream state
@@ -80,6 +83,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     null,
   );
   const justCreatedIdRef = useRef<number | null>(null);
+  const failedRequestRef = useRef<ConversationMessageRequest | null>(null);
 
   const queryClient = useQueryClient();
   const { data: conversationList, isLoading: isLoadingList } =
@@ -97,6 +101,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   // When streaming is done (messageId set), invalidate caches and reset
   useEffect(() => {
     if (streamState.messageId !== null) {
+      failedRequestRef.current = null;
       queryClient.invalidateQueries({
         queryKey: ["conversation", activeConversationId],
       });
@@ -140,16 +145,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [mode, streamState.isStreaming, streamState.messageId]);
 
-  async function createConversation() {
+  useEffect(() => {
+    if (mode === "chat" && streamState.error) {
+      setPendingUserMessage(null);
+      queryClient.invalidateQueries({
+        queryKey: ["conversation", activeConversationId],
+      });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    }
+  }, [activeConversationId, mode, queryClient, streamState.error]);
+
+  const createConversation = useCallback(async () => {
     try {
       const newConversation = await createMutation.mutateAsync({});
       setActiveConversationId(newConversation.id);
     } catch (error) {
       console.error("Failed to create conversation:", error);
     }
-  }
+  }, [createMutation]);
 
-  async function deleteConversation(id: number) {
+  const deleteConversation = useCallback(async (id: number) => {
     try {
       await deleteMutation.mutateAsync(id);
       if (activeConversationId === id) {
@@ -158,9 +173,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error("Failed to delete conversation:", error);
     }
-  }
+  }, [deleteMutation, activeConversationId]);
 
-  async function handleSendMessage(request: ConversationMessageRequest) {
+  const handleSendMessage = useCallback(async (request: ConversationMessageRequest) => {
     let conversationId = activeConversationId;
     if (!conversationId) {
       try {
@@ -207,52 +222,81 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     } else {
       try {
+        const streamRequest = {
+          ...request,
+          project_id: request.project_id || selectedProject || undefined,
+        };
+        failedRequestRef.current = streamRequest;
         await sendStreamMessage(
-          {
-            ...request,
-            project_id: request.project_id || selectedProject || undefined,
-          },
+          streamRequest,
           conversationId ?? undefined,
         );
       } catch (error) {
         console.error("Failed to send message:", error);
       }
     }
-  }
+  }, [activeConversationId, createMutation, deepDive, mode, queryClient, selectedProject, sendStreamMessage]);
 
-  function setMode(newMode: ChatMode) {
+  const retryFailedMessage = useCallback(async () => {
+    const request = failedRequestRef.current;
+    if (!request || streamState.isStreaming) {
+      return;
+    }
+    await handleSendMessage(request);
+  }, [handleSendMessage, streamState.isStreaming]);
+
+  const setMode = useCallback((newMode: ChatMode) => {
     setModeState(newMode);
     if (newMode !== "deep-dive") {
       deepDive.reset();
       setPendingUserMessage(null);
     }
-  }
+  }, [deepDive]);
 
   const conversations = conversationList?.conversations ?? [];
 
+  const contextValue = useMemo(() => ({
+    conversations,
+    isLoading: isLoadingList,
+    activeConversationId,
+    setActiveConversationId,
+    activeConversation: activeConversation ?? null,
+    isLoadingConversation,
+    mode,
+    setMode,
+    selectedProject,
+    setSelectedProject,
+    createConversation,
+    deleteConversation,
+    handleSendMessage,
+    retryFailedMessage,
+    isCreating: createMutation.isPending,
+    pendingUserMessage,
+    streamState,
+    deepDiveState: deepDive.state,
+    onCancelDeepDive: deepDive.cancel,
+  }), [
+    conversations,
+    isLoadingList,
+    activeConversationId,
+    activeConversation,
+    isLoadingConversation,
+    mode,
+    setMode,
+    selectedProject,
+    createConversation,
+    deleteConversation,
+    handleSendMessage,
+    retryFailedMessage,
+    createMutation.isPending,
+    pendingUserMessage,
+    streamState,
+    deepDive.state,
+    deepDive.cancel,
+  ]);
+
   return (
-    <ChatContext.Provider
-      value={{
-        conversations,
-        isLoading: isLoadingList,
-        activeConversationId,
-        setActiveConversationId,
-        activeConversation: activeConversation ?? null,
-        isLoadingConversation,
-        mode,
-        setMode,
-        selectedProject,
-        setSelectedProject,
-        createConversation,
-        deleteConversation,
-        handleSendMessage,
-        isCreating: createMutation.isPending,
-        pendingUserMessage,
-        streamState,
-        deepDiveState: deepDive.state,
-        onCancelDeepDive: deepDive.cancel,
-      }}
-    >
+    <ChatContext.Provider value={contextValue}>
       {children}
     </ChatContext.Provider>
   );

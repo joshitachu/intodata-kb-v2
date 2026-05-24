@@ -36,6 +36,7 @@ class ProjectResponse(BaseModel):
     has_github_token: bool = False
     webhook_status: str | None = None  # "active" | "not_registered" | "unknown" | None
     instruction_pack_dir: str | None = None
+    plugin_pack_id: int | None = None
     created_at: datetime.datetime | None = None
     updated_at: datetime.datetime | None = None
 
@@ -113,6 +114,14 @@ class GenerateRequest(BaseModel):
     model: str | None = Field(None, description="Analysis model override (Phase 2) — 'provider/model' format")
     write_model: str | None = Field(None, description="Doc-writing model override (Phase 3) — 'provider/model' format")
     resume: bool = Field(True, description="Resume from staging checkpoint if available")
+    mode: str = Field("enterprise", description="'enterprise' blocks publish on all quality gates; 'draft' allows looser output")
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        if v not in {"enterprise", "draft"}:
+            raise ValueError("mode must be 'enterprise' or 'draft'")
+        return v
 
 
 class PushToRagRequest(BaseModel):
@@ -222,6 +231,8 @@ class GenerateRunResponse(BaseModel):
     quality_score: float | None = None
     auto_verdict: str | None = None
     auto_baseline_run_id: int | None = None
+    run_verdict: str | None = None
+    gate_results: dict | None = None
 
 
 class GenerateRunListResponse(BaseModel):

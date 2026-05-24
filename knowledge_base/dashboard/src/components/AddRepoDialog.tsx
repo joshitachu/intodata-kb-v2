@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePlatforms } from "../hooks/useDiscovery";
 import { useAddRepo, useUploadZip } from "../hooks/useProjects";
+import { parseApiError } from "../lib/errors";
 
 interface Props {
   open: boolean;
@@ -161,7 +162,7 @@ export default function AddRepoDialog({ open, onClose }: Props) {
         {/* Error */}
         {(addRepo.isError || uploadZip.isError) && (
           <p className="text-red-400 text-sm mt-3 font-mono">
-            {addRepo.error?.message || uploadZip.error?.message}
+            {parseApiError(addRepo.error ?? uploadZip.error)}
           </p>
         )}
 

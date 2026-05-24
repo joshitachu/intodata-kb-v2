@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
+const KB_API_URL = process.env.KB_API_URL || "http://localhost:8002";
 
 export async function GET(
   request: NextRequest,

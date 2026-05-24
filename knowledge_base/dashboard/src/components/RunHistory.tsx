@@ -105,7 +105,24 @@ export default function RunHistory({ projectId, onViewLog, onCompare }: Props) {
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
-                    {run.auto_verdict ? (
+                    {run.run_verdict ? (
+                      <span
+                        className={`status-chip text-xs ${
+                          run.run_verdict === "client_ready"
+                            ? "border-[#a0e06f]/40 text-[#a0e06f]"
+                            : run.run_verdict === "published" || run.run_verdict === "draft"
+                              ? "border-amber-400/40 text-amber-400"
+                              : "border-red-400/40 text-red-400"
+                        }`}
+                        title={
+                          run.gate_results
+                            ? "Enterprise gate verdict available in run detail"
+                            : `Run verdict: ${run.run_verdict}`
+                        }
+                      >
+                        {run.run_verdict.replace(/_/g, " ").toUpperCase()}
+                      </span>
+                    ) : run.auto_verdict ? (
                       <button
                         className={`status-chip text-xs ${
                           run.auto_verdict === "PASS"

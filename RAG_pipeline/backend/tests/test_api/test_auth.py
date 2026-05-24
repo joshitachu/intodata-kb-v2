@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import Response
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
@@ -39,6 +40,8 @@ def _mock_user(is_superadmin: bool = True, mfa_enabled: bool = False):
     user.backup_codes_hashed = None
     user.roles = [role]
     user.last_login_at = None
+    user.password_hash = "hash"
+    user.sso_provider = None
     return user
 
 
@@ -455,6 +458,60 @@ class TestMandatoryMFA:
         assert resp.json()["detail"]["code"] == "mfa_required"
 
 
+class TestCSRFExemptions:
+    def test_authenticated_auth_mutations_are_not_csrf_exempt(self):
+        from src.api.middleware.csrf import _EXEMPT_PATHS, _EXEMPT_PREFIXES
+
+        sensitive_paths = {
+            "/api/v1/auth/change-password",
+            "/api/v1/auth/totp/disable",
+        }
+
+        for path in sensitive_paths:
+            assert path not in _EXEMPT_PATHS
+            assert not any(path.startswith(prefix) for prefix in _EXEMPT_PREFIXES)
+
+
+class TestTOTPEnrollment:
+    async def test_totp_verify_reissues_auth_cookies_with_fresh_mfa_claim(self):
+        from src.api.routes.auth import TOTPVerifyRequest, totp_verify
+
+        user = _mock_user(mfa_enabled=False)
+        user.totp_secret = "JBSWY3DPEHPK3PXP"
+        db = AsyncMock()
+        response = Response()
+
+        with (
+            patch("src.api.routes.auth.verify_totp", return_value=True),
+            patch("src.api.routes.auth.generate_backup_codes", return_value=["BACKUP-CODE"]),
+            patch("src.api.routes.auth.hash_backup_codes", return_value=["hashed-backup"]),
+            patch("src.api.routes.auth.AuthService") as mock_svc_cls,
+        ):
+            mock_svc = MagicMock()
+            mock_svc.create_tokens = AsyncMock(return_value=("fresh_access", "fresh_refresh"))
+            mock_svc_cls.return_value = mock_svc
+
+            result = await totp_verify(
+                TOTPVerifyRequest(code="123456"),
+                user,
+                db,
+                response,
+            )
+
+        assert result == {"message": "MFA enabled", "backup_codes": ["BACKUP-CODE"]}
+        assert user.mfa_enabled is True
+        db.flush.assert_awaited_once()
+        db.commit.assert_awaited_once()
+        mock_svc.create_tokens.assert_awaited_once_with(user)
+        set_cookie_headers = [
+            value.decode("latin-1")
+            for key, value in response.raw_headers
+            if key == b"set-cookie"
+        ]
+        assert any(header.startswith("access_token=fresh_access") for header in set_cookie_headers)
+        assert any(header.startswith("refresh_token=fresh_refresh") for header in set_cookie_headers)
+
+
 class TestAccessRequestsAndInvites:
     async def test_request_access_creates_pending_and_duplicate_is_idempotent(self, db_session):
         from src.api.dependencies import get_db
@@ -603,7 +660,10 @@ class TestLogout:
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post("/api/v1/auth/logout")
+                resp = await client.post(
+                    "/api/v1/auth/logout",
+                    headers={"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"},
+                )
 
         assert resp.status_code == 200
         data = resp.json()

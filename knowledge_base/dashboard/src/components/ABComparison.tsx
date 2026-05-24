@@ -26,9 +26,9 @@ function formatDelta(value: number | null | undefined, suffix = "") {
 
 function qualityBreakdown(run: RunComparisonRun) {
   const details = run.doc_quality ?? {};
-  return Object.entries(details)
-    .filter(([key, value]) => key !== "overall" && typeof value === "number")
-    .map(([key, value]) => ({ key, value: value as number }));
+  return (Object.entries(details) as Array<[string, number | null]>)
+    .filter((entry): entry is [string, number] => entry[0] !== "overall" && typeof entry[1] === "number")
+    .map(([key, value]) => ({ key, value }));
 }
 
 export default function ABComparison({ projectId, preloadRunA, preloadRunB }: Props) {

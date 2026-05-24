@@ -28,9 +28,10 @@ The platform operates in two modes:
 - Phase 1: Setup (load scan data via MCP)
 - Phase 2: Group Analysis (parallel per-group tasks, configurable concurrency via `MCP_AGENT_PHASE2_CONCURRENCY`)
 - Phase 3: Write Docs (parallel per-document tasks via `MCP_AGENT_PHASE3_CONCURRENCY`)
-- Phase 4: Publish (`index.json` + run log; RAG push is handled server-side via `RagBridge.push_docs()`)
+- Phase 4: Enterprise gates + publish (`enterprise_gates.json`, `_audit/`, `index.json`, run log; RAG push is handled server-side via `RagBridge.push_docs()`)
 - Task artifacts persisted in `docs_staging/_agent_tasks/{phase}/{target_id}/` (contract.json, output.md, validation_report.json)
 - Custom provider requires API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, etc.)
+- Publishable runs default to enterprise mode. Failed gates preserve `docs_staging/` for repair/resume and block swap to `docs/`.
 
 ### Supporting Services
 
@@ -46,9 +47,9 @@ is designed to manage multiple projects simultaneously through the dashboard or 
 ## Multi-Platform Support
 
 The scanner uses a platform plugin architecture (`src/intodoc/platforms/<name>/`). Each
-platform plugin is self-contained with its own parser, prompts, and best practices. Currently
-only Talend is implemented; the architecture supports adding MuleSoft, dbt, and other
-integration platforms.
+platform plugin is self-contained with its own parser, prompts, and best practices. Current
+production platforms include Talend, Workato, Generic, and Lobster; the architecture still
+supports adding MuleSoft, dbt, and other integration platforms.
 
 ## Data Pipeline
 
@@ -59,8 +60,9 @@ Source Code (XML, properties, configs, etc.)
     -> Scan Cache (intodoc-output/ JSON files)
     -> MCP Server (serves chunks, manifest, connections)
     -> Doc Generation Provider (claude_cli or custom API harness, analyzes chunks)
-    -> Documentation (12 markdown docs in output/{project_id}/docs_staging/)
-    -> Server swaps docs_staging/ -> docs/ on success, then pushes to RAG via RagBridge
+    -> Documentation (9 enterprise markdown docs in output/{project_id}/docs_staging/)
+    -> Enterprise gates + audit bundle
+    -> Server swaps docs_staging/ -> docs/ only on success, then pushes to RAG via RagBridge
 ```
 
 ## Project Structure

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import FactsManifest
 from mcp_server.platforms import get_platform_strategy
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
@@ -21,9 +22,6 @@ REQUIRED_DOCS = [
     "07_QUALITY_SECURITY_RISK_SCORECARD",
     "08_CHANGE_PLAYBOOK",
 ]
-
-GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
-
 
 DOC_ASSIGNMENTS = {
     "core": [
@@ -720,14 +718,24 @@ FORMAT:
 - Use plain ASCII tables (no Unicode box-drawing characters)
 - Use markdown headings, bullet lists, and fenced code blocks for expressions/SQL/code
 - Reference scorecard dimension scores where relevant (e.g. "Security: 2/5 -- see Assessment Scorecard")
-- Mark evidence confidence as HIGH / MEDIUM / LOW where claims are inferred or scanner-limited
+- Mark evidence confidence with a leading HIGH / MEDIUM / LOW token where claims are inferred or scanner-limited
 - Use exact source artifact/path names where available
 - Use the preloaded `_analysis/_doc_pack_{doc_name}.md` evidence pack as the primary evidence source.
 - Include evidence pointers from the pack when a section depends on Phase 2 findings.
+- Include a `## Evidence Register` table with these exact columns:
+  `| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |`
+- The Evidence Register must cover the major topics in this document with concrete supplied evidence,
+  exact artifact/path names where available, and a confidence cell that starts with `HIGH`, `MEDIUM`,
+  or `LOW`.
+- Write that leading confidence token as plain unformatted text. Do not bold, italicize, quote, or
+  wrap it in backticks: use `LOW (scanner-limited)`, not `**LOW**`, `_LOW_`, or `` `LOW` ``.
+- Explanatory scanner-limited, inferred, or redaction notes may follow that confidence token or appear
+  in evidence/topic cells. Mark those topics as such instead of guessing.
 
 MANDATORY HEADINGS for {doc_name} -- your response MUST contain each of these as a `##` markdown
 heading, using exactly this wording (do not rename, merge, or omit any of them):
 {headings_block}
+  ## Evidence Register
 
 {doc_specific}
 Platform-specific evidence obligations:

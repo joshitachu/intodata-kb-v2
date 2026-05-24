@@ -50,6 +50,32 @@ to see what's registered.
 **Symptom**: `trigger_scan()` fails because intodoc CLI is not installed.
 **Fix**: Install the scanner: `cd intodoc && pip install -e .`
 
+### Scan succeeds but project status becomes error
+**Symptom**: Scan subprocess exits 0, but MCP marks scan failed with
+"did not produce scan_result.json" or "invalid scan_result.json".
+**Fix**: This is intentional fail-closed behavior. `ScannerService` deletes stale
+scan artifacts before each scan and requires a fresh valid `scan_result.json`.
+Check the intodoc stdout/stderr log for parser failures, output path mismatch, or
+permission issues. Do not copy an old scan file into place to bypass the gate.
+
+### Enterprise generation fails and leaves docs_staging
+**Symptom**: Generation ends in error, but `output/{project_id}/docs_staging/`
+still exists with docs and `_assessment/enterprise_gates.json`.
+**Fix**: This is expected. Enterprise mode preserves staging for repair/resume and
+does not publish to `docs/` until all gates pass. Inspect:
+```bash
+jq '.gates' output/{project_id}/docs_staging/_assessment/enterprise_gates.json
+```
+Then repair the listed gate failures and generate again with resume enabled.
+
+### Docs exist but are not client-ready
+**Symptom**: Run status is completed or docs are visible, but dashboard verdict is
+`draft`, `published`, or `published_with_rag_error`.
+**Fix**: Only `client_ready` means delivery-ready. For `published_with_rag_error`,
+repair RAG and re-sync. For `draft`, regenerate in enterprise mode. For
+`published`, inspect `gate_results` to identify which readiness condition was not
+satisfied.
+
 ## Dashboard Issues
 
 ### Dashboard shows API errors (500s)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -206,15 +207,24 @@ async def _run_diff_patch(
         if impact_plan and impact_plan.get("strategy") == "targeted_regen":
             return _manual(base_summary, str(impact_plan.get("reason") or "Impact agent requested targeted regeneration"))
 
+        clean_url: str | None = None
         if github_token_enc:
             try:
                 from mcp_server.utils.encryption import inject_token as _inject_token
-                current_url = (await _git(local_path, "remote", "get-url", "origin")).strip()
-                authed_url = _inject_token(current_url, github_token_enc)
+                clean_url = (await _git(local_path, "remote", "get-url", "origin")).strip()
+                authed_url = _inject_token(clean_url, github_token_enc)
                 await _git(local_path, "remote", "set-url", "origin", authed_url)
             except Exception as exc:
                 logger.warning("Failed to inject token for fetch in %s: %s", local_path, exc)
-        await _git(local_path, "fetch", "--quiet", "origin")
+                clean_url = None
+        try:
+            await _git(local_path, "fetch", "--quiet", "origin")
+        finally:
+            if clean_url:
+                try:
+                    await _git(local_path, "remote", "set-url", "origin", clean_url)
+                except Exception as exc:
+                    logger.warning("Failed to restore clean remote URL for %s: %s", local_path, exc)
         name_status = await _git(local_path, "diff", "--name-status", before_sha, after_sha)
         changes = parse_name_status(name_status)
         base_summary["changed_files"] = [c.path for c in changes]
@@ -441,7 +451,8 @@ async def _run_diff_patch(
         return _failed(base_summary, str(e))
 
 
-async def _git(local_path: str, *args: str) -> str:
+async def _run_git(local_path: str, *args: str, timeout: float = 60.0, strip: bool = False) -> str:
+    """Shared async git subprocess helper. Used directly and re-exported to git_poller."""
     proc = await asyncio.create_subprocess_exec(
         "git",
         *args,
@@ -449,17 +460,23 @@ async def _git(local_path: str, *args: str) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
-        raise RuntimeError(f"git {' '.join(args)} timed out after 60s")
+        raise RuntimeError(f"git {' '.join(args)} timed out after {timeout:.0f}s")
     if proc.returncode != 0:
         detail = stderr.decode().strip() or stdout.decode().strip()
         raise RuntimeError(detail or f"git {' '.join(args)} failed")
-    return stdout.decode()
+    result = stdout.decode()
+    return result.strip() if strip else result
+
+
+async def _git(local_path: str, *args: str) -> str:
+    return await _run_git(local_path, *args)
 
 
 def parse_name_status(output: str) -> list[FileChange]:
@@ -1224,7 +1241,7 @@ def _apply_patches_with_backup(docs_dir: Path, patches: list[dict[str, str]]) ->
         path = docs_dir / filename
         if not path.exists() or not path.name[0].isdigit():
             continue
-        original = path.read_text(encoding="utf-8")
+        original = path.read_text(encoding="utf-8", errors="replace")
         if not _replacement_markdown_is_complete(original, heading, replacement):
             continue
         updated = _replace_section(original, heading, replacement)

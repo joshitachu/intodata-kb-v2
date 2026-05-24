@@ -33,6 +33,9 @@ class CredentialFilter:
         r"com|net|org|io|cloud|local|internal|dev|app|info|biz|co|eu|nl|de|uk|fr|be"
     )
 
+    # Lobster-specific: only apply to .xml files (avoid false positives in non-XML text)
+    _LOBSTER_BASE64_RE = re.compile(r"(<value>)([A-Za-z0-9+/]{8,}={0,2})(</value>)")
+
     # ── Compiled patterns per level ─────────────────────────────────────
     # Each entry: (regex, replacement, min_level)
     _BASE_PATTERNS: list[tuple[re.Pattern[str], str, RedactionLevel]] = [
@@ -165,8 +168,8 @@ class CredentialFilter:
         # OBF-encoded passwords (Lobster obfuscation format)
         (re.compile(r"OBF:[a-zA-Z0-9+/=]+"),
          "[OBF_PASSWORD_REDACTED]", RedactionLevel.STANDARD),
-        # Base64-encoded value tags (Lobster filter constants)
-        (re.compile(r"(<value>)([A-Za-z0-9+/]{8,}={0,2})(</value>)"),
+        # Base64-encoded value tags (Lobster filter constants) — XML-only, guarded in filter_text
+        (_LOBSTER_BASE64_RE,
          r"\1[BASE64_REDACTED]\3", RedactionLevel.STRICT),
 
         # ── Strict-level patterns ───────────────────────────────────
@@ -304,9 +307,15 @@ class CredentialFilter:
             return "[HOSTNAME]"
         return self._FQDN_RE.sub(_replace_fqdn, text)
 
-    def filter_text(self, text: str) -> str:
+    def filter_text(self, text: str, filename: str = "") -> str:
         """Apply all redaction patterns to raw text. Returns cleaned text."""
+        stripped = text.lstrip()
+        is_xml = filename.lower().endswith(".xml") or (
+            stripped.startswith("<?xml") or stripped.startswith("<")
+        )
         for pattern, replacement in self._active_patterns:
+            if pattern is self._LOBSTER_BASE64_RE and not is_xml:
+                continue
             # Use a wrapper to track audit for patterns with simple replacements
             def _make_repl(pat: re.Pattern[str], repl: str):  # noqa: E301
                 def _repl(m: re.Match[str]) -> str:

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+import { backendProxyHeaders } from "@/lib/proxyHeaders";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
 export async function GET(request: NextRequest) {
-  const cookieHeader = request.headers.get("cookie") || "";
   const res = await fetch(`${FASTAPI_URL}/api/v1/onboarding/company/setup-status`, {
-    headers: { Cookie: cookieHeader },
+    headers: backendProxyHeaders(request),
     cache: "no-store",
   });
 

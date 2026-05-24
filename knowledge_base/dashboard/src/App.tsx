@@ -11,7 +11,7 @@ import RunHistory from "./components/RunHistory";
 import ScanHistory from "./components/ScanHistory";
 import ValidationReviewPanel from "./components/ValidationReviewPanel";
 import ABComparison from "./components/ABComparison";
-import DocumentCatalogue from "./components/DocumentCatalogue";
+import HelpPanel from "./components/HelpPanel";
 import PluginPacksPage from "./components/PluginPacksPage";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
@@ -59,6 +59,7 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
 
   async function handleLogout() {
     await fetch("/auth/logout", { method: "POST", credentials: "include" });
+    queryClient.clear();
     window.location.href = getLoginUrl();
   }
 
@@ -223,8 +224,8 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
             </>
           )}
 
-          {/* Document catalogue page */}
-          {topNav === "docs" && <DocumentCatalogue />}
+          {/* Help / reference panel */}
+          {topNav === "docs" && <HelpPanel />}
 
           {/* Plugin packs page (superadmin only) */}
           {topNav === "packs" && user?.is_superadmin && <PluginPacksPage />}

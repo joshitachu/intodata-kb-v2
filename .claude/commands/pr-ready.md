@@ -1,63 +1,79 @@
 Pre-PR gate. Run before creating any pull request. Stops at the first blocking issue
 and tells you exactly what to fix.
 
-## Steps
+### Steps
 
-### 1. Check for uncommitted changes
-
-```bash
-git status --short
-```
-
-If any modified or untracked files exist: **BLOCKED -- uncommitted changes.** List them.
-Tell the user to commit or stash before continuing.
-
-### 2. Show what's going into the PR
+#### 1. Check for uncommitted changes
 
 ```bash
-git log --oneline -5
-git diff main...HEAD --stat
+git -C /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 status --short
 ```
 
-Output the commit list and file summary so the scope is visible.
+If any modified or untracked files: **BLOCKED — uncommitted changes.** List them.
+Commit or stash before continuing. Do not proceed past this step if blocked.
 
-### 3. Run /validate inline
+#### 2. Show PR scope
 
-Run all relevant validation checks (same logic as `/validate`):
-- py_compile on changed Python files
+```bash
+git -C /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 log --oneline -8
+git -C /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 diff main...HEAD --stat
+```
+
+Print both outputs. This shows exactly what is going into the PR.
+
+#### 3. Run CI checks (if on GitHub)
+
+```bash
+gh pr checks 2>/dev/null || echo "no PR open yet — skipping CI check"
+```
+
+If a PR is open and any check is failing: **BLOCKED — CI failing.** Print the check names
+and their status. Do not continue until CI is green.
+
+#### 4. Run local validation
+
+Run the full `/validate` logic inline (same bash blocks as validate.md):
+- py_compile on all changed Python files for each touched sub-project
 - pytest for each touched sub-project
 - tsc --noEmit for each touched frontend
 
-If any check fails: **BLOCKED -- tests/type checks failing.** Show the failure output.
-Do not continue to step 4 until this passes.
+If any check fails: **BLOCKED — local checks failing.** Print the full output.
+Do not continue to step 5 until this passes.
 
-### 4. Check for documentation gaps
+#### 5. Check for documentation gaps
 
-Run the /doc-gap logic:
-- `git diff --name-only main...HEAD` to get all changed files in this branch
-- Check each changed file against the relevant CLAUDE.md files for coverage
-- Flag any `UNDOCUMENTED` files (new routes, models, components not mentioned)
+```bash
+git -C /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 diff --name-only main...HEAD
+```
 
-If gaps found: **WARNING -- undocumented files.** List them with suggested CLAUDE.md section.
-This is a warning, not a block -- but log it.
+For each new file in the diff, check whether it appears in the relevant CLAUDE.md:
+- New `RAG_pipeline/backend/src/api/routes/*.py` → check `RAG_pipeline/CLAUDE.md` routes section
+- New `RAG_pipeline/backend/src/db/models/*.py` → check `RAG_pipeline/CLAUDE.md` models list
+- New `knowledge_base/mcp-server/src/**/*.py` → check `knowledge_base/CLAUDE.md`
+- New `knowledge_base/dashboard/src/components/*.tsx` → check `knowledge_base/CLAUDE.md`
 
-### 5. Check for active blockers
+If gaps found: **WARNING — undocumented files.** List them with the CLAUDE.md section they
+belong in. This is a warning, not a block — but record it.
 
-Read `knowledge_base/.claude/context.md` and `RAG_pipeline/.claude/context.md`.
-If either has a non-empty Blockers section: **WARNING -- active blockers recorded.**
+#### 6. Check for active blockers
 
-### 6. Output
+Read `RAG_pipeline/.claude/context.md` and `knowledge_base/.claude/context.md`.
+If either has a non-empty Blockers section: **WARNING — active blockers recorded.** List them.
 
-If all checks pass:
+#### 7. Output
+
+If all checks pass (or only warnings):
 
 ```
-READY -- PR checklist passed.
+READY — PR checklist passed.
 
-Suggested PR title: <derive from git log>
+Commits in this PR:
+  <git log --oneline output>
 
-Suggested description:
+Suggested PR title: <derive from the dominant change in git log>
+
 ## Summary
-- <bullet per commit>
+- <one bullet per logical change>
 
 ## Test plan
 - [ ] /validate passed (pytest + tsc)
@@ -65,4 +81,4 @@ Suggested description:
 - [ ] No regressions in [list affected sub-projects]
 ```
 
-If anything failed: list each blocker with the specific action needed to fix it.
+If anything failed: print each blocker with the exact output and the action needed to fix it.

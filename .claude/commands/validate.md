@@ -1,64 +1,76 @@
-Run validation checks for the active sub-project. Uses real shell output -- report
+Run validation checks for the active sub-project. Uses real shell output — report
 actual pass/fail, not a narrative.
 
-## Steps
+### Steps
 
-### 1. Identify changed files
-
-```bash
-git diff --name-only HEAD
-git status --short
-```
-
-Combine both lists (staged + unstaged). Determine which sub-projects are affected.
-
-### 2. Run checks per sub-project
-
-Run only the checks relevant to what changed. Skip checks for unchanged sub-projects.
-
-#### knowledge_base Python (any `knowledge_base/**/*.py` changed)
+#### 1. Determine scope
 
 ```bash
-# Syntax check each changed .py file
-for f in $(git diff --name-only HEAD | grep "knowledge_base.*\.py$"); do
-  python3 -m py_compile "$f" && echo "OK: $f" || echo "FAIL: $f"
-done
+git -C /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 diff --name-only HEAD
+git -C /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 status --short
 ```
+
+Combine both lists. Identify which sub-projects are touched. Only run checks relevant
+to what changed — skip everything else (mark as SKIP in the table).
+
+#### 2. Run each applicable check and capture output
+
+##### RAG backend — Python syntax (any `RAG_pipeline/backend/**/*.py` changed)
 
 ```bash
-# Unit tests (if mcp-server files changed)
-cd knowledge_base/mcp-server && python3 -m pytest tests/ -x -q 2>&1 | tail -25
+cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 && for f in $(git diff --name-only HEAD | grep "^RAG_pipeline/backend/.*\.py$" | head -15); do python3 -m py_compile "$f" && echo "OK: $f" || echo "FAIL: $f"; done
 ```
 
-#### knowledge_base TypeScript (any `knowledge_base/dashboard/**` changed)
+##### RAG backend — pytest (any `RAG_pipeline/backend/**` changed)
 
 ```bash
-cd knowledge_base/dashboard && npx tsc --noEmit 2>&1 | head -40
+cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/RAG_pipeline/backend && python3 -m pytest tests/ -x -q 2>&1 | tail -20
 ```
 
-#### RAG_pipeline Python (any `RAG_pipeline/backend/**` changed)
+##### RAG frontend — tsc (any `RAG_pipeline/frontend/**` changed)
 
 ```bash
-cd RAG_pipeline/backend && python3 -m pytest tests/ -x -q 2>&1 | tail -25
+cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/RAG_pipeline/frontend && npx tsc --noEmit 2>&1 | head -30
 ```
 
-#### RAG_pipeline TypeScript (any `RAG_pipeline/frontend/**` changed)
+##### KB Python — syntax (any `knowledge_base/**/*.py` changed)
 
 ```bash
-cd RAG_pipeline/frontend && npx tsc --noEmit 2>&1 | head -40
+cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2 && for f in $(git diff --name-only HEAD | grep "^knowledge_base/.*\.py$" | head -15); do python3 -m py_compile "$f" && echo "OK: $f" || echo "FAIL: $f"; done
 ```
 
-### 3. Report
+##### KB mcp-server — pytest (any `knowledge_base/mcp-server/**` changed)
 
-Output a table:
+```bash
+cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/knowledge_base/mcp-server && python3 -m pytest tests/ -x -q 2>&1 | tail -20
+```
 
-| Check | Result | Output |
-|-------|--------|--------|
-| kb py_compile | PASS / FAIL | (first error line if FAIL) |
-| kb pytest | PASS / FAIL | (summary line) |
-| kb tsc | PASS / FAIL | (first error if FAIL) |
-| rag pytest | PASS / FAIL | (summary line) |
-| rag tsc | PASS / FAIL | (first error if FAIL) |
+##### KB dashboard — tsc (any `knowledge_base/dashboard/**` changed)
 
-If all pass: "PASS -- ready to commit."
-If any fail: "FAIL -- fix before committing." List each failure with the relevant output.
+```bash
+cd /Users/joshuakabel/Documents/Source/intodata/intodata-kb-v2/knowledge_base/dashboard && npx tsc --noEmit 2>&1 | head -30
+```
+
+#### 3. Emit the result table
+
+After all checks complete, output exactly this format:
+
+```
+| Check               | Result | Detail                           |
+|---------------------|--------|----------------------------------|
+| rag py_compile      | PASS   |                                  |
+| rag pytest          | PASS   | 42 passed in 3.2s                |
+| rag tsc             | SKIP   | no frontend changes              |
+| kb py_compile       | FAIL   | SyntaxError line 14: invalid ... |
+| kb pytest           | PASS   | 18 passed in 1.1s                |
+| kb tsc              | SKIP   | no dashboard changes             |
+```
+
+Result values:
+- **PASS** — exit code 0, no errors in output
+- **FAIL** — exit code non-zero or error text — put the first error line in Detail
+- **SKIP** — sub-project not touched by this change
+
+Final line (required):
+- All PASS or SKIP → `PASS — ready to commit.`
+- Any FAIL → `FAIL — fix before committing.` then print the full output for each failing check.

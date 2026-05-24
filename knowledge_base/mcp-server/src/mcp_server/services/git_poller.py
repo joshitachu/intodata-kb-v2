@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mcp_server.config import config
@@ -12,6 +13,7 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.utils.error_sanitizer import sanitize_git_error
 
 logger = logging.getLogger(__name__)
 
@@ -36,24 +38,8 @@ async def run_webhook_diff_update(
 
 
 async def _git_output(local_path: str, *args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=local_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise RuntimeError(f"git {' '.join(args)} timed out after 30s")
-    if proc.returncode != 0:
-        detail = stderr.decode().strip() or stdout.decode().strip()
-        raise RuntimeError(detail or f"git {' '.join(args)} failed")
-    return stdout.decode().strip()
+    from mcp_server.services.git_diff_patcher import _run_git
+    return await _run_git(local_path, *args, timeout=30.0, strip=True)
 
 
 async def _set_remote_url(local_path: str, url: str) -> None:
@@ -61,16 +47,24 @@ async def _set_remote_url(local_path: str, url: str) -> None:
 
 
 async def _fetch_remote(local_path: str, token_enc: str | None = None) -> None:
+    clean_url: str | None = None
     if token_enc:
         from mcp_server.utils.encryption import inject_token as _inject_token
         try:
-            # Read current remote URL (clean, no credentials)
-            current_url = await _git_output(local_path, "remote", "get-url", "origin")
-            authed_url = _inject_token(current_url, token_enc)
+            clean_url = await _git_output(local_path, "remote", "get-url", "origin")
+            authed_url = _inject_token(clean_url, token_enc)
             await _set_remote_url(local_path, authed_url)
         except Exception as exc:
             logger.warning("Failed to inject token into remote URL for %s: %s", local_path, exc)
-    await _git_output(local_path, "fetch", "--quiet")
+            clean_url = None
+    try:
+        await _git_output(local_path, "fetch", "--quiet")
+    finally:
+        if clean_url:
+            try:
+                await _set_remote_url(local_path, clean_url)
+            except Exception as exc:
+                logger.warning("Failed to restore clean remote URL for %s: %s", local_path, exc)
 
 
 async def _remote_head_sha(local_path: str) -> str:
@@ -114,7 +108,7 @@ async def poll_git_projects_once(log_mgr: LogManager) -> None:
             if not success:
                 error = f"Diff-only auto update failed for remote commit {remote_sha}"
         except Exception as e:
-            error = str(e)
+            error = sanitize_git_error(str(e))
             logger.warning("Git polling failed for %s: %s", project.id, e)
 
         async with async_session_factory() as db:

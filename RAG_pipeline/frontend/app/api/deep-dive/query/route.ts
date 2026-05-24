@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { DeepDiveRequestSchema } from "@/types";
 
-const KB_API_URL = process.env.KB_API_URL || "http://localhost:8001";
+const KB_API_URL = process.env.KB_API_URL || "http://localhost:8002";
 
 export async function POST(request: NextRequest) {
   try {

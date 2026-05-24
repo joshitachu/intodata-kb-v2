@@ -23,6 +23,7 @@ import {
   Brain,
   HelpCircle,
   Database,
+  User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -206,6 +207,13 @@ export function Sidebar() {
           {user && (
             <>
               <NotificationBell />
+              <Link
+                href="/settings/profile"
+                className="p-1.5 text-muted-foreground hover:text-foreground"
+                title="Profile"
+              >
+                <User className="h-3.5 w-3.5" />
+              </Link>
               <button
                 onClick={logout}
                 className="p-1.5 text-muted-foreground hover:text-foreground"
@@ -343,9 +351,13 @@ export function Sidebar() {
       <div className="p-2 border-t">
         {user && (
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-muted-foreground truncate flex-1">
+            <Link
+              href="/settings/profile"
+              className="text-xs text-muted-foreground truncate flex-1 hover:text-foreground transition-colors"
+              title="View profile"
+            >
               {user.username}
-            </span>
+            </Link>
             <NotificationBell />
             <button
               onClick={logout}

@@ -31,8 +31,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     const suffix = isProduction
       ? ""
       : ` (${tenant.environment.toUpperCase()})`;
-    const base = tenant.name || "IntoData";
-    document.title = `${base} Knowledge Base${suffix}`;
+    const base = tenant.name || process.env.NEXT_PUBLIC_TENANT_NAME || "Nexus";
+    document.title = `${base}${suffix}`;
   }, [tenant.name, tenant.environment, isProduction]);
 
   return (

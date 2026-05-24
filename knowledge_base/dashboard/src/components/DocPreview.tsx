@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useDocs } from "../hooks/useProjects";
 import { api } from "../api/client";
-import type { DocFile } from "../types";
+import type { DocFile, DocSource } from "../types";
 
 interface Props {
   projectId: string | null;
@@ -14,10 +14,10 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function DocContentPanel({ projectId, filename }: { projectId: string; filename: string }) {
+function DocContentPanel({ projectId, filename, source }: { projectId: string; filename: string; source: DocSource }) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["doc-content", projectId, filename],
-    queryFn: () => api.getDocContent(projectId, filename),
+    queryKey: ["doc-content", projectId, filename, source],
+    queryFn: () => api.getDocContent(projectId, filename, source),
   });
 
   if (isLoading) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
@@ -33,7 +33,9 @@ function DocContentPanel({ projectId, filename }: { projectId: string; filename:
 }
 
 export default function DocPreview({ projectId }: Props) {
-  const { data, isLoading } = useDocs(projectId);
+  const [source, setSource] = useState<DocSource>("published");
+  const { data, isLoading, isError } = useDocs(projectId, source);
+  const { data: stagingData } = useDocs(projectId, "staging", source === "staging");
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
 
   const generateAssessment = useMutation({
@@ -47,34 +49,59 @@ export default function DocPreview({ projectId }: Props) {
 
   const docs: DocFile[] = data?.docs ?? [];
   const hasDocs = docs.length > 0;
+  const stagingCount = stagingData?.docs?.length ?? 0;
 
   return (
     <div className="card-dark">
       <div className="px-4 py-3 border-b border-white/[0.05] bg-surface-raised rounded-t flex items-center justify-between">
-        <h3 className="text-sm font-mono text-slate-400">
-          Documentation
-          {docs.length > 0 && (
-            <span className="ml-2 text-xs text-slate-600">
-              ({docs.length} file{docs.length !== 1 ? "s" : ""})
-            </span>
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-mono text-slate-400">
+            Documentation
+            {docs.length > 0 && (
+              <span className="ml-2 text-xs text-slate-600">
+                ({docs.length} file{docs.length !== 1 ? "s" : ""})
+              </span>
+            )}
+          </h3>
+          <div className="flex overflow-hidden rounded border border-white/[0.08]">
+            {(["published", "staging"] as DocSource[]).map((option) => (
+              <button
+                key={option}
+                className={`px-2.5 py-1 text-xs font-mono transition-colors ${
+                  source === option
+                    ? "bg-accent-primary/15 text-accent-primary"
+                    : "text-slate-500 hover:bg-white/[0.03]"
+                }`}
+                onClick={() => {
+                  setSource(option);
+                  setSelectedDoc(null);
+                }}
+              >
+                {option === "published" ? "Published" : `Staging${stagingCount ? ` ${stagingCount}` : ""}`}
+              </button>
+            ))}
+          </div>
+        </div>
+        {hasDocs && source === "published" && (
+            <button
+              className="btn-ghost"
+              disabled={generateAssessment.isPending}
+              onClick={() => generateAssessment.mutate()}
+            >
+              {generateAssessment.isPending ? "Generating..." : "View Assessment"}
+            </button>
           )}
-        </h3>
-        {hasDocs && (
-          <button
-            className="btn-ghost"
-            disabled={generateAssessment.isPending}
-            onClick={() => generateAssessment.mutate()}
-          >
-            {generateAssessment.isPending ? "Generating..." : "View Assessment"}
-          </button>
-        )}
       </div>
 
       {isLoading ? (
         <div className="p-6 text-sm text-slate-500">Loading...</div>
+      ) : isError ? (
+        <div className="p-6 text-sm text-red-400 font-mono">Failed to load documentation.</div>
       ) : docs.length === 0 ? (
         <div className="p-6 text-sm text-slate-500 font-mono">
-          No documentation files yet. Generate docs first.
+          {source === "staging"
+            ? "No staged documentation files. Failed or in-progress enterprise output will appear here."
+            : "No published documentation files yet. Generate docs first."}
         </div>
       ) : (
         <div className="flex flex-col lg:flex-row">
@@ -102,7 +129,7 @@ export default function DocPreview({ projectId }: Props) {
           {/* Content preview */}
           <div className="flex-1 min-h-[200px]">
             {selectedDoc ? (
-              <DocContentPanel projectId={projectId} filename={selectedDoc} />
+              <DocContentPanel projectId={projectId} filename={selectedDoc} source={source} />
             ) : (
               <div className="p-6 text-sm text-slate-500 font-mono">
                 Select a document to preview.

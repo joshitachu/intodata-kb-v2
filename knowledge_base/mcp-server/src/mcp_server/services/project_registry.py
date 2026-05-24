@@ -314,6 +314,8 @@ class ProjectRegistry:
         quality_score: float | None = None,
         error_message: str | None = None,
         log_file: str | None = None,
+        run_verdict: str | None = None,
+        gate_results: dict | None = None,
     ) -> None:
         values = dict(
             status=status,
@@ -330,6 +332,8 @@ class ProjectRegistry:
             quality_score=quality_score,
             error_message=error_message,
             log_file=log_file,
+            run_verdict=run_verdict,
+            gate_results=gate_results,
             completed_at=datetime.datetime.now(datetime.timezone.utc),
         )
         await self.db.execute(

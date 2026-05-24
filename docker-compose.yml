@@ -119,6 +119,7 @@ services:
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     environment:
+      NODE_ENV: production
       FASTAPI_URL: http://backend:8000
       KB_API_URL: ${KB_API_URL:-http://mcp-server:8002}
       HOSTNAME: 0.0.0.0

@@ -1,7 +1,15 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import type { ConversationMessageRequest, DocumentSource, UsageStats } from "@/types";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { z } from "zod";
+import {
+  type ConversationMessageRequest,
+  type DocumentSource,
+  type UsageStats,
+  DocumentSourceSchema,
+  UsageStatsSchema,
+  SseDoneSchema,
+} from "@/types";
 
 export interface StreamState {
   isStreaming: boolean;
@@ -26,6 +34,12 @@ const INITIAL_STATE: StreamState = {
 export function useStreamMessage(conversationId: number | null) {
   const [streamState, setStreamState] = useState<StreamState>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const reset = useCallback(() => {
     setStreamState(INITIAL_STATE);
@@ -91,6 +105,69 @@ export function useStreamMessage(conversationId: number | null) {
         const decoder = new TextDecoder();
         let buffer = "";
         let currentEvent = "";
+        let currentData: string[] = [];
+
+        const dispatchEvent = (eventType: string, data: string) => {
+          if (eventType === "sources") {
+            try {
+              const sources = z.array(DocumentSourceSchema).parse(JSON.parse(data));
+              setStreamState((prev) => ({ ...prev, sources }));
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "token") {
+            try {
+              const token = z.string().parse(JSON.parse(data));
+              setStreamState((prev) => ({
+                ...prev,
+                content: prev.content + token,
+              }));
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "usage") {
+            try {
+              const usage = UsageStatsSchema.parse(JSON.parse(data));
+              setStreamState((prev) => ({ ...prev, usage }));
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "error") {
+            let message = data;
+            try {
+              message = JSON.parse(data) as string;
+            } catch {
+              // Keep plain text SSE errors unchanged.
+            }
+            setStreamState((prev) => ({
+              ...prev,
+              isStreaming: false,
+              error: message,
+            }));
+          } else if (eventType === "done") {
+            try {
+              const result = SseDoneSchema.parse(JSON.parse(data));
+              if (result.message_id < 1) {
+                setStreamState((prev) => ({
+                  ...prev,
+                  isStreaming: false,
+                  error:
+                    prev.error ??
+                    "Chat stream ended before a response was saved.",
+                }));
+                return;
+              }
+              setStreamState((prev) => ({
+                ...prev,
+                isStreaming: false,
+                messageId: result.message_id,
+                latencyMs: result.latency_ms,
+              }));
+            } catch {
+              // ignore parse error
+            }
+          }
+        };
 
         while (true) {
           const { done, value } = await reader.read();
@@ -103,63 +180,24 @@ export function useStreamMessage(conversationId: number | null) {
           // Keep the last potentially incomplete line in the buffer
           buffer = lines.pop() ?? "";
 
-          for (const line of lines) {
+          for (const rawLine of lines) {
+            const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
             if (line.startsWith("event: ")) {
               currentEvent = line.slice(7).trim();
             } else if (line.startsWith("data: ")) {
-              const data = line.slice(6);
-
-              if (currentEvent === "sources") {
-                try {
-                  const sources = JSON.parse(data) as DocumentSource[];
-                  setStreamState((prev) => ({ ...prev, sources }));
-                } catch {
-                  // ignore parse error
-                }
-              } else if (currentEvent === "token") {
-                try {
-                  const token = JSON.parse(data) as string;
-                  setStreamState((prev) => ({
-                    ...prev,
-                    content: prev.content + token,
-                  }));
-                } catch {
-                  // ignore parse error
-                }
-              } else if (currentEvent === "usage") {
-                try {
-                  const usage = JSON.parse(data) as UsageStats;
-                  setStreamState((prev) => ({ ...prev, usage }));
-                } catch {
-                  // ignore parse error
-                }
-              } else if (currentEvent === "error") {
-                setStreamState((prev) => ({
-                  ...prev,
-                  isStreaming: false,
-                  error: data,
-                }));
-              } else if (currentEvent === "done") {
-                try {
-                  const result = JSON.parse(data) as {
-                    message_id: number;
-                    latency_ms: number;
-                  };
-                  setStreamState((prev) => ({
-                    ...prev,
-                    isStreaming: false,
-                    messageId: result.message_id,
-                    latencyMs: result.latency_ms,
-                  }));
-                } catch {
-                  // ignore parse error
-                }
+              currentData.push(line.slice(6));
+            } else if (line === "") {
+              if (currentEvent && currentData.length > 0) {
+                dispatchEvent(currentEvent, currentData.join("\n"));
               }
-
               currentEvent = "";
+              currentData = [];
             }
-            // Empty lines are SSE delimiters — no action needed
           }
+        }
+
+        if (currentEvent && currentData.length > 0) {
+          dispatchEvent(currentEvent, currentData.join("\n"));
         }
 
         // If we get here without a done event, mark as not streaming

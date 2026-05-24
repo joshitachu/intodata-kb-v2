@@ -5,21 +5,16 @@ import { AlertTriangle, ArrowDown, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MessageBubble } from "./MessageBubble";
 import { DeepDiveChatBubble } from "./DeepDiveChatBubble";
+import { SUGGESTIONS } from "@/lib/constants";
 import type { MessageResponse } from "@/types";
 import type { StreamState } from "@/hooks/useStreamMessage";
 import type { DeepDiveState } from "@/hooks/useDeepDive";
-
-const SUGGESTIONS = [
-  "What projects are available?",
-  "Summarize the latest documentation",
-  "How do the integrations connect?",
-  "What are the key data flows?",
-];
 
 interface MessageListProps {
   messages: MessageResponse[];
   conversationId?: number | null;
   streamingMessage?: StreamState | null;
+  onRetryMessage?: () => void;
   pendingUserMessage?: string | null;
   deepDiveState?: DeepDiveState | null;
   onCancelDeepDive?: () => void;
@@ -30,6 +25,7 @@ export function MessageList({
   messages,
   conversationId,
   streamingMessage,
+  onRetryMessage,
   pendingUserMessage,
   deepDiveState,
   onCancelDeepDive,
@@ -76,9 +72,17 @@ export function MessageList({
       deepDiveState.content ||
       deepDiveState.thinking ||
       deepDiveState.error);
+  const latestMessage = messages.at(-1);
+  const liveErrorHasPersistedMessage =
+    Boolean(streamingMessage?.error) && latestMessage?.status === "failed";
 
   // Empty conversation state
-  if (messages.length === 0 && !pendingUserMessage && !hasDeepDiveContent) {
+  if (
+    messages.length === 0 &&
+    !pendingUserMessage &&
+    !hasDeepDiveContent &&
+    !streamingMessage
+  ) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
         <div className="max-w-md text-center space-y-4">
@@ -114,6 +118,11 @@ export function MessageList({
             key={message.id}
             message={message}
             conversationId={conversationId ?? null}
+            onRetry={
+              liveErrorHasPersistedMessage && message.id === latestMessage?.id
+                ? onRetryMessage
+                : undefined
+            }
           />
         ))}
 
@@ -126,6 +135,7 @@ export function MessageList({
               content: pendingUserMessage ?? deepDiveState!.question!,
               sources: null,
               latency_ms: null,
+              status: "completed",
               created_at: new Date().toISOString(),
             }}
           />
@@ -142,7 +152,10 @@ export function MessageList({
         {/* Streaming assistant message (normal chat mode) */}
         {!hasDeepDiveContent &&
           streamingMessage &&
-          (streamingMessage.isStreaming || streamingMessage.content) && (
+          !liveErrorHasPersistedMessage &&
+          (streamingMessage.isStreaming ||
+            streamingMessage.content ||
+            streamingMessage.error) && (
             <MessageBubble
               message={{
                 id: -2,
@@ -153,11 +166,14 @@ export function MessageList({
                     ? streamingMessage.sources
                     : null,
                 latency_ms: streamingMessage.latencyMs,
+                status: streamingMessage.error ? "failed" : "completed",
+                error_message: streamingMessage.error,
                 created_at: new Date().toISOString(),
               }}
               isStreaming={streamingMessage.isStreaming}
               hasSources={streamingMessage.sources.length > 0}
               usage={streamingMessage.usage}
+              onRetry={streamingMessage.error ? onRetryMessage : undefined}
             />
           )}
 

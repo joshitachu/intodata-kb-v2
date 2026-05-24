@@ -91,7 +91,9 @@ class MCPServerConfig(BaseSettings):
         "google/gemini-2.5-flash"
     )  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
     # Fallback model on provider failure (rate-limit, network, auth). No fallback if not set.
-    doc_generation_fallback_model: str | None = "openai/gpt-5.4"  # MCP_DOC_GENERATION_FALLBACK_MODEL
+    doc_generation_fallback_model: str | None = None  # MCP_DOC_GENERATION_FALLBACK_MODEL
+    doc_generation_enterprise_mode_default: bool = True
+    doc_generation_quality_threshold: float = 4.0
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
 
     # API-based providers. First-party providers read ANTHROPIC_API_KEY,
@@ -149,7 +151,7 @@ class MCPServerConfig(BaseSettings):
 
     # LLM output token limits per phase
     investigation_max_tokens: int = 10_000   # MCP_INVESTIGATION_MAX_TOKENS
-    phase2_max_tokens: int = 16_000          # MCP_PHASE2_MAX_TOKENS
+    phase2_max_tokens: int = 32_000          # MCP_PHASE2_MAX_TOKENS
     phase3_max_tokens: int = 32_000          # MCP_PHASE3_MAX_TOKENS
     context_max_tokens: int = 900_000        # MCP_CONTEXT_MAX_TOKENS — hard pre-flight ceiling
     core_context_soft_target_tokens: int = 80_000   # MCP_CORE_CONTEXT_SOFT_TARGET_TOKENS
@@ -194,6 +196,12 @@ class MCPServerConfig(BaseSettings):
 
     # Instruction pack directory (relative to project_root) — US-106
     instruction_pack_dir: str = "packs/default"  # MCP_INSTRUCTION_PACK_DIR
+
+    # Upload limits
+    max_upload_zip_bytes: int = 500 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_BYTES — 500 MB default
+
+    # Local path security — comma-separated allowed roots; empty = no restriction
+    allowed_local_roots: str = ""            # MCP_ALLOWED_LOCAL_ROOTS
 
     # RAG bridge HTTP timeouts (seconds)
     rag_push_timeout_s: float = 60.0         # MCP_RAG_PUSH_TIMEOUT_S

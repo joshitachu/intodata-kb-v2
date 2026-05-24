@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiErrorMessage } from "@/lib/apiError";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
-
-export async function GET(request: NextRequest) {
-  const token = request.nextUrl.searchParams.get("token") || "";
-  const res = await fetch(
-    `${FASTAPI_URL}/api/v1/auth/invite/validate?token=${encodeURIComponent(token)}`,
-    { cache: "no-store" },
-  );
+export async function POST(request: NextRequest) {
+  const { token } = await request.json().catch(() => ({ token: "" }));
+  const res = await fetch(`${FASTAPI_URL}/api/v1/auth/invite/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+    cache: "no-store",
+  });
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(res.ok ? data : { error: apiErrorMessage(data.detail, "Invalid invite") }, {
     status: res.status,

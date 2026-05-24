@@ -22,8 +22,8 @@ from intodoc.models import (
     ProjectManifest,
     Routine,
     ScanResult,
-    ScanWarning,
 )
+from intodoc.platforms.base_parser import BaseParser
 from intodoc.scanner.walker import walk_repo
 
 if TYPE_CHECKING:
@@ -124,20 +124,11 @@ _IMPORT_TO_SYSTEM: dict[str, str] = {
 }
 
 
-class GenericParser:
+class GenericParser(BaseParser):
     """Parse any codebase into structured scan results with language-aware extraction."""
 
     def __init__(self, cred_filter: CredentialFilter) -> None:
-        self.cred_filter = cred_filter
-        self._warnings: list[ScanWarning] = []
-        self._warn_root: Path | None = None
-
-    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
-        try:
-            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
-        except ValueError:
-            rel = str(file)
-        self._warnings.append(ScanWarning(kind=kind, file=rel, message=message, phase=phase))
+        super().__init__(cred_filter)
 
     # ── Main entry ────────────────────────────────────────────────────────────
 
@@ -274,7 +265,7 @@ class GenericParser:
             text = path.read_text(encoding="utf-8", errors="replace")
         except (OSError, UnicodeDecodeError):
             return "[BINARY OR UNREADABLE FILE]"
-        text = self.cred_filter.filter_text(text)
+        text = self.cred_filter.filter_text(text, filename=str(path))
         lines = text.splitlines()
         limit = self._max_lines(path)
         if len(lines) > limit:
@@ -563,7 +554,8 @@ class GenericParser:
     def _parse_config_as_context(self, path: Path) -> ContextGroup | None:
         try:
             text = self.cred_filter.filter_text(
-                path.read_text(encoding="utf-8", errors="replace")
+                path.read_text(encoding="utf-8", errors="replace"),
+                filename=str(path),
             )
         except OSError:
             return None

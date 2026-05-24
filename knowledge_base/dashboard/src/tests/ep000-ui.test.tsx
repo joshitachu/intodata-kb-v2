@@ -57,6 +57,8 @@ const runs = {
       quality_score: 4.5,
       auto_verdict: null,
       auto_baseline_run_id: null,
+      run_verdict: null,
+      gate_results: null,
     },
     {
       id: 2,
@@ -80,6 +82,8 @@ const runs = {
       quality_score: 3.9,
       auto_verdict: null,
       auto_baseline_run_id: null,
+      run_verdict: null,
+      gate_results: null,
     },
   ],
   total: 2,

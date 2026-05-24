@@ -27,7 +27,7 @@ from mcp_server.providers.custom.models import (
     ModelResult,
 )
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, materialize_prompt_packs
-from mcp_server.providers.custom.prompts import REQUIRED_DOCS
+from mcp_server.providers.custom.prompts import REQUIRED_DOCS, doc_prompt
 from mcp_server.providers.custom.providers import OpenAICompatibleProvider, _execute_staging_tool
 from mcp_server.providers.custom.validators import (
     build_facts_manifest,
@@ -39,6 +39,7 @@ from mcp_server.providers.custom.validators import (
     validate_doc_depth,
     validate_docs,
     validate_investigation_coverage,
+    validate_source_provenance,
 )
 
 
@@ -76,7 +77,7 @@ def _assistant_doc_text(doc: str, facts, extra: str = "") -> str:
         for u in facts.units
     )
     unit_names = ", ".join(u.name for u in facts.units)
-    paths = ", ".join(u.path for u in facts.units)
+    paths = ", ".join(u.path or f"{u.name}.source" for u in facts.units)
     platform_terms = {
         "talend": (
             "job, .item, group, context group, trigger, component, unique_name, "
@@ -101,6 +102,14 @@ def _assistant_doc_text(doc: str, facts, extra: str = "") -> str:
         f"Units covered: {unit_names}.\n"
         f"Platform evidence includes {platform_terms}.\n"
         "Risk: HIGH missing_error_path. Confidence: HIGH. Evidence: facts_manifest.json.\n"
+    )
+    evidence_register = (
+        "\n## Evidence Register\n\n"
+        "| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |\n"
+        "|-------|---------------|-----------------|------------------------|------------|\n"
+        f"| Inventory | {unit_names} | facts_manifest.json scanner evidence | {paths} | HIGH |\n"
+        f"| Dependencies | {unit_names} | dependency_map.md EngineeringFacts evidence | {paths} | MEDIUM |\n"
+        f"| Runtime risk | {unit_names} | known_risks.md scorecard evidence | {paths} | LOW |\n"
     )
     bodies = {
         "00_AGENT_BRIEF": (
@@ -142,7 +151,7 @@ def _assistant_doc_text(doc: str, facts, extra: str = "") -> str:
         "## Business Rules\nExpression | Unit | Domain | Impact.\n"
         "## Runtime Config\nConfig rows include Redacted and Scanner-Limited status.\n"
         f"## Evidence\n{unit_names}\n"
-    ) + extra
+    ) + evidence_register + extra
 
 
 def _write_assistant_docs(staging: Path, facts, extra_by_doc: dict[str, str] | None = None) -> None:
@@ -453,6 +462,138 @@ def test_doc_gate_fails_on_dynamic_conflicting_total_claim(tmp_path):
     assert any("Project contains 2 profiles" in e for e in report.errors)
 
 
+def test_phase3_doc_prompt_requires_evidence_register(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    prompt = doc_prompt(facts, "03_DATA_FLOWS_AND_LINEAGE")
+
+    assert "## Evidence Register" in prompt
+    assert "| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |" in prompt
+    assert "confidence cell that starts with `HIGH`, `MEDIUM`" in prompt
+    assert "plain unformatted text" in prompt
+    assert "not `**LOW**`, `_LOW_`, or `` `LOW` ``" in prompt
+    assert "scanner-limited, inferred, or redaction notes may follow" in prompt
+
+
+def test_source_provenance_requires_evidence_register(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "staging"
+    _write_assistant_docs(staging, facts)
+    (staging / "03_DATA_FLOWS_AND_LINEAGE.md").write_text(
+        "# Data Flow\n\n## Data Flow\nUnit A evidence from source artifact Unit A.item.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_source_provenance(staging, facts)
+
+    assert not report.ok
+    assert any("03_DATA_FLOWS_AND_LINEAGE.md missing required Evidence Register" in e for e in report.errors)
+
+
+def test_source_provenance_rejects_malformed_evidence_register(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "staging"
+    _write_assistant_docs(staging, facts)
+    (staging / "05_RUNTIME_CONFIG_AND_EXTERNALS.md").write_text(
+        "# Runtime\n\n## Evidence Register\n\n"
+        "| Subject | Evidence | Confidence |\n"
+        "|---------|----------|------------|\n"
+        "| Config | facts_manifest.json | CERTAIN |\n",
+        encoding="utf-8",
+    )
+
+    report = validate_source_provenance(staging, facts)
+
+    assert not report.ok
+    assert any("05_RUNTIME_CONFIG_AND_EXTERNALS.md Evidence Register has invalid table headers" in e for e in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("confidence", "ok"),
+    [
+        ("HIGH", True),
+        ("MEDIUM", True),
+        ("LOW", True),
+        ("LOW (scanner-limited)", True),
+        ("MEDIUM -- inferred", True),
+        ("HIGH -- intentionally redacted", True),
+        ("**LOW**", True),
+        ("__LOW__", True),
+        ("*MEDIUM*", True),
+        ("_MEDIUM_", True),
+        ("`HIGH`", True),
+        ("**LOW** (scanner-limited)", True),
+        ("`MEDIUM` -- inferred", True),
+        ("UNKNOWN", False),
+        ("CERTAIN", False),
+        ("", False),
+        ("scanner-limited LOW", False),
+        ("**UNKNOWN**", False),
+        ("**scanner-limited LOW**", False),
+    ],
+)
+def test_source_provenance_validates_confidence_semantics(tmp_path, confidence, ok):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "staging"
+    _write_assistant_docs(staging, facts)
+    runtime_doc = staging / "05_RUNTIME_CONFIG_AND_EXTERNALS.md"
+    runtime_doc.write_text(
+        runtime_doc.read_text(encoding="utf-8").replace("| MEDIUM |", f"| {confidence} |", 1),
+        encoding="utf-8",
+    )
+
+    report = validate_source_provenance(staging, facts)
+
+    assert report.ok is ok
+    assert any("invalid confidence" in e for e in report.errors) is not ok
+
+
+def test_source_provenance_rejects_rows_without_source_provenance(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "staging"
+    _write_assistant_docs(staging, facts)
+    runtime_doc = staging / "05_RUNTIME_CONFIG_AND_EXTERNALS.md"
+    runtime_doc.write_text(
+        runtime_doc.read_text(encoding="utf-8").replace(
+            "| Runtime risk | Unit A | known_risks.md scorecard evidence | Unit A.source | LOW |",
+            "| Runtime risk | Unit A | reviewed notes | runtime claim | LOW |",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    report = validate_source_provenance(staging, facts)
+
+    assert not report.ok
+    assert any("without source provenance" in e for e in report.errors)
+
+
+def test_source_provenance_ignores_support_markdown(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "staging"
+    _write_assistant_docs(staging, facts)
+    (staging / "engineering_facts.md").write_text("support facts without an evidence table\n", encoding="utf-8")
+
+    report = validate_source_provenance(staging, facts)
+
+    assert report.ok
+
+
+def test_source_provenance_requires_inventory_unit_paths(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A", "Unit B"])
+    facts.units[0].path = "src/unit_a.py"
+    facts.units[1].path = "src/unit_b.py"
+    staging = tmp_path / "staging"
+    _write_assistant_docs(staging, facts)
+    inventory = staging / "02_COMPONENT_INVENTORY.md"
+    inventory.write_text(inventory.read_text(encoding="utf-8").replace("src/unit_b.py", "missing_path"), encoding="utf-8")
+
+    report = validate_source_provenance(staging, facts)
+
+    assert not report.ok
+    assert any("canonical unit artifact paths" in e and "Unit B" in e for e in report.errors)
+
+
 def test_analysis_depth_gate_fails_on_shallow_complete_coverage(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A"), _job("b", "A")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
@@ -729,7 +870,7 @@ def test_parse_json_action_accepts_fenced_json():
 
 
 def test_parse_json_action_rejects_unknown_action():
-    with pytest.raises(InvestigationError):
+    with pytest.raises(InvestigationError, match="unsupported action"):
         parse_json_action('{"action":"write_file","path":"x"}')
 
 
@@ -738,7 +879,7 @@ def test_staging_toolbox_blocks_outside_access(tmp_path):
     staging.mkdir()
     toolbox = StagingToolbox(staging)
 
-    with pytest.raises(InvestigationError):
+    with pytest.raises(InvestigationError, match="path outside staging"):
         toolbox.execute({"action": "read_file", "path": "../secret.txt"})
 
 
@@ -1181,6 +1322,8 @@ class _FakeProvider:
 
         deep_text = (
             "# Deep Generated Analysis\n\n"
+            "## Project Orientation\n"
+            "Project Orientation for developers includes source-backed onboarding and navigation.\n"
             "Canonical inventory: 2 recipes/functions. Source artifacts: Recipe One.item, Function One.item.\n"
             "Platform evidence includes recipe, callable function, folder, export artifact, trigger, step, action, block, "
             "datapill, formula, lookup table, property, connection, monitor, job history.\n"
@@ -1200,9 +1343,9 @@ class _FakeProvider:
             "## Data flows and lineage\n"
             "Data flow details describe source systems, transformation, and target systems for each group.\n"
             "## Transformation and business logic\n"
-            "Business rule evidence, transformation logic, and implementation rules are documented.\n"
+            "Business rule evidence, transformation logic, conflicts, edge cases, Hardcoded Values, and implementation rules are documented.\n"
             "## External systems and context/configuration\n"
-            "External systems, context values, configuration, and properties are documented.\n"
+            "External systems, context values, configuration, Credentials, and properties are documented.\n"
             "## Operations, monitoring, and error handling\n"
             "Operation, execution, monitoring, retry, and error handling details are documented.\n"
             "## Security risks\n"
@@ -1212,8 +1355,8 @@ class _FakeProvider:
             "pattern, standard, anti-pattern, architecture, connectivity, component, environment, "
             "key findings, recommendations, scope, groups, lineage, inventory, scanner limitations, "
             "executive overview, access, credential, severity, mitigation, onboarding, plan.\n"
-            "## Scanner limitations\n"
-            "Scanner limitations are called out where source detail is incomplete.\n"
+            "## Scanner-Limited Evidence\n"
+            "Scanner-Limited limitations are called out where source detail is incomplete.\n"
         )
         for section in ANALYSIS_SECTION_NAMES:
             deep_text += f"\n### {section}\n"
@@ -1384,7 +1527,8 @@ def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
     assert "Unit A" not in brief
 
 
-def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
+@pytest.mark.asyncio
+async def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     (staging / "engineering_facts.md").write_text("# Engineering Facts\n", encoding="utf-8")
@@ -1409,7 +1553,7 @@ def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
         analysis_guide_file="_analysis_guide.md",
     )
 
-    CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase4_cleanup(ctx, state)
+    await CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase4_cleanup(ctx, state)
 
     assert not (staging / "engineering_facts.md").exists()
     assert not (staging / "dependency_map.md").exists()
@@ -1418,7 +1562,8 @@ def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
     assert index["engineering_facts"] == ["_facts/dependency_map.md", "_facts/engineering_facts.md"]
 
 
-def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
+@pytest.mark.asyncio
+async def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
@@ -1441,7 +1586,7 @@ def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
         analysis_guide_file="_analysis_guide.md",
     )
 
-    CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase4_cleanup(ctx, state)
+    await CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase4_cleanup(ctx, state)
 
     index = json.loads((staging / "index.json").read_text(encoding="utf-8"))
     assert index["warnings_count"] == 1
@@ -2687,6 +2832,83 @@ async def test_phase3_targeted_repair_appends_validator_gap(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_phase3_targeted_repair_can_fix_evidence_register_gap(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    _write_assistant_docs(staging, facts)
+    facts.write(staging / "facts_manifest.json")
+    flow_doc = staging / "03_DATA_FLOWS_AND_LINEAGE.md"
+    flow_doc.write_text(
+        "# Flow\n\n## Data Flow\nUnit A data flow source evidence.\n\n"
+        "## Evidence Register\n\n"
+        "| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |\n"
+        "|-------|---------------|-----------------|------------------------|------------|\n"
+        "| Data Flow | Unit A | reviewed notes | missing provenance | CERTAIN |\n",
+        encoding="utf-8",
+    )
+
+    class _RepairProvider:
+        model_name = "fake/model"
+        supports_tools = False
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            assert "return only a `## Evidence Register`" in prompt
+            assert "confidence cell must start with plain unformatted `HIGH`" in prompt
+            assert "do not bold, italicize, quote, or wrap that leading token in backticks" in prompt
+            return ModelResult(
+                success=True,
+                text=(
+                    "The validator needs a corrected register.\n\n"
+                    "---\n\n"
+                    "## Evidence Register\n\n"
+                    "| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |\n"
+                    "|-------|---------------|-----------------|------------------------|------------|\n"
+                    "| Data Flow | Unit A | Phase 2 doc_pack evidence | Unit A.source | HIGH |\n"
+                    "| Lineage | Unit A | data_flow_map.md scanner evidence | Unit A.source | MEDIUM |\n"
+                    "| Validation | Unit A | preprocess source evidence | Unit A.source | LOW |\n"
+                    "\n---\n\n"
+                    "**Repair applied**: Removed formatting and replaced invalid evidence.\n"
+                ),
+                model_name=self.model_name,
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+        enterprise_mode=True,
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    report = validate_source_provenance(staging, facts)
+    assert any("03_DATA_FLOWS_AND_LINEAGE.md" in error for error in report.errors)
+
+    await CustomHarnessProvider(_RepairProvider())._phase3_targeted_repair(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        report,
+        log_cb,
+    )
+
+    repaired = flow_doc.read_text(encoding="utf-8")
+    assert validate_source_provenance(staging, facts).ok
+    assert repaired.count("## Evidence Register") == 1
+    assert "Targeted Validator Repair" not in repaired
+    assert "validator needs a corrected register" not in repaired
+    assert "Repair applied" not in repaired
+
+
+@pytest.mark.asyncio
 async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     from mcp_server.config import config
 
@@ -2733,6 +2955,7 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
         write_model="fake/model",
         platform="workato",
         analysis_guide_file="_analysis_guide.md",
+        enterprise_mode=False,
     )
 
     logs = []
@@ -2760,3 +2983,410 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     assert any("_phase3_prompt_pack_core.md" in call["context_names"] for call in provider.calls)
     assert any("_summary.md" in call["context_names"] for call in provider.calls)
     assert not any("You are a documentation critic" in call["prompt"] for call in provider.calls)
+
+
+# ---------------------------------------------------------------------------
+# P2.2 / P2.3 — FailureKind.INCOMPLETE detection via metadata
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("metadata,expected", [
+    ({"finish_reason": "length"}, FailureKind.INCOMPLETE),
+    ({"finish_reason": "max_tokens"}, FailureKind.INCOMPLETE),
+    ({"incomplete_reason": "length"}, FailureKind.INCOMPLETE),
+    ({"finish_reason": "stop"}, None),
+    ({}, None),
+])
+def test_classify_failure_detects_incomplete_via_metadata(metadata, expected):
+    result = ModelResult(
+        success=True if expected is None else False,
+        text="partial output" if expected is None else "",
+        raw_error=None if expected is None else "incomplete: provider stopped because max tokens were reached",
+        metadata=metadata,
+    )
+    if expected is None:
+        result = ModelResult(success=True, text="complete output", metadata=metadata)
+        assert CustomHarnessProvider._classify_failure(result) is None
+    else:
+        assert CustomHarnessProvider._classify_failure(result) == expected
+
+
+def test_incomplete_failure_kind_not_retryable_with_fallback():
+    assert not FailureKind.INCOMPLETE.is_retryable_with_fallback
+    assert FailureKind.RATE_LIMIT.is_retryable_with_fallback
+    assert FailureKind.NETWORK.is_retryable_with_fallback
+    assert not FailureKind.CONTEXT_TOO_LARGE.is_retryable_with_fallback
+    assert not FailureKind.BUDGET_EXCEEDED.is_retryable_with_fallback
+
+
+# ---------------------------------------------------------------------------
+# P2.4 — Force-conclude on INCOMPLETE
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_force_conclude_fires_and_succeeds_on_incomplete(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    complete_calls: list[str] = []
+
+    class _IncompleteProvider:
+        model_name = "fake/deepseek"
+        provider_name = "openai"
+        supports_tools = True
+
+        async def complete_with_tools(self, prompt, staging_dir, options=None, **kwargs):
+            return ModelResult(
+                success=False,
+                text="partial",
+                model_name=self.model_name,
+                raw_error="incomplete: max tokens reached",
+                metadata={"finish_reason": "length", "incomplete_reason": "length"},
+            )
+
+        async def complete(self, prompt, context_files=None, options=None):
+            complete_calls.append(prompt)
+            return ModelResult(
+                success=True,
+                text="## Unit A\n\nFull concluded output.",
+                model_name=self.model_name,
+                input_tokens=20,
+                output_tokens=30,
+                metadata={"estimated_input_tokens": 20, "context_bytes": 0},
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/deepseek",
+        write_model="fake/deepseek",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+    logs: list[tuple] = []
+
+    async def log_cb(pid, msg, level="info"):
+        logs.append((pid, msg, level))
+
+    provider = _IncompleteProvider()
+    contract = AgentTaskContract(
+        phase="phase2_group",
+        target_id="A",
+        allowed_units=["Unit A"],
+        allowed_groups=["A"],
+        expected_artifact="analysis markdown",
+    )
+    tools = ScopedEvidenceTools(staging, facts, contract)
+    harness = CustomHarnessProvider(provider)
+    result = await harness._call_model_with_logging(
+        ctx,
+        state,
+        provider=provider,
+        phase="phase2",
+        target="A",
+        prompt="Analyze Unit A",
+        context_files=[],
+        opts=ModelOptions(max_tokens=32_000),
+        log_cb=log_cb,
+        scoped_tools=tools,
+    )
+
+    assert result.success
+    assert len(complete_calls) == 1
+    assert "Original task:" in complete_calls[0]
+    assert any("force-conclude succeeded" in msg for _, msg, _ in logs)
+    assert not any("retrying with fallback" in msg for _, msg, _ in logs)
+
+
+# ---------------------------------------------------------------------------
+# P3.4 — Primary call logged before fallback overwrites result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_primary_call_logged_before_fallback_overwrites_result(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _FailingProvider:
+        model_name = "fake/primary"
+        provider_name = "openai"
+        supports_tools = False
+
+        async def complete(self, prompt, context_files=None, options=None):
+            return ModelResult(
+                success=False,
+                model_name=self.model_name,
+                raw_error="429 Too Many Requests",
+                metadata={"estimated_input_tokens": 5, "context_bytes": 0},
+            )
+
+    class _FallbackProvider:
+        model_name = "fake/fallback"
+        provider_name = "openai"
+        supports_tools = False
+
+        async def complete(self, prompt, context_files=None, options=None):
+            return ModelResult(
+                success=True,
+                text="## Unit A\n\nFallback output.",
+                model_name=self.model_name,
+                input_tokens=10,
+                output_tokens=15,
+                metadata={"estimated_input_tokens": 10, "context_bytes": 0},
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/primary",
+        write_model="fake/primary",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    async def log_cb(pid, msg, level="info"):
+        pass
+
+    harness = CustomHarnessProvider(_FailingProvider(), fallback_provider=_FallbackProvider())
+    await harness._call_model_with_logging(
+        ctx,
+        state,
+        provider=_FailingProvider(),
+        phase="phase3",
+        target="01_ARCHITECTURE_MAP",
+        prompt="Write the architecture map",
+        context_files=[],
+        opts=ModelOptions(),
+        log_cb=log_cb,
+    )
+
+    assert len(state.calls) == 2
+    assert state.calls[0].result.model_name == "fake/primary"
+    assert not state.calls[0].result.success
+    assert state.calls[1].result.model_name == "fake/fallback"
+    assert state.calls[1].result.success
+
+
+# ---------------------------------------------------------------------------
+# P4.3 — Slice token aggregation from state.calls
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_slice_token_aggregation_from_state_calls(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "core_context_soft_target_tokens", 100)
+    monkeypatch.setattr(config, "core_context_hard_ceiling_tokens", 200)
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    large_md = staging / "group.md"
+    large_md.write_text("Unit A evidence\n" * 600, encoding="utf-8")
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _CountingProvider:
+        model_name = "fake/model"
+        provider_name = "openai"
+        supports_tools = False
+
+        async def complete(self, prompt, context_files=None, options=None):
+            return ModelResult(
+                success=True,
+                text="slice output for Unit A",
+                model_name=self.model_name,
+                input_tokens=50,
+                output_tokens=25,
+                metadata={"estimated_input_tokens": 50, "context_bytes": 100},
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+    provider = _CountingProvider()
+    harness = CustomHarnessProvider(provider)
+
+    async def log_cb(pid, msg, level="info"):
+        pass
+
+    result = await harness._complete_core_generation(
+        ctx,
+        state,
+        provider=provider,
+        phase="phase3",
+        target="01_ARCHITECTURE_MAP",
+        prompt="Write the architecture map",
+        context_files=[large_md],
+        opts=ModelOptions(),
+        log_cb=log_cb,
+    )
+
+    if len(state.calls) > 1:
+        assert result.input_tokens > 0
+        assert result.output_tokens > 0
+        assert result.input_tokens == sum(c.result.input_tokens for c in state.calls)
+        assert result.output_tokens == sum(c.result.output_tokens for c in state.calls)
+
+
+# ---------------------------------------------------------------------------
+# P5.1 — Atomic writes leave no .tmp files
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_agent_runtime_atomic_writes_leave_no_tmp_files(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    runtime = AgentTaskRuntime(staging, facts)
+    contract = AgentTaskContract(
+        phase="phase3_doc",
+        target_id="01_ARCHITECTURE_MAP",
+        allowed_units=["Unit A"],
+        allowed_groups=["A"],
+        expected_artifact="document markdown",
+    )
+
+    async def dispatch(task, tools):
+        return ModelResult(
+            success=True,
+            text="## Unit A\n\nArchitecture content.",
+            model_name="fake/model",
+            input_tokens=5,
+            output_tokens=10,
+        )
+
+    await runtime.run(contract, dispatch, lambda text: {"ok": "Unit A" in text, "errors": []})
+
+    task_dir = runtime.task_dir(contract)
+    tmp_files = list(task_dir.glob("**/*.tmp"))
+    assert tmp_files == [], f"leftover .tmp files: {tmp_files}"
+
+
+# ---------------------------------------------------------------------------
+# P5.2 — accepted_output tolerates OSError/UnicodeDecodeError on corrupt status
+# ---------------------------------------------------------------------------
+
+def test_agent_runtime_accepted_output_tolerates_corrupt_status_file(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    runtime = AgentTaskRuntime(staging, facts)
+    contract = AgentTaskContract(
+        phase="phase3_doc",
+        target_id="03_DATA_FLOWS",
+        allowed_units=["Unit A"],
+        allowed_groups=["A"],
+        expected_artifact="document markdown",
+    )
+    task_dir = runtime.task_dir(contract)
+    task_dir.mkdir(parents=True)
+    (task_dir / "output.md").write_text("## Unit A\n\nContent.", encoding="utf-8")
+    (task_dir / "status.json").write_bytes(b"\xff\xfe invalid json bytes")
+
+    assert runtime.accepted_output(contract) is None
+
+
+# ---------------------------------------------------------------------------
+# P6.1 — OpenAIOfficialProvider maps Responses API status="incomplete" to failure
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_openai_official_provider_maps_incomplete_status_to_failure(tmp_path, monkeypatch):
+    import mcp_server.providers.custom.providers as provider_module
+    from mcp_server.providers.custom.providers import OpenAIOfficialProvider
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+
+    class _FakeResponse:
+        id = "resp-1"
+        status = "incomplete"
+
+        def __iter__(self):
+            return iter([])
+
+    class _FakeResponses:
+        async def create(self, **kwargs):
+            return _FakeResponse()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    def _response_output_text_stub(response):
+        return "partial output"
+
+    def _response_output_items_stub(response):
+        return []
+
+    def _response_usage_stub(response):
+        return 10, 5
+
+    monkeypatch.setattr(provider_module, "_response_output_text", _response_output_text_stub)
+    monkeypatch.setattr(provider_module, "_response_output_items", _response_output_items_stub)
+    monkeypatch.setattr(provider_module, "_response_usage", _response_usage_stub)
+
+    provider = OpenAIOfficialProvider("fake/gpt-4", api_key="test")
+    monkeypatch.setattr(provider, "_client", lambda timeout_s: _FakeClient())
+
+    result = await provider.complete_with_tools("Write docs", staging, ModelOptions())
+
+    assert not result.success
+    assert result.metadata["finish_reason"] == "length"
+    assert result.metadata["incomplete_reason"] == "length"
+
+
+# ---------------------------------------------------------------------------
+# P6.2 — OpenAIOfficialProvider does not retry on auth errors (401/403)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_openai_official_provider_skips_retry_on_auth_error(tmp_path, monkeypatch):
+    import mcp_server.providers.custom.providers as provider_module
+    from mcp_server.providers.custom.providers import OpenAIOfficialProvider
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    call_count = 0
+
+    class _FakeResponses:
+        async def create(self, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            exc = Exception("401 Unauthorized")
+            exc.status_code = 401  # type: ignore[attr-defined]
+            raise exc
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    provider = OpenAIOfficialProvider("fake/gpt-4", api_key="test")
+    monkeypatch.setattr(provider, "_client", lambda timeout_s: _FakeClient())
+    monkeypatch.setattr(provider_module, "_response_output_items", lambda r: [])
+    monkeypatch.setattr(provider_module, "_response_usage", lambda r: (0, 0))
+
+    result = await provider.complete_with_tools("Write docs", staging, ModelOptions())
+
+    assert not result.success
+    assert call_count == 1

@@ -6,6 +6,7 @@ import datetime
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import zipfile
@@ -17,8 +18,9 @@ logger = logging.getLogger(__name__)
 # Prevents concurrent generate calls for the same project in the same process.
 # Multi-worker deployments rely on the DB status check as the cross-process guard.
 _currently_generating: set[str] = set()
+_generation_tasks: dict[str, asyncio.Task] = {}
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select, text
 
@@ -63,13 +65,14 @@ from mcp_server.schemas import (
     UpdateProjectRequest,
 )
 from mcp_server.services.atomic_swap import swap_docs
-from mcp_server.services.claude_service import ClaudeService
+from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
 from mcp_server.services.rag_bridge import RagBridge
+from mcp_server.utils.error_sanitizer import sanitize_git_error
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.services.summary_service import SummaryService
 from mcp_server.services import validation_service
@@ -98,15 +101,16 @@ def _project_to_response(p) -> ProjectResponse:
         last_rag_push_at=p.last_rag_push_at,
         job_count=p.job_count,
         doc_count=p.doc_count,
-        error_message=p.error_message,
+        error_message=sanitize_git_error(p.error_message) if p.error_message else p.error_message,
         last_ingested_commit_sha=p.last_ingested_commit_sha,
         auto_reingest_enabled=p.auto_reingest_enabled,
         auto_reingest_last_checked_at=p.auto_reingest_last_checked_at,
-        auto_reingest_error=p.auto_reingest_error,
+        auto_reingest_error=sanitize_git_error(p.auto_reingest_error) if p.auto_reingest_error else p.auto_reingest_error,
         git_update_summary=p.git_update_summary,
         has_github_token=bool(getattr(p, "github_token_enc", None)),
         webhook_status=webhook_status,
         instruction_pack_dir=getattr(p, "instruction_pack_dir", None),
+        plugin_pack_id=getattr(p, "plugin_pack_id", None),
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -119,8 +123,19 @@ async def add_repo(req: AddRepoRequest, request: Request):
     path = Path(url)
 
     if path.exists():
+        resolved = path.resolve()
+        _allowed_roots = [
+            Path(r.strip()).resolve()
+            for r in config.allowed_local_roots.split(",")
+            if r.strip()
+        ]
+        if _allowed_roots and not any(resolved.is_relative_to(r) for r in _allowed_roots):
+            raise HTTPException(
+                status_code=400,
+                detail="Local path is not within an allowed root. Set MCP_ALLOWED_LOCAL_ROOTS to permit it.",
+            )
         source_type = "local"
-        local_path = str(path.resolve())
+        local_path = str(resolved)
         repo_url = None
     elif url.startswith(("http://", "https://", "git@")):
         # Validate URL to prevent command injection
@@ -132,9 +147,7 @@ async def add_repo(req: AddRepoRequest, request: Request):
         repo_url = url
         clone_dir = config.repos_dir / req.project_id
         if not clone_dir.exists():
-            import subprocess
             from mcp_server.utils.encryption import inject_token as _inject_token
-            # Encrypt token now so we can use it for clone; store enc form later
             _token_enc_tmp: str | None = None
             if req.github_token:
                 from mcp_server.utils.encryption import encrypt_token as _encrypt_token
@@ -143,14 +156,22 @@ async def add_repo(req: AddRepoRequest, request: Request):
                 except Exception:
                     _token_enc_tmp = None
             clone_url = _inject_token(url, _token_enc_tmp)
+            _clone_proc = await asyncio.create_subprocess_exec(
+                "git", "clone", "--", clone_url, str(clone_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
+            )
             try:
-                subprocess.run(
-                    ["git", "clone", "--", clone_url, str(clone_dir)],
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError as e:
-                raise HTTPException(status_code=400, detail=f"Git clone failed: {e.stderr.decode()}")
+                _, _stderr = await asyncio.wait_for(_clone_proc.communicate(), timeout=120.0)
+            except asyncio.TimeoutError:
+                _clone_proc.kill()
+                await _clone_proc.communicate()
+                raise HTTPException(status_code=400, detail="Git clone timed out")
+            if _clone_proc.returncode != 0:
+                logger.warning("Git clone failed for %s: %s", req.project_id, _stderr.decode().strip())
+                raise HTTPException(status_code=400, detail="Git clone failed — check the URL and credentials")
         local_path = str(clone_dir)
     elif url == "zip":
         source_type = "zip"
@@ -243,12 +264,25 @@ async def upload_zip(
     if platform not in SUPPORTED_PLATFORMS:
         raise HTTPException(400, f"Unsupported platform: {platform!r}. Must be one of {sorted(SUPPORTED_PLATFORMS)}")
 
+    # Enforce upload size limit before reading the full body
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > config.max_upload_zip_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
+        )
+
     # Save ZIP
     zip_path = config.uploads_dir / f"{project_id}.zip"
     content = await file.read()
+    if len(content) > config.max_upload_zip_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
+        )
     zip_path.write_bytes(content)
 
-    # Unpack
+    # Unpack — validate member paths before extraction to prevent zip-slip
     repo_dir = config.repos_dir / project_id
     if repo_dir.exists():
         shutil.rmtree(repo_dir)
@@ -256,6 +290,10 @@ async def upload_zip(
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
+            for member in zf.infolist():
+                member_parts = Path(member.filename).parts
+                if member.filename.startswith("/") or ".." in member_parts:
+                    raise HTTPException(status_code=400, detail="ZIP contains unsafe path")
             zf.extractall(repo_dir)
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Invalid ZIP file")
@@ -407,6 +445,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         run_id_for_lock=run_id,
         doc_generation_provider=project.doc_generation_provider,
         instruction_pack_dir=project.instruction_pack_dir,
+        enterprise_mode=req.mode == "enterprise",
     )
     return StatusResponse(
         status="generation_triggered",
@@ -622,6 +661,19 @@ async def get_github_webhook_status(project_id: str, request: Request):
     return {"project_id": project_id, "webhook_status": status, "webhook_id": project.github_webhook_id}
 
 
+_PERMANENT_HTTP_CODES = {400, 401, 403, 404, 422}
+_HTTP_STATUS_RE = re.compile(r"\b([45]\d{2})\b")
+
+
+def _has_permanent_error(errors: list[str]) -> bool:
+    """True if any error message contains a non-retryable HTTP status code."""
+    for e in errors:
+        for m in _HTTP_STATUS_RE.finditer(e):
+            if int(m.group(1)) in _PERMANENT_HTTP_CODES:
+                return True
+    return False
+
+
 async def _push_with_retry(
     bridge,
     project_id: str,
@@ -644,6 +696,9 @@ async def _push_with_retry(
         if not result.get("errors"):
             return result, None
         last_errors = result["errors"]
+        # Permanent errors (auth, CSRF, bad request) won't succeed on retry
+        if _has_permanent_error(last_errors):
+            break
     return result, last_errors
 
 
@@ -723,6 +778,20 @@ def _diff_generated_docs(old_docs_dir: Path, new_docs_dir: Path) -> tuple[set[st
     return changed, removed
 
 
+def _load_enterprise_gate_results(base_dir: Path) -> dict | None:
+    for candidate in (
+        base_dir / "_assessment" / "enterprise_gates.json",
+        base_dir / "_audit" / "enterprise_gates.json",
+    ):
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError):
+            return None
+    return None
+
+
 async def _run_generate_background(
     project_id: str,
     run_id: int,
@@ -736,20 +805,37 @@ async def _run_generate_background(
     doc_generation_provider: str | None = None,
     instruction_pack_dir: str | None = None,
     partial_rag_sync: bool = False,
+    enterprise_mode: bool = True,
 ):
     """Background task: spawn Claude Code for doc generation.
 
     Uses a staging directory (docs_staging/) so that existing docs survive
     if generation fails.  Only on success is the staging dir swapped in.
     """
-    claude = ClaudeService(log_manager=log_mgr)
+    claude = DocGenerationCoordinator(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
-    result = await claude.generate_docs(
-        project_id, investigation_model=investigation_model, model=model,
-        write_model=write_model, resume=resume, run_id=run_id_for_lock or run_id,
-        doc_generation_provider=doc_generation_provider,
-        instruction_pack_dir=instruction_pack_dir,
-    )
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        _generation_tasks[project_id] = current_task
+    try:
+        result = await claude.generate_docs(
+            project_id, investigation_model=investigation_model, model=model,
+            write_model=write_model, resume=resume, run_id=run_id_for_lock or run_id,
+            doc_generation_provider=doc_generation_provider,
+            instruction_pack_dir=instruction_pack_dir,
+            enterprise_mode=enterprise_mode,
+        )
+    except asyncio.CancelledError:
+        await log_mgr.emit(project_id, "Generation cancelled by user.", level="warning")
+        result = {
+            "success": False,
+            "error": "Generation cancelled by user",
+            "model_name": model,
+            "write_model_name": write_model,
+        }
+    except Exception as exc:
+        logger.exception("Doc generation background task crashed for %s", project_id)
+        result = {"success": False, "error": str(exc), "model_name": model, "write_model_name": write_model}
 
     success = result.get("success", False)
 
@@ -764,6 +850,7 @@ async def _run_generate_background(
     if success:
         # Count docs produced in staging
         doc_count = len(list(staging_dir.glob("*.md"))) if staging_dir.exists() else 0
+        gate_results = _load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None
 
         if doc_count > 0:
             changed_rag_docs: set[str] | None = None
@@ -848,9 +935,8 @@ async def _run_generate_background(
             # Score the generated docs and write run_metrics.json
             quality_score: float | None = None
             try:
-                from mcp_server.services.doc_quality_scorer import DocQualityScorer
-                scorer = DocQualityScorer()
-                quality_report = scorer.score(project_id, docs_dir=docs_dir)
+                from mcp_server.services.doc_quality_scorer import score_project
+                quality_report = score_project(project_id, docs_dir=docs_dir)
                 quality_score = quality_report.overall
 
                 metrics = {
@@ -888,6 +974,15 @@ async def _run_generate_background(
             rag_error_message: str | None = (
                 f"RAG push failed after retries: {rag_errors}" if rag_errors else None
             )
+            run_verdict = (
+                "draft"
+                if not enterprise_mode
+                else "published_with_rag_error"
+                if rag_errors
+                else "client_ready"
+                if gate_results and gate_results.get("client_ready")
+                else "published"
+            )
         else:
             # Generation reported success but produced no docs — treat as failure
             if staging_dir.exists():
@@ -919,9 +1014,12 @@ async def _run_generate_background(
                     quality_score=None,
                     error_message="Generation produced no documents",
                     log_file=log_file,
+                    run_verdict="failed",
+                    gate_results=_load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None,
                 )
                 await db.commit()
             _currently_generating.discard(project_id)
+            _generation_tasks.pop(project_id, None)
             await log_mgr.emit_done(project_id)
             return
 
@@ -931,6 +1029,8 @@ async def _run_generate_background(
                 project_id, "ready", error_message=rag_error_message
             )
             await registry.update_generate_result(project_id, doc_count=doc_count)
+            if rag_error_message is None and _rag_result.get("pushed", 0) > 0:
+                await registry.update_rag_push(project_id)
             project = await registry.get_project(project_id)
             if project and project.source_type == "git" and rag_error_message is None:
                 head_sha = await _current_git_head(project.local_path)
@@ -952,6 +1052,8 @@ async def _run_generate_background(
                 quality_score=quality_score,
                 error_message=rag_error_message,
                 log_file=log_file,
+                run_verdict=run_verdict,
+                gate_results=gate_results,
             )
             await db.commit()
         await _auto_compare_run(project_id, run_id)
@@ -970,7 +1072,7 @@ async def _run_generate_background(
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
             await registry.update_status(
-                project_id, "error", error_message="Doc generation failed"
+                project_id, "error", error_message=result.get("error") or "Doc generation failed"
             )
             # Keep existing doc_count — old docs are still on disk
             await registry.complete_generate_run(
@@ -986,13 +1088,16 @@ async def _run_generate_background(
                 doc_count=0,
                 model_name=result.get("model_name"),
                 write_model_name=result.get("write_model_name"),
-                error_message="Doc generation failed",
+                error_message=result.get("error") or "Doc generation failed",
                 log_file=log_file,
+                run_verdict="failed",
+                gate_results=_load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None,
             )
             await db.commit()
 
     # Signal SSE subscribers that generation is done
     _currently_generating.discard(project_id)
+    _generation_tasks.pop(project_id, None)
     await log_mgr.emit_done(project_id)
 
 
@@ -1026,8 +1131,9 @@ async def push_to_rag(req: PushToRagRequest, request: Request):
 
 
 @router.get("/status/{project_id}", response_model=ScanStatusResponse)
-async def get_status(project_id: str):
+async def get_status(project_id: str, request: Request):
     """Get project scan status."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -1256,8 +1362,9 @@ async def delete_project(project_id: str, request: Request):
 
 
 @router.get("/projects/{project_id}/usage", response_model=ProjectUsageResponse)
-async def get_project_usage(project_id: str):
+async def get_project_usage(project_id: str, request: Request):
     """Get aggregated usage stats (tokens, cost, run counts) for a project."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -1300,8 +1407,9 @@ async def get_project_usage(project_id: str):
 
 
 @router.get("/scan-runs/{project_id}", response_model=ScanRunListResponse)
-async def list_scan_runs(project_id: str):
+async def list_scan_runs(project_id: str, request: Request):
     """List all scan runs for a project (newest first)."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         runs = await registry.list_scan_runs(project_id)
@@ -1324,14 +1432,20 @@ async def list_scan_runs(project_id: str):
 
 
 @router.get("/projects/{project_id}/docs/{filename}/content")
-async def get_doc_content(project_id: str, filename: str):
+async def get_doc_content(
+    project_id: str,
+    filename: str,
+    request: Request,
+    source: str = Query("published", pattern="^(published|staging)$"),
+):
     """Return raw markdown content for inline preview."""
+    await require_project_access(request, project_id)
     if not filename.endswith(".md"):
         raise HTTPException(status_code=400, detail="Only .md files can be previewed")
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    docs_dir = config.project_root / "output" / project_id / "docs"
+    docs_dir = config.project_root / "output" / project_id / ("docs_staging" if source == "staging" else "docs")
     file_path = docs_dir / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
@@ -1341,8 +1455,9 @@ async def get_doc_content(project_id: str, filename: str):
 
 
 @router.post("/reset-status", response_model=StatusResponse)
-async def reset_status(req: ResetStatusRequest):
+async def reset_status(req: ResetStatusRequest, request: Request):
     """Reset a stuck generating/scanning project back to error state."""
+    await require_project_access(request, req.project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(req.project_id)
@@ -1355,8 +1470,19 @@ async def reset_status(req: ResetStatusRequest):
                 detail=f"Project status is '{project.status}', not generating/scanning. Nothing to reset.",
             )
 
+        was_generating = project.status == "generating"
+        cancelled_live_task = False
+        if was_generating:
+            task = _generation_tasks.pop(req.project_id, None)
+            if task is not None and not task.done():
+                task.cancel()
+                cancelled_live_task = True
+            _currently_generating.discard(req.project_id)
+
         await registry.update_status(
-            req.project_id, "error", error_message="Manually reset by user"
+            req.project_id,
+            "error",
+            error_message="Generation cancelled by user" if was_generating else "Manually reset by user",
         )
 
         # Mark any running GenerateRun/ScanRun records as failed
@@ -1367,7 +1493,12 @@ async def reset_status(req: ResetStatusRequest):
         await db.execute(
             update(GenerateRun)
             .where(GenerateRun.project_id == req.project_id, GenerateRun.status == "running")
-            .values(status="failed", completed_at=now, error_message="Manually reset by user")
+            .values(
+                status="failed",
+                completed_at=now,
+                error_message="Generation cancelled by user" if was_generating else "Manually reset by user",
+                run_verdict="failed",
+            )
         )
         await db.execute(
             update(ScanRun)
@@ -1377,6 +1508,11 @@ async def reset_status(req: ResetStatusRequest):
 
         await db.commit()
 
+    if cancelled_live_task:
+        log_mgr = request.app.state.log_manager
+        await log_mgr.emit(req.project_id, "Generation cancellation requested. Stopping active task.", level="warning")
+        await log_mgr.emit_done(req.project_id)
+        return StatusResponse(status="cancelled", message=f"Generation for '{req.project_id}' was cancelled.")
     return StatusResponse(status="reset", message=f"Project '{req.project_id}' status reset to error.")
 
 
@@ -1403,12 +1539,15 @@ def _run_to_response(r) -> GenerateRunResponse:
         quality_score=getattr(r, "quality_score", None),
         auto_verdict=getattr(r, "auto_verdict", None),
         auto_baseline_run_id=getattr(r, "auto_baseline_run_id", None),
+        run_verdict=getattr(r, "run_verdict", None),
+        gate_results=getattr(r, "gate_results", None),
     )
 
 
 @router.get("/generate-runs/{project_id}", response_model=GenerateRunListResponse)
-async def list_generate_runs(project_id: str):
+async def list_generate_runs(project_id: str, request: Request):
     """List all generation runs for a project (newest first)."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         runs = await registry.list_generate_runs(project_id)
@@ -1419,8 +1558,9 @@ async def list_generate_runs(project_id: str):
 
 
 @router.get("/generate-run-detail/{project_id}/{run_id}")
-async def get_generate_run(project_id: str, run_id: int):
+async def get_generate_run(project_id: str, run_id: int, request: Request):
     """Return a single generation run with per-doc quality breakdown from run_metrics.json."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         runs = await registry.list_generate_runs(project_id)
@@ -1445,10 +1585,12 @@ async def compare_generate_runs(
     project_id: str,
     run_a: int,
     run_b: int,
+    request: Request,
     quality_drop_pct: float = 5.0,
     size_change_pct: float = 10.0,
 ):
     """Side-by-side comparison of two generation runs by quality, cost, and token usage."""
+    await require_project_access(request, project_id)
     from mcp_server.api.routes.generate_runs import build_run_comparison
 
     return await build_run_comparison(
@@ -1465,8 +1607,9 @@ _DURATION_REGRESSION_THRESHOLD_PCT = 20.0
 
 
 @router.get("/projects/{project_id}/quality-history")
-async def get_quality_history(project_id: str):
+async def get_quality_history(project_id: str, request: Request):
     """Return time-series quality/cost/duration metrics for all completed runs of a project."""
+    await require_project_access(request, project_id)
     metrics_dir = config.project_root / "output" / project_id / "logs"
     entries = []
     if metrics_dir.exists():
@@ -1523,7 +1666,8 @@ async def get_quality_history(project_id: str):
 # --- Validation (US-105) ---
 
 @router.get("/projects/{project_id}/questionnaire")
-async def get_questionnaire(project_id: str, run_id: int = 0):
+async def get_questionnaire(project_id: str, request: Request, run_id: int = 0):
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -1532,7 +1676,8 @@ async def get_questionnaire(project_id: str, run_id: int = 0):
 
 
 @router.post("/projects/{project_id}/reviews", status_code=201)
-async def submit_review(project_id: str, review: DocReview):
+async def submit_review(project_id: str, review: DocReview, request: Request):
+    await require_project_access(request, project_id)
     if not (1 <= review.overall <= 10):
         raise HTTPException(status_code=422, detail="overall must be 1–10")
     for q in review.questions:
@@ -1544,7 +1689,8 @@ async def submit_review(project_id: str, review: DocReview):
 
 
 @router.get("/projects/{project_id}/reviews", response_model=ReviewAggregateResponse)
-async def get_reviews(project_id: str, run_id: int | None = None):
+async def get_reviews(project_id: str, request: Request, run_id: int | None = None):
+    await require_project_access(request, project_id)
     output_root = config.project_root / "output"
     return validation_service.aggregate_reviews(output_root, project_id, run_id)
 
@@ -1573,8 +1719,9 @@ async def get_instruction_pack_metadata():
 
 
 @router.get("/logs/{project_id}", response_model=LogFileListResponse)
-async def list_log_files(project_id: str):
+async def list_log_files(project_id: str, request: Request):
     """List available log files for a project."""
+    await require_project_access(request, project_id)
     logs_dir = config.logs_dir
     files: list[LogFileResponse] = []
     for log_path in sorted(logs_dir.glob(f"{project_id}_*.log"), reverse=True):
@@ -1591,8 +1738,9 @@ async def list_log_files(project_id: str):
 
 
 @router.get("/logs/{project_id}/{filename}")
-async def get_log_content(project_id: str, filename: str):
+async def get_log_content(project_id: str, filename: str, request: Request):
     """Return the content of a specific log file."""
+    await require_project_access(request, project_id)
     # Sanitize filename to prevent path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
@@ -1607,18 +1755,42 @@ async def get_log_content(project_id: str, filename: str):
 
 
 @router.get("/projects/{project_id}/docs", response_model=DocListResponse)
-async def list_project_docs(project_id: str):
+async def list_project_docs(
+    project_id: str,
+    request: Request,
+    source: str = Query("published", pattern="^(published|staging)$"),
+):
     """List all documentation files for a project with metadata."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
         if not project:
             raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
 
-    from mcp_server.services.pdf_service import PdfService
+    if source == "published":
+        from mcp_server.services.pdf_service import PdfService
 
-    svc = PdfService()
-    docs = svc.list_docs(project_id)
+        svc = PdfService()
+        docs = svc.list_docs(project_id)
+    else:
+        docs_dir = config.project_root / "output" / project_id / "docs_staging"
+        docs = []
+        if docs_dir.is_dir():
+            for md_file in sorted(docs_dir.glob("*.md")):
+                if md_file.name.startswith("_"):
+                    continue
+                stat = md_file.stat()
+                docs.append({
+                    "name": md_file.name,
+                    "type": "md",
+                    "size_bytes": stat.st_size,
+                    "has_pdf": False,
+                    "modified_at": datetime.datetime.fromtimestamp(
+                        stat.st_mtime,
+                        tz=datetime.timezone.utc,
+                    ).isoformat(),
+                })
     return DocListResponse(
         project_id=project_id,
         docs=[DocFileInfo(**d) for d in docs],
@@ -1627,8 +1799,9 @@ async def list_project_docs(project_id: str):
 
 
 @router.get("/projects/{project_id}/docs/{filename}")
-async def download_doc(project_id: str, filename: str):
+async def download_doc(project_id: str, filename: str, request: Request):
     """Download a specific doc file (md or pdf)."""
+    await require_project_access(request, project_id)
     # Validate extension
     if not filename.endswith((".md", ".pdf")):
         raise HTTPException(status_code=400, detail="Only .md and .pdf files are supported")
@@ -1655,8 +1828,9 @@ async def download_doc(project_id: str, filename: str):
 
 
 @router.post("/projects/{project_id}/generate-pdfs", response_model=PdfGenerateResponse)
-async def generate_pdfs(project_id: str):
+async def generate_pdfs(project_id: str, request: Request):
     """Generate PDF files for all markdown docs in a project."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -1688,8 +1862,9 @@ async def generate_pdfs(project_id: str):
     "/projects/{project_id}/generate-assessment",
     response_model=AssessmentGenerateResponse,
 )
-async def generate_assessment(project_id: str):
+async def generate_assessment(project_id: str, request: Request):
     """Generate a self-contained HTML assessment page from project docs."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -1705,8 +1880,9 @@ async def generate_assessment(project_id: str):
 
 
 @router.get("/projects/{project_id}/assessment")
-async def get_assessment(project_id: str):
+async def get_assessment(project_id: str, request: Request):
     """Serve the generated assessment HTML page."""
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -2218,8 +2394,9 @@ async def _run_summaries_background(project_id: str, platform: str) -> None:
 
 
 @router.post("/deep-dive")
-async def deep_dive_query(req: DeepDiveRequest):
+async def deep_dive_query(req: DeepDiveRequest, request: Request):
     """Stream deep-dive analysis via Claude Code CLI (SSE)."""
+    await require_project_access(request, req.project_id)
     # Validate project exists and has scan data
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)

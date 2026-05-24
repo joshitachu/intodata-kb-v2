@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/onboarding", "/api/auth", "/api/tenant"];
+const MFA_SETUP_PATH = "/settings/security";
+
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const segment = token.split(".")[1];
+    if (!segment) return null;
+    const base64 = segment.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    return JSON.parse(atob(padded)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -31,6 +44,17 @@ export function middleware(request: NextRequest) {
     const loginUrl = new URL("/login", `${proto}://${host}`);
     loginUrl.searchParams.set("redirect", pathname);
     return NextResponse.redirect(loginUrl);
+  }
+
+  // Redirect users who have not set up MFA. The mfa_enabled claim is embedded
+  // in the access token at issuance so this check requires no DB call.
+  if (accessToken && !pathname.startsWith("/api/") && pathname !== MFA_SETUP_PATH) {
+    const payload = decodeJwtPayload(accessToken.value);
+    if (payload !== null && payload.mfa_enabled === false) {
+      const proto = request.headers.get("x-forwarded-proto") || "https";
+      const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost";
+      return NextResponse.redirect(new URL(MFA_SETUP_PATH, `${proto}://${host}`));
+    }
   }
 
   return NextResponse.next();

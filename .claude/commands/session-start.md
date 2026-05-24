@@ -16,7 +16,8 @@ Accepted values: `kb` | `rag` | empty (default: both)
      to identify relevant SOPs for the current work.
    - **`rag`** (or git status shows only RAG_pipeline changes):
      Read `RAG_pipeline/.claude/context.md` and the last 3 entries of
-     `RAG_pipeline/.claude/PROGRESS_LOG.md`.
+     `RAG_pipeline/.claude/PROGRESS_LOG.md`. Also read `RAG_pipeline/.agent/README.md`
+     to identify relevant docs for the current work.
    - **empty / both**:
      Read context.md and last 3 PROGRESS_LOG entries for both sub-projects.
 

@@ -148,6 +148,8 @@ class MessageResponse(BaseModel):
     sources: list[DocumentSource] | None = None
     image_data: list[str] | None = None
     latency_ms: int | None = None
+    status: str = "completed"
+    error_message: str | None = None
     created_at: datetime.datetime
 
 

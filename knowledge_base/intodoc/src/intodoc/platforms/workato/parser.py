@@ -27,9 +27,9 @@ from intodoc.models import (
     ProjectManifest,
     Routine,
     ScanResult,
-    ScanWarning,
     TRunJobRef,
 )
+from intodoc.platforms.base_parser import BaseParser
 from intodoc.scanner.walker import walk_repo
 
 if TYPE_CHECKING:
@@ -75,7 +75,7 @@ _PROVIDER_TYPE_MAP: dict[str, str] = {
 }
 
 
-class WorkatoParser:
+class WorkatoParser(BaseParser):
     """Parse a Workato export into structured scan results.
 
     Passes cleaned raw JSON through as a single Component per recipe.
@@ -91,7 +91,7 @@ class WorkatoParser:
     })
 
     def __init__(self, cred_filter: CredentialFilter) -> None:
-        self.cred_filter = cred_filter
+        super().__init__(cred_filter)
         self._connection_index: dict[str, MetadataConnection] = {}
         self._connection_id_index: dict[int, str] = {}  # numeric ID -> conn name
         self._provider_to_conn: dict[str, str] = {}  # provider -> conn name
@@ -100,19 +100,6 @@ class WorkatoParser:
         self._recipe_id_index: dict[str, str] = {}
         self._asset_registry: dict[str, list[Path]] = {}
         self._parsed_recipe_data: dict[str, dict] = {}  # job_name -> cleaned recipe dict
-        # Non-fatal parse failures collected for the final ScanResult.
-        self._warnings: list[ScanWarning] = []
-        self._warn_root: Path | None = None
-
-    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
-        """Record a non-fatal scan warning alongside the usual console output."""
-        try:
-            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
-        except ValueError:
-            rel = str(file)
-        self._warnings.append(
-            ScanWarning(kind=kind, file=rel, message=message, phase=phase)
-        )
 
     # ── Content-Based Asset Classification ─────────────────────────
 
@@ -1074,11 +1061,6 @@ class WorkatoParser:
         return params
 
     # ── Helpers ──────────────────────────────────────────────────────
-
-    def _read_filtered(self, path: Path) -> str:
-        """Read a file and apply credential filtering."""
-        text = path.read_text(encoding="utf-8", errors="replace")
-        return self.cred_filter.filter_text(text)
 
     @staticmethod
     def _extract_group(file_path: Path, root: Path) -> str:

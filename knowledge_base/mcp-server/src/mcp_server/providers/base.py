@@ -32,6 +32,7 @@ class AgentResult:
         """Return a plain dict compatible with the legacy result format."""
         return {
             "success": self.success,
+            "error": self.error,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cost_usd": self.cost_usd,
@@ -62,6 +63,7 @@ class DocGenContext:
     write_model: str
     platform: str
     analysis_guide_file: str
+    enterprise_mode: bool = True
     resume_state: dict | None = None
 
 

@@ -1,11 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import type { DocSource } from "../types";
 
 export function useProjects() {
   return useQuery({
     queryKey: ["projects"],
     queryFn: api.listProjects,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      const projects = query.state.data?.projects ?? [];
+      return projects.some((p) => p.status === "scanning" || p.status === "generating") ? 10_000 : false;
+    },
   });
 }
 
@@ -92,7 +96,10 @@ export function useGenerateRuns(projectId: string | null) {
     queryKey: ["generate-runs", projectId],
     queryFn: () => api.listGenerateRuns(projectId!),
     enabled: !!projectId,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      const runs = query.state.data?.runs ?? [];
+      return runs.some((r) => r.status === "pending" || r.status === "running") ? 10_000 : false;
+    },
   });
 }
 
@@ -101,7 +108,6 @@ export function useLogFiles(projectId: string | null) {
     queryKey: ["log-files", projectId],
     queryFn: () => api.listLogFiles(projectId!),
     enabled: !!projectId,
-    refetchInterval: 10_000,
   });
 }
 
@@ -193,7 +199,10 @@ export function useScanRuns(projectId: string | null) {
     queryKey: ["scan-runs", projectId],
     queryFn: () => api.listScanRuns(projectId!),
     enabled: !!projectId,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      const runs = query.state.data?.runs ?? [];
+      return runs.some((r) => r.status === "pending" || r.status === "running") ? 10_000 : false;
+    },
   });
 }
 
@@ -202,15 +211,17 @@ export function useScanStatus(projectId: string | null) {
     queryKey: ["scan-status", projectId],
     queryFn: () => api.getStatus(projectId!),
     enabled: !!projectId,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => {
+      return query.state.data?.status === "scanning" ? 10_000 : false;
+    },
   });
 }
 
-export function useDocs(projectId: string | null) {
+export function useDocs(projectId: string | null, source: DocSource = "published", enabled = true) {
   return useQuery({
-    queryKey: ["docs", projectId],
-    queryFn: () => api.listDocs(projectId!),
-    enabled: !!projectId,
+    queryKey: ["docs", projectId, source],
+    queryFn: () => api.listDocs(projectId!, source),
+    enabled: !!projectId && enabled,
   });
 }
 
@@ -236,7 +247,6 @@ export function useQualityHistory(projectId: string | null) {
     queryKey: ["quality-history", projectId],
     queryFn: () => api.getQualityHistory(projectId!),
     enabled: !!projectId,
-    refetchInterval: 10_000,
   });
 }
 

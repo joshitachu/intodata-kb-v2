@@ -16,7 +16,7 @@ export const TenantConfigSchema = z.object({
 export type TenantConfig = z.infer<typeof TenantConfigSchema>;
 
 export const FALLBACK_TENANT: TenantConfig = {
-  name: "IntoData",
-  slug: "intodata",
+  name: "Nexus",
+  slug: "nexus",
   environment: "development",
 };

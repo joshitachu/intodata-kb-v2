@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     kimi_api_key: str = ""
     kimi_llm_model: str = "kimi-k2.5"
     kimi_temperature: float = 0.6
-    kimi_timeout: float = 60.0
+    kimi_timeout: float = 300.0
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     jwt_previous_keys: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
-    refresh_token_expire_days: int = 365
+    refresh_token_expire_days: int = 14
     admin_default_password: str = "admin"
     cookie_secure: bool = False
     cookie_domain: str = ""

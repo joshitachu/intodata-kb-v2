@@ -81,6 +81,8 @@ export const MessageResponseSchema = z.object({
   sources: z.array(DocumentSourceSchema).nullable(),
   image_data: z.array(z.string()).nullable().optional(),
   latency_ms: z.number().nullable(),
+  status: z.string().optional().default("completed"),
+  error_message: z.string().nullable().optional(),
   created_at: z.string(),
 });
 
@@ -273,3 +275,28 @@ export const DeepDiveProjectsResponseSchema = z.object({
 export type DeepDiveProjectsResponse = z.infer<
   typeof DeepDiveProjectsResponseSchema
 >;
+
+// --- SSE stream ---
+
+export const SseDoneSchema = z.object({
+  message_id: z.number().int(),
+  latency_ms: z.number(),
+});
+
+// --- Auth user ---
+
+export const AuthUserSchema = z.object({
+  id: z.number(),
+  username: z.string(),
+  email: z.string(),
+  is_active: z.boolean(),
+  is_superadmin: z.boolean(),
+  roles: z.array(z.string()),
+  permissions: z.array(z.string()),
+  onboarding_completed: z.boolean(),
+  tour_completed: z.boolean(),
+  mfa_enabled: z.boolean(),
+  last_login_at: z.string().nullable(),
+  has_password: z.boolean(),
+  sso_provider: z.string().nullable(),
+});

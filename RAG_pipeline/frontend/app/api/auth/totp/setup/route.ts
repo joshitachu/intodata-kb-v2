@@ -1,22 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { apiErrorMessage } from "@/lib/apiError";
-
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
-
-function csrfHeaders(request: NextRequest): HeadersInit {
-  const cookieHeader = request.headers.get("cookie") || "";
-  const csrfToken = request.cookies.get("csrf_token")?.value;
-  return {
-    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-    ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
-  };
-}
+import { backendProxyHeaders } from "@/lib/proxyHeaders";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
 export async function POST(request: NextRequest) {
   try {
     const res = await fetch(`${FASTAPI_URL}/api/v1/auth/totp/setup`, {
       method: "POST",
-      headers: csrfHeaders(request),
+      headers: backendProxyHeaders(request, { json: true }),
     });
     const data = await res.json();
     if (!res.ok) {

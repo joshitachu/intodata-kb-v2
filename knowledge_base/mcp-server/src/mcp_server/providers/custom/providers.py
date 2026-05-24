@@ -157,6 +157,14 @@ def _is_retryable_exception(exc: Exception) -> bool:
     return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError))
 
 
+def _log_json_mode_ignored(provider_name: str) -> None:
+    logger.debug(
+        "[provider] json_mode=True ignored in complete_with_tools (%s) — "
+        "structured output is enforced via tool contracts",
+        provider_name,
+    )
+
+
 async def _sleep_for_retry(attempt: int, response: httpx.Response | None = None) -> None:
     retry_after = _retry_after_seconds(response)
     if retry_after is not None:
@@ -578,6 +586,8 @@ class OpenAIOfficialProvider:
         scoped_tools: Any | None = None,
     ) -> ModelResult:
         opts = options or ModelOptions()
+        if opts.json_mode:
+            _log_json_mode_ignored(self.provider_name)
         start = time.monotonic()
         total_in = total_out = 0
         tool_call_count = 0
@@ -632,6 +642,29 @@ class OpenAIOfficialProvider:
                 })
 
                 if not function_calls:
+                    # Responses API returns status="incomplete" when max_output_tokens is hit.
+                    if finish_reason == "incomplete":
+                        return ModelResult(
+                            success=False,
+                            model_name=self.model_name,
+                            input_tokens=total_in or _estimate_tokens(prompt),
+                            output_tokens=total_out,
+                            latency_ms=int((time.monotonic() - start) * 1000),
+                            retries=turn,
+                            raw_error="incomplete: provider stopped because max tokens were reached",
+                            metadata={
+                                "provider": self.provider_name,
+                                "turns": turn + 1,
+                                "tool_calls": tool_call_count,
+                                "tool_result_bytes": tool_result_bytes,
+                                "finish_reason": "length",
+                                "finish_reasons": finish_reasons,
+                                "incomplete_reason": "length",
+                                "conversation_trace": conversation_trace,
+                                "tool_call_ledger": tool_ledger,
+                                "context_bytes": 0,
+                            },
+                        )
                     text = _apply_prefill(opts.prefill, _response_output_text(response))
                     result = ModelResult(
                         success=True,
@@ -691,8 +724,12 @@ class OpenAIOfficialProvider:
             except Exception as exc:
                 last_error = _sdk_error(exc)
                 response_id = None
+                # Don't retry auth errors — they won't recover with more attempts
+                status_code = getattr(exc, "status_code", None)
+                if status_code in {401, 403}:
+                    break
                 if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                    await _sleep_for_retry(turn)
 
         return ModelResult(
             success=False,
@@ -854,6 +891,8 @@ class OpenAICompatibleProvider:
         scoped_tools: Any | None = None,
     ) -> ModelResult:
         opts = options or ModelOptions()
+        if opts.json_mode:
+            _log_json_mode_ignored(self.provider_name)
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
         total_in = total_out = 0
@@ -1490,6 +1529,8 @@ class AnthropicProvider:
         import anthropic as _anthropic
 
         opts = options or ModelOptions()
+        if opts.json_mode:
+            _log_json_mode_ignored("anthropic")
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
         total_in = total_out = 0

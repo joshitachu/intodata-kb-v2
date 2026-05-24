@@ -20,6 +20,7 @@ triggering scans, viewing logs, generating docs, and reviewing quality.
 - **Provider/model selection** -- Choose backend and model before generation
 - **View logs** -- Real-time log streaming via SSE during scan/generation
 - **Run history** -- Per-project scan and generation run history
+- **Structured verdicts** -- Generation runs show `draft`, `failed`, `published`, `published_with_rag_error`, or `client_ready`
 - **Quality history** -- Doc quality scores over time per project
 - **AB comparison** -- Side-by-side diff of two generation runs
 - **Document catalogue** -- Browse generated docs for a project
@@ -61,6 +62,13 @@ dashboard/src/
     KpiBar.tsx                -- Summary KPI bar
     PluginPacksPage.tsx       -- Plugin pack management
 ```
+
+## Run Verdict Display
+
+`RunHistory.tsx` prefers the enterprise `run_verdict` badge when present. The old
+PASS/FAIL auto-comparison badge is still shown for legacy runs without a
+structured verdict. Treat `client_ready` as the only positive delivery signal.
+`published_with_rag_error` requires RAG repair even if docs exist on disk.
 
 ## Running
 

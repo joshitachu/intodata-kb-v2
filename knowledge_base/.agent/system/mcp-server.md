@@ -106,6 +106,32 @@ mcp-server/src/mcp_server/
 
 Note: all `/mcp/*` routes require JWT cookie auth. The GitHub webhook route explicitly bypasses JWT and uses HMAC verification instead.
 
+## Enterprise Generation Verdicts
+
+`POST /mcp/generate` accepts `mode`:
+
+- `enterprise` (default) -- blocks publish unless all enterprise gates pass
+- `draft` -- allows exploratory generation but cannot be considered client-ready
+
+Generation runs persist:
+
+- `run_verdict`: `draft`, `failed`, `published`, `published_with_rag_error`, or `client_ready`
+- `gate_results`: JSON copy of the enterprise gate report
+
+Operational meaning:
+- `client_ready` means docs passed enterprise gates and final RAG sync did not fail.
+- `published_with_rag_error` means docs were saved but indexing failed; do not advance client delivery until RAG is repaired.
+- `published` means docs saved but did not meet full client-ready conditions.
+- `draft` means intentionally non-enterprise output.
+- `failed` means docs were not swapped into `docs/`; inspect preserved `docs_staging/`.
+
+## Scan Output Contract
+
+`ScannerService.run_scan()` clears stale scan artifacts before invoking `intodoc`.
+After subprocess success it requires a fresh valid `scan_result.json` object with a
+`jobs` list. Missing or invalid output is a failed scan. This prevents stale facts
+from being reused by enterprise generation.
+
 ## Adding New Tools/Endpoints
 
 1. Add the tool definition to `mcp/server.py` `list_tools()` return list

@@ -432,6 +432,23 @@ def test_lobster_filter_bearer_redacted():
     assert "eyJhbGciOiJIUzI1NiJ9" not in result
 
 
+def test_lobster_base64_value_redacted_for_xml_filename():
+    f = CredentialFilter(level=RedactionLevel.STRICT)
+    result = f.filter_text(
+        "<config><value>aHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20=</value></config>",
+        filename="filter.xml",
+    )
+    assert "aHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20=" not in result
+    assert "[BASE64_REDACTED]" in result
+
+
+def test_lobster_base64_value_not_redacted_for_non_xml_filename():
+    f = CredentialFilter(level=RedactionLevel.STRICT)
+    value = "prefix <value>aHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20=</value>"
+    result = f.filter_text(value, filename="notes.txt")
+    assert result == value
+
+
 # ── New patterns: Cloud credentials ────────────────────────────────
 
 
