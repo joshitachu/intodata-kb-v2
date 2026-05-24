@@ -103,14 +103,15 @@ def _project_payload(project: Project) -> dict[str, Any]:
 
 async def _fetch_rag_metrics() -> dict[str, Any]:
     """Fetch user/activity/conversation metrics from the RAG backend."""
-    if not config.rag_base_url or not config.ingest_api_key:
+    if not config.rag_base_url:
         return {}
     url = config.rag_base_url.rstrip("/") + "/api/v1/internal/ops-metrics"
+    headers: dict[str, str] = {}
+    if config.ingest_api_key:
+        headers["Authorization"] = f"Bearer {config.ingest_api_key}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                url, headers={"Authorization": f"Bearer {config.ingest_api_key}"}
-            )
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:
