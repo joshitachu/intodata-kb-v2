@@ -234,6 +234,28 @@ services:
     cpus: 2.0
     restart: unless-stopped
 
+  mission-control:
+    pull_policy: build
+    build:
+      context: ./mission_control
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${MC_PORT:-9100}:9100"
+    environment:
+      MC_API_KEY: ${MC_API_KEY:-mc-dev-local-secret}
+      MC_SNAPSHOTS_DIR: /app/snapshots
+    volumes:
+      - mission_control_snapshots:/app/snapshots
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9100/health')\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+
   dashboard:
     pull_policy: build
     build:
@@ -241,7 +263,8 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
-        VITE_FLEET_ENABLED: ${FLEET_ENABLED:-false}
+        VITE_FLEET_ENABLED: ${FLEET_ENABLED:-true}
+        VITE_MC_API_KEY: ${MC_API_KEY:-mc-dev-local-secret}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:
@@ -259,9 +282,12 @@ services:
     depends_on:
       mcp-server:
         condition: service_healthy
+      mission-control:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   postgres_data:
   qdrant_data:
   hindsight_data:
+  mission_control_snapshots:
