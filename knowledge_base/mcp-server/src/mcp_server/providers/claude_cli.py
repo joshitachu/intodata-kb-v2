@@ -537,7 +537,6 @@ FILE READING GUIDANCE (prevents cascading failures):
             ar = AgentResult(
                 success=returncode == 0,
                 model_name=ctx.effective_model,
-                template_snapshot=ctx.template_snapshot,
             )
             if result_event:
                 ar.session_id = result_event.get("session_id")

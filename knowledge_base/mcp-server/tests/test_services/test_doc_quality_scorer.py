@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_server.services.doc_quality_scorer import DocScore, score_doc
+from mcp_server.services.doc_quality_scorer import DocQualityScorer, DocScore, score_doc
 
 
 def _write_doc(tmp_path: Path, name: str, content: str) -> Path:
@@ -77,3 +77,12 @@ def test_score_doc_returns_correct_dimensions(tmp_path):
         "assistant_usefulness",
     }
     assert 0.0 <= result.score <= 5.0
+
+
+def test_run_score_ignores_support_markdown_files(tmp_path):
+    _write_doc(tmp_path, "00_AGENT_BRIEF.md", _BASE_CONTENT)
+    _write_doc(tmp_path, "engineering_facts.md", "short support file\n")
+
+    result = DocQualityScorer().score("example", docs_dir=tmp_path)
+
+    assert [doc.file for doc in result.docs] == ["00_AGENT_BRIEF.md"]

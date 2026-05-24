@@ -11,11 +11,16 @@ Scores assistant-grade generated Markdown docs 0–5 based on:
 from __future__ import annotations
 
 import datetime
+import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from mcp_server.config import config
+from mcp_server.providers.custom.prompts import REQUIRED_DOCS
+
+logger = logging.getLogger(__name__)
 
 
 # Baseline minimum line counts calibrated at 50 units (jobs/recipes).
@@ -31,6 +36,7 @@ _BASE_MIN_LINES_AT_50: dict[str, int] = {
     "07_QUALITY_SECURITY_RISK_SCORECARD": 900,
     "08_CHANGE_PLAYBOOK": 800,
 }
+_PUBLISHABLE_DOC_KEYS = frozenset(REQUIRED_DOCS)
 _SCALE_REFERENCE_UNITS = 50
 
 
@@ -384,45 +390,40 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
     )
 
 
-class DocQualityScorer:
+def score_project(
+    project_id: str,
+    docs_dir: Path | None = None,
+) -> RunQualityReport:
     """Score all docs in a project's docs/ directory."""
+    if docs_dir is None:
+        docs_dir = config.project_root / "output" / project_id / "docs"
 
-    def score(
-        self,
-        project_id: str,
-        docs_dir: Path | None = None,
-    ) -> RunQualityReport:
-        if docs_dir is None:
-            docs_dir = config.project_root / "output" / project_id / "docs"
+    doc_files = sorted(
+        p for p in docs_dir.glob("*.md")
+        if _doc_key(p.name) in _PUBLISHABLE_DOC_KEYS
+    )
 
-        doc_files = sorted(
-            p for p in docs_dir.glob("*.md")
-            if not p.name.startswith("_")
-        )
-
-        if not doc_files:
-            return RunQualityReport(
-                overall=0.0,
-                docs=[],
-                graded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            )
-
-        # Read unit_count from facts_manifest.json if available for calibrated scoring
-        unit_count = _SCALE_REFERENCE_UNITS
-        facts_path = docs_dir / "facts_manifest.json"
-        if facts_path.exists():
-            try:
-                import json as _json
-                facts = _json.loads(facts_path.read_text(encoding="utf-8"))
-                unit_count = int(facts.get("unit_count", _SCALE_REFERENCE_UNITS))
-            except Exception:
-                pass
-
-        doc_scores = [score_doc(f, unit_count=unit_count) for f in doc_files]
-        overall = round(sum(d.score for d in doc_scores) / len(doc_scores), 2)
-
+    if not doc_files:
         return RunQualityReport(
-            overall=overall,
-            docs=doc_scores,
+            overall=0.0,
+            docs=[],
             graded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         )
+
+    unit_count = _SCALE_REFERENCE_UNITS
+    facts_path = docs_dir / "facts_manifest.json"
+    if facts_path.exists():
+        try:
+            facts = json.loads(facts_path.read_text(encoding="utf-8"))
+            unit_count = int(facts.get("unit_count", _SCALE_REFERENCE_UNITS))
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            logger.warning("Failed to read facts_manifest.json for %s: %s", docs_dir, exc)
+
+    doc_scores = [score_doc(f, unit_count=unit_count) for f in doc_files]
+    overall = round(sum(d.score for d in doc_scores) / len(doc_scores), 2)
+
+    return RunQualityReport(
+        overall=overall,
+        docs=doc_scores,
+        graded_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )

@@ -44,6 +44,7 @@ export interface SourceProject {
   auto_reingest_last_checked_at?: string | null;
   auto_reingest_error?: string | null;
   last_ingested_commit_sha?: string | null;
+  git_update_summary?: Record<string, unknown> | null;
   has_github_token?: boolean;
   webhook_status?: string | null;
 }

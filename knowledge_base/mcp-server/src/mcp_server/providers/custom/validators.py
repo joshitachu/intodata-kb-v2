@@ -8,21 +8,28 @@ from pathlib import Path
 from typing import Any
 
 from mcp_server.platforms import get_platform_strategy
+from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import CoverageReport, FactsManifest, InvestigationReport, UnitFact
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
 from mcp_server.providers.custom.prompts import DOC_SECTION_REQUIREMENTS, REQUIRED_DOCS
 
-GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
+EVIDENCE_REGISTER_SECTION_RE = re.compile(
+    r"^##\s+Evidence Register\s*$([\s\S]*?)(?=^##\s+|\Z)",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 
 def _load_scan_result(scan_output_dir: Path) -> dict[str, Any]:
     mono = scan_output_dir / "scan_result.json"
     if mono.exists():
-        return json.loads(mono.read_text(encoding="utf-8"))
+        payload = json.loads(mono.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs", []), list):
+            raise ValueError(f"Invalid scan result at {mono}: expected object with jobs list")
+        return payload
 
     scan_dir = scan_output_dir / "scan"
     if not scan_dir.exists():
-        raise FileNotFoundError(f"No scan result found in {scan_output_dir}")
+        raise FileNotFoundError(f"No valid fresh scan_result.json found in {scan_output_dir}")
 
     meta = json.loads((scan_dir / "meta.json").read_text(encoding="utf-8"))
     jobs: list[dict[str, Any]] = []
@@ -449,11 +456,11 @@ def validate_analysis_guide_sections(
 def normalize_analysis_guide_headings(text: str, platform: str) -> str:
     """Normalize known guide section headings to the canonical Phase 2 level."""
 
-    if platform != "talend":
-        return text
-    section_names = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION,)
+    section_names = (GROUP_SUMMARY_SECTION,)
+    if platform == "talend":
+        section_names = tuple(ANALYSIS_SECTION_NAMES) + section_names
     pattern = re.compile(
-        rf"^(?P<hashes>#{{1,6}})\s+(?P<name>{'|'.join(re.escape(n) for n in section_names)})\s*$",
+        rf"^#{{1,6}}\s+(?:#{{1,6}}\s+)?(?P<name>{'|'.join(re.escape(n) for n in section_names)})\s*$",
         re.MULTILINE,
     )
     return pattern.sub(lambda m: f"### {m.group('name')}", text)
@@ -504,7 +511,10 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
         p.read_text(encoding="utf-8", errors="replace")
         for p in sorted(staging_dir.glob("*.md"))
     )
-    covered_ids = {_unit_id(unit) for unit in facts.units if unit.name in text}
+    covered_ids = {
+        _unit_id(unit) for unit in facts.units
+        if re.search(r"\b" + re.escape(unit.name) + r"\b", text, re.IGNORECASE)
+    }
     units_by_id = {_unit_id(unit): unit for unit in facts.units}
     duplicate_names = set(_duplicate_unit_names(facts))
     missing_ids = sorted(set(units_by_id) - covered_ids)
@@ -792,6 +802,202 @@ def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageRepor
     )
 
 
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:password|passwd|pwd|secret|api[_-]?key|token)\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{8,}", re.I),
+    re.compile(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+)
+
+
+def validate_final_redaction(staging_dir: Path) -> CoverageReport:
+    """Scan publishable docs and persisted run artifacts for obvious secrets."""
+
+    errors: list[str] = []
+    scanned = 0
+    for path in sorted(staging_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(staging_dir).as_posix()
+        if path.suffix.lower() not in {".md", ".json", ".log", ".txt"}:
+            continue
+        scanned += 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for pattern in _SECRET_PATTERNS:
+            if pattern.search(text):
+                errors.append(f"Potential unredacted secret in {rel}")
+                break
+        if len(errors) >= 20:
+            break
+    return CoverageReport(
+        ok=not errors,
+        coverage_count=scanned,
+        expected_count=scanned,
+        errors=errors,
+    )
+
+
+def validate_source_provenance(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
+    """Require publishable docs to carry a concrete evidence register."""
+
+    errors: list[str] = []
+    docs = {
+        doc: staging_dir / f"{doc}.md"
+        for doc in REQUIRED_DOCS
+        if (staging_dir / f"{doc}.md").exists()
+    }
+    if not docs:
+        errors.append("No publishable markdown docs found for provenance validation")
+    for doc, path in docs.items():
+        errors.extend(_evidence_register_errors(path, DOC_SECTION_REQUIREMENTS.get(doc, [])))
+
+    inventory = docs.get("02_COMPONENT_INVENTORY")
+    inventory_text = inventory.read_text(encoding="utf-8", errors="replace") if inventory else ""
+    covered_ids = {
+        _unit_id(unit)
+        for unit in facts.units
+        if unit.name in inventory_text and (not unit.path or unit.path in inventory_text)
+    }
+    if len(covered_ids) < facts.unit_count:
+        missing = [
+            unit.name for unit in facts.units
+            if _unit_id(unit) not in covered_ids
+        ]
+        inventory_name = inventory.name if inventory else "02_COMPONENT_INVENTORY.md"
+        errors.append(
+            f"{inventory_name} source provenance missing canonical unit artifact paths for: "
+            + ", ".join(missing[:20])
+        )
+    return _coverage_report_from_identities(
+        facts=facts,
+        covered_ids=covered_ids,
+        skipped_ids={},
+        errors=errors,
+    )
+
+
+_EVIDENCE_REGISTER_HEADERS = (
+    "topic",
+    "units / scope",
+    "evidence source",
+    "source artifact / path",
+    "confidence",
+)
+_EVIDENCE_CONFIDENCE = {"HIGH", "MEDIUM", "LOW"}
+_EVIDENCE_CONFIDENCE_RE = re.compile(r"^\s*(HIGH|MEDIUM|LOW)\b", re.IGNORECASE)
+_EVIDENCE_CONFIDENCE_MARKDOWN_WRAPPERS = ("**", "__", "`", "*", "_")
+_PROVENANCE_SOURCE_RE = re.compile(
+    r"(?:doc[_ -]?pack|phase\s*2|engineering[_ -]?facts|facts_manifest|"
+    r"scanner|scan|preprocess|investigation|scorecard|source|"
+    r"artifact|path|\.item\b|\.json\b|\.csv\b|\.md\b|\.xml\b|\.py\b|\.tsx?\b|\.js\b|\.sql\b)",
+    re.IGNORECASE,
+)
+
+
+def _markdown_table_cells(line: str) -> list[str]:
+    if "|" not in line:
+        return []
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _table_separator(cells: list[str]) -> bool:
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells)
+
+
+def _evidence_confidence_level(cell: str) -> str | None:
+    match = _EVIDENCE_CONFIDENCE_RE.match(cell)
+    if match:
+        return match.group(1).upper()
+
+    stripped = cell.lstrip()
+    for wrapper in _EVIDENCE_CONFIDENCE_MARKDOWN_WRAPPERS:
+        if not stripped.startswith(wrapper):
+            continue
+        wrapped = re.match(
+            rf"^{re.escape(wrapper)}(HIGH|MEDIUM|LOW){re.escape(wrapper)}(?!\w)",
+            stripped,
+            re.IGNORECASE,
+        )
+        if wrapped:
+            return wrapped.group(1).upper()
+    return None
+
+
+def _evidence_register_errors(path: Path, major_topics: list[str]) -> list[str]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = EVIDENCE_REGISTER_SECTION_RE.search(text)
+    if not match:
+        return [f"{path.name} missing required Evidence Register"]
+
+    lines = [line for line in match.group(1).splitlines() if line.strip()]
+    table_start = next((index for index, line in enumerate(lines) if line.lstrip().startswith("|")), None)
+    if table_start is None or table_start + 1 >= len(lines):
+        return [f"{path.name} Evidence Register missing required provenance table"]
+
+    headers = [cell.lower() for cell in _markdown_table_cells(lines[table_start])]
+    if headers != list(_EVIDENCE_REGISTER_HEADERS):
+        return [f"{path.name} Evidence Register has invalid table headers"]
+    if not _table_separator(_markdown_table_cells(lines[table_start + 1])):
+        return [f"{path.name} Evidence Register missing markdown table separator"]
+
+    rows = [
+        _markdown_table_cells(line)
+        for line in lines[table_start + 2 :]
+        if line.lstrip().startswith("|")
+    ]
+    rows = [row for row in rows if len(row) == len(_EVIDENCE_REGISTER_HEADERS) and not _table_separator(row)]
+    substantive = [
+        row for row in rows
+        if all(cell and cell not in {"-", "n/a", "na", "none", "tbd"} for cell in (c.lower() for c in row[:4]))
+    ]
+    min_rows = max(1, min(3, len(major_topics)))
+    errors: list[str] = []
+    if len(substantive) < min_rows:
+        errors.append(f"{path.name} Evidence Register has fewer than {min_rows} substantive evidence rows")
+        return errors
+
+    if any(_evidence_confidence_level(row[4]) not in _EVIDENCE_CONFIDENCE for row in substantive):
+        errors.append(f"{path.name} Evidence Register has invalid confidence; use HIGH, MEDIUM, or LOW")
+    if any(not _PROVENANCE_SOURCE_RE.search(f"{row[2]} {row[3]}") for row in substantive):
+        errors.append(f"{path.name} Evidence Register has evidence rows without source provenance")
+    return errors
+
+
+def validate_usefulness_rubric(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
+    """Final deterministic product-quality rubric for developer usefulness."""
+
+    text = "\n".join(
+        (staging_dir / f"{doc}.md").read_text(encoding="utf-8", errors="replace")
+        for doc in REQUIRED_DOCS
+        if (staging_dir / f"{doc}.md").exists()
+    )
+    lower = text.lower()
+    rubric = {
+        "developer onboarding": ["onboarding", "documentation map", "common tasks"],
+        "change navigation": ["where to change", "change impact", "inspect"],
+        "data flow and rules": ["data flow", "lineage", "business rule", "transformation"],
+        "runtime dependencies": ["external systems", "config", "runtime", "secret", "redacted"],
+        "debugging": ["debug", "troubleshoot", "verify", "failure"],
+        "tests and rollback": ["test", "rollback", "recovery"],
+        "unknowns": ["unknown", "scanner-limited", "confidence"],
+    }
+    errors = [
+        f"Usefulness rubric missing {label}: expected one of {', '.join(terms)}"
+        for label, terms in rubric.items()
+        if not any(term in lower for term in terms)
+    ]
+    covered_ids = {_unit_id(unit) for unit in facts.units if unit.name in text}
+    return _coverage_report_from_identities(
+        facts=facts,
+        covered_ids=covered_ids,
+        skipped_ids={},
+        errors=errors,
+    )
+
+
 def _conflicting_total_count_claims(staging_dir: Path, facts: FactsManifest) -> list[str]:
     """Find count mismatches only when the text claims a total/canonical inventory.
 
@@ -842,7 +1048,7 @@ def _conflicting_config_evidence_claims(staging_dir: Path) -> list[str]:
     its content was absent when a config_file fact exists.
     """
 
-    config_files = _scanned_config_files(staging_dir) | _covered_source_files(staging_dir)
+    config_files = scanned_config_files(staging_dir) | covered_source_files(staging_dir)
     if not config_files:
         return []
 
@@ -872,7 +1078,7 @@ def _conflicting_config_evidence_claims(staging_dir: Path) -> list[str]:
     return problems
 
 
-def _strip_config_contradiction_sentences(text: str, config_files: set[str]) -> str:
+def strip_config_contradiction_sentences(text: str, config_files: set[str]) -> str:
     """Remove lines claiming a scanned config file was not scanned/captured.
 
     Covers both plain text and ~~strikethrough~~ spans that repair models
@@ -918,7 +1124,7 @@ def _claims_config_file_unavailable(window: str, label: str) -> bool:
     return any(re.search(pattern, window, re.I) for pattern in direct_patterns)
 
 
-def _scanned_config_files(staging_dir: Path) -> set[str]:
+def scanned_config_files(staging_dir: Path) -> set[str]:
     paths: set[str] = set()
     candidates = [
         staging_dir / "config_runtime_map.json",
@@ -949,7 +1155,7 @@ def _scanned_config_files(staging_dir: Path) -> set[str]:
     return paths
 
 
-def _covered_source_files(staging_dir: Path) -> set[str]:
+def covered_source_files(staging_dir: Path) -> set[str]:
     paths: set[str] = set()
     candidates = [
         staging_dir / "_preprocess" / "_source_coverage.json",

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import FactsManifest
 from mcp_server.platforms import get_platform_strategy
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
@@ -19,9 +22,6 @@ REQUIRED_DOCS = [
     "07_QUALITY_SECURITY_RISK_SCORECARD",
     "08_CHANGE_PLAYBOOK",
 ]
-
-GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
-
 
 DOC_ASSIGNMENTS = {
     "core": [
@@ -462,6 +462,23 @@ CRITICAL / HIGH / MEDIUM / LOW with specific unit references and remediation.
 """
 
 
+def _resolve_preamble(
+    plugin_pack_dir: Path | None,
+    pack_filename: str,
+    instruction_pack: InstructionPack | None,
+    instruction_pack_key: str,
+    default: str,
+) -> str:
+    """Return the preamble for a prompt, checking plugin pack files first."""
+    if plugin_pack_dir:
+        override = plugin_pack_dir / "prompts" / pack_filename
+        if override.exists():
+            return override.read_text(encoding="utf-8").rstrip()
+    if instruction_pack:
+        return instruction_pack.preambles.get(instruction_pack_key, default).rstrip()
+    return default
+
+
 _PHASE2_PREAMBLE_DEFAULT = """\
 You are generating Phase 2 group analysis. Your output is the SOLE factual foundation for
 every documentation file produced in Phase 3. If you omit a finding here, it will be absent
@@ -469,18 +486,29 @@ from every document. Be EXHAUSTIVE. Include every expression, every rule, every 
 Depth over brevity. Never summarize when you can enumerate."""
 
 
-def group_analysis_prompt(facts: FactsManifest, group: str, pack: InstructionPack | None = None) -> str:
+def group_analysis_prompt(
+    facts: FactsManifest,
+    group: str,
+    pack: InstructionPack | None = None,
+    plugin_pack_dir: "Path | None" = None,
+    required_docs: "list[str] | None" = None,
+) -> str:
     unit_names = [u.name for u in facts.units if u.group == group or group.startswith(f"{u.group}_part")]
     if not unit_names:
         unit_names = [u.name for u in facts.units if u.group == group]
     section_headings = "\n".join(f"- `### {name}`" for name in (*ANALYSIS_SECTION_NAMES, GROUP_SUMMARY_SECTION))
-    preamble = pack.preambles.get("phase2_preamble", _PHASE2_PREAMBLE_DEFAULT).rstrip() if pack else _PHASE2_PREAMBLE_DEFAULT
+    preamble = _resolve_preamble(
+        plugin_pack_dir, "phase2.md",
+        pack, "phase2_preamble",
+        _PHASE2_PREAMBLE_DEFAULT,
+    )
+    effective_docs = required_docs or REQUIRED_DOCS
     return f"""\
 {preamble}
 
 Group: {group}
-Current Phase 3 document set ({len(REQUIRED_DOCS)} files):
-{chr(10).join(f"- {doc}.md" for doc in REQUIRED_DOCS)}
+Current Phase 3 document set ({len(effective_docs)} files):
+{chr(10).join(f"- {doc}.md" for doc in effective_docs)}
 
 Canonical units in this group -- mention EVERY one by exact name:
 {chr(10).join(f"- {name}" for name in unit_names)}
@@ -582,8 +610,16 @@ Follow the scoring rubric, anti-pattern catalog, red-flag catalog, and security 
 in the supplied scorecard prompt pack exactly -- do not invent scoring criteria."""
 
 
-def scorecard_prompt(facts: FactsManifest, pack: InstructionPack | None = None) -> str:
-    preamble = pack.preambles.get("scorecard_preamble", _SCORECARD_PREAMBLE_DEFAULT).rstrip() if pack else _SCORECARD_PREAMBLE_DEFAULT
+def scorecard_prompt(
+    facts: FactsManifest,
+    pack: InstructionPack | None = None,
+    plugin_pack_dir: "Path | None" = None,
+) -> str:
+    preamble = _resolve_preamble(
+        plugin_pack_dir, "scorecard.md",
+        pack, "scorecard_preamble",
+        _SCORECARD_PREAMBLE_DEFAULT,
+    )
     return f"""\
 {preamble}
 
@@ -637,11 +673,24 @@ evidence of record. Do not say a covered file is missing/unavailable/not scanned
 `[REDACTED]` are intentionally hidden secrets."""
 
 
-def doc_prompt(facts: FactsManifest, doc_name: str, pack: InstructionPack | None = None) -> str:
-    required_headings = DOC_SECTION_REQUIREMENTS.get(doc_name, [])
+def doc_prompt(
+    facts: FactsManifest,
+    doc_name: str,
+    pack: InstructionPack | None = None,
+    plugin_pack_dir: "Path | None" = None,
+    extra_section_requirements: "dict[str, list[str]] | None" = None,
+) -> str:
+    required_headings = (
+        (extra_section_requirements or {}).get(doc_name)
+        or DOC_SECTION_REQUIREMENTS.get(doc_name, [])
+    )
     headings_block = "\n".join(f"  ## {s}" for s in required_headings)
-    doc_specific = _doc_specific_instructions(doc_name, facts)
-    raw_preamble = pack.preambles.get("phase3_preamble", _PHASE3_PREAMBLE_DEFAULT) if pack else _PHASE3_PREAMBLE_DEFAULT
+    doc_specific = _doc_specific_from_pack(plugin_pack_dir, doc_name) or _doc_specific_instructions(doc_name, facts)
+    raw_preamble = _resolve_preamble(
+        plugin_pack_dir, "phase3.md",
+        pack, "phase3_preamble",
+        _PHASE3_PREAMBLE_DEFAULT,
+    )
     preamble = raw_preamble.rstrip().format(doc_name=doc_name)
     return f"""\
 {preamble}
@@ -669,14 +718,24 @@ FORMAT:
 - Use plain ASCII tables (no Unicode box-drawing characters)
 - Use markdown headings, bullet lists, and fenced code blocks for expressions/SQL/code
 - Reference scorecard dimension scores where relevant (e.g. "Security: 2/5 -- see Assessment Scorecard")
-- Mark evidence confidence as HIGH / MEDIUM / LOW where claims are inferred or scanner-limited
+- Mark evidence confidence with a leading HIGH / MEDIUM / LOW token where claims are inferred or scanner-limited
 - Use exact source artifact/path names where available
 - Use the preloaded `_analysis/_doc_pack_{doc_name}.md` evidence pack as the primary evidence source.
 - Include evidence pointers from the pack when a section depends on Phase 2 findings.
+- Include a `## Evidence Register` table with these exact columns:
+  `| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |`
+- The Evidence Register must cover the major topics in this document with concrete supplied evidence,
+  exact artifact/path names where available, and a confidence cell that starts with `HIGH`, `MEDIUM`,
+  or `LOW`.
+- Write that leading confidence token as plain unformatted text. Do not bold, italicize, quote, or
+  wrap it in backticks: use `LOW (scanner-limited)`, not `**LOW**`, `_LOW_`, or `` `LOW` ``.
+- Explanatory scanner-limited, inferred, or redaction notes may follow that confidence token or appear
+  in evidence/topic cells. Mark those topics as such instead of guessing.
 
 MANDATORY HEADINGS for {doc_name} -- your response MUST contain each of these as a `##` markdown
 heading, using exactly this wording (do not rename, merge, or omit any of them):
 {headings_block}
+  ## Evidence Register
 
 {doc_specific}
 Platform-specific evidence obligations:
@@ -686,7 +745,27 @@ Platform documentation guidance:
 
 Facts:
 {facts_summary(facts)}
-"""
+{_examples_block(plugin_pack_dir)}"""
+
+
+def _examples_block(plugin_pack_dir: Path | None) -> str:
+    """Return example documents from the pack's examples/ folder, if any."""
+    if not plugin_pack_dir:
+        return ""
+    examples_dir = plugin_pack_dir / "examples"
+    if not examples_dir.exists():
+        return ""
+    parts: list[str] = ["\n\nEXAMPLE OUTPUT (for format and style reference only — do not copy content):"]
+    for path in sorted(examples_dir.glob("*.md")):
+        parts.append(f"\n--- Example: {path.name} ---\n{path.read_text(encoding='utf-8').strip()}")
+    return "\n".join(parts) if len(parts) > 1 else ""
+
+
+def _doc_specific_from_pack(plugin_pack_dir: "Path | None", doc_name: str) -> str:
+    if not plugin_pack_dir:
+        return ""
+    p = plugin_pack_dir / "prompts" / "docs" / f"{doc_name}.md"
+    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
 
 
 def _doc_specific_instructions(doc_name: str, facts: FactsManifest) -> str:

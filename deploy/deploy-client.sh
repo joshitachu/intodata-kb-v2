@@ -12,7 +12,8 @@
 #       --client-name acme \
 #       --port-offset 0 \
 #       --base-domain nexus.intodata.nl \
-#       --admin-email ops@intodata.nl
+#       --admin-email ops@intodata.nl \
+#       --initial-admin-email owner@acme.example
 #
 # The script is idempotent: re-running with the same --client-name updates the
 # rendered nginx block and env file, then re-applies the compose stack.
@@ -34,6 +35,9 @@ Optional:
                              Default: nexus.intodata.nl
   --admin-email <email>      Email used by certbot for ACME registration.
                              Default: support@intodata.nl
+  --initial-admin-email <email>
+                             Email seeded for the first Nexus admin account.
+                             Default: admin@<client>.<base-domain>
   --no-certbot               Do not print the certbot command. Use when DNS is
                              not ready yet or on CI.
   --env-dir <path>           Directory for rendered env files.
@@ -52,6 +56,7 @@ CLIENT=""
 PORT_OFFSET=0
 BASE_DOMAIN="nexus.intodata.nl"
 ADMIN_EMAIL="support@intodata.nl"
+INITIAL_ADMIN_EMAIL=""
 RUN_CERTBOT=1
 ENV_DIR="/etc/intodata-kb/envs"
 NGINX_AVAILABLE="/etc/nginx/sites-available"
@@ -67,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --port-offset) PORT_OFFSET="$2"; shift 2 ;;
         --base-domain) BASE_DOMAIN="$2"; shift 2 ;;
         --admin-email) ADMIN_EMAIL="$2"; shift 2 ;;
+        --initial-admin-email) INITIAL_ADMIN_EMAIL="$2"; shift 2 ;;
         --no-certbot) RUN_CERTBOT=0; shift ;;
         --env-dir) ENV_DIR="$2"; shift 2 ;;
         --nginx-sites-available) NGINX_AVAILABLE="$2"; shift 2 ;;
@@ -86,6 +92,7 @@ done
     echo "--port-offset must be a non-negative integer" >&2
     exit 2
 }
+INITIAL_ADMIN_EMAIL="${INITIAL_ADMIN_EMAIL:-admin@$CLIENT.$BASE_DOMAIN}"
 
 REPO_ROOT="${REPO_ROOT:-$REPO_ROOT_DEFAULT}"
 [[ -f "$REPO_ROOT/docker-compose.yml" ]] || {
@@ -132,6 +139,7 @@ CLIENT_SLUG=$CLIENT
 JWT_SECRET_KEY=$JWT_SECRET
 MCP_JWT_SECRET_KEY=$JWT_SECRET
 ADMIN_DEFAULT_PASSWORD=$ADMIN_DEFAULT_PASSWORD
+ADMIN_INITIAL_EMAIL=$INITIAL_ADMIN_EMAIL
 COOKIE_SECURE=true
 COOKIE_DOMAIN=$CLIENT.$BASE_DOMAIN
 ALLOWED_ORIGINS=https://$CLIENT.$BASE_DOMAIN
@@ -143,16 +151,16 @@ REPO_ROOT=$REPO_ROOT
 # MCP ingest auth (server-to-server)
 MCP_INGEST_API_KEY=$MCP_INGEST_API_KEY
 MCP_PORT=$MCP_PORT
-MCP_DATABASE_URL=postgresql+asyncpg://admin:$POSTGRES_PASSWORD@127.0.0.1:$POSTGRES_PORT/intodata_kb_$CLIENT
-MCP_RAG_BASE_URL=http://127.0.0.1:$BACKEND_PORT
+MCP_DATABASE_URL=postgresql+asyncpg://admin:$POSTGRES_PASSWORD@postgres:5432/intodata_kb_$CLIENT
+MCP_RAG_BASE_URL=http://backend:8000
 MCP_PUBLIC_URL=https://$CLIENT.$BASE_DOMAIN
 MCP_GITHUB_WEBHOOK_SECRET=
-MCP_DATA_DIR=$REPO_ROOT/knowledge_base/data
-MCP_INTODOC_OUTPUT_DIR=$REPO_ROOT/knowledge_base/intodoc-output
-MCP_PROJECT_ROOT=$REPO_ROOT/knowledge_base
-MCP_INTODOC_COMMAND=$REPO_ROOT/venv/bin/intodoc
+MCP_DATA_DIR=/app/data
+MCP_INTODOC_OUTPUT_DIR=/app/intodoc-output
+MCP_PROJECT_ROOT=/app/workspace
+MCP_INTODOC_COMMAND=intodoc
 MCP_HINDSIGHT_ENABLED=true
-MCP_HINDSIGHT_URL=http://127.0.0.1:$HINDSIGHT_API_PORT
+MCP_HINDSIGHT_URL=http://hindsight:8888
 MCP_LOG_LEVEL=INFO
 MCP_OPS_CLIENT_SLUG=$CLIENT
 MCP_OPS_ENVIRONMENT=production
@@ -232,6 +240,22 @@ if (( RUN_CERTBOT )); then
     echo "  sudo certbot --nginx -d $CLIENT.$BASE_DOMAIN --email $ADMIN_EMAIL --agree-tos -n"
 fi
 
+# --- Prepare host directories mounted into the MCP container ---
+mkdir -p \
+    "$REPO_ROOT/knowledge_base/mcp-server/data" \
+    "$REPO_ROOT/knowledge_base/intodoc-output" \
+    "$REPO_ROOT/knowledge_base/output" \
+    "$REPO_ROOT/knowledge_base/packs"
+
+# The MCP image runs as uid/gid 1001. Keep generated state writable when this
+# script is run as root on a VPS.
+if [[ "$(id -u)" -eq 0 ]]; then
+    chown -R 1001:1001 \
+        "$REPO_ROOT/knowledge_base/mcp-server/data" \
+        "$REPO_ROOT/knowledge_base/intodoc-output" \
+        "$REPO_ROOT/knowledge_base/output"
+fi
+
 # --- Bring up the Docker stack ---
 echo ""
 echo "Bringing up docker-compose stack (project=$CLIENT) ..."
@@ -241,21 +265,12 @@ echo "Bringing up docker-compose stack (project=$CLIENT) ..."
     docker compose --env-file "$ENV_FILE" -p "$CLIENT" up -d
 )
 
-# --- Hint about MCP systemd unit ---
 cat <<EOF
 
-Docker stack for '$CLIENT' is up. Remaining per-host steps:
-
-1. Install the templated MCP systemd unit (once per host):
-     sudo cp $SCRIPT_DIR/mcp-server@.service /etc/systemd/system/
-     sudo systemctl daemon-reload
-
-2. Enable this client's MCP instance:
-     sudo systemctl enable --now mcp-server@$CLIENT.service
-
-3. Verify:
+Docker stack for '$CLIENT' is up. Verify:
      curl -fsS https://$CLIENT.$BASE_DOMAIN/health
      curl -fsS https://$CLIENT.$BASE_DOMAIN/api/v1/auth/bootstrap-status
+     curl -fsS http://127.0.0.1:$MCP_PORT/health
 
 The stack's ports (on localhost):
   postgres=$POSTGRES_PORT, qdrant=$QDRANT_HTTP_PORT, backend=$BACKEND_PORT,

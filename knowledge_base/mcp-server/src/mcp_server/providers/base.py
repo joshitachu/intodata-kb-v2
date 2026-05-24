@@ -27,12 +27,12 @@ class AgentResult:
     session_id: str | None = None
     model_name: str = "claude"
     write_model_name: str | None = None
-    template_snapshot: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Return a plain dict compatible with the legacy result format."""
         return {
             "success": self.success,
+            "error": self.error,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cost_usd": self.cost_usd,
@@ -42,7 +42,6 @@ class AgentResult:
             "session_id": self.session_id,
             "model_name": self.model_name,
             "write_model_name": self.write_model_name,
-            "template_snapshot": self.template_snapshot,
         }
 
 
@@ -62,9 +61,9 @@ class DocGenContext:
     total_groups: int
     effective_model: str
     write_model: str
-    template_snapshot: dict
     platform: str
     analysis_guide_file: str
+    enterprise_mode: bool = True
     resume_state: dict | None = None
 
 

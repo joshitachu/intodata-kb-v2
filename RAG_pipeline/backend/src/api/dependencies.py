@@ -46,6 +46,7 @@ MFA_ENROLLMENT_EXEMPT_PATHS = {
     "/api/v1/auth/refresh",
     "/api/v1/auth/totp/setup",
     "/api/v1/auth/totp/verify",
+    "/api/v1/auth/change-password",
 }
 
 

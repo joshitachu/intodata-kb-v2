@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     kimi_api_key: str = ""
     kimi_llm_model: str = "kimi-k2.5"
     kimi_temperature: float = 0.6
-    kimi_timeout: float = 60.0
+    kimi_timeout: float = 300.0
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     hindsight_distill_before_retain: bool = False
     hindsight_max_project_memories: int = 5
 
+    # Admin bootstrap
+    admin_initial_email: str = "admin@localhost"
+
     # Auth
     jwt_secret_key: str = "change-me-in-production-use-a-strong-random-key"
     # Comma-separated keys that are no longer used for signing but are still
@@ -82,7 +85,7 @@ class Settings(BaseSettings):
     jwt_previous_keys: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
-    refresh_token_expire_days: int = 365
+    refresh_token_expire_days: int = 14
     admin_default_password: str = "admin"
     cookie_secure: bool = False
     cookie_domain: str = ""

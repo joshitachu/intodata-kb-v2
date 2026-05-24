@@ -117,6 +117,8 @@ class _FakeProvider:
 
         deep_text = (
             "# Deep Generated Analysis\n\n"
+            "## Project Orientation\n"
+            "Project Orientation for developers includes source-backed onboarding and navigation.\n"
             "Canonical inventory: 2 recipes/functions. Source artifacts: Recipe One.item, Function One.item.\n"
             "Platform evidence includes recipe, callable function, folder, export artifact, trigger, step, action, block, "
             "datapill, formula, lookup table, property, connection, monitor, job history.\n"
@@ -136,9 +138,9 @@ class _FakeProvider:
             "## Data flows and lineage\n"
             "Data flow details describe source systems, transformation, and target systems for each group.\n"
             "## Transformation and business logic\n"
-            "Business rule evidence, transformation logic, and implementation rules are documented.\n"
+            "Business rule evidence, transformation logic, conflicts, edge cases, Hardcoded Values, and implementation rules are documented.\n"
             "## External systems and context/configuration\n"
-            "External systems, context values, configuration, and properties are documented.\n"
+            "External systems, context values, configuration, Credentials, and properties are documented.\n"
             "## Operations, monitoring, and error handling\n"
             "Operation, execution, monitoring, retry, and error handling details are documented.\n"
             "## Security risks\n"
@@ -148,8 +150,8 @@ class _FakeProvider:
             "pattern, standard, anti-pattern, architecture, connectivity, component, environment, "
             "key findings, recommendations, scope, groups, lineage, inventory, scanner limitations, "
             "executive overview, access, credential, severity, mitigation, onboarding, plan.\n"
-            "## Scanner limitations\n"
-            "Scanner limitations are called out where source detail is incomplete.\n"
+            "## Scanner-Limited Evidence\n"
+            "Scanner-Limited limitations are called out where source detail is incomplete.\n"
         )
         for section in ANALYSIS_SECTION_NAMES:
             deep_text += f"\n### {section}\n"
@@ -234,9 +236,9 @@ def _make_staging(tmp_path: Path, project_id: str, jobs: list[dict], platform: s
         total_groups=len(groups),
         effective_model="fake/model",
         write_model="fake/model",
-        template_snapshot={},
         platform=platform,
         analysis_guide_file="_analysis_guide.md",
+        enterprise_mode=False,
     )
 
 

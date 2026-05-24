@@ -5,6 +5,7 @@ from mcp_server.model_strategies.registry import (
     get_model_strategy,
     list_model_descriptors,
     list_model_strategies,
+    normalize_model_id,
     resolve_generation_models,
     supported_model_ids,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "get_model_strategy",
     "list_model_descriptors",
     "list_model_strategies",
+    "normalize_model_id",
     "resolve_generation_models",
     "supported_model_ids",
 ]

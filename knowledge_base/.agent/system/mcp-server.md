@@ -10,18 +10,24 @@ The server runs in two modes via `python -m mcp_server`:
 - `--mcp` -- MCP stdio server for Claude Code (configured in `.mcp.json`)
 - `--serve` -- REST API on port 8001 for the dashboard
 
-## MCP Tools (8 tools)
+## MCP Tools (14 tools)
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `add_repo` | `url`, `project_id`, `platform?` | Register a project (local path, git URL, or 'zip') |
 | `fetch_json` | `project_id`, `section?` | Read cached scan JSON by section |
-| `trigger_scan` | `project_id`, `force?` | Run `intodoc scan` subprocess |
+| `trigger_scan` | `project_id`, `force?` | Run `intodoc scan` subprocess — only if cache is stale/missing |
 | `get_scan_status` | `project_id` | Cache age, job count, status |
 | `get_chunks` | `project_id` | Chunk definitions (chunk_id, group, job_count, token_estimate) |
 | `fetch_chunk` | `project_id`, `chunk_id` | Full job data for one chunk |
-| `insert_to_rag` | `project_id`, `docs?` | Push .md files to RAG pipeline (note: doc generation no longer calls this -- RAG push is server-side via `_run_generate_background`) |
+| `insert_to_rag` | `project_id`, `docs?` | Push .md files to RAG — do not call during doc generation; push is server-side via `RagBridge.push_docs()` |
 | `list_projects` | -- | All registered projects with status |
+| `get_analysis_prompts` | `project_id`, `platform?` | Returns bundled `ANALYSIS_GUIDE.md` and `PHASE_3_GUIDE.md` content |
+| `get_reference_docs` | -- | Returns reference doc content for output format/structure |
+| `recall_process_memory` | `query` | Query Hindsight for cross-project process lessons |
+| `recall_project_memory` | `project_id`, `query` | Query Hindsight for project-specific findings |
+| `retain_findings` | `project_id`, `content` | Store project findings in Hindsight |
+| `retain_process_lesson` | `content` | Store cross-project lesson in Hindsight |
 
 ### fetch_json Sections
 
@@ -47,8 +53,8 @@ All endpoints are under `/mcp/` prefix:
 | GET | `/mcp/status/{project_id}` | Get project scan status |
 | GET | `/mcp/projects` | List all projects |
 | GET | `/health` | Health check |
-| GET | `/logs/{project_id}/stream` | SSE log streaming |
-| POST | `/webhook/scan-complete` | Webhook for scan completion |
+| GET | `/logs/stream?project_id=...` | SSE log streaming |
+| POST | `/webhook/github/webhook` | GitHub webhook (HMAC-verified, bypasses JWT) |
 
 ## Configuration (.mcp.json)
 
@@ -69,26 +75,62 @@ All endpoints are under `/mcp/` prefix:
 ```
 mcp-server/src/mcp_server/
   __main__.py          -- Entry point (--mcp or --serve)
-  config.py            -- Pydantic Settings (paths, ports, URLs)
+  config.py            -- Pydantic Settings (paths, ports, URLs, API keys)
   schemas.py           -- API request/response models
-  mcp/server.py        -- 8 MCP tools + dispatch
+  mcp/server.py        -- 14 MCP tools + dispatch
   api/
-    app.py             -- FastAPI app factory
+    app.py             -- FastAPI app factory (JWT auth middleware on /mcp/*)
     routes/
-      projects.py      -- Project CRUD + scan/generate/RAG endpoints
+      projects.py      -- Project CRUD + scan/generate/RAG/GitHub webhook endpoints
       health.py        -- Health check
-      logs.py          -- SSE log streaming
-      webhook.py       -- Scan completion webhook
-  services/
-    project_registry.py -- DB operations for projects + scan runs
+      logs.py          -- SSE log streaming (/logs/stream?project_id=...)
+      webhook.py       -- GitHub webhook (HMAC, no JWT)
+  services/            -- 25+ service files including:
+    project_registry.py -- DB operations for projects + scan/generate runs
     scanner_service.py  -- Run intodoc scan, read scan cache/chunks
     rag_bridge.py       -- Push docs to RAG pipeline
-    claude_service.py   -- Spawn Claude Code CLI
+    claude_service.py   -- Route doc generation to active provider
     log_manager.py      -- Log file management + streaming
+    assessment_service.py, deep_dive_service.py, doc_quality_scorer.py
+    auto_doc_update.py, git_poller.py, git_reingestion.py
+    pdf_service.py, plugin_runner.py, summary_service.py
+    model_pricing.py, ops_telemetry.py, validation_service.py
+  providers/           -- Doc generation backends
+    base.py            -- Abstract provider interface
+    claude_cli/        -- Spawns Claude Code CLI subprocess
+    custom/            -- API-based harness (agent_runtime.py, harness.py)
   db/
-    models.py          -- SQLAlchemy models (Project, ScanRun, GenerateRun)
+    models.py          -- SQLAlchemy models (Project, ScanRun, GenerateRun, PluginPack)
     session.py         -- Async session factory
 ```
+
+Note: all `/mcp/*` routes require JWT cookie auth. The GitHub webhook route explicitly bypasses JWT and uses HMAC verification instead.
+
+## Enterprise Generation Verdicts
+
+`POST /mcp/generate` accepts `mode`:
+
+- `enterprise` (default) -- blocks publish unless all enterprise gates pass
+- `draft` -- allows exploratory generation but cannot be considered client-ready
+
+Generation runs persist:
+
+- `run_verdict`: `draft`, `failed`, `published`, `published_with_rag_error`, or `client_ready`
+- `gate_results`: JSON copy of the enterprise gate report
+
+Operational meaning:
+- `client_ready` means docs passed enterprise gates and final RAG sync did not fail.
+- `published_with_rag_error` means docs were saved but indexing failed; do not advance client delivery until RAG is repaired.
+- `published` means docs saved but did not meet full client-ready conditions.
+- `draft` means intentionally non-enterprise output.
+- `failed` means docs were not swapped into `docs/`; inspect preserved `docs_staging/`.
+
+## Scan Output Contract
+
+`ScannerService.run_scan()` clears stale scan artifacts before invoking `intodoc`.
+After subprocess success it requires a fresh valid `scan_result.json` object with a
+`jobs` list. Missing or invalid output is a failed scan. This prevents stale facts
+from being reused by enterprise generation.
 
 ## Adding New Tools/Endpoints
 

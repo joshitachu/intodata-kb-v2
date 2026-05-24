@@ -144,6 +144,8 @@ async def get_conversation(
                 sources=_deserialize_sources(m.sources) if m.sources else None,
                 image_data=m.image_data,
                 latency_ms=m.latency_ms,
+                status=m.status,
+                error_message=m.error_message,
                 created_at=m.created_at,
             )
             for m in conversation.messages
@@ -328,8 +330,19 @@ async def send_message_stream(
                 yield f"event: {event_type}\ndata: {data}\n\n"
         except Exception as e:
             logger.error("Conversation stream failed: %s", e, exc_info=True)
-            yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
-            yield "event: done\ndata: {}\n\n"
+            safe_message = "Chat response failed. Please try again."
+            failed_msg = ConversationMessage(
+                conversation_id=conversation.id,
+                role="assistant",
+                content="",
+                status="failed",
+                error_message=safe_message,
+            )
+            db.add(failed_msg)
+            await db.flush()
+            await db.commit()
+            yield f"event: error\ndata: {json.dumps(safe_message)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'message_id': failed_msg.id, 'latency_ms': 0})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

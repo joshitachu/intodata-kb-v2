@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 const MAX_IMAGES = 4;
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const IMAGE_ONLY_PROMPT = "Analyze the attached image.";
 
 interface ChatInputProps {
   onSend: (message: string, images?: string[]) => void;
@@ -55,8 +56,12 @@ export function ChatInput({
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmed = message.trim();
-    if (trimmed.length > 0 && !isLoading && !disabled) {
-      onSend(trimmed, images.length > 0 ? images : undefined);
+    const hasImages = images.length > 0;
+    if ((trimmed.length > 0 || hasImages) && !isLoading && !disabled) {
+      onSend(
+        trimmed.length > 0 ? trimmed : IMAGE_ONLY_PROMPT,
+        hasImages ? images : undefined,
+      );
       pendingRef.current = true;
     }
   }
@@ -115,7 +120,8 @@ export function ChatInput({
     setImageError(null);
   }
 
-  const canSend = message.trim().length > 0 && !isLoading && !disabled;
+  const canSend =
+    (message.trim().length > 0 || images.length > 0) && !isLoading && !disabled;
 
   return (
     <div className="px-6 pb-5 pt-2 w-full" data-tour="chat-input">
@@ -139,6 +145,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick={() => removeImage(i)}
+                    aria-label={`Remove attachment ${i + 1}`}
                     className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
                   >
                     <X className="h-3 w-3" />
@@ -198,6 +205,7 @@ export function ChatInput({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isLoading || disabled || images.length >= MAX_IMAGES}
+                  aria-label="Attach image"
                   className={cn(
                     "flex items-center justify-center w-7 h-7 rounded-md transition-colors",
                     images.length >= MAX_IMAGES
@@ -213,6 +221,7 @@ export function ChatInput({
             <button
               type="submit"
               disabled={!canSend}
+              aria-label="Send message"
               className={cn(
                 "flex items-center justify-center w-8 h-8 rounded-full transition-colors",
                 canSend

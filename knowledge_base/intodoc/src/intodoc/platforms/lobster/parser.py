@@ -29,9 +29,9 @@ from intodoc.models import (
     ParsedJob,
     ProjectManifest,
     ScanResult,
-    ScanWarning,
     TRunJobRef,
 )
+from intodoc.platforms.base_parser import BaseParser
 from intodoc.scanner.walker import walk_repo
 
 if TYPE_CHECKING:
@@ -113,24 +113,11 @@ _EXTRA_SKIP_TAGS: frozenset[str] = frozenset({
 })
 
 
-class LobsterParser:
+class LobsterParser(BaseParser):
     """Parse Lobster/DataWizard XML profile exports into intodoc models."""
 
     def __init__(self, cred_filter: CredentialFilter) -> None:
-        self.cred_filter = cred_filter
-        # Non-fatal parse failures collected for the final ScanResult.
-        self._warnings: list[ScanWarning] = []
-        self._warn_root: Path | None = None
-
-    def _warn(self, *, kind: str, file: Path, message: str, phase: str) -> None:
-        """Record a non-fatal scan warning alongside the usual console output."""
-        try:
-            rel = str(file.relative_to(self._warn_root)) if self._warn_root else str(file)
-        except ValueError:
-            rel = str(file)
-        self._warnings.append(
-            ScanWarning(kind=kind, file=rel, message=message, phase=phase)
-        )
+        super().__init__(cred_filter)
 
     # ── Main entry ───────────────────────────────────────────────────
 
@@ -797,11 +784,6 @@ class LobsterParser:
         )
 
     # ── Helpers ──────────────────────────────────────────────────────
-
-    def _read_filtered(self, path: Path) -> str:
-        """Read a file and apply credential filtering."""
-        text = path.read_text(encoding="utf-8", errors="replace")
-        return self.cred_filter.filter_text(text)
 
     @staticmethod
     def _text(el: ET.Element, tag: str) -> str:

@@ -42,6 +42,12 @@ class ConversationMessage(Base):
     sources: Mapped[dict | None] = mapped_column(JSON)  # For assistant messages
     image_data: Mapped[list | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="completed",
+        server_default="completed",
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE")
     )

@@ -12,7 +12,7 @@ import pytest
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.claude_cli import ClaudeCliProvider
 from mcp_server.providers.custom.providers import ClaudeCliModelProvider
-from mcp_server.services.claude_service import ClaudeService
+from mcp_server.services.claude_service import DocGenerationCoordinator as ClaudeService
 
 
 @pytest.fixture
@@ -66,6 +66,17 @@ def test_format_event_suppressed():
     assert result is None
 
 
+def test_doc_templates_require_unformatted_evidence_confidence(tmp_path):
+    preprocess = tmp_path / "_preprocess"
+    preprocess.mkdir()
+
+    ClaudeService._write_doc_templates(preprocess)
+
+    templates = (preprocess / "_doc_templates.md").read_text(encoding="utf-8")
+    assert "confidence cells must start with plain unformatted HIGH / MEDIUM / LOW text" in templates
+    assert "do not bold, italicize, quote, or wrap that leading token in backticks" in templates
+
+
 async def test_preprocess_generic_direct_redacted_source_mode(claude_svc, monkeypatch, tmp_path):
     from mcp_server.config import config
 
@@ -100,7 +111,7 @@ async def test_preprocess_generic_direct_redacted_source_mode(claude_svc, monkey
         lambda self, platform: {"content": "phase 3 guide"},
     )
 
-    groups, _ = await claude_svc._preprocess_scan_data(project_id, tmp_path / "staging", platform="generic")
+    groups = await claude_svc._preprocess_scan_data(project_id, tmp_path / "staging", platform="generic")
 
     assert groups == ["src"]
     bundle = (tmp_path / "staging" / "_preprocess" / "src.md").read_text(encoding="utf-8")
@@ -183,7 +194,6 @@ async def test_claude_cli_command_uses_resolved_cli_model(monkeypatch, tmp_path)
         total_groups=1,
         effective_model="sonnet",
         write_model="openai/deepseek-v4-pro",
-        template_snapshot={},
         platform="generic",
         analysis_guide_file="_analysis_prompts.md",
     )

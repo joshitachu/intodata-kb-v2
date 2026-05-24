@@ -7,6 +7,7 @@ import { ModeToggle } from "./ModeToggle";
 import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
 import { useUserProjects } from "@/hooks/useUserProjects";
+import { SUGGESTIONS } from "@/lib/constants";
 import type { ChatMode } from "./ModeToggle";
 import type {
   ConversationDetailResponse,
@@ -15,18 +16,12 @@ import type {
 import type { StreamState } from "@/hooks/useStreamMessage";
 import type { DeepDiveState } from "@/hooks/useDeepDive";
 
-const SUGGESTIONS = [
-  "What projects are available?",
-  "Summarize the latest documentation",
-  "How do the integrations connect?",
-  "What are the key data flows?",
-];
-
 interface ChatWindowProps {
   conversation: ConversationDetailResponse | null;
   isLoading: boolean;
   isSending: boolean;
   onSendMessage: (request: ConversationMessageRequest) => void;
+  onRetryMessage?: () => void;
   streamingMessage?: StreamState | null;
   pendingUserMessage?: string | null;
   mode: ChatMode;
@@ -41,6 +36,7 @@ export function ChatWindow({
   isLoading,
   isSending,
   onSendMessage,
+  onRetryMessage,
   streamingMessage,
   pendingUserMessage,
   mode,
@@ -96,7 +92,7 @@ export function ChatWindow({
         <div className="flex-1 flex flex-col items-center justify-center px-4">
           <div className="max-w-md text-center space-y-4">
             <div>
-              <h2 className="text-xl font-semibold">IntoData Knowledge Base</h2>
+              <h2 className="text-xl font-semibold">Nexus</h2>
               <p className="text-sm text-muted-foreground mt-1">
                 Ask questions about your documents, explore integrations, or deep-dive into project code.
               </p>
@@ -163,6 +159,7 @@ export function ChatWindow({
           messages={conversation?.messages ?? []}
           conversationId={conversation?.id ?? null}
           streamingMessage={isDeepDive ? null : streamingMessage}
+          onRetryMessage={isDeepDive ? undefined : onRetryMessage}
           pendingUserMessage={pendingUserMessage}
           deepDiveState={isDeepDive ? deepDiveState : null}
           onCancelDeepDive={onCancelDeepDive}

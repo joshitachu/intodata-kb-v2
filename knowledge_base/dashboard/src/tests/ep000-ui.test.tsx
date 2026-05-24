@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
-import ABComparison from "../components/templates/ABComparison";
+import ABComparison from "../components/ABComparison";
 import ProjectSettings from "../components/ProjectSettings";
 import ValidationReviewPanel from "../components/ValidationReviewPanel";
 import { api } from "../api/client";
@@ -21,6 +21,8 @@ vi.mock("../api/client", () => ({
     submitReview: vi.fn(),
     updateProject: vi.fn(),
     deleteProject: vi.fn(),
+    listPluginPacks: vi.fn(),
+    assignPluginPack: vi.fn(),
   },
 }));
 
@@ -53,10 +55,10 @@ const runs = {
       model_name: "moonshot/kimi-k2.6",
       write_model_name: "openai/deepseek-v4-pro",
       quality_score: 4.5,
-      template_profile_id: 1,
-      template_snapshot: { overview: 1 },
       auto_verdict: null,
       auto_baseline_run_id: null,
+      run_verdict: null,
+      gate_results: null,
     },
     {
       id: 2,
@@ -78,10 +80,10 @@ const runs = {
       model_name: "openai/gpt-4o",
       write_model_name: "anthropic/claude-sonnet-4-6",
       quality_score: 3.9,
-      template_profile_id: 2,
-      template_snapshot: { overview: 2 },
       auto_verdict: null,
       auto_baseline_run_id: null,
+      run_verdict: null,
+      gate_results: null,
     },
   ],
   total: 2,
@@ -92,7 +94,7 @@ beforeEach(() => {
 });
 
 describe("EP-000 dashboard panels", () => {
-  it("renders comparison verdict, models, quality details, and template diffs", async () => {
+  it("renders comparison verdict, models, and quality details", async () => {
     vi.mocked(api.listGenerateRuns).mockResolvedValue(runs);
     vi.mocked(api.compareGenerateRuns).mockResolvedValue({
       project_id: "p1",
@@ -128,8 +130,6 @@ describe("EP-000 dashboard panels", () => {
       quality_delta_pct: -13.33,
       verdict: "FAIL",
       checks: [],
-      template_diffs: [{ slug: "overview", version_a: 1, version_b: 2 }],
-      total_template_diffs: 1,
     });
 
     renderWithClient(<ABComparison projectId="p1" />);
@@ -141,7 +141,6 @@ describe("EP-000 dashboard panels", () => {
     expect(screen.getByText("moonshot/kimi-k2.6")).toBeInTheDocument();
     expect(screen.getByText("anthropic/claude-sonnet-4-6")).toBeInTheDocument();
     expect(screen.getAllByText("source alignment").length).toBeGreaterThan(0);
-    expect(screen.getByText("Template Differences (1)")).toBeInTheDocument();
   });
 
   it("shows validation aggregate and requires reviewer before submit", async () => {
@@ -192,11 +191,13 @@ describe("EP-000 dashboard panels", () => {
       has_github_token: false,
       webhook_status: null,
       instruction_pack_dir: null,
+      plugin_pack_id: null,
       created_at: null,
       updated_at: null,
     };
     vi.mocked(api.listPlatforms).mockResolvedValue({ platforms: [] });
     vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.listPluginPacks).mockResolvedValue([]);
     vi.mocked(api.getProjectUsage).mockResolvedValue({
       project_id: "p1",
       total_generate_runs: 0,

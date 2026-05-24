@@ -61,6 +61,9 @@ class Project(Base):
     github_token_enc: Mapped[str | None] = mapped_column(String(500), nullable=True)
     github_webhook_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     instruction_pack_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    plugin_pack_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("plugin_packs.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Relationships
     scan_runs: Mapped[list[ScanRun]] = relationship(
@@ -131,20 +134,34 @@ class GenerateRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     log_file: Mapped[str | None] = mapped_column(String(500))
 
-    # Template management
-    template_profile_id: Mapped[int | None] = mapped_column(
-        Integer,
-        ForeignKey("template_profiles.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    template_snapshot: Mapped[dict | None] = mapped_column(
+    # Auto-comparison verdict (US-104)
+    auto_verdict: Mapped[str | None] = mapped_column(String(10), nullable=True)  # "PASS" | "FAIL"
+    auto_baseline_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_verdict: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    gate_results: Mapped[dict | None] = mapped_column(
         JSONB().with_variant(JSON(), "sqlite"),
         nullable=True,
     )
 
-    # Auto-comparison verdict (US-104)
-    auto_verdict: Mapped[str | None] = mapped_column(String(10), nullable=True)  # "PASS" | "FAIL"
-    auto_baseline_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")
+
+
+class PluginPack(Base):
+    """Registry of plugin packs available for doc generation.
+
+    A pack directory must contain a plugin.yaml manifest.  When installed from
+    a GitHub URL the local clone path is stored in `path` and the HEAD SHA in
+    `last_commit_sha` so the poller/webhook can detect updates.
+    """
+
+    __tablename__ = "plugin_packs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    version: Mapped[str] = mapped_column(String(50), nullable=False)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    auto_update: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

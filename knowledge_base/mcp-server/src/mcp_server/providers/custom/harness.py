@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import time
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from mcp_server.config import config
 from mcp_server.providers.base import AgentResult, DocGenContext, DocGenerationProvider, LogCallback
@@ -61,12 +64,18 @@ from mcp_server.providers.custom.validators import (
     validate_analysis_coverage,
     validate_doc_depth,
     validate_docs,
+    validate_final_redaction,
+    validate_source_provenance,
+    validate_usefulness_rubric,
     build_documentation_obligation_map,
-    _scanned_config_files,
-    _covered_source_files,
-    _strip_config_contradiction_sentences,
+    scanned_config_files,
+    covered_source_files,
+    strip_config_contradiction_sentences,
+    EVIDENCE_REGISTER_SECTION_RE,
 )
 from mcp_server.services.model_pricing import calculate_total_cost
+from mcp_server.services.generation_run_state import record_manifest_chunks
+from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 
 
 LARGE_CONTEXT_ARTIFACTS = {
@@ -83,7 +92,6 @@ LARGE_CONTEXT_ARTIFACTS = {
     "change_impact_matrix.json",
 }
 
-GROUP_SUMMARY_SECTION = "GROUP_SUMMARY"
 ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
 PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION, ADDITIONAL_FINDINGS_SECTION,)
 BASELINE_BUNDLE_SECTIONS = {
@@ -105,6 +113,25 @@ DOC_SECTION_BUNDLE_MAP = {
     "07_QUALITY_SECURITY_RISK_SCORECARD": {"ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SOURCE_SQL", "CUSTOM_CODE", "RISK_FLAGS"},
     "08_CHANGE_PLAYBOOK": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SCHEDULING", "ENVIRONMENT_CONFIG", "CROSS_GROUP_REFS", "RISK_FLAGS"},
 }
+def _evidence_register_section(text: str) -> str | None:
+    match = EVIDENCE_REGISTER_SECTION_RE.search(text)
+    if not match:
+        return None
+
+    section = match.group(0).strip()
+    lines = section.splitlines()
+    table_start = next((index for index, line in enumerate(lines) if line.lstrip().startswith("|")), None)
+    if table_start is None:
+        return section
+
+    table_lines: list[str] = []
+    for line in lines[table_start:]:
+        if not line.lstrip().startswith("|"):
+            break
+        table_lines.append(line.rstrip())
+    if len(table_lines) < 2:
+        return section
+    return f"{lines[0].strip()}\n\n" + "\n".join(table_lines).rstrip()
 
 
 class FailureKind(str, Enum):
@@ -115,10 +142,15 @@ class FailureKind(str, Enum):
     AUTH_ERROR = "auth_error"
     UNKNOWN = "unknown"
     BUDGET_EXCEEDED = "budget_exceeded"
+    INCOMPLETE = "incomplete"  # provider cut off mid-generation (output max_tokens hit)
 
     @property
     def is_retryable_with_fallback(self) -> bool:
-        return self not in {FailureKind.CONTEXT_TOO_LARGE, FailureKind.BUDGET_EXCEEDED}
+        return self not in {
+            FailureKind.CONTEXT_TOO_LARGE,
+            FailureKind.BUDGET_EXCEEDED,
+            FailureKind.INCOMPLETE,
+        }
 
 
 def estimate_input_tokens(prompt: str, context_files: list[Path] | None = None) -> int:
@@ -204,12 +236,37 @@ class CustomHarnessProvider(DocGenerationProvider):
         investigation_provider: ModelProvider | None = None,
         fallback_provider: ModelProvider | None = None,
         pack: "InstructionPack | None" = None,
+        plugin_pack_dir: "Path | None" = None,
     ) -> None:
         self.model_provider = model_provider
         self.write_provider = write_provider or model_provider
         self.investigation_provider = investigation_provider or model_provider
         self.fallback_provider = fallback_provider
         self.pack = pack
+        self.plugin_pack_dir = plugin_pack_dir
+
+        self._required_docs: list[str] = list(REQUIRED_DOCS)
+        self._doc_assignments: dict[str, list[str]] = dict(DOC_ASSIGNMENTS)
+        self._doc_bundle_map: dict[str, str] = dict(DOC_BUNDLE_MAP)
+        self._doc_section_requirements_extra: dict[str, list[str]] = {}
+
+        if plugin_pack_dir:
+            from mcp_server.services.plugin_schema import load_plugin_manifest
+            try:
+                _manifest = load_plugin_manifest(plugin_pack_dir)
+                if _manifest.docs:
+                    self._required_docs = [d.name for d in _manifest.docs]
+                    self._doc_assignments = {"custom": list(self._required_docs)}
+                    self._doc_bundle_map = {d: "custom" for d in self._required_docs}
+                    self._doc_section_requirements_extra = {
+                        d.name: d.sections for d in _manifest.docs if d.sections
+                    }
+            except Exception as exc:
+                logger.warning(
+                    "[custom] plugin manifest load failed, continuing with defaults: %s",
+                    exc,
+                    exc_info=True,
+                )
 
     @staticmethod
     def _describe_provider(provider: ModelProvider) -> str:
@@ -269,6 +326,21 @@ class CustomHarnessProvider(DocGenerationProvider):
         if result.success and (not result.text.strip() or result.output_tokens == 0):
             return FailureKind.EMPTY_OUTPUT
 
+        # Detect output truncation: check metadata first, then fall through to text heuristics.
+        # Metadata is populated by all provider implementations; text heuristics catch edge cases.
+        finish_reason = (result.metadata or {}).get("finish_reason", "")
+        incomplete_reason = (result.metadata or {}).get("incomplete_reason", "")
+        if (
+            finish_reason in {"length", "max_tokens"}
+            or incomplete_reason == "length"
+            or re.search(
+                r"incomplete:.*max.{0,10}tokens|max.{0,10}tokens.{0,20}reached",
+                evidence,
+                re.IGNORECASE,
+            )
+        ):
+            return FailureKind.INCOMPLETE
+
         return FailureKind.UNKNOWN
 
     @staticmethod
@@ -280,10 +352,9 @@ class CustomHarnessProvider(DocGenerationProvider):
             metadata={"phase": phase, "target": target, "failure_kind": kind.value},
         )
 
-    @staticmethod
-    def _run_model_call_budget(state: HarnessRunState) -> int:
+    def _run_model_call_budget(self, state: HarnessRunState) -> int:
         group_count = max(1, len(state.facts_manifest.groups))
-        required_doc_count = max(1, len(REQUIRED_DOCS))
+        required_doc_count = max(1, len(self._required_docs))
         allowed_slices = max(1, config.docgen_allowed_slices_per_doc)
         dynamic_budget = (
             config.docgen_call_budget_base
@@ -292,9 +363,8 @@ class CustomHarnessProvider(DocGenerationProvider):
         )
         return max(config.docgen_min_run_call_budget, dynamic_budget)
 
-    @staticmethod
-    def _doc_budget_key(target: str) -> str:
-        for doc_name in REQUIRED_DOCS:
+    def _doc_budget_key(self, target: str) -> str:
+        for doc_name in self._required_docs:
             if target == doc_name or target.startswith(f"{doc_name}_"):
                 return doc_name
         return target.split("_slice_", 1)[0].split("_retry_", 1)[0]
@@ -493,22 +563,44 @@ class CustomHarnessProvider(DocGenerationProvider):
                     doc_depth.model_dump_json(indent=2), encoding="utf-8"
                 )
             if not doc_depth.ok or doc_depth.coverage_count != facts.unit_count:
-                warnings = doc_depth.errors or ["Phase 3 depth warning"]
-                if doc_depth.coverage_count != facts.unit_count:
-                    warnings.append(
-                        f"Phase 3 depth coverage warning: {doc_depth.coverage_count}/{facts.unit_count} units referenced"
-                    )
-                state.warnings.extend(warnings)
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] Phase 3 depth warnings preserved without failing generation: "
-                    + "; ".join(warnings[:5]),
-                    "warning",
-                )
+                raise RuntimeError("; ".join(doc_depth.errors) or "Phase 3 depth mismatch")
             else:
                 await log_cb(ctx.project_id, "[custom] Phase 3 depth gate passed", "info")
 
-            self._phase4_cleanup(ctx, state)
+            if ctx.enterprise_mode:
+                provenance = validate_source_provenance(ctx.staging_dir, facts)
+                (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
+                    provenance.model_dump_json(indent=2), encoding="utf-8"
+                )
+                if not provenance.ok or provenance.coverage_count != facts.unit_count:
+                    await self._phase3_targeted_repair(ctx, state, provenance, log_cb)
+                    provenance = validate_source_provenance(ctx.staging_dir, facts)
+                    (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
+                        provenance.model_dump_json(indent=2), encoding="utf-8"
+                    )
+                if not provenance.ok or provenance.coverage_count != facts.unit_count:
+                    await log_cb(ctx.project_id, "[custom] Phase 3 provenance repair did not clear all gaps", "warning")
+                else:
+                    await log_cb(ctx.project_id, "[custom] Phase 3 provenance gate passed", "info")
+
+            gate_report = self._enterprise_gate_report(
+                ctx, state,
+                provenance=(provenance if ctx.enterprise_mode else None),
+            )
+            if ctx.enterprise_mode:
+                await self._write_audit_bundle(ctx, state, gate_report)
+                failed = [
+                    f"{name}: {entry.get('remediation') or '; '.join(entry.get('errors') or [])}"
+                    for name, entry in gate_report["gates"].items()
+                    if not entry.get("ok")
+                ]
+                if failed:
+                    raise RuntimeError("Enterprise publish gates failed: " + " | ".join(failed))
+                await log_cb(ctx.project_id, "[custom] Enterprise publish gates passed", "info")
+            else:
+                state.warnings.append("Draft mode: enterprise publish gates are advisory only")
+
+            await self._phase4_cleanup(ctx, state)
         except Exception as exc:
             state.errors.append(str(exc))
             await log_cb(ctx.project_id, f"[custom] generation failed: {exc}", "error")
@@ -537,7 +629,6 @@ class CustomHarnessProvider(DocGenerationProvider):
                 for c in state.calls
             ),
             duration_ms=int(time.time() * 1000) - start_ms,
-            template_snapshot=ctx.template_snapshot,
         )
 
     async def _phase1_investigation(
@@ -561,8 +652,17 @@ class CustomHarnessProvider(DocGenerationProvider):
         for group in ctx.preprocess_groups:
             group_units = self._group_units(state, group)
             chunks = self._phase2_group_chunks(preprocess_dir / f"{group}.md", group_units, investigation_dir)
+            record_manifest_chunks(ctx.staging_dir, phase="investigation", group=group, chunks=chunks)
             chunk_reports = []
             for idx, chunk_file in enumerate(chunks, start=1):
+                if not chunk_file.exists():
+                    failed_groups.add(group)
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Investigation chunk missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
+                        "error",
+                    )
+                    break
                 chunk_name = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
                 cached = self._load_investigation_artifact(investigation_dir, chunk_name)
                 if cached is not None and ctx.resume_state is not None:
@@ -583,6 +683,17 @@ class CustomHarnessProvider(DocGenerationProvider):
                         provider_options=self._provider_options(self.investigation_provider),
                     )
                 except InvestigationError as exc:
+                    failure_kind = self._classify_failure(
+                        ModelResult(
+                            success=False,
+                            model_name=getattr(self.investigation_provider, "model_name", ""),
+                            raw_error=str(exc),
+                        )
+                    )
+                    if failure_kind == FailureKind.AUTH_ERROR:
+                        raise RuntimeError(
+                            f"Phase 1 investigation auth failed for {chunk_name}: {exc}"
+                        ) from exc
                     await log_cb(
                         ctx.project_id,
                         f"[custom] Investigation failed for {chunk_name} (partial, continuing): {exc}",
@@ -649,7 +760,15 @@ class CustomHarnessProvider(DocGenerationProvider):
                     log_cb,
                 )
 
-        await asyncio.gather(*[_process_group(group) for group in ctx.preprocess_groups])
+        gather_results = await asyncio.gather(
+            *[_process_group(group) for group in ctx.preprocess_groups],
+            return_exceptions=True,
+        )
+        group_errors = [r for r in gather_results if isinstance(r, BaseException)]
+        if group_errors:
+            for exc in group_errors:
+                await log_cb(ctx.project_id, f"[custom] Phase 2 group failed: {exc}", "error")
+            raise group_errors[0]
 
     async def _phase2_group_agent(
         self,
@@ -671,6 +790,8 @@ class CustomHarnessProvider(DocGenerationProvider):
 
             group_units = self._group_units(state, group)
             group_file = preprocess_dir / f"{group}.md"
+            if not group_file.exists():
+                raise RuntimeError(f"Phase 2 source group file missing: {group_file.relative_to(ctx.staging_dir).as_posix()}")
             file_bytes = group_file.stat().st_size if group_file.exists() else 0
             opts = ModelOptions(
                 max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, file_bytes // 4)),
@@ -680,10 +801,13 @@ class CustomHarnessProvider(DocGenerationProvider):
                 provider_options=self._provider_options(self.model_provider),
             )
             chunks = self._phase2_group_chunks(group_file, group_units, analysis_dir)
+            record_manifest_chunks(ctx.staging_dir, phase="phase2", group=group, chunks=chunks)
             investigation_context = self._investigation_context(ctx, group)
             chunk_outputs: list[str] = []
             for idx, chunk_file in enumerate(chunks, start=1):
-                prompt = group_analysis_prompt(state.facts_manifest, group, pack=self.pack)
+                if not chunk_file.exists():
+                    raise RuntimeError(f"Phase 2 chunk file missing: {chunk_file.relative_to(ctx.staging_dir).as_posix()}")
+                prompt = group_analysis_prompt(state.facts_manifest, group, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, required_docs=self._required_docs)
                 if len(chunks) > 1:
                     prompt += (
                         f"\n\nThis is chunk {idx} of {len(chunks)} for group {group}. "
@@ -1122,7 +1246,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                     lambda text: self._validate_agent_markdown(text, units, min_bytes=80),
                 )
                 if not task_result.result.success:
-                    await log_cb(ctx.project_id, f"[custom] Phase 2 targeted repair failed for {group}: {task_result.result.raw_error}", "warning")
+                    await log_cb(ctx.project_id, f"[custom] Phase 2 targeted repair failed for {group}: {task_result.result.raw_error}", "error")
                     return
                 existing = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
                 coverage = "\n".join(f"- COVERED: {unit}" for unit in units)
@@ -1156,7 +1280,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             timeout_s=300.0,
             provider_options=self._provider_options(self.model_provider),
         )
-        scorecard_prompt_text = scorecard_prompt(state.facts_manifest, pack=self.pack)
+        scorecard_prompt_text = scorecard_prompt(state.facts_manifest, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir)
         context_files = []
         if scorecard_pack.exists():
             context_files.append(scorecard_pack)
@@ -1302,7 +1426,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             p for p in sorted(analysis_dir.glob("*.md"))
             if not p.name.startswith("_") and "_chunk_" not in p.name
         ]
-        for bundle_name, doc_names in DOC_ASSIGNMENTS.items():
+        for bundle_name, doc_names in self._doc_assignments.items():
             section_names = self._bundle_sections_for_docs(doc_names)
             analysis_text = self._targeted_analysis_bundle_text(analysis_files, section_names)
             (analysis_dir / f"_bundle_{bundle_name}.md").write_text(
@@ -1317,7 +1441,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                 encoding="utf-8",
             )
         manifest: dict[str, object] = {"source_analyses": [p.name for p in analysis_files], "doc_packs": {}}
-        for doc_name in REQUIRED_DOCS:
+        for doc_name in self._required_docs:
             section_names = self._bundle_sections_for_docs([doc_name])
             pack_text, pack_manifest = self._doc_evidence_pack_text(
                 ctx,
@@ -1514,7 +1638,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
 
         async def _write_one(doc_name: str) -> None:
-            doc_prompt_text = doc_prompt(state.facts_manifest, doc_name, pack=self.pack)
+            doc_prompt_text = doc_prompt(state.facts_manifest, doc_name, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, extra_section_requirements=self._doc_section_requirements_extra)
             context_files = self._phase3_context_files(ctx, doc_name)
             if scorecard.exists():
                 context_files.append(scorecard)
@@ -1564,9 +1688,17 @@ class CustomHarnessProvider(DocGenerationProvider):
             await log_cb(ctx.project_id, f"[custom] Phase 3 doc complete: {doc_name}", "info")
 
         _i = 0
-        while _i < len(REQUIRED_DOCS):
+        while _i < len(self._required_docs):
             batch_size = 1 if state.adaptive_serial_generation else max(1, config.agent_phase3_concurrency)
-            await asyncio.gather(*[_write_one(d) for d in REQUIRED_DOCS[_i : _i + batch_size]])
+            batch_results = await asyncio.gather(
+                *[_write_one(d) for d in self._required_docs[_i : _i + batch_size]],
+                return_exceptions=True,
+            )
+            batch_errors = [r for r in batch_results if isinstance(r, BaseException)]
+            if batch_errors:
+                for exc in batch_errors:
+                    await log_cb(ctx.project_id, f"[custom] Phase 3 doc write failed: {exc}", "error")
+                raise batch_errors[0]
             _i += batch_size
 
     def _final_doc_content(self, state: HarnessRunState, doc_name: str, body: str) -> str:
@@ -1611,7 +1743,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             provider_options=self._provider_options(self.write_provider),
         )
 
-        for family, doc_names in DOC_ASSIGNMENTS.items():
+        for family, doc_names in self._doc_assignments.items():
             critic_prompt_text = self._critic_prompt(state, family, doc_names)
             if getattr(self.write_provider, "supports_tools", False):
                 result = await self.write_provider.complete_with_tools(
@@ -1696,26 +1828,25 @@ class CustomHarnessProvider(DocGenerationProvider):
             )
             result = task_result.result
             if not result.success:
-                await log_cb(ctx.project_id, f"[custom] Phase 3 targeted repair failed for {target_doc.name}: {result.raw_error}", "warning")
+                await log_cb(ctx.project_id, f"[custom] Phase 3 targeted repair failed for {target_doc.name}: {result.raw_error}", "error")
                 continue
             existing = target_doc.read_text(encoding="utf-8", errors="replace") if target_doc.exists() else ""
-            config_files = _scanned_config_files(ctx.staging_dir) | _covered_source_files(ctx.staging_dir)
-            assembled = f"{existing.rstrip()}\n\n## Targeted Validator Repair\n\n{result.text.strip()}\n"
-            patched = _strip_config_contradiction_sentences(assembled, config_files)
+            config_files = scanned_config_files(ctx.staging_dir) | covered_source_files(ctx.staging_dir)
+            assembled = self._phase3_targeted_repair_content(existing, result.text)
+            patched = strip_config_contradiction_sentences(assembled, config_files)
             target_doc.write_text(patched, encoding="utf-8")
             phase3_checkpoint = ctx.staging_dir / "_agent_tasks" / "phase3_doc" / target_doc.stem / "output.md"
             if phase3_checkpoint.exists():
                 phase3_checkpoint.write_text(patched, encoding="utf-8")
             await log_cb(ctx.project_id, f"[custom] Phase 3 targeted repair applied to {target_doc.name}", "info")
 
-    @staticmethod
-    def _phase3_repair_targets(ctx: DocGenContext, errors: list[str]) -> list[tuple[Path, list[str]]]:
+    def _phase3_repair_targets(self, ctx: DocGenContext, errors: list[str]) -> list[tuple[Path, list[str]]]:
         grouped: dict[str, list[str]] = {}
         for error in errors:
             matches = re.findall(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
             matched_required = [
                 name for name in matches
-                if name.removesuffix(".md") in REQUIRED_DOCS
+                if name.removesuffix(".md") in self._required_docs
             ]
             if matched_required:
                 for name in matched_required:
@@ -1732,12 +1863,29 @@ class CustomHarnessProvider(DocGenerationProvider):
             if not target_doc.exists():
                 existing_docs = [
                     ctx.staging_dir / f"{doc}.md"
-                    for doc in REQUIRED_DOCS
+                    for doc in self._required_docs
                     if (ctx.staging_dir / f"{doc}.md").exists()
                 ]
                 target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / "02_COMPONENT_INVENTORY.md"
             targets.append((target_doc, doc_errors))
         return targets
+
+    @staticmethod
+    def _phase3_targeted_repair_content(existing: str, repair: str) -> str:
+        repaired_register = _evidence_register_section(repair)
+        if repaired_register is None:
+            return f"{existing.rstrip()}\n\n## Targeted Validator Repair\n\n{repair.strip()}\n"
+
+        register_sections = list(EVIDENCE_REGISTER_SECTION_RE.finditer(existing))
+        if not register_sections:
+            return f"{existing.rstrip()}\n\n{repaired_register.rstrip()}\n"
+
+        first_register = register_sections[0]
+        before = existing[: first_register.start()].rstrip()
+        after = existing[first_register.end() :]
+        after = EVIDENCE_REGISTER_SECTION_RE.sub("", after).strip()
+        parts = [part for part in (before, repaired_register.rstrip(), after) if part]
+        return "\n\n".join(parts).rstrip() + "\n"
 
     def _phase3_repair_context_files(
         self,
@@ -1764,7 +1912,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             elif safe.exists():
                 analysis_files.append(safe)
         if not analysis_files:
-            bundle = DOC_BUNDLE_MAP.get(doc_name, "core")
+            bundle = self._doc_bundle_map.get(doc_name, "core")
             fallback = analysis_dir / f"_bundle_{bundle}.md"
             analysis_files = [fallback] if fallback.exists() else []
 
@@ -1811,6 +1959,11 @@ Rules:
 - Write markdown sections that can be appended directly to the document.
 - Cover each missing obligation directly or explain scanner-limited evidence if the supplied context is insufficient.
 - Do not add broad filler. If a validator asks for inspect/test/change guidance, include concrete inspect/test/change entries.
+- If the validator error mentions Evidence Register or source provenance, return only a `## Evidence Register`
+  table with columns `Topic`, `Units / Scope`, `Evidence Source`, `Source Artifact / Path`, and `Confidence`.
+  Use exact supplied evidence names. Each confidence cell must start with plain unformatted `HIGH`,
+  `MEDIUM`, or `LOW` text; do not bold, italicize, quote, or wrap that leading token in backticks.
+  Scanner-limited, inferred, or redaction notes may follow that token or appear in evidence/topic cells.
 
 Canonical inventory: {state.facts_manifest.unit_count} {state.facts_manifest.canonical_unit_label}
 
@@ -1968,25 +2121,30 @@ Missing units:
             cache_file.write_text(result.text.strip(), encoding="utf-8")
             return idx, result.text.strip(), []
 
+        pre_calls_len = len(state.calls)
         slice_results = await asyncio.gather(*[
             _run_slice(idx, slice_files)
             for idx, slice_files in enumerate(slices, start=1)
         ])
         outputs: list[str] = []
         failures: list[str] = []
-        for _idx, text, slice_failures in sorted(slice_results, key=lambda item: item[0]):
+        for _, text, slice_failures in sorted(slice_results, key=lambda item: item[0]):
             if slice_failures:
                 failures.extend(slice_failures)
             if text:
                 outputs.append(text)
+
+        new_calls = state.calls[pre_calls_len:]
+        total_input_tokens = sum(c.result.input_tokens for c in new_calls)
+        total_output_tokens = sum(c.result.output_tokens for c in new_calls)
 
         if failures:
             return ModelResult(
                 success=False,
                 text="\n\n---\n\n".join(outputs),
                 model_name=getattr(provider, "model_name", ""),
-                input_tokens=0,
-                output_tokens=0,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
                 raw_error="; ".join(failures[:5]),
                 metadata={"phase": phase, "target": target, "incomplete_slices": failures},
             )
@@ -1994,8 +2152,8 @@ Missing units:
             success=True,
             text="\n\n---\n\n".join(outputs),
             model_name=getattr(provider, "model_name", ""),
-            input_tokens=0,
-            output_tokens=0,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
             metadata={"phase": phase, "target": target, "slices": len(slices)},
         )
 
@@ -2039,7 +2197,7 @@ Missing units:
             message = (
                 f"model call budget exceeded before {phase} {target}: "
                 f"{current_calls}/{budget} calls; groups={len(state.facts_manifest.groups)} "
-                f"docs={len(REQUIRED_DOCS)}"
+                f"docs={len(self._required_docs)}"
             )
             await log_cb(ctx.project_id, f"[custom] {message}", "error")
             return self._failure_result(provider, phase, target, message, FailureKind.BUDGET_EXCEEDED)
@@ -2051,7 +2209,7 @@ Missing units:
             f"call_budget={current_calls + 1}/{budget}",
             "info",
         )
-        self._write_model_input_snapshot(
+        snapshot_dir = self._write_model_input_snapshot(
             ctx,
             provider=provider,
             phase=phase,
@@ -2072,6 +2230,7 @@ Missing units:
             )
         else:
             result = await provider.complete(prompt, context_files, opts)
+        self._write_model_response_snapshot(snapshot_dir, result)
         failure_kind = self._classify_failure(result)
         if failure_kind is not None:
             raw_error = result.raw_error or (
@@ -2094,11 +2253,60 @@ Missing units:
                 kind=failure_kind,
                 log_cb=log_cb,
             )
+            # When the provider cut off mid-generation, attempt a no-tools completion
+            # on the same provider so it can write out a coherent final response.
+            # INCOMPLETE is not retryable_with_fallback, so the fallback block below
+            # will not fire regardless of whether the force-conclude succeeds.
+            if failure_kind == FailureKind.INCOMPLETE and scoped_tools is not None:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] output truncated ({self._describe_provider(provider)}); "
+                    "attempting force-conclude without tools",
+                    "warning",
+                )
+                conclude_prompt = (
+                    "The previous generation run was cut off at the token limit before "
+                    "producing complete final output. Using the context files and facts "
+                    "provided, write the complete final output now. "
+                    "Do not use any tools — write your complete response directly.\n\n"
+                    f"Original task:\n{prompt}"
+                )
+                conclude_result = await provider.complete(
+                    conclude_prompt,
+                    context_files,
+                    opts.model_copy(update={"retries": 0}),
+                )
+                conclude_kind = self._classify_failure(conclude_result)
+                if conclude_kind is None:
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] force-conclude succeeded: {self._describe_provider(provider)} "
+                        f"tokens={conclude_result.output_tokens}",
+                        "info",
+                    )
+                    result = conclude_result
+                    failure_kind = None
+                else:
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] force-conclude also failed ({conclude_kind.value}): "
+                        f"{self._describe_provider(provider)}",
+                        "warning",
+                    )
             if (
                 not result.success
                 and self.fallback_provider is not None
+                and failure_kind is not None
                 and failure_kind.is_retryable_with_fallback
             ):
+                # Record primary failure before result is overwritten by fallback, so
+                # tokens and failure reason are not lost from state.calls.
+                primary_call = ProviderCallLog(phase=phase, target=target, result=result)
+                if calls_lock is None:
+                    state.calls.append(primary_call)
+                else:
+                    async with calls_lock:
+                        state.calls.append(primary_call)
                 await log_cb(
                     ctx.project_id,
                     f"[custom] primary failed ({failure_kind.value}); retrying with fallback "
@@ -2152,7 +2360,7 @@ Missing units:
         estimated_tokens: int,
         total_bytes: int,
         call_index: int,
-    ) -> None:
+    ) -> Path:
         """Persist the exact model-call inputs for offline review and no-AI tests."""
 
         snapshot_dir = (
@@ -2211,6 +2419,35 @@ Missing units:
             "context_files": context_entries,
         }
         (snapshot_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        request = {
+            "provider": self._describe_provider(provider),
+            "model": provider.model_name,
+            "phase": phase,
+            "target": target,
+            "uses_tools": use_tools_for_core_generation(provider),
+            "message_count": 1,
+            "context_file_count": len(context_files),
+            "max_tokens": opts.max_tokens,
+            "temperature": opts.temperature,
+            "provider_options": opts.provider_options,
+        }
+        (snapshot_dir / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
+        return snapshot_dir
+
+    @staticmethod
+    def _write_model_response_snapshot(snapshot_dir: Path, result: ModelResult) -> None:
+        response = {
+            "success": result.success,
+            "model_name": result.model_name,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "latency_ms": result.latency_ms,
+            "retries": result.retries,
+            "raw_error": result.raw_error,
+            "metadata": result.metadata,
+            "text_preview": result.text[:1000],
+        }
+        (snapshot_dir / "response.json").write_text(json.dumps(response, indent=2, default=str), encoding="utf-8")
 
     @staticmethod
     def _bounded_context_files(context_files: list[Path]) -> list[Path]:
@@ -2333,7 +2570,201 @@ Missing units:
     def _safe_name(value: str) -> str:
         return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
 
-    def _phase4_cleanup(self, ctx: DocGenContext, state: HarnessRunState) -> None:
+    def _enterprise_gate_report(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        provenance: "CoverageReport | None" = None,
+    ) -> dict:
+        from mcp_server.providers.custom.models import CoverageReport as _CR  # noqa: F401 — type-check only
+        assessment_dir = ctx.staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+
+        facts = state.facts_manifest
+        reports = {
+            "phase2_coverage": ctx.staging_dir / "_analysis" / "_coverage_report.json",
+            "phase2_depth": ctx.staging_dir / "_analysis" / "_depth_report.json",
+            "phase3_doc_coverage": assessment_dir / "doc_validation_report.json",
+            "phase3_doc_depth": assessment_dir / "doc_depth_report.json",
+        }
+
+        def from_report(path: Path, remediation: str) -> dict:
+            if not path.exists():
+                return {"ok": False, "errors": [f"Missing gate report: {path.name}"], "remediation": remediation}
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                return {"ok": False, "errors": [f"Invalid gate report {path.name}: {exc}"], "remediation": remediation}
+            ok = bool(payload.get("ok")) and int(payload.get("coverage_count", 0)) == int(payload.get("expected_count", facts.unit_count))
+            return {
+                "ok": ok,
+                "coverage_count": payload.get("coverage_count"),
+                "expected_count": payload.get("expected_count"),
+                "errors": payload.get("errors", []),
+                "warnings": payload.get("warnings", []),
+                "remediation": None if ok else remediation,
+            }
+
+        redaction = validate_final_redaction(ctx.staging_dir)
+        if provenance is None:
+            provenance = validate_source_provenance(ctx.staging_dir, facts)
+        usefulness = validate_usefulness_rubric(ctx.staging_dir, facts)
+        reviewers = self._run_internal_reviewers(ctx, state)
+        reviewer_ok = all(not finding.get("critical") for report in reviewers for finding in report["findings"])
+
+        quality_report = None
+        quality_score = None
+        try:
+            from mcp_server.services.doc_quality_scorer import score_project
+
+            quality_report = score_project(ctx.project_id, docs_dir=ctx.staging_dir).to_dict()
+            quality_score = quality_report["overall"]
+        except Exception as exc:
+            logger.warning("score_project failed for %s", ctx.project_id, exc_info=True)
+            quality_report = {"error": str(exc)}
+
+        gates = {
+            "valid_fresh_scan": {
+                "ok": (config.intodoc_output_dir / ctx.project_id / "scan_result.json").exists(),
+                "errors": [] if (config.intodoc_output_dir / ctx.project_id / "scan_result.json").exists() else ["Missing scan_result.json"],
+                "remediation": "Run a fresh scan before generating publishable docs.",
+            },
+            "complete_evidence_coverage": from_report(reports["phase2_coverage"], "Repair Phase 2 unit coverage gaps."),
+            "phase2_analysis_depth": from_report(reports["phase2_depth"], "Repair shallow Phase 2 analysis with source-backed details."),
+            "phase3_doc_coverage": from_report(reports["phase3_doc_coverage"], "Repair docs until every canonical unit and obligation is covered."),
+            "phase3_doc_depth": from_report(reports["phase3_doc_depth"], "Expand shallow docs with actionable architecture, flow, debug, and change guidance."),
+            "final_redaction": {
+                "ok": redaction.ok,
+                "errors": redaction.errors,
+                "remediation": None if redaction.ok else "Remove or redact secret-like values from docs and persisted artifacts.",
+            },
+            "source_provenance": {
+                "ok": provenance.ok,
+                "coverage_count": provenance.coverage_count,
+                "expected_count": provenance.expected_count,
+                "errors": provenance.errors,
+                "remediation": None if provenance.ok else "Tie important claims and unit entries to source artifacts or scanner evidence.",
+            },
+            "reviewer_approval": {
+                "ok": reviewer_ok,
+                "errors": [
+                    finding["message"]
+                    for report in reviewers
+                    for finding in report["findings"]
+                    if finding.get("critical")
+                ],
+                "remediation": None if reviewer_ok else "Address critical Product Owner, Technical, and QA/Security reviewer findings.",
+            },
+            "quality_threshold": {
+                "ok": quality_score is not None and quality_score >= config.doc_generation_quality_threshold,
+                "score": quality_score,
+                "threshold": config.doc_generation_quality_threshold,
+                "errors": [] if quality_score is not None else [str(quality_report.get("error", "quality scorer failed"))],
+                "remediation": None if quality_score is not None and quality_score >= config.doc_generation_quality_threshold else "Increase document specificity, expected sections, evidence, and actionable workflows.",
+            },
+            "usefulness_rubric": {
+                "ok": usefulness.ok,
+                "errors": usefulness.errors,
+                "remediation": None if usefulness.ok else "Add developer onboarding, change, flow, runtime, debugging, testing, rollback, and unknowns guidance.",
+            },
+            "rag_sync": {
+                "ok": True,
+                "errors": [],
+                "remediation": None,
+                "note": "Pre-publish gate; final RAG sync is recorded by the API background task after swap.",
+            },
+        }
+        report = {
+            "mode": "enterprise" if ctx.enterprise_mode else "draft",
+            "client_ready": ctx.enterprise_mode and all(entry.get("ok") for entry in gates.values()),
+            "gates": gates,
+            "reviewers": reviewers,
+            "quality": quality_report,
+            "generated_at": time.time(),
+        }
+        (assessment_dir / "enterprise_gates.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        return report
+
+    @staticmethod
+    def _term_is_covered(text_lower: str, term: str) -> bool:
+        """True if term is substantively present — in a heading, or mentioned more than once.
+        A single bare mention (e.g. "no onboarding guidance found") does not count as covered."""
+        if term not in text_lower:
+            return False
+        if any(term in line for line in text_lower.splitlines() if line.lstrip().startswith("#")):
+            return True
+        return text_lower.count(term) > 1
+
+    def _run_internal_reviewers(self, ctx: DocGenContext, state: HarnessRunState) -> list[dict]:
+        all_text = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in sorted(ctx.staging_dir.glob("*.md"))
+        ).lower()
+
+        covered = self._term_is_covered
+
+        def finding(message: str, critical: bool = True) -> dict:
+            return {"message": message, "critical": critical}
+
+        reports = [
+            {
+                "reviewer": "Product Owner",
+                "findings": [] if all(covered(all_text, t) for t in ("onboarding", "common tasks", "change impact")) else [
+                    finding("Docs do not yet prove client-useful onboarding, common tasks, and change-impact guidance.")
+                ],
+            },
+            {
+                "reviewer": "Technical Reviewer",
+                "findings": [] if all(covered(all_text, t) for t in ("source artifact", "dependency", "debug", "rollback")) else [
+                    finding("Docs lack enough source artifact, dependency, debug, or rollback detail for developer change work.")
+                ],
+            },
+            {
+                "reviewer": "QA/Security Reviewer",
+                "findings": [] if all(covered(all_text, t) for t in ("evidence", "redacted", "unknown")) else [
+                    finding("Docs lack explicit evidence, redaction posture, or unknowns needed for safe delivery.")
+                ],
+            },
+        ]
+        review_dir = ctx.staging_dir / "_assessment" / "reviewers"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        for report in reports:
+            (review_dir / f"{self._safe_name(report['reviewer'])}.json").write_text(
+                json.dumps(report, indent=2), encoding="utf-8"
+            )
+        return reports
+
+    async def _write_audit_bundle(self, ctx: DocGenContext, state: HarnessRunState, gate_report: dict) -> None:
+        audit_dir = ctx.staging_dir / "_audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("facts_manifest.json", "documentation_obligations.json", "provider_calls.json"):
+            source = ctx.staging_dir / name
+            if source.exists():
+                shutil.copy2(source, audit_dir / name)
+        for dirname in ("_assessment", "_analysis", "_investigation"):
+            source = ctx.staging_dir / dirname
+            target = audit_dir / dirname
+            if source.exists() and source.is_dir():
+                if target.exists():
+                    await asyncio.to_thread(shutil.rmtree, target, True)
+                await asyncio.to_thread(shutil.copytree, source, target)
+        hashes: dict[str, str] = {}
+        try:
+            import hashlib
+
+            for path in sorted(ctx.staging_dir.glob("*.md")):
+                hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            pass
+        (audit_dir / "enterprise_gates.json").write_text(json.dumps(gate_report, indent=2, default=str), encoding="utf-8")
+        (audit_dir / "final_doc_hashes.json").write_text(json.dumps(hashes, indent=2), encoding="utf-8")
+
+    async def _phase4_cleanup(self, ctx: DocGenContext, state: HarnessRunState) -> None:
+        # _enterprise_gate_report is always called before _phase4_cleanup on the normal path;
+        # this guard is a safety net for direct calls outside generate().
+        if not (ctx.staging_dir / "_assessment" / "enterprise_gates.json").exists():
+            gate_report = self._enterprise_gate_report(ctx, state)
+            await self._write_audit_bundle(ctx, state, gate_report)
         archived_engineering_facts = self._archive_engineering_artifacts(ctx, state)
         index = {
             "project_id": ctx.project_id,
@@ -2341,7 +2772,7 @@ Missing units:
             "groups": state.facts_manifest.groups,
             "unit_count": state.facts_manifest.unit_count,
             "canonical_unit_label": state.facts_manifest.canonical_unit_label,
-            "docs": REQUIRED_DOCS,
+            "docs": self._required_docs,
             "engineering_facts": archived_engineering_facts,
             "provider": "custom",
             "model": self.model_provider.model_name,
@@ -2356,6 +2787,12 @@ Missing units:
             json.dumps([c.model_dump() for c in state.calls], indent=2),
             encoding="utf-8",
         )
+        audit_calls = ctx.staging_dir / "_audit" / "provider_calls.json"
+        if audit_calls.parent.exists():
+            audit_calls.write_text(
+                json.dumps([c.model_dump() for c in state.calls], indent=2),
+                encoding="utf-8",
+            )
 
         for directory in ("_preprocess", "_analysis"):
             target = ctx.staging_dir / directory
@@ -2605,6 +3042,7 @@ Allowed docs:
             if guide.exists():
                 files.append(guide)
             else:
+                logger.warning("phase2 guide file missing, using glob fallback: %s", guide)
                 files.extend(sorted(preprocess_dir.glob("_analysis_prompts*.md")))
         return files
 
@@ -2654,7 +3092,7 @@ Allowed docs:
         preprocess_dir = ctx.staging_dir / "_preprocess"
         analysis_dir = ctx.staging_dir / "_analysis"
         pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
-        bundle = DOC_BUNDLE_MAP.get(doc_name, "core")
+        bundle = self._doc_bundle_map.get(doc_name, "core")
         files: list[Path] = []
         obligations = ctx.staging_dir / "documentation_obligations.json"
         if obligations.exists():
@@ -2663,6 +3101,7 @@ Allowed docs:
         if prompt_pack.exists():
             files.append(prompt_pack)
         else:
+            logger.warning("phase3 prompt pack missing, falling back to guide files: %s", prompt_pack)
             phase3_guide = preprocess_dir / "_phase3_guide.md"
             if phase3_guide.exists():
                 files.append(phase3_guide)
@@ -2745,15 +3184,36 @@ def build_custom_provider(
     investigation_model_str: str | None = None,
     fallback_model_str: str | None = None,
     instruction_pack_dir: str | None = None,
+    plugin_pack_dir: Path | None = None,
 ) -> CustomHarnessProvider:
+    from mcp_server.model_strategies import normalize_model_id
+
+    model_str = normalize_model_id(model_str)
+
+    def _provider_config(model_id: str) -> dict[str, str | None]:
+        model_id = normalize_model_id(model_id)
+        provider = model_id.partition("/")[0]
+        if provider == "deepseek":
+            return {
+                "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
+                "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
+            }
+        if provider in {"openai", "anthropic", "google"}:
+            return {"api_key": None, "base_url": None}
+        return {
+            "api_key": config.doc_generation_api_key,
+            "base_url": config.doc_generation_base_url,
+        }
+
     def _build_secondary(secondary_str: str | None, *, skip_if_same: bool = True) -> ModelProvider | None:
+        secondary_str = normalize_model_id(secondary_str) if secondary_str else None
         if not secondary_str or (skip_if_same and secondary_str == model_str):
             return None
-        same_provider = secondary_str.partition("/")[0] == model_str.partition("/")[0]
+        provider_config = _provider_config(secondary_str)
         return build_model_provider(
             secondary_str,
-            api_key=config.doc_generation_api_key if same_provider else None,
-            base_url=config.doc_generation_base_url if same_provider else None,
+            api_key=provider_config["api_key"],
+            base_url=provider_config["base_url"],
             ollama_base_url=config.ollama_base_url,
         )
 
@@ -2764,8 +3224,7 @@ def build_custom_provider(
 
     main = build_model_provider(
         model_str,
-        api_key=config.doc_generation_api_key,
-        base_url=config.doc_generation_base_url,
+        **_provider_config(model_str),
         ollama_base_url=config.ollama_base_url,
     )
     return CustomHarnessProvider(
@@ -2774,4 +3233,5 @@ def build_custom_provider(
         _build_secondary(investigation_model_str),
         _build_secondary(fallback_model_str, skip_if_same=False),
         pack=pack,
+        plugin_pack_dir=plugin_pack_dir,
     )

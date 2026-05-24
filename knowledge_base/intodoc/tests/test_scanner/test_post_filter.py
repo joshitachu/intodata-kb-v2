@@ -296,3 +296,96 @@ def test_post_filter_audit_recorded():
 
     report = cf.get_audit_report()
     assert report["total_redactions"] > 0
+
+
+# ── ComponentParam name-based redaction ────────────────────────────
+
+
+def test_component_param_sensitive_name_redacted():
+    """Param named 'api_key' must be redacted unconditionally regardless of value format."""
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(name="api_key", value="prod-internal-custom-xyz123", field_type="TEXT"),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    param = result.jobs[0].components[0].params[0]
+    assert param.value == "[REDACTED]"
+
+
+def test_component_param_auth_token_name_redacted():
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(name="auth_token", value="some-internal-token-value", field_type="TEXT"),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    param = result.jobs[0].components[0].params[0]
+    assert param.value == "[REDACTED]"
+
+
+def test_component_param_bearer_value_redacted_by_pattern():
+    """Param with generic name but Bearer token value must be caught by text filter."""
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(name="HEADER_VALUE_1", value="Bearer xyz123abcdefghijklmno", field_type="TEXT"),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    param = result.jobs[0].components[0].params[0]
+    assert "xyz123abcdefghijklmno" not in param.value
+    assert "[BEARER_TOKEN_REDACTED]" in param.value
+
+
+def test_component_param_nonsensitive_name_preserved():
+    """Params with non-sensitive names and non-credential values must not be redacted."""
+    cf = CredentialFilter(level=RedactionLevel.STANDARD)
+    result = _make_scan_result(jobs=[
+        ParsedJob(
+            name="test_job", path="/jobs/test",
+            components=[
+                Component(
+                    unique_name="tRest_1", component_type="tRESTClient",
+                    params=[
+                        ComponentParam(name="MAX_ROWS", value="1000", field_type="TEXT"),
+                        ComponentParam(name="OUTPUT_FORMAT", value="json", field_type="TEXT"),
+                    ],
+                ),
+            ],
+        ),
+    ])
+    filter_scan_result(result, cf)
+
+    params = result.jobs[0].components[0].params
+    assert params[0].value == "1000"
+    assert params[1].value == "json"

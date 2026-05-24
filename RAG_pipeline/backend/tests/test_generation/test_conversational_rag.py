@@ -170,6 +170,23 @@ class TestTruncateHistory:
         result = truncate_history(messages, max_tokens=300)
         assert len(result) < 4
 
+    def test_excludes_failed_assistant_messages(self) -> None:
+        failed = _mock_message("assistant", "")
+        failed.status = "failed"
+        failed.error_message = "Provider timed out"
+        messages = [
+            _mock_message("user", "What happened?"),
+            failed,
+            _mock_message("user", "Try again"),
+        ]
+
+        result = truncate_history(messages, max_tokens=10000)
+
+        assert [message["content"] for message in result] == [
+            "What happened?",
+            "Try again",
+        ]
+
 
 class TestBuildContext:
     def test_empty_sources(self) -> None:

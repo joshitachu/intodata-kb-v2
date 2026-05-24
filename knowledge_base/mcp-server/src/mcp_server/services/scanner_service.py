@@ -13,6 +13,7 @@ from pathlib import Path
 
 from mcp_server.config import config
 from mcp_server.services.log_manager import LogManager
+from mcp_server.utils.error_sanitizer import sanitize_git_error, sanitize_multiline_git_error
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,11 @@ class ScannerService:
         """
         out_dir = Path(output_dir) if output_dir else config.intodoc_output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
+        for stale in (out_dir / "scan_result.json", out_dir / "scan"):
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
+            else:
+                stale.unlink(missing_ok=True)
 
         # Resolve full path: check the running Python env's bin/ first,
         # then fall back to system PATH.
@@ -47,6 +53,24 @@ class ScannerService:
             resolved_cmd = shutil.which(config.intodoc_command)
         if not resolved_cmd:
             msg = f"intodoc command not found on PATH: {config.intodoc_command}"
+            logger.error(msg)
+            if self.log_manager:
+                await self.log_manager.emit(project_id, msg, level="error")
+            return {
+                "success": False,
+                "error": msg,
+                "job_count": 0,
+                "scan_result_path": None,
+                "output_dir": str(out_dir),
+            }
+
+        repo = Path(repo_path)
+        if not repo.exists():
+            expected = config.repos_dir / project_id
+            msg = (
+                f"Project repository path does not exist for {project_id!r}: "
+                f"{repo}. Expected managed projects under {expected}."
+            )
             logger.error(msg)
             if self.log_manager:
                 await self.log_manager.emit(project_id, msg, level="error")
@@ -107,9 +131,11 @@ class ScannerService:
                     lines.append(stripped)
                     if self.log_manager:
                         if tag == "stderr":
-                            await self.log_manager.emit(
-                                project_id, f"[stderr] {stripped}", level="warning",
-                            )
+                            safe = sanitize_git_error(stripped)
+                            if safe:
+                                await self.log_manager.emit(
+                                    project_id, f"[stderr] {safe}", level="warning",
+                                )
                         else:
                             await self.log_manager.emit(
                                 project_id, stripped, level="info",
@@ -127,6 +153,7 @@ class ScannerService:
                 all_lines = output_lines + stderr_lines
                 error_msg = "\n".join(all_lines[-10:])
                 logger.error(f"Scan failed (exit {returncode}): {error_msg}")
+                error_msg = sanitize_multiline_git_error(all_lines[-10:])
                 if self.log_manager:
                     await self.log_manager.emit(
                         project_id,
@@ -144,12 +171,35 @@ class ScannerService:
             # Read scan result to get job count
             scan_result_path = out_dir / "scan_result.json"
             job_count = 0
-            if scan_result_path.exists():
-                try:
-                    data = json.loads(scan_result_path.read_text(encoding="utf-8"))
-                    job_count = len(data.get("jobs", []))
-                except Exception:
-                    pass
+            if not scan_result_path.exists():
+                msg = f"Scan completed but did not produce {scan_result_path}"
+                logger.error(msg)
+                if self.log_manager:
+                    await self.log_manager.emit(project_id, msg, level="error")
+                return {
+                    "success": False,
+                    "error": msg,
+                    "job_count": 0,
+                    "scan_result_path": None,
+                    "output_dir": str(out_dir),
+                }
+            try:
+                data = json.loads(scan_result_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or not isinstance(data.get("jobs", []), list):
+                    raise ValueError("scan_result.json must be an object with a jobs list")
+                job_count = len(data.get("jobs", []))
+            except Exception as exc:
+                msg = f"Scan produced invalid scan_result.json: {exc}"
+                logger.error(msg)
+                if self.log_manager:
+                    await self.log_manager.emit(project_id, msg, level="error")
+                return {
+                    "success": False,
+                    "error": msg,
+                    "job_count": 0,
+                    "scan_result_path": None,
+                    "output_dir": str(out_dir),
+                }
 
             logger.info(f"Scan completed: {job_count} jobs found")
             if self.log_manager:

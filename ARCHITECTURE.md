@@ -55,7 +55,7 @@ The platform is containerized via Docker Compose (6 services), fronted by an ngi
 
 ## 2. System Architecture Overview
 
-The platform follows a microservices-inspired architecture with six containerized services orchestrated by Docker Compose. All external traffic enters through an nginx reverse proxy on the VPS which handles TLS termination, security headers, and path-based routing to the appropriate upstream service.
+The platform follows a microservices-inspired architecture with seven containerized services orchestrated by Docker Compose. All external traffic enters through an nginx reverse proxy on the VPS which handles TLS termination, security headers, and path-based routing to the appropriate upstream service.
 
 ### High-Level Architecture Diagram
 
@@ -72,7 +72,7 @@ The platform follows a microservices-inspired architecture with six containerize
 |Next  | | FastAPI  | | Vite +    | | FastAPI    |
 |.js   | | RAG      | | React     | | MCP Server |
 |UI    | | Backend  | | Dashboard | | :8002      |
-|:3000 | | :8000    | | :8001     | | (systemd)  |
+|:3000 | | :8000    | | :8001     | | :8002      |
 +--+---+ +----+-----+ +-----+-----+ +------+-----+
    |          |             |               |
    +----------+------+------+-------+-------+
@@ -160,8 +160,7 @@ User asks question ---> intent classify --> hybrid search (dense+BM25) -+
 | Database | PostgreSQL 16 | Relational data (auth, docs, usage, audit) |
 | Vector Store | Qdrant | Dense + sparse vector search |
 | Reverse Proxy | nginx | HTTPS/SSL, routing, security headers |
-| Containers | Docker Compose | 6-service orchestration |
-| Process Manager | systemd (per-client template) | MCP server lifecycle |
+| Containers | Docker Compose | 7-service orchestration |
 | Local LLM Runtime | Ollama | Model inference on host |
 
 ---
@@ -374,7 +373,7 @@ Redaction levels: standard | strict | paranoid (configurable per scan).
 
 ### 7.2 MCP Server (port 8002)
 
-The MCP Server is a FastAPI application running as a host-level systemd service (not in Docker), serving as both a REST API for the dashboard and an MCP-compatible server for AI agent integration.
+The MCP Server is a FastAPI application running as the `mcp-server` Docker Compose service, serving as both a REST API for the dashboard and an MCP-compatible server for AI agent integration.
 
 - Project registry: manages code repositories and their metadata
 - Scan orchestration: triggers intodoc scans and tracks status/progress
@@ -536,7 +535,7 @@ Port values are environment-variable-driven (`nexus-client.conf.template`) — n
 | `/api/v1/*` | `localhost:${BACKEND_PORT}` | RAG API |
 | `/health` | `localhost:${BACKEND_PORT}` | Health check |
 | `/dashboard/*` | `localhost:${DASHBOARD_PORT}` | Dashboard (nginx container) |
-| `/mcp/*` | `localhost:${MCP_PORT}` | MCP server (systemd), max_body 500 MB |
+| `/mcp/*` | `localhost:${MCP_PORT}` | MCP server container, max_body 500 MB |
 | `/logs/*` | `localhost:${MCP_PORT}` | SSE logs, buffering off, 24 h timeout |
 | `/webhook/*` | `localhost:${MCP_PORT}` | GitHub webhooks |
 | `/` (catch-all) | `localhost:${FRONTEND_PORT}` | Next.js RAG UI, WebSocket upgrade |
@@ -705,11 +704,12 @@ Two-layer access model:
 | hindsight | ghcr.io/vectorize-io/hindsight:latest | 127.0.0.1:8888, 9999 | 2 GB | wget /health |
 | backend | Custom (FastAPI) | 127.0.0.1:8000 | 1 GB | curl /health |
 | frontend | Custom (Next.js) | 127.0.0.1:3000 | 512 MB | curl / |
+| mcp-server | Custom (FastAPI) | 127.0.0.1:8002 | 1 GB | curl /health |
 | dashboard | Custom (Vite+nginx) | 127.0.0.1:8001 | 256 MB | curl /health |
 
 All internal ports are bound to `127.0.0.1` only. Only ports 22 (SSH), 80, and 443 are exposed externally via UFW. External access routes exclusively through the VPS nginx proxy.
 
-The MCP server runs as a host-level systemd service on port 8002 (not in Docker) to allow direct filesystem access for code scanning and AI agent CLI invocation.
+The MCP server runs as a Docker Compose service on port 8002 with bind mounts for generated data, scan output, documentation output, and instruction packs.
 
 ### 12.2 nginx Architecture (Two Layers)
 
@@ -725,21 +725,21 @@ The MCP server runs as a host-level systemd service on port 8002 (not in Docker)
 **Layer 2: Dashboard Container nginx**
 
 - Serves the Vite static build; SPA fallback to `index.html`
-- Proxies `/mcp/`, `/logs/`, `/webhook/` to `host.docker.internal:8002`
+- Proxies `/mcp/`, `/logs/`, `/webhook/` to `mcp-server:8002`
 - Proxies `/auth/` to `host.docker.internal:8000/api/v1/auth/`
 - SSE: `proxy_buffering off`, `proxy_read_timeout 600s`
 - Max upload body: 500 MB
 
-### 12.3 MCP Server Deployment (systemd)
+### 12.3 MCP Server Deployment (Docker Compose)
 
-The MCP server is deployed as a per-client templated systemd unit (`deploy/mcp-server@.service`):
+The MCP server is deployed as the `mcp-server` service in the root Docker Compose file:
 
-- Service name: `mcp-server@{client}.service`
-- WorkingDirectory: `/opt/intodata-kb/{client}/knowledge_base`
-- EnvironmentFile: `/etc/intodata-kb/envs/{client}.env`
+- Service name: `mcp-server`
+- Image build context: `knowledge_base`
+- EnvironmentFile: `/etc/intodata-kb/envs/{client}.env` via `docker compose --env-file`
 - Port: configurable via `MCP_PORT` (default: 8002)
-- Restart: on-failure, 5-second delay
-- Runs as dedicated `intodata` system user
+- Restart: unless-stopped
+- Mounted state: MCP data, intodoc scan output, generated docs, instruction packs
 
 Running on the host (not in Docker) is intentional: the MCP server requires direct filesystem access to scan source code directories and invoke the AI doc-generation CLI.
 
@@ -804,13 +804,13 @@ Results stored in PostgreSQL (`benchmark_runs`, JSONB). Run comparison diffs tra
 | nginx with env-variable port template | Per-client deployment flexibility without config file changes |
 | Staging directory for docs | Atomic doc generation: failure leaves existing docs intact |
 | PostgreSQL shared by both services | Single DB to manage; shared user/project data |
-| MCP server on host (systemd) | Direct filesystem access for code scanning and AI CLI invocation |
+| MCP server in Docker Compose | Same lifecycle and health boundary as the rest of the application stack |
 | Two-layer nginx | Edge SSL termination + container-level SPA routing |
 | Bounded agent runtime with task persistence | Reliable multi-phase doc gen: resumes incomplete tasks, retries failed ones, never loses accepted output |
 | Configurable doc-gen provider | Decouple batch documentation writing from the query-time LLM chain |
 | TOTP MFA + invite + access-request flows | Enterprise-grade auth without an external identity provider |
 | Tenant config API | White-label branding per deployment without code changes |
-| Per-client systemd template | Multi-tenant MCP deployment with isolated env files per client |
+| Per-client compose project | Multi-tenant deployment with isolated env files, networks, ports, and volumes per client |
 
 ---
 

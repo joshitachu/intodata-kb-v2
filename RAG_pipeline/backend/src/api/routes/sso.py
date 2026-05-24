@@ -202,7 +202,7 @@ async def sso_callback(request: Request, db: DBSession):
     await db.refresh(user)
 
     # --- Issue JWT cookies ---
-    access = create_access_token(user.id, user.username)
+    access = create_access_token(user.id, user.username, user.mfa_enabled)
     refresh, expires_at = create_refresh_token(user.id)
     db.add(RefreshToken(token_hash=hash_token(refresh), user_id=user.id, expires_at=expires_at))
     await db.commit()

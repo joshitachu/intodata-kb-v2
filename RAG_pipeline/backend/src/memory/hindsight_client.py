@@ -248,8 +248,11 @@ async def ensure_user_bank(user_id: str) -> None:
     """Create user memory bank if it doesn't already exist (idempotent)."""
     if not settings.hindsight_enabled:
         return
+    client = _get_client()
+    if client is None:
+        logger.warning("ensure_user_bank: hindsight package not installed")
+        return
     try:
-        client = _get_client()
         await client.acreate_bank(
             bank_id=_user_bank(user_id),
             name=f"Memory for user {user_id}",

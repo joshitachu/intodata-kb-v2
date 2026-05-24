@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthContext } from "@/components/AuthProvider";
 import { TenantMark } from "@/components/TenantMark";
 import { useTenantContext } from "@/contexts/TenantContext";
+import { AuthUserSchema } from "@/types";
 
 type Mode = "loading" | "login" | "code" | "mfa" | "bootstrap";
 type AuthTab = "signin" | "signup";
@@ -14,7 +15,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") || "/";
-  const { loginAs } = useAuthContext();
+  const { loginAs, refreshUser } = useAuthContext();
   const { tenant } = useTenantContext();
 
   const [mode, setMode] = useState<Mode>("loading");
@@ -55,17 +56,26 @@ function LoginForm() {
     };
   }, []);
 
-  function finishLogin(data: { user?: { username: string; mfa_enabled?: boolean } & Record<string, unknown> }) {
-    if (data.user) loginAs(data.user as unknown as Parameters<typeof loginAs>[0]);
-    if (data.user?.mfa_enabled === false) {
+  async function finishLogin(data: unknown) {
+    const user = data !== null && typeof data === "object" ? (data as Record<string, unknown>).user : undefined;
+    const parsed = AuthUserSchema.safeParse(user);
+    let authUser: Parameters<typeof loginAs>[0] | null = null;
+    if (parsed.success) {
+      authUser = parsed.data as Parameters<typeof loginAs>[0];
+      loginAs(authUser);
+    } else {
+      authUser = await refreshUser();
+      if (!authUser) {
+        setError("Login succeeded, but your session could not be loaded. Please try again.");
+        return;
+      }
+    }
+    if (!authUser.mfa_enabled) {
       router.push("/settings/security");
       return;
     }
-    if (redirect.startsWith("http")) {
-      window.location.href = redirect;
-    } else {
-      router.push(redirect);
-    }
+    const safeRedirect = redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/";
+    router.push(safeRedirect);
   }
 
   async function handleSendLoginCode(e?: React.FormEvent) {
@@ -120,7 +130,7 @@ function LoginForm() {
         setMode("mfa");
         return;
       }
-      finishLogin(data);
+      await finishLogin(data);
     } catch {
       setError("Network error. Please try again.");
     } finally {
@@ -152,7 +162,7 @@ function LoginForm() {
         setMode("mfa");
         return;
       }
-      finishLogin(data);
+      await finishLogin(data);
     } catch {
       setError("Network error. Please try again.");
     } finally {
@@ -175,7 +185,7 @@ function LoginForm() {
         setError(data?.error || "Invalid code");
         return;
       }
-      finishLogin(data);
+      await finishLogin(data);
     } catch {
       setError("Network error. Please try again.");
     } finally {
@@ -202,7 +212,7 @@ function LoginForm() {
         setError(data?.error || "Bootstrap failed");
         return;
       }
-      finishLogin(data);
+      await finishLogin(data);
     } catch {
       setError("Network error. Please try again.");
     } finally {

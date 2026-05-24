@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,22 +15,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
-from sqlalchemy import inspect
+from sqlalchemy import inspect, update
+from sqlalchemy.future import select
 from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from mcp_server.api.middleware import IPAllowlistMiddleware
-from mcp_server.config import config
-from mcp_server.db.models import Base
-import mcp_server.db.template_models  # noqa: F401 -- register with Base.metadata
-from mcp_server.db.session import engine
+from mcp_server.config import check_provider_credentials, config
+from mcp_server.db.models import Base, GenerateRun
+from mcp_server.db.session import async_session_factory, engine
 from mcp_server.services.atomic_swap import (
     gc_abandoned_staging,
     recover_stale_backups,
 )
+from mcp_server.services.generation_run_state import lock_path, read_json_file
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.git_poller import git_polling_loop
 from mcp_server.services.ops_telemetry import telemetry_enabled, telemetry_loop
+from mcp_server.services.project_paths import repair_managed_project_repo_paths
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +40,61 @@ logger = logging.getLogger(__name__)
 log_manager = LogManager()
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+async def _reconcile_orphaned_runs() -> None:
+    """Mark GenerateRun rows left in status='running' at crash time as failed."""
+    output_root = config.project_root / "output"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(GenerateRun).where(GenerateRun.status == "running")
+        )
+        runs = result.scalars().all()
+        if not runs:
+            return
+        orphaned_ids: list[int] = []
+        for run in runs:
+            staging_dir = output_root / run.project_id / "docs_staging"
+            lock_data = read_json_file(lock_path(staging_dir))
+            if lock_data is None:
+                orphaned_ids.append(run.id)
+                continue
+            pid = lock_data.get("pid")
+            if pid and not _pid_alive(int(pid)):
+                orphaned_ids.append(run.id)
+                continue
+            age = time.time() - float(lock_data.get("updated_at") or 0)
+            if age > config.doc_generation_lock_stale_seconds:
+                orphaned_ids.append(run.id)
+        if orphaned_ids:
+            await session.execute(
+                update(GenerateRun)
+                .where(GenerateRun.id.in_(orphaned_ids))
+                .values(
+                    status="failed",
+                    error_message="orphaned at restart",
+                    completed_at=now,
+                )
+            )
+            await session.commit()
+            logger.warning(
+                "[startup] marked %d orphaned generate_run(s) as failed: ids=%s",
+                len(orphaned_ids), orphaned_ids,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown."""
     logging.basicConfig(level=getattr(logging, config.log_level))
-    logger.info("Starting intodoc MCP Server API on :8001")
+    logger.info("Starting intodoc MCP Server API")
     # Auto-create tables on first run, skip if they already exist
     async with engine.begin() as conn:
         existing = set(
@@ -60,6 +114,12 @@ async def lifespan(app: FastAPI):
             logger.info("Created tables: %s", [t.name for t in tables_to_create])
         else:
             logger.info("All tables already exist, skipping create")
+    try:
+        repaired_paths = await repair_managed_project_repo_paths(async_session_factory)
+        if repaired_paths:
+            logger.warning("Repaired %d stale project repo path(s)", repaired_paths)
+    except Exception:
+        logger.exception("Startup project path repair failed")
     app.state.log_manager = log_manager
     app.state.git_poller_task = asyncio.create_task(git_polling_loop(log_manager))
     app.state.ops_telemetry_task = (
@@ -83,6 +143,17 @@ async def lifespan(app: FastAPI):
     except Exception:
         # Never let startup maintenance prevent the server coming up.
         logger.exception("Startup docs maintenance failed")
+
+    try:
+        await _reconcile_orphaned_runs()
+    except Exception:
+        logger.exception("Startup orphaned-run reconciliation failed")
+
+    for warning in check_provider_credentials():
+        if config.app_env == "production":
+            logger.error("[startup] %s", warning)
+        else:
+            logger.warning("[startup] %s", warning)
 
     try:
         yield
@@ -167,9 +238,10 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import discovery, generate_runs, health, logs, projects, templates, webhook  # noqa: E402
+from mcp_server.api.routes import discovery, generate_runs, health, logs, ops_control, plugins, projects, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
+app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
 app.include_router(
     projects.router,
     prefix="/mcp",
@@ -181,17 +253,12 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
-    templates.router,
-    prefix="/mcp",
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
-    templates.profile_router,
-    prefix="/mcp",
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
     generate_runs.router,
+    prefix="/mcp",
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    plugins.router,
     prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )

@@ -35,7 +35,7 @@
 
 ## MCP Server
 
-- [x] 8 MCP tools for Claude Code (add_repo, fetch_json, trigger_scan, etc.)
+- [x] 14 MCP tools for Claude Code (add_repo, fetch_json, trigger_scan, get_analysis_prompts, get_reference_docs, recall/retain Hindsight tools, etc.)
 - [x] REST API (12 endpoints on port 8001)
 - [x] Dual mode: --mcp (stdio) and --serve (HTTP)
 - [x] Doc generation via Claude Code subprocess
@@ -65,6 +65,8 @@
 - [x] TRANSFORMATION_DETAIL analysis section (all platforms)
 - [x] Per-job transformation detail requirements in Phase 3 guides
 - [x] Function chain trace examples in reference docs (03, 04)
+- [x] Enterprise documentation gates: blocking Phase 3 depth, final redaction/provenance/usefulness/reviewer/quality gates, audit bundle, structured run verdicts
+- [x] Scan reliability hardening: stale scan cleanup and fail-closed missing/invalid `scan_result.json`
 
 ## Dashboard
 
@@ -85,6 +87,7 @@
 - [x] Profile detail with per-template version assignment
 - [x] Profile dropdown on Generate button for template swapping
 - [x] Run history with profile column
+- [x] Run history structured verdict badges (`draft`, `failed`, `published`, `published_with_rag_error`, `client_ready`)
 - [x] A/B run comparison (metrics table + template diff)
 - [x] Document catalogue (12 doc type reference with template links)
 - [x] Top-level navigation (Projects / Templates / Profiles / Docs)
@@ -114,7 +117,7 @@
 | Component | Files | Tests | Status |
 |-----------|-------|-------|--------|
 | Scanner CLI | 15+ Python files | 126 Workato tests | Complete (Talend, Workato, Generic) |
-| MCP Server | 20+ Python files | -- | Complete (templates, profiles, scoring) |
+| MCP Server | 20+ Python files | 350 backend tests | Complete (templates, profiles, scoring, enterprise gates) |
 | Dashboard | 20+ TypeScript files | Vitest | Complete (templates, profiles, A/B, docs) |
 
 See `PROGRESS_LOG.md` for detailed session history.

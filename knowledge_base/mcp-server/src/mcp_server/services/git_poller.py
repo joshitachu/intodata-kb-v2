@@ -5,38 +5,41 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
-from mcp_server.services.git_diff_patcher import run_webhook_diff_update
+from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.utils.error_sanitizer import sanitize_git_error
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_HOURS = (0, 12)
 
 
-async def _git_output(local_path: str, *args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=local_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.DEVNULL,
+async def run_webhook_diff_update(
+    *,
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    log_mgr: LogManager,
+    trigger: str = "poller",
+) -> bool:
+    """Compatibility wrapper around the shared auto-doc update service."""
+    return await AutoDocUpdateService(log_mgr=log_mgr).run(
+        project_id=project_id,
+        before_sha=before_sha,
+        after_sha=after_sha,
+        trigger=trigger,
     )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise RuntimeError(f"git {' '.join(args)} timed out after 30s")
-    if proc.returncode != 0:
-        detail = stderr.decode().strip() or stdout.decode().strip()
-        raise RuntimeError(detail or f"git {' '.join(args)} failed")
-    return stdout.decode().strip()
+
+
+async def _git_output(local_path: str, *args: str) -> str:
+    from mcp_server.services.git_diff_patcher import _run_git
+    return await _run_git(local_path, *args, timeout=30.0, strip=True)
 
 
 async def _set_remote_url(local_path: str, url: str) -> None:
@@ -44,16 +47,24 @@ async def _set_remote_url(local_path: str, url: str) -> None:
 
 
 async def _fetch_remote(local_path: str, token_enc: str | None = None) -> None:
+    clean_url: str | None = None
     if token_enc:
         from mcp_server.utils.encryption import inject_token as _inject_token
         try:
-            # Read current remote URL (clean, no credentials)
-            current_url = await _git_output(local_path, "remote", "get-url", "origin")
-            authed_url = _inject_token(current_url, token_enc)
+            clean_url = await _git_output(local_path, "remote", "get-url", "origin")
+            authed_url = _inject_token(clean_url, token_enc)
             await _set_remote_url(local_path, authed_url)
         except Exception as exc:
             logger.warning("Failed to inject token into remote URL for %s: %s", local_path, exc)
-    await _git_output(local_path, "fetch", "--quiet")
+            clean_url = None
+    try:
+        await _git_output(local_path, "fetch", "--quiet")
+    finally:
+        if clean_url:
+            try:
+                await _set_remote_url(local_path, clean_url)
+            except Exception as exc:
+                logger.warning("Failed to restore clean remote URL for %s: %s", local_path, exc)
 
 
 async def _remote_head_sha(local_path: str) -> str:
@@ -97,7 +108,7 @@ async def poll_git_projects_once(log_mgr: LogManager) -> None:
             if not success:
                 error = f"Diff-only auto update failed for remote commit {remote_sha}"
         except Exception as e:
-            error = str(e)
+            error = sanitize_git_error(str(e))
             logger.warning("Git polling failed for %s: %s", project.id, e)
 
         async with async_session_factory() as db:
@@ -159,6 +170,50 @@ def next_git_poll_at(
     )
 
 
+async def poll_plugin_packs_once() -> None:
+    """Pull any plugin packs installed from a GitHub URL whose remote HEAD changed."""
+    from sqlalchemy import select
+    from mcp_server.db.models import PluginPack
+
+    async with async_session_factory() as db:
+        packs = (
+            await db.execute(
+                select(PluginPack).where(
+                    PluginPack.repo_url.isnot(None),
+                    PluginPack.auto_update.is_(True),
+                )
+            )
+        ).scalars().all()
+
+    for pack in packs:
+        try:
+            await _git_output(pack.path, "fetch", "--quiet")
+            remote_sha = await _remote_head_sha(pack.path)
+            if remote_sha == pack.last_commit_sha:
+                continue
+
+            logger.info("Plugin pack %r has new commits — pulling (%s)", pack.name, remote_sha[:8])
+            await _git_output(pack.path, "pull", "--ff-only")
+
+            async with async_session_factory() as db:
+                p = await db.get(PluginPack, pack.id)
+                if p:
+                    p.last_commit_sha = remote_sha
+                    # Reload version from manifest in case it changed
+                    from pathlib import Path
+                    from mcp_server.services.plugin_schema import load_plugin_manifest
+                    try:
+                        manifest = load_plugin_manifest(Path(p.path))
+                        p.version = manifest.version
+                        p.description = manifest.description or p.description
+                    except Exception:
+                        pass
+                    await db.commit()
+
+        except Exception:
+            logger.exception("Failed to poll plugin pack %r at %s", pack.name, pack.path)
+
+
 async def git_polling_loop(log_mgr: LogManager) -> None:
     while True:
         next_run = next_git_poll_at()
@@ -174,3 +229,9 @@ async def git_polling_loop(log_mgr: LogManager) -> None:
             raise
         except Exception:
             logger.exception("Git polling loop failed")
+        try:
+            await poll_plugin_packs_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Plugin pack polling loop failed")

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
 export async function GET() {
   try {
@@ -10,7 +9,7 @@ export async function GET() {
     const data = await res.json().catch(() => null);
     if (!res.ok || !data) {
       return NextResponse.json(
-        { name: "IntoData", slug: "intodata", environment: "development" },
+        { name: process.env.NEXT_PUBLIC_TENANT_NAME ?? "Nexus", slug: process.env.NEXT_PUBLIC_TENANT_SLUG ?? "nexus", environment: "development" },
         { status: 200 },
       );
     }
@@ -18,7 +17,7 @@ export async function GET() {
   } catch {
     // Tenant config must never block the app — return the safe fallback.
     return NextResponse.json(
-      { name: "IntoData", slug: "intodata", environment: "development" },
+      { name: process.env.NEXT_PUBLIC_TENANT_NAME ?? "Nexus", slug: process.env.NEXT_PUBLIC_TENANT_SLUG ?? "nexus", environment: "development" },
       { status: 200 },
     );
   }

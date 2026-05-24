@@ -1,0 +1,10 @@
+name: integration-assessor
+version: "1.0.0"
+description: >
+  Full multi-phase integration documentation pipeline.
+  Runs investigation, analysis, scorecard, and doc-writing phases
+  via the platform's CustomHarnessProvider.
+
+steps:
+  - id: full_pipeline
+    type: harness

@@ -6,10 +6,12 @@ import { Layout } from "@/components/Layout";
 
 const inter = Inter({ subsets: ["latin"] });
 
+const tenantName = process.env.NEXT_PUBLIC_TENANT_NAME ?? "Nexus";
+
 export const metadata: Metadata = {
   title: {
-    default: "IntoData Knowledge Base",
-    template: "%s | IntoData KB",
+    default: tenantName,
+    template: `%s | ${tenantName}`,
   },
   description: "RAG-powered knowledge base for company documents",
   icons: {

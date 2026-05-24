@@ -6,14 +6,14 @@ Get the intodoc platform running locally for development.
 
 - Python 3.11+
 - Node.js 18+ and npm
-- PostgreSQL running locally
+- PostgreSQL running locally (or via `docker-compose up -d postgres`)
 - Ollama with `nomic-embed-text` model (for RAG pipeline embeddings)
 
 ## Step 1: Install Python Dependencies
 
 ```bash
 # Scanner CLI
-cd intodoc
+cd knowledge_base/intodoc
 pip install -e ".[dev]"
 
 # MCP server
@@ -24,21 +24,38 @@ pip install -e .
 ## Step 2: Install Node Dependencies
 
 ```bash
-cd dashboard
+cd knowledge_base/dashboard
 npm install
 ```
 
-## Step 3: Database Setup
+## Step 3: Environment Variables
 
-The MCP server and RAG pipeline share a PostgreSQL database.
+Create `knowledge_base/mcp-server/.env`:
 
 ```bash
-# Run Alembic migrations for RAG pipeline
-cd ../RAG_pipeline/backend
+DATABASE_URL=postgresql+asyncpg://postgres:changeme@localhost:5432/intodata_kb
+JWT_SECRET_KEY=change-me-for-local-dev
+
+# Optional: for custom API provider
+# MCP_DOC_GENERATION_PROVIDER=custom
+# ANTHROPIC_API_KEY=...
+```
+
+## Step 4: Database Setup
+
+```bash
+# RAG pipeline migrations
+cd RAG_pipeline/backend
+alembic upgrade head
+
+# MCP server migrations
+cd knowledge_base/mcp-server
 alembic upgrade head
 ```
 
-## Step 4: Start Services (3 terminals)
+The MCP server also auto-creates tables on first startup, but Alembic is required for schema upgrades.
+
+## Step 5: Start Services (3 terminals)
 
 ```bash
 # Terminal 1: RAG pipeline (port 8000)
@@ -46,30 +63,30 @@ cd RAG_pipeline/backend
 python -m uvicorn src.api.main:app --port 8000
 
 # Terminal 2: MCP REST API (port 8001)
-cd vaxxinova/mcp-server
+cd knowledge_base/mcp-server
 python -m mcp_server --serve
 
 # Terminal 3: Dashboard (port 5173)
-cd vaxxinova/dashboard
+cd knowledge_base/dashboard
 npm run dev
 ```
 
-## Step 5: Verify
+## Step 6: Verify
 
 ```bash
 # Health check
 curl http://localhost:8001/health
 
-# List projects
-curl http://localhost:8001/mcp/projects
+# List projects (requires auth cookie -- use dashboard login instead)
+open http://localhost:5173
 ```
 
-Open http://localhost:5173 to verify the dashboard loads.
+Default dashboard credentials: `admin` / `admin`
 
-## Step 6: Configure Claude Code MCP
+## Step 7: Configure Claude Code MCP
 
-The `.mcp.json` file in the project root configures the MCP server for Claude Code.
-Restart Claude Code in the `vaxxinova/` directory so it picks up the config.
+The `.mcp.json` file in `knowledge_base/` configures the MCP server for Claude Code.
+Open Claude Code with `knowledge_base/` as the working directory so it picks up the config.
 
 Test with:
 ```
@@ -81,3 +98,4 @@ Test with:
 - The MCP server (stdio mode) is started automatically by Claude Code via `.mcp.json`
 - The REST API server (port 8001) must be started manually for the dashboard
 - Ollama must be running with `nomic-embed-text` pulled for RAG embeddings
+- Ollama is also used directly by the MCP server if `MCP_DOC_GENERATION_PROVIDER=ollama`

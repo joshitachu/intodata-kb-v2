@@ -1,3 +1,5 @@
+export type DocSource = "published" | "staging";
+
 export interface Project {
   id: string;
   display_name: string;
@@ -21,8 +23,20 @@ export interface Project {
   has_github_token: boolean;
   webhook_status: "active" | "not_registered" | "unknown" | null;
   instruction_pack_dir: string | null;
+  plugin_pack_id: number | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface PluginPack {
+  id: number;
+  name: string;
+  version: string;
+  path: string;
+  description: string | null;
+  repo_url: string | null;
+  last_commit_sha: string | null;
+  auto_update: boolean;
 }
 
 export interface ProjectListResponse {
@@ -50,6 +64,7 @@ export interface ModelDescriptor {
   supports_analysis: boolean;
   supports_writing: boolean;
   is_default_analysis: boolean;
+  is_default_investigation: boolean;
   is_default_writing: boolean;
   is_local: boolean;
 }
@@ -89,10 +104,10 @@ export interface GenerateRun {
   model_name: string | null;
   write_model_name: string | null;
   quality_score: number | null;
-  template_profile_id: number | null;
-  template_snapshot: Record<string, number> | null;
   auto_verdict: "PASS" | "FAIL" | null;
   auto_baseline_run_id: number | null;
+  run_verdict: "draft" | "failed" | "published" | "published_with_rag_error" | "client_ready" | null;
+  gate_results: Record<string, unknown> | null;
 }
 
 export interface ScanRun {
@@ -164,8 +179,6 @@ export interface RunComparisonRun {
   status: string;
   started_at: string | null;
   completed_at: string | null;
-  template_profile_id: number | null;
-  template_snapshot: Record<string, number> | null;
   doc_count: number;
   provider: string | null;
   analysis_model: string | null;
@@ -196,8 +209,6 @@ export interface RunComparison {
   quality_delta_pct: number | null;
   verdict: "PASS" | "FAIL";
   checks: Array<Record<string, unknown>>;
-  template_diffs: Array<{ slug: string; version_a: number | null; version_b: number | null }>;
-  total_template_diffs: number;
 }
 
 export interface QualityHistoryEntry {
@@ -252,61 +263,4 @@ export interface InstructionPackMetadata {
   is_local: boolean;
   supported: boolean;
   preambles: Array<{ key: string; bytes: number; chars: number }>;
-}
-
-// --- Templates ---
-
-export type TemplateTier = "policy" | "configurable" | "addon";
-
-export interface Template {
-  id: number;
-  slug: string;
-  category: string;
-  platform: string | null;
-  display_name: string;
-  description: string | null;
-  is_active: boolean;
-  tier: TemplateTier;
-  created_at: string | null;
-  updated_at: string | null;
-  latest_version: number | null;
-}
-
-export interface TemplateVersion {
-  id: number;
-  template_id: number;
-  version_number: number;
-  content: string | null;
-  change_summary: string;
-  created_by: string | null;
-  content_hash: string | null;
-  byte_size: number | null;
-  created_at: string | null;
-}
-
-export interface TemplateProfile {
-  id: number;
-  name: string;
-  description: string | null;
-  platform: string | null;
-  scope: string;
-  scope_ref: string | null;
-  is_default: boolean;
-  created_by: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface ProfileAssignment {
-  id: number;
-  profile_id: number;
-  template_slug: string;
-  template_display_name: string;
-  version_id: number;
-  version_number: number;
-  created_at: string | null;
-}
-
-export interface ProfileDetail extends TemplateProfile {
-  assignments: ProfileAssignment[];
 }

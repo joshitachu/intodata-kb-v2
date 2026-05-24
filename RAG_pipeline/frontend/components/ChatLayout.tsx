@@ -15,6 +15,7 @@ export function ChatLayout() {
     deepDiveState,
     onCancelDeepDive,
     handleSendMessage,
+    retryFailedMessage,
   } = useChatContext();
 
   return (
@@ -24,8 +25,11 @@ export function ChatLayout() {
       isSending={streamState.isStreaming}
       onSendMessage={handleSendMessage}
       streamingMessage={
-        streamState.isStreaming || streamState.content ? streamState : null
+        streamState.isStreaming || streamState.content || streamState.error
+          ? streamState
+          : null
       }
+      onRetryMessage={retryFailedMessage}
       pendingUserMessage={pendingUserMessage}
       mode={mode}
       onModeChange={setMode}

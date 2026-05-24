@@ -23,6 +23,8 @@ services:
     ports:
       - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
       - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -43,7 +45,7 @@ services:
     environment:
       HINDSIGHT_API_LLM_PROVIDER: ollama
       HINDSIGHT_API_LLM_BASE_URL: http://host.docker.internal:11434/v1
-      HINDSIGHT_API_LLM_MODEL: gemma3:4b
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gemma3:4b}
       HINDSIGHT_API_LLM_TIMEOUT: "300"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -60,6 +62,7 @@ services:
     restart: unless-stopped
 
   backend:
+    pull_policy: build
     build:
       context: ./RAG_pipeline/backend
       dockerfile: Dockerfile
@@ -81,7 +84,7 @@ services:
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:3000}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-${SMTP_USER:-}}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-IntoData Nexus}
@@ -90,8 +93,18 @@ services:
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
       MCP_INGEST_API_KEY: ${MCP_INGEST_API_KEY:-}
+      ADMIN_INITIAL_EMAIL: ${ADMIN_INITIAL_EMAIL:-admin@localhost}
       ALLOWED_IPS: ${ALLOWED_IPS:-}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1}
+      TENANT_NAME: ${TENANT_NAME:-IntoData}
+      TENANT_SLUG: ${TENANT_SLUG:-intodata}
+      TENANT_ENVIRONMENT: ${TENANT_ENVIRONMENT:-production}
+      CSRF_ENABLED: ${CSRF_ENABLED:-true}
+      SSO_ENABLED: ${SSO_ENABLED:-false}
+      OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -110,16 +123,20 @@ services:
     restart: unless-stopped
 
   frontend:
+    pull_policy: build
     build:
       context: ./RAG_pipeline/frontend
       dockerfile: Dockerfile
       args:
-        KB_API_URL: ${KB_API_URL:-http://host.docker.internal:8002}
+        KB_API_URL: ${KB_API_URL:-http://mcp-server:8002}
+        NEXT_PUBLIC_TENANT_NAME: ${TENANT_NAME:-IntoData}
+        NEXT_PUBLIC_TENANT_SLUG: ${TENANT_SLUG:-intodata}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     environment:
+      NODE_ENV: production
       FASTAPI_URL: http://backend:8000
-      KB_API_URL: ${KB_API_URL:-http://host.docker.internal:8002}
+      KB_API_URL: ${KB_API_URL:-http://mcp-server:8002}
       HOSTNAME: 0.0.0.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -132,18 +149,102 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+      mcp-server:
+        condition: service_healthy
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
 
+  mcp-server:
+    pull_policy: build
+    build:
+      context: ./knowledge_base
+      dockerfile: mcp-server/Dockerfile
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8002}:8002"
+    environment:
+      MCP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-intodata_kb}
+      MCP_RAG_BASE_URL: http://backend:8000
+      MCP_INTODOC_COMMAND: intodoc
+      MCP_CLAUDE_COMMAND: ${MCP_CLAUDE_COMMAND:-claude}
+      MCP_CLAUDE_MODEL: ${MCP_CLAUDE_MODEL:-sonnet}
+      MCP_DATA_DIR: /app/data
+      MCP_INTODOC_OUTPUT_DIR: /app/intodoc-output
+      MCP_PROJECT_ROOT: /app/workspace
+      MCP_HINDSIGHT_ENABLED: "true"
+      MCP_HINDSIGHT_URL: http://hindsight:8888
+      MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
+      MCP_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8001}}
+      MCP_INGEST_API_KEY: ${MCP_INGEST_API_KEY:-}
+      MCP_ALLOWED_IPS: ${MCP_ALLOWED_IPS:-}
+      MCP_TRUSTED_PROXIES: ${MCP_TRUSTED_PROXIES:-${TRUSTED_PROXIES:-127.0.0.1}}
+      MCP_APP_ENV: ${MCP_APP_ENV:-${APP_ENV:-production}}
+      MCP_GITHUB_WEBHOOK_SECRET: ${MCP_GITHUB_WEBHOOK_SECRET:-}
+      MCP_DEV_WEBHOOK_SKIP_SIGNATURE: ${MCP_DEV_WEBHOOK_SKIP_SIGNATURE:-false}
+      MCP_TOKEN_ENCRYPTION_KEY: ${MCP_TOKEN_ENCRYPTION_KEY:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-${PUBLIC_APP_URL:-}}
+      MCP_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      MCP_DOC_GENERATION_PROVIDER: ${MCP_DOC_GENERATION_PROVIDER:-custom}
+      MCP_DOC_GENERATION_MODEL: ${MCP_DOC_GENERATION_MODEL:-anthropic/claude-sonnet-4-6}
+      MCP_DOC_GENERATION_WRITE_MODEL: ${MCP_DOC_GENERATION_WRITE_MODEL:-anthropic/claude-sonnet-4-6}
+      MCP_DOC_GENERATION_INVESTIGATION_MODEL: ${MCP_DOC_GENERATION_INVESTIGATION_MODEL:-google/gemini-2.5-flash}
+      MCP_DOC_GENERATION_FALLBACK_MODEL: ${MCP_DOC_GENERATION_FALLBACK_MODEL:-openai/gpt-5.4}
+      MCP_DOC_GENERATION_API_KEY: ${MCP_DOC_GENERATION_API_KEY:-${LLM_API_KEY:-}}
+      MCP_DOC_GENERATION_BASE_URL: ${MCP_DOC_GENERATION_BASE_URL:-}
+      MCP_DOC_GENERATION_DEEPSEEK_API_KEY: ${MCP_DOC_GENERATION_DEEPSEEK_API_KEY:-}
+      MCP_DOC_GENERATION_DEEPSEEK_BASE_URL: ${MCP_DOC_GENERATION_DEEPSEEK_BASE_URL:-}
+      MCP_MODEL_PRICING_JSON: ${MCP_MODEL_PRICING_JSON:-}
+      MCP_DEEP_DIVE_ENGINE: ${MCP_DEEP_DIVE_ENGINE:-repo_agent}
+      MCP_DEEP_DIVE_MODEL: ${MCP_DEEP_DIVE_MODEL:-anthropic/claude-sonnet-4-6}
+      MCP_DEEP_DIVE_API_KEY: ${MCP_DEEP_DIVE_API_KEY:-}
+      MCP_DEEP_DIVE_BASE_URL: ${MCP_DEEP_DIVE_BASE_URL:-}
+      MCP_OPS_CLIENT_SLUG: ${MCP_OPS_CLIENT_SLUG:-}
+      MCP_OPS_ENVIRONMENT: ${MCP_OPS_ENVIRONMENT:-production}
+      MCP_OPS_RELEASE_VERSION: ${MCP_OPS_RELEASE_VERSION:-}
+      MCP_OPS_TELEMETRY_URL: ${MCP_OPS_TELEMETRY_URL:-}
+      MCP_OPS_TELEMETRY_API_KEY: ${MCP_OPS_TELEMETRY_API_KEY:-}
+      MCP_OPS_TELEMETRY_INTERVAL_SECONDS: ${MCP_OPS_TELEMETRY_INTERVAL_SECONDS:-300}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./knowledge_base/mcp-server/data:/app/data
+      - ./knowledge_base/intodoc-output:/app/intodoc-output
+      - ./knowledge_base/output:/app/workspace/output
+      - ./knowledge_base/packs:/app/workspace/packs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 2.0
+    restart: unless-stopped
+
   dashboard:
+    pull_policy: build
     build:
       context: ./knowledge_base/dashboard
       dockerfile: Dockerfile
+      args:
+        VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
+        VITE_FLEET_ENABLED: ${FLEET_ENABLED:-false}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:
-      MCP_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
       MCP_ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8001}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -155,6 +256,9 @@ services:
       start_period: 20s
     mem_limit: 256m
     cpus: 0.5
+    depends_on:
+      mcp-server:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

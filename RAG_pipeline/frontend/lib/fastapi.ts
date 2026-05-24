@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+export const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
 interface FetchOptions extends Omit<RequestInit, "body"> {
   body?: unknown;

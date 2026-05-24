@@ -5,6 +5,10 @@ RUN npm ci
 COPY . .
 ARG VITE_LOGIN_URL=https://nexus.intodata.nl/login
 ENV VITE_LOGIN_URL=$VITE_LOGIN_URL
+# Fleet / Mission Control UI — only enabled on the nexus operator server.
+# Customer VPS instances must NOT set this to true.
+ARG VITE_FLEET_ENABLED=false
+ENV VITE_FLEET_ENABLED=$VITE_FLEET_ENABLED
 RUN npm run build
 
 FROM nginx:alpine

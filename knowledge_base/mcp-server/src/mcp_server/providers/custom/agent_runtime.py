@@ -11,6 +11,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -19,7 +20,19 @@ from mcp_server.config import config
 from mcp_server.providers.custom.models import FactsManifest, ModelResult
 
 
-AgentPhase = Literal["phase2_group", "phase2_merge", "scorecard", "phase3_doc", "repair"]
+class AgentPhase(StrEnum):
+    PHASE2_GROUP = "phase2_group"
+    PHASE2_MERGE = "phase2_merge"
+    SCORECARD = "scorecard"
+    PHASE3_DOC = "phase3_doc"
+    REPAIR = "repair"
+
+
+def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write content to a temporary file then rename atomically (POSIX guarantee)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding=encoding)
+    tmp.rename(path)
 
 
 class ToolBudget(BaseModel):
@@ -144,8 +157,7 @@ class ScopedEvidenceTools:
             text = func()
             raw = text.encode("utf-8")
             if len(raw) > self.contract.tool_budget.max_result_bytes:
-                text = raw[: self.contract.tool_budget.max_result_bytes].decode("utf-8", errors="ignore")
-                text += "\n\n[truncated by tool result byte budget]"
+                text = text[: self.contract.tool_budget.max_result_bytes] + "\n\n[truncated by tool result byte budget]"
             size = len(text.encode("utf-8"))
             if self.bytes_returned + size > self.contract.tool_budget.max_bytes:
                 raise RuntimeError("tool byte budget exceeded")
@@ -259,7 +271,7 @@ class AgentTaskRuntime:
             return None
         try:
             status = json.loads(status_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             return None
         if status.get("status") == "accepted":
             return output_path.read_text(encoding="utf-8", errors="replace")
@@ -327,10 +339,14 @@ class AgentTaskRuntime:
 
         accepted = bool(result.success and validation.get("ok", False))
         status = "accepted" if accepted else ("incomplete" if incomplete_reason else "rejected")
-        (task_dir / "validation_report.json").write_text(json.dumps(validation, indent=2), encoding="utf-8")
-        (task_dir / "tool_call_ledger.json").write_text(json.dumps(tool_ledgers, indent=2), encoding="utf-8")
-        (task_dir / "conversation_trace.json").write_text(json.dumps(conversation_attempts, indent=2), encoding="utf-8")
-        (task_dir / "provider_metrics.json").write_text(
+        # Atomic writes: temp-file + rename prevents partial state on crash.
+        # status.json is written last — it is the acceptance gate for resume.
+        _atomic_write(task_dir / "output.md", output)
+        _atomic_write(task_dir / "validation_report.json", json.dumps(validation, indent=2))
+        _atomic_write(task_dir / "tool_call_ledger.json", json.dumps(tool_ledgers, indent=2))
+        _atomic_write(task_dir / "conversation_trace.json", json.dumps(conversation_attempts, indent=2))
+        _atomic_write(
+            task_dir / "provider_metrics.json",
             json.dumps(
                 {
                     "model_name": result.model_name,
@@ -343,9 +359,9 @@ class AgentTaskRuntime:
                 },
                 indent=2,
             ),
-            encoding="utf-8",
         )
-        (task_dir / "status.json").write_text(
+        _atomic_write(
+            task_dir / "status.json",
             json.dumps(
                 {
                     "status": status,
@@ -355,7 +371,6 @@ class AgentTaskRuntime:
                 },
                 indent=2,
             ),
-            encoding="utf-8",
         )
         return AgentTaskResult(
             accepted=accepted,

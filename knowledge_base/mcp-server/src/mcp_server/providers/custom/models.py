@@ -61,9 +61,10 @@ class ModelOptions(BaseModel):
     max_tokens: int = 4096
     temperature: float = 0.1
     timeout_s: float = 180.0
-    retries: int = 1
+    retries: int = 3
     provider_options: dict[str, Any] = Field(default_factory=dict)
     prefill: str | None = None
+    json_mode: bool = False  # request native JSON enforcement from providers that support it
 
 
 class ModelResult(BaseModel):

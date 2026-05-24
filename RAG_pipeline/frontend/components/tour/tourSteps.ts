@@ -14,9 +14,9 @@ export const tourSteps: TourStep[] = [
     element: '[data-tour="chat-input"]',
     navigateTo: "/",
     popover: {
-      title: "Ask anything",
+      title: "Ask your knowledge base",
       description:
-        "This is where you ask questions about your integrations and documents. Natural language — no query syntax needed.",
+        "Ask questions about uploaded documents, generated project docs, and your integration knowledge base. Natural language is enough.",
       side: "top",
       align: "center",
     },
@@ -25,31 +25,31 @@ export const tourSteps: TourStep[] = [
     element: '[data-tour="mode-toggle"]',
     navigateTo: "/",
     popover: {
-      title: "Chat vs Deep-Dive",
+      title: "Choose the work mode",
       description:
-        "Chat gives you quick answers. Deep-dive runs a multi-step investigation for complex questions — slower but much more thorough.",
+        "Chat is for quick answers. Deep Dive runs a project-focused investigation when you need slower, more detailed analysis.",
       side: "bottom",
       align: "center",
     },
   },
   {
-    element: '[data-tour="project-selector"]',
+    element: '[data-tour="sidebar"]',
     navigateTo: "/",
     popover: {
-      title: "Scope your question",
+      title: "Move around the workspace",
       description:
-        "Limit search to a single project, or ask across your whole knowledge base.",
-      side: "bottom",
-      align: "center",
+        "Use the sidebar for chat, documents, generated project docs, topology, and admin tools when you have access.",
+      side: "right",
+      align: "start",
     },
   },
   {
     element: '[data-tour="documents-page"]',
     navigateTo: "/documents",
     popover: {
-      title: "Your documents",
+      title: "Uploaded documents",
       description:
-        "Anything you upload — PDFs, DOCX, PPTX — will appear here. We chunk and embed them for retrieval.",
+        "Uploaded PDFs, DOCX, PPTX, and other source files appear here after ingestion so you can inspect what the assistant can search.",
       side: "bottom",
       align: "center",
     },
@@ -60,7 +60,7 @@ export const tourSteps: TourStep[] = [
     popover: {
       title: "Generated documentation",
       description:
-        "Once we scan your codebase, auto-generated docs for each project will live here — architecture, data flows, and more.",
+        "Scanned sources produce project documentation here, including architecture, components, data flows, operations, and risk notes.",
       side: "bottom",
       align: "center",
     },
@@ -71,27 +71,16 @@ export const tourSteps: TourStep[] = [
     popover: {
       title: "Integration topology",
       description:
-        "Once your codebase is scanned, you'll see how your integrations connect here. Click any node to drill into its details.",
+        "Use topology to inspect how jobs, groups, connections, and dependencies relate. Select nodes to drill into implementation details.",
       side: "bottom",
       align: "center",
     },
   },
   {
-    element: '[data-tour="sidebar-nav"]',
-    navigateTo: "/",
     popover: {
-      title: "Navigation",
+      title: "Ready to start",
       description:
-        "Jump between chat, documents, docs, and topology anytime. New conversations start with the + button at the top.",
-      side: "right",
-      align: "start",
-    },
-  },
-  {
-    popover: {
-      title: "You're all set!",
-      description:
-        "That's the whirlwind tour. Head to the chat and ask your first question.",
+        "Return to chat, pick the right mode, and ask your first question about the workspace.",
     },
   },
 ];

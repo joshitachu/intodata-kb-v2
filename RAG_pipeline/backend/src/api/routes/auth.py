@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -141,6 +142,10 @@ class InviteStartBody(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
 
 
+class ValidateInviteBody(BaseModel):
+    token: str = Field(..., min_length=1)
+
+
 class VerifyMFARequest(BaseModel):
     mfa_token: str = Field(..., min_length=1)
     # 6-digit TOTP code OR a backup code (alphanumeric, up to 16 chars)
@@ -167,6 +172,9 @@ class UserResponse(BaseModel):
     onboarding_completed: bool = True
     tour_completed: bool = True
     mfa_enabled: bool = False
+    last_login_at: str | None = None
+    has_password: bool = True
+    sso_provider: str | None = None
 
 
 def _create_mfa_token(user_id: int) -> str:
@@ -224,7 +232,8 @@ def _new_otp_code() -> str:
 
 
 def _otp_hash(email: str, purpose: str, code: str) -> str:
-    return hash_token(f"{settings.jwt_secret_key}:{email}:{purpose}:{code}")
+    data = f"{email}:{purpose}:{code}".encode("utf-8")
+    return hmac.new(settings.jwt_secret_key.encode("utf-8"), data, "sha256").hexdigest()
 
 
 def _request_ip(request: Request) -> str | None:
@@ -297,7 +306,7 @@ async def _verify_email_otp(
     if invite_required and row.invite_id is None:
         raise api_error(401, "invalid_otp", "Invalid or expired code")
 
-    if row.code_hash != _otp_hash(email, purpose, code.strip()):
+    if not hmac.compare_digest(row.code_hash, _otp_hash(email, purpose, code.strip())):
         row.attempt_count += 1
         await db.flush()
         raise api_error(401, "invalid_otp", "Invalid or expired code")
@@ -316,6 +325,9 @@ def _user_response(user: User, onboarding_completed: bool, tour_completed: bool)
         onboarding_completed=onboarding_completed,
         tour_completed=tour_completed,
         mfa_enabled=user.mfa_enabled,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+        has_password=user.password_hash is not None,
+        sso_provider=user.sso_provider,
     )
 
 
@@ -505,10 +517,11 @@ async def start_invite(request: Request, body: InviteStartBody, db: DBSession):
     return {"status": "sent", "message": "Setup code sent."}
 
 
-@router.get("/invite/validate", summary="Validate an invite token")
-async def validate_invite(token: str, db: DBSession):
+@router.post("/invite/validate", summary="Validate an invite token")
+@limiter.limit("10/minute")
+async def validate_invite(request: Request, body: ValidateInviteBody, db: DBSession):
     """Check that an invite token is valid and return the associated email."""
-    invite = await _load_invite_by_token(db, token)
+    invite = await _load_invite_by_token(db, body.token)
     return {
         "email": invite.email,
         "expires_at": invite.expires_at.isoformat(),
@@ -758,7 +771,12 @@ async def totp_setup(user: CurrentUser, db: DBSession):
 
 
 @router.post("/totp/verify", summary="Confirm TOTP setup and enable MFA")
-async def totp_verify(body: TOTPVerifyRequest, user: CurrentUser, db: DBSession):
+async def totp_verify(
+    body: TOTPVerifyRequest,
+    user: CurrentUser,
+    db: DBSession,
+    response: Response,
+):
     """Confirm the pending secret by verifying a 6-digit code.
 
     Flips mfa_enabled to True and generates 10 single-use backup codes. The
@@ -776,6 +794,9 @@ async def totp_verify(body: TOTPVerifyRequest, user: CurrentUser, db: DBSession)
     plaintext_codes = generate_backup_codes()
     user.backup_codes_hashed = hash_backup_codes(plaintext_codes)
     user.mfa_enabled = True
+    await db.flush()
+    access, refresh = await AuthService(db).create_tokens(user)
+    _set_auth_cookies(response, access, refresh)
     await db.commit()
     logger.info(f"MFA enabled for user id={user.id}")
     return {"message": "MFA enabled", "backup_codes": plaintext_codes}
@@ -934,19 +955,52 @@ async def refresh(request: Request, db: DBSession, response: Response):
     return {"message": "Token refreshed"}
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=12, max_length=128)
+
+
 @router.get("/me", summary="Get the current authenticated user")
 async def me(user: CurrentUser, db: DBSession):
     """Return the profile and permissions of the currently authenticated user."""
     onboarding_completed, tour_completed = await _onboarding_flags(db, user.id)
-    return UserResponse(
-        id=user.id,
+    return _user_response(user, onboarding_completed, tour_completed)
+
+
+@router.post("/change-password", summary="Self-service password change")
+@limiter.limit("5/minute")
+async def change_password(
+    request: Request, body: ChangePasswordRequest, user: CurrentUser, db: DBSession
+) -> dict:
+    """Change the current user's password. Revokes all other active sessions."""
+    if user.password_hash is None:
+        raise api_error(400, "passwordless_account", "This account has no password. Contact an administrator.")
+
+    if not verify_password(body.current_password, user.password_hash):
+        raise api_error(401, "invalid_password", "Current password is incorrect.")
+
+    if body.new_password == body.current_password:
+        raise api_error(400, "same_password", "New password must differ from the current password.")
+
+    user.password_hash = hash_password(body.new_password)
+
+    svc = AuthService(db)
+    current_refresh = request.cookies.get("refresh_token")
+    if current_refresh:
+        await svc.revoke_other_user_tokens(user.id, current_refresh)
+    else:
+        await svc.revoke_all_user_tokens(user.id)
+
+    await db.commit()
+
+    audit = AuditService(db)
+    await audit.log(
+        user_id=user.id,
         username=user.username,
-        email=user.email,
-        is_active=user.is_active,
-        is_superadmin=user.is_superadmin,
-        roles=[r.name for r in user.roles],
-        permissions=sorted(get_user_permissions(user)),
-        onboarding_completed=onboarding_completed,
-        tour_completed=tour_completed,
-        mfa_enabled=user.mfa_enabled,
+        action="password_changed",
+        resource_type="user",
+        resource_id=str(user.id),
+        ip_address=_request_ip(request),
     )
+
+    return {"message": "Password updated."}

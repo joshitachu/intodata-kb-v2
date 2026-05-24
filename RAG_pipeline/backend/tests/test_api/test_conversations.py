@@ -34,7 +34,10 @@ def _mock_message(id: int = 1, role: str = "user", content: str = "Hello"):
     msg.role = role
     msg.content = content
     msg.sources = None
+    msg.image_data = None
     msg.latency_ms = None
+    msg.status = "completed"
+    msg.error_message = None
     msg.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return msg
 
@@ -297,6 +300,8 @@ class TestSendMessage:
         mock_response.content = "The answer is 42."
         mock_response.sources = None
         mock_response.latency_ms = 100
+        mock_response.status = "completed"
+        mock_response.error_message = None
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(
@@ -363,6 +368,8 @@ class TestSendMessage:
         mock_response.content = "Answer"
         mock_response.sources = None
         mock_response.latency_ms = 50
+        mock_response.status = "completed"
+        mock_response.error_message = None
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(
@@ -382,6 +389,51 @@ class TestSendMessage:
         call_kwargs = mock_rag.call_args.kwargs
         assert call_kwargs["top_k"] == 10
         assert call_kwargs["threshold"] == 0.8
+
+
+class TestSendMessageStream:
+    async def test_stream_failure_persists_failed_assistant_message(self, mock_deps):
+        mock_db = mock_deps["db"]
+        mock_db.add = MagicMock()
+        mock_db.commit = AsyncMock()
+
+        async def assign_failed_id():
+            mock_db.add.call_args.args[0].id = 42
+
+        mock_db.flush = AsyncMock(side_effect=assign_failed_id)
+
+        conv = _mock_conversation(id=1, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        async def failing_stream(**_kwargs):
+            raise RuntimeError("Provider timed out")
+            yield  # noqa: unreachable - keeps this an async generator
+
+        with patch(
+            "src.api.routes.conversations.run_conversational_rag_stream",
+            side_effect=failing_stream,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/conversations/1/messages/stream",
+                    json={"query": "Slow question"},
+                    headers={"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"},
+                )
+
+        assert resp.status_code == 200
+        assert "event: error" in resp.text
+        assert "event: done" in resp.text
+        assert '"message_id": 42' in resp.text
+        mock_db.commit.assert_awaited_once()
+
+        failed_msg = mock_db.add.call_args.args[0]
+        assert isinstance(failed_msg, ConversationMessage)
+        assert failed_msg.role == "assistant"
+        assert failed_msg.status == "failed"
+        assert failed_msg.error_message == "Chat response failed. Please try again."
 
 
 # --- Soft delete tests (real SQLite DB via db_session) ---

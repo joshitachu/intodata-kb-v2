@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
 export async function GET() {
   try {

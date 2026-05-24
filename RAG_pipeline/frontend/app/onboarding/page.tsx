@@ -43,7 +43,11 @@ function InviteOnboarding() {
     (async () => {
       if (!legacyToken) return;
       setLoading(true);
-      const res = await fetch(`/api/auth/invite/validate?token=${encodeURIComponent(legacyToken)}`);
+      const res = await fetch("/api/auth/invite/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: legacyToken }),
+      });
       const data = await res.json().catch(() => ({}));
       if (cancelled) return;
       setLoading(false);

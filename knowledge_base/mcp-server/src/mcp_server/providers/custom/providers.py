@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -13,12 +14,63 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from mcp_server.config import config
 from mcp_server.providers.custom.models import ModelOptions, ModelResult
 from mcp_server.services.token_refresh import ensure_token_fresh
 
 logger = logging.getLogger(__name__)
+
+
+class ProviderPayloadError(RuntimeError):
+    """Raised when an outbound provider request is structurally invalid."""
+
+
+class ChatMessagePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    role: str
+    content: Any = ""
+
+
+class OpenAIChatCompletionPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    messages: list[ChatMessagePayload] = Field(min_length=1)
+    max_tokens: int = Field(gt=0)
+    temperature: float | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+
+
+class GeminiGenerateContentPayload(BaseModel):
+    model: str
+    contents: str = Field(min_length=1)
+    config: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _has_max_output_tokens(self):
+        if int(self.config.get("max_output_tokens") or 0) <= 0:
+            raise ValueError("config.max_output_tokens must be positive")
+        return self
+
+
+class AnthropicMessagePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str
+    max_tokens: int = Field(gt=0)
+    messages: list[ChatMessagePayload] = Field(min_length=1)
+    tools: list[dict[str, Any]] | None = None
+
+
+def _validated_payload(model: type[BaseModel], payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return model.model_validate(payload).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        raise ProviderPayloadError(str(exc)) from exc
 
 
 class ModelProvider(Protocol):
@@ -85,6 +137,41 @@ def _apply_prefill(prefill: str | None, raw_text: str) -> str:
     if raw_text.lstrip().startswith(prefill.lstrip()):
         return raw_text
     return prefill + raw_text
+
+
+def _retry_after_seconds(response: httpx.Response | None) -> float | None:
+    if response is None:
+        return None
+    value = response.headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {429, 500, 502, 503, 504}
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError))
+
+
+def _log_json_mode_ignored(provider_name: str) -> None:
+    logger.debug(
+        "[provider] json_mode=True ignored in complete_with_tools (%s) — "
+        "structured output is enforced via tool contracts",
+        provider_name,
+    )
+
+
+async def _sleep_for_retry(attempt: int, response: httpx.Response | None = None) -> None:
+    retry_after = _retry_after_seconds(response)
+    if retry_after is not None:
+        await asyncio.sleep(min(retry_after, 30.0))
+        return
+    delay = min(2 ** attempt, 12) + random.uniform(0, 0.5)
+    await asyncio.sleep(delay)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +298,16 @@ STAGING_TOOLS_ANTHROPIC: list[dict[str, Any]] = [
     for tool in STAGING_TOOLS_OPENAI
 ]
 
+STAGING_TOOLS_OPENAI_RESPONSES: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": tool["function"]["name"],
+        "description": tool["function"]["description"],
+        "parameters": tool["function"]["parameters"],
+    }
+    for tool in STAGING_TOOLS_OPENAI
+]
+
 
 def _safe_limit(args: dict[str, Any], default: int) -> int:
     try:
@@ -280,6 +377,381 @@ def _execute_staging_tool(
 # Providers
 # ---------------------------------------------------------------------------
 
+def _sdk_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _assert_contract(result: ModelResult, context: str = "") -> None:
+    tag = f" [{context}]" if context else ""
+    issues: list[str] = []
+    if result.success and not result.text:
+        issues.append(f"C1 violation: success=True but text is empty{tag}")
+    if not result.success and result.raw_error is None:
+        issues.append(f"C2 violation: success=False but raw_error is None{tag}")
+    if result.input_tokens < 0 or result.output_tokens < 0:
+        issues.append(f"C3 violation: token counts are negative{tag}")
+    if not issues:
+        return
+    for msg in issues:
+        if config.app_env != "production":
+            raise AssertionError(msg)
+        logger.warning("[provider-contract] %s", msg)
+
+
+def _model_dump(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _first_dict(value: Any) -> dict[str, Any]:
+    items = _as_list(value)
+    return _as_dict(items[0]) if items else {}
+
+
+def _message_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            data = _as_dict(item)
+            if data:
+                chunks.append(str(data.get("text") or data.get("content") or ""))
+            elif isinstance(item, str):
+                chunks.append(item)
+        return "".join(chunks)
+    return ""
+
+
+def _response_output_items(response: Any) -> list[Any]:
+    output = getattr(response, "output", None)
+    if output is None and isinstance(response, dict):
+        output = response.get("output")
+    return list(output or [])
+
+
+def _response_output_text(response: Any) -> str:
+    text = getattr(response, "output_text", None)
+    if text is None and isinstance(response, dict):
+        text = response.get("output_text")
+    if text:
+        return str(text)
+    chunks: list[str] = []
+    for item in _response_output_items(response):
+        data = _model_dump(item)
+        if data.get("type") == "message":
+            for content in data.get("content") or []:
+                if isinstance(content, dict):
+                    chunks.append(str(content.get("text") or ""))
+    return "".join(chunks)
+
+
+def _response_usage(response: Any) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    data = _model_dump(usage)
+    input_tokens = data.get("input_tokens") or data.get("prompt_tokens") or 0
+    output_tokens = data.get("output_tokens") or data.get("completion_tokens") or 0
+    return int(input_tokens or 0), int(output_tokens or 0)
+
+
+def _chat_completion_message_text(message: Any) -> str:
+    return _message_content_text(_as_dict(message).get("content"))
+
+
+def _chat_completion_usage(data: Any) -> dict[str, Any]:
+    return _as_dict(_as_dict(data).get("usage"))
+
+
+def _normalize_openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in _as_list(tool_calls):
+        call = _as_dict(item)
+        if not call:
+            continue
+        function = _as_dict(call.get("function"))
+        if not function:
+            # Some compatible providers flatten the function payload.
+            function = {
+                "name": call.get("name") or call.get("tool_name") or call.get("tool"),
+                "arguments": call.get("arguments") or call.get("args") or "{}",
+            }
+        normalized.append({
+            **call,
+            "id": str(call.get("id") or call.get("call_id") or ""),
+            "function": function,
+        })
+    return normalized
+
+
+class OpenAIOfficialProvider:
+    """Adapter for OpenAI's official Python SDK and Responses API."""
+
+    supports_tools: bool = True
+
+    def __init__(self, model_name: str, api_key: str | None = None) -> None:
+        self.provider_name = "openai"
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.base_url = "https://api.openai.com/v1"
+
+    def _client(self, timeout_s: float):
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(api_key=self.api_key, timeout=timeout_s)
+
+    async def complete(
+        self,
+        prompt: str,
+        context_files: list[Path] | None = None,
+        options: ModelOptions | None = None,
+    ) -> ModelResult:
+        opts = options or ModelOptions()
+        context = _read_context(context_files)
+        full_prompt = prompt + context
+        estimated_tokens = _estimate_tokens(full_prompt)
+        ctx_limit = config.context_max_tokens
+        if estimated_tokens > ctx_limit:
+            raise RuntimeError(
+                f"Context too large: ~{estimated_tokens:,} estimated tokens exceeds "
+                f"MCP_CONTEXT_MAX_TOKENS={ctx_limit:,}. Reduce engineering facts or split the group."
+            )
+        metadata = {
+            "provider": self.provider_name,
+            "estimated_input_tokens": estimated_tokens,
+            **_context_metadata(context_files),
+        }
+        start = time.monotonic()
+        last_error: str | None = None
+
+        for attempt in range(opts.retries + 1):
+            try:
+                payload: dict[str, Any] = {
+                    "model": self.model_name,
+                    "input": full_prompt,
+                    "max_output_tokens": opts.max_tokens,
+                }
+                if opts.json_mode:
+                    payload["text"] = {"format": {"type": "json_object"}}
+                payload.update(opts.provider_options)
+                response = await self._client(opts.timeout_s).responses.create(**payload)
+                raw_text = _response_output_text(response)
+                text = raw_text
+                input_tokens, output_tokens = _response_usage(response)
+                result = ModelResult(
+                    success=True,
+                    text=text,
+                    model_name=self.model_name,
+                    input_tokens=input_tokens or estimated_tokens,
+                    output_tokens=output_tokens or _estimate_tokens(text),
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    retries=attempt,
+                    metadata=metadata,
+                )
+                _assert_contract(result, self.provider_name)
+                return result
+            except Exception as exc:
+                last_error = _sdk_error(exc)
+                if attempt < opts.retries:
+                    await asyncio.sleep(min(2 ** attempt, 4))
+
+        return ModelResult(
+            success=False,
+            model_name=self.model_name,
+            input_tokens=estimated_tokens,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            retries=opts.retries,
+            raw_error=last_error,
+            metadata=metadata,
+        )
+
+    async def complete_with_tools(
+        self,
+        prompt: str,
+        staging_dir: Path,
+        options: ModelOptions | None = None,
+        max_turns: int = 30,
+        scoped_tools: Any | None = None,
+    ) -> ModelResult:
+        opts = options or ModelOptions()
+        if opts.json_mode:
+            _log_json_mode_ignored(self.provider_name)
+        start = time.monotonic()
+        total_in = total_out = 0
+        tool_call_count = 0
+        tool_result_bytes = 0
+        finish_reasons: list[str] = []
+        conversation_trace: list[dict[str, Any]] = []
+        tool_ledger: list[dict[str, Any]] = []
+        response_id: str | None = None
+        next_input: Any = prompt
+        last_error: str | None = None
+
+        for turn in range(max_turns):
+            payload: dict[str, Any] = {
+                "model": self.model_name,
+                "input": next_input,
+                "tools": STAGING_TOOLS_OPENAI_RESPONSES,
+                "max_output_tokens": opts.max_tokens,
+            }
+            if response_id:
+                payload["previous_response_id"] = response_id
+            payload.update(opts.provider_options)
+
+            try:
+                response = await self._client(opts.timeout_s).responses.create(**payload)
+                response_id = str(getattr(response, "id", "") or "")
+                in_tokens, out_tokens = _response_usage(response)
+                total_in += in_tokens
+                total_out += out_tokens
+                output_items = _response_output_items(response)
+                function_calls: list[dict[str, Any]] = []
+                for item in output_items:
+                    data = _model_dump(item)
+                    item_type = data.get("type")
+                    if item_type in {"function_call", "function_call_output"} and data.get("name"):
+                        function_calls.append(data)
+                finish_reason = str(getattr(response, "status", "") or "")
+                if finish_reason:
+                    finish_reasons.append(finish_reason)
+                conversation_trace.append({
+                    "turn": turn + 1,
+                    "role": "assistant",
+                    "finish_reason": finish_reason,
+                    "tool_calls": [
+                        {
+                            "id": fc.get("call_id", ""),
+                            "name": fc.get("name", ""),
+                            "arguments": fc.get("arguments", ""),
+                        }
+                        for fc in function_calls
+                    ],
+                    "content_bytes": len(_response_output_text(response).encode("utf-8")),
+                })
+
+                if not function_calls:
+                    # Responses API returns status="incomplete" when max_output_tokens is hit.
+                    if finish_reason == "incomplete":
+                        return ModelResult(
+                            success=False,
+                            model_name=self.model_name,
+                            input_tokens=total_in or _estimate_tokens(prompt),
+                            output_tokens=total_out,
+                            latency_ms=int((time.monotonic() - start) * 1000),
+                            retries=turn,
+                            raw_error="incomplete: provider stopped because max tokens were reached",
+                            metadata={
+                                "provider": self.provider_name,
+                                "turns": turn + 1,
+                                "tool_calls": tool_call_count,
+                                "tool_result_bytes": tool_result_bytes,
+                                "finish_reason": "length",
+                                "finish_reasons": finish_reasons,
+                                "incomplete_reason": "length",
+                                "conversation_trace": conversation_trace,
+                                "tool_call_ledger": tool_ledger,
+                                "context_bytes": 0,
+                            },
+                        )
+                    text = _apply_prefill(opts.prefill, _response_output_text(response))
+                    result = ModelResult(
+                        success=True,
+                        text=text,
+                        model_name=self.model_name,
+                        input_tokens=total_in or _estimate_tokens(prompt),
+                        output_tokens=total_out or _estimate_tokens(text),
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        retries=turn,
+                        metadata={
+                            "provider": self.provider_name,
+                            "turns": turn + 1,
+                            "tool_calls": tool_call_count,
+                            "tool_result_bytes": tool_result_bytes,
+                            "finish_reason": finish_reason,
+                            "finish_reasons": finish_reasons,
+                            "conversation_trace": conversation_trace,
+                            "tool_call_ledger": tool_ledger,
+                            "context_bytes": 0,
+                        },
+                    )
+                    _assert_contract(result, self.provider_name)
+                    return result
+
+                next_input = []
+                for call in function_calls:
+                    try:
+                        args = json.loads(call.get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    args = _as_dict(args)
+                    tool_name = str(call.get("name") or "")
+                    ok = True
+                    error = None
+                    try:
+                        result = _execute_staging_tool(tool_name, args, staging_dir, scoped_tools)
+                    except Exception as exc:
+                        ok = False
+                        error = str(exc)
+                        result = f"ERROR: {error}"
+                    tool_call_count += 1
+                    result_bytes = len(result.encode("utf-8"))
+                    tool_result_bytes += result_bytes
+                    tool_ledger.append({
+                        "turn": turn + 1,
+                        "tool": tool_name,
+                        "args": args,
+                        "ok": ok,
+                        "bytes": result_bytes,
+                        "error": error,
+                    })
+                    next_input.append({
+                        "type": "function_call_output",
+                        "call_id": call.get("call_id", ""),
+                        "output": result,
+                    })
+            except Exception as exc:
+                last_error = _sdk_error(exc)
+                response_id = None
+                # Don't retry auth errors — they won't recover with more attempts
+                status_code = getattr(exc, "status_code", None)
+                if status_code in {401, 403}:
+                    break
+                if turn < max_turns - 1:
+                    await _sleep_for_retry(turn)
+
+        return ModelResult(
+            success=False,
+            model_name=self.model_name,
+            input_tokens=total_in,
+            output_tokens=total_out,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            retries=max_turns,
+            raw_error=last_error or "max_turns exceeded",
+            metadata={
+                "provider": self.provider_name,
+                "turns": max_turns,
+                "tool_calls": tool_call_count,
+                "tool_result_bytes": tool_result_bytes,
+                "finish_reasons": finish_reasons,
+                "conversation_trace": conversation_trace,
+                "tool_call_ledger": tool_ledger,
+                "incomplete_reason": "max_turns",
+            },
+        )
+
+
 class OpenAICompatibleProvider:
     """Adapter for OpenAI-compatible chat-completions APIs."""
 
@@ -345,8 +817,11 @@ class OpenAICompatibleProvider:
                 }
                 if self.include_temperature:
                     payload["temperature"] = opts.temperature
+                if opts.json_mode:
+                    payload["response_format"] = {"type": "json_object"}
                 payload.update(self.extra_body)
                 payload.update(opts.provider_options)
+                payload = _validated_payload(OpenAIChatCompletionPayload, payload)
                 headers = {"Content-Type": "application/json"}
                 if self.api_key:
                     headers["Authorization"] = f"Bearer {self.api_key}"
@@ -357,15 +832,16 @@ class OpenAICompatibleProvider:
                         headers=headers,
                     )
                     resp.raise_for_status()
-                    data = resp.json()
-                choice = data.get("choices", [{}])[0]
-                raw_text = choice.get("message", {}).get("content", "")
+                    data = _as_dict(resp.json())
+                choice = _first_dict(_as_dict(data).get("choices"))
+                message = _as_dict(choice.get("message"))
+                raw_text = _chat_completion_message_text(message)
                 text = _apply_prefill(opts.prefill, raw_text)
-                usage = data.get("usage", {}) or {}
+                usage = _chat_completion_usage(data)
                 finish_reason = choice.get("finish_reason")
                 if finish_reason:
                     metadata["finish_reason"] = finish_reason
-                return ModelResult(
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
@@ -375,6 +851,8 @@ class OpenAICompatibleProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except httpx.HTTPStatusError as exc:
                 body = exc.response.text.strip()
                 last_error = (
@@ -383,12 +861,16 @@ class OpenAICompatibleProvider:
                 )
                 if body:
                     last_error = f"{last_error} :: {body}"
-                if attempt < opts.retries:
-                    await asyncio.sleep(min(2 ** attempt, 4))
+                if attempt < opts.retries and _is_retryable_exception(exc):
+                    await _sleep_for_retry(attempt, exc.response)
+                else:
+                    break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                if attempt < opts.retries:
-                    await asyncio.sleep(min(2 ** attempt, 4))
+                if attempt < opts.retries and _is_retryable_exception(exc):
+                    await _sleep_for_retry(attempt)
+                else:
+                    break
 
         return ModelResult(
             success=False,
@@ -409,6 +891,8 @@ class OpenAICompatibleProvider:
         scoped_tools: Any | None = None,
     ) -> ModelResult:
         opts = options or ModelOptions()
+        if opts.json_mode:
+            _log_json_mode_ignored(self.provider_name)
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
         total_in = total_out = 0
@@ -434,6 +918,8 @@ class OpenAICompatibleProvider:
             if self.include_temperature:
                 payload["temperature"] = opts.temperature
             payload.update(self.extra_body)
+            payload.update(opts.provider_options)
+            payload = _validated_payload(OpenAIChatCompletionPayload, payload)
 
             try:
                 async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
@@ -443,15 +929,15 @@ class OpenAICompatibleProvider:
                         headers=headers,
                     )
                     resp.raise_for_status()
-                    data = resp.json()
+                data = _as_dict(resp.json())
 
-                usage = data.get("usage") or {}
+                usage = _chat_completion_usage(data)
                 total_in += int(usage.get("prompt_tokens") or 0)
                 total_out += int(usage.get("completion_tokens") or 0)
 
-                choice = (data.get("choices") or [{}])[0]
-                message = choice.get("message") or {}
-                tool_calls = message.get("tool_calls") or []
+                choice = _first_dict(data.get("choices"))
+                message = _as_dict(choice.get("message"))
+                tool_calls = _normalize_openai_tool_calls(message.get("tool_calls"))
                 finish_reason = choice.get("finish_reason", "")
                 if finish_reason:
                     finish_reasons.append(finish_reason)
@@ -462,16 +948,16 @@ class OpenAICompatibleProvider:
                     "tool_calls": [
                         {
                             "id": tc.get("id", ""),
-                            "name": (tc.get("function") or {}).get("name", ""),
-                            "arguments": (tc.get("function") or {}).get("arguments", ""),
+                            "name": _as_dict(tc.get("function")).get("name", ""),
+                            "arguments": _as_dict(tc.get("function")).get("arguments", ""),
                         }
                         for tc in tool_calls
                     ],
-                    "content_bytes": len((message.get("content") or "").encode("utf-8")),
+                    "content_bytes": len(_chat_completion_message_text(message).encode("utf-8")),
                 })
 
                 if finish_reason == "length":
-                    text = _apply_prefill(opts.prefill, message.get("content") or "")
+                    text = _apply_prefill(opts.prefill, _chat_completion_message_text(message))
                     return ModelResult(
                         success=False,
                         text=text,
@@ -496,8 +982,8 @@ class OpenAICompatibleProvider:
                     )
 
                 if not tool_calls or finish_reason == "stop":
-                    text = _apply_prefill(opts.prefill, message.get("content") or "")
-                    return ModelResult(
+                    text = _apply_prefill(opts.prefill, _chat_completion_message_text(message))
+                    result = ModelResult(
                         success=True,
                         text=text,
                         model_name=self.model_name,
@@ -517,6 +1003,8 @@ class OpenAICompatibleProvider:
                             "context_bytes": 0,
                         },
                     )
+                    _assert_contract(result, self.provider_name)
+                    return result
 
                 assistant_msg: dict[str, Any] = {
                     "role": "assistant",
@@ -527,11 +1015,12 @@ class OpenAICompatibleProvider:
                     assistant_msg["reasoning_content"] = message["reasoning_content"]
                 messages.append(assistant_msg)
                 for tc in tool_calls:
-                    fn = tc.get("function") or {}
+                    fn = _as_dict(tc.get("function"))
                     try:
                         args = json.loads(fn.get("arguments") or "{}")
                     except Exception:
                         args = {}
+                    args = _as_dict(args)
                     tool_name = fn.get("name", "")
                     ok = True
                     error = None
@@ -567,12 +1056,16 @@ class OpenAICompatibleProvider:
                 )
                 if body:
                     last_error = f"{last_error} :: {body}"
-                if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                if turn < max_turns - 1 and _is_retryable_exception(exc):
+                    await _sleep_for_retry(turn, exc.response)
+                else:
+                    break
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                if turn < max_turns - 1 and _is_retryable_exception(exc):
+                    await _sleep_for_retry(turn)
+                else:
+                    break
 
         return ModelResult(
             success=False,
@@ -609,6 +1102,112 @@ class MoonshotKimiProvider(OpenAICompatibleProvider):
             include_temperature=False,
             provider_name="moonshot",
         )
+
+
+class GoogleGeminiProvider:
+    """Gemini adapter using Google's official Gen AI SDK."""
+
+    supports_tools: bool = False
+
+    def __init__(self, model_name: str, api_key: str | None, base_url: str | None = None) -> None:
+        self.provider_name = "google"
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        self.base_url = base_url or "https://generativelanguage.googleapis.com"
+
+    def _client(self):
+        from google import genai
+
+        return genai.Client(api_key=self.api_key)
+
+    async def complete(
+        self,
+        prompt: str,
+        context_files: list[Path] | None = None,
+        options: ModelOptions | None = None,
+    ) -> ModelResult:
+        opts = options or ModelOptions()
+        context = _read_context(context_files)
+        full_prompt = prompt + context
+        estimated_tokens = _estimate_tokens(full_prompt)
+        ctx_limit = config.context_max_tokens
+        if estimated_tokens > ctx_limit:
+            raise RuntimeError(
+                f"Context too large: ~{estimated_tokens:,} estimated tokens exceeds "
+                f"MCP_CONTEXT_MAX_TOKENS={ctx_limit:,}. Reduce engineering facts or split the group."
+            )
+        metadata = {
+            "provider": self.provider_name,
+            "estimated_input_tokens": estimated_tokens,
+            **_context_metadata(context_files),
+        }
+        start = time.monotonic()
+        last_error: str | None = None
+
+        for attempt in range(opts.retries + 1):
+            try:
+                client = self._client()
+                gemini_config: dict[str, Any] = {
+                    "max_output_tokens": opts.max_tokens,
+                    "temperature": opts.temperature,
+                    **opts.provider_options,
+                }
+                if opts.json_mode:
+                    gemini_config["response_mime_type"] = "application/json"
+                payload = _validated_payload(
+                    GeminiGenerateContentPayload,
+                    {
+                        "model": self.model_name,
+                        "contents": full_prompt,
+                        "config": gemini_config,
+                    },
+                )
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    **payload,
+                )
+                raw_text = str(getattr(response, "text", "") or "")
+                # Gemini does not support server-side prefill; applying it would
+                # corrupt the output when the model returns a preamble before JSON.
+                text = raw_text
+                usage = getattr(response, "usage_metadata", None)
+                usage_data = _model_dump(usage)
+                result = ModelResult(
+                    success=True,
+                    text=text,
+                    model_name=self.model_name,
+                    input_tokens=int(usage_data.get("prompt_token_count") or estimated_tokens),
+                    output_tokens=int(usage_data.get("candidates_token_count") or _estimate_tokens(text)),
+                    latency_ms=int((time.monotonic() - start) * 1000),
+                    retries=attempt,
+                    metadata=metadata,
+                )
+                _assert_contract(result, self.provider_name)
+                return result
+            except Exception as exc:
+                last_error = _sdk_error(exc)
+                if attempt < opts.retries:
+                    await _sleep_for_retry(attempt)
+
+        return ModelResult(
+            success=False,
+            model_name=self.model_name,
+            input_tokens=estimated_tokens,
+            latency_ms=int((time.monotonic() - start) * 1000),
+            retries=opts.retries,
+            raw_error=last_error,
+            metadata=metadata,
+        )
+
+    async def complete_with_tools(
+        self,
+        prompt: str,
+        staging_dir: Path,
+        options: ModelOptions | None = None,
+        max_turns: int = 30,
+        scoped_tools: Any | None = None,
+    ) -> ModelResult:
+        raise NotImplementedError("GoogleGeminiProvider does not support harness tool-use")
 
 
 class OllamaCompatibleProvider(OpenAICompatibleProvider):
@@ -773,7 +1372,7 @@ class ClaudeCliModelProvider:
                 )
                 model_usage = data.get("modelUsage", {}) or {}
                 result_model = next(iter(model_usage.keys()), self.model_name or "claude")
-                return ModelResult(
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=result_model,
@@ -783,6 +1382,8 @@ class ClaudeCliModelProvider:
                     retries=attempt,
                     metadata={**metadata, "session_id": data.get("session_id")},
                 )
+                _assert_contract(result, self.provider_name)
+                return result
             except subprocess.TimeoutExpired as exc:
                 last_error = f"Claude CLI timed out after {exc.timeout}s"
             except json.JSONDecodeError as exc:
@@ -813,7 +1414,7 @@ class ClaudeCliModelProvider:
 
 
 class AnthropicProvider:
-    """Adapter for Anthropic's Messages API."""
+    """Adapter for Anthropic's official Python SDK and Messages API."""
 
     supports_tools: bool = True
 
@@ -821,6 +1422,12 @@ class AnthropicProvider:
         self.model_name = model_name
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.provider_name = "anthropic"
+        self.base_url = "https://api.anthropic.com"
+
+    def _client(self, timeout_s: float):
+        from anthropic import AsyncAnthropic
+
+        return AsyncAnthropic(api_key=self.api_key, timeout=timeout_s)
 
     async def complete(
         self,
@@ -856,28 +1463,35 @@ class AnthropicProvider:
                 messages: list[dict[str, str]] = [{"role": "user", "content": full_prompt}]
                 if opts.prefill:
                     messages.append({"role": "assistant", "content": opts.prefill})
-                payload: dict[str, Any] = {
-                    "model": self.model_name,
-                    "max_tokens": opts.max_tokens,
-                    "messages": messages,
-                }
-                headers = {
-                    "Content-Type": "application/json",
-                    "x-api-key": self.api_key or "",
-                    "anthropic-version": "2023-06-01",
-                }
-                async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
-                    resp = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                raw_text = (data.get("content") or [{}])[0].get("text", "")
-                text = _apply_prefill(opts.prefill, raw_text)
+                payload = _validated_payload(
+                    AnthropicMessagePayload,
+                    {
+                        "model": self.model_name,
+                        "max_tokens": opts.max_tokens,
+                        "messages": messages,
+                        **opts.provider_options,
+                    },
+                )
+                response = await self._client(opts.timeout_s).messages.create(**payload)
+                data = response.model_dump()
+                blocks = data.get("content") or []
+                raw_text = next((b.get("text", "") for b in blocks if b.get("type") == "text"), "")
+                stop_reason = data.get("stop_reason")
                 usage = data.get("usage", {}) or {}
-                return ModelResult(
+                if stop_reason == "max_tokens":
+                    return ModelResult(
+                        success=False,
+                        text=_apply_prefill(opts.prefill, raw_text),
+                        model_name=self.model_name,
+                        input_tokens=int(usage.get("input_tokens") or _estimate_tokens(full_prompt)),
+                        output_tokens=int(usage.get("output_tokens") or _estimate_tokens(raw_text)),
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                        retries=attempt,
+                        raw_error="incomplete: stop_reason=max_tokens",
+                        metadata=metadata,
+                    )
+                text = _apply_prefill(opts.prefill, raw_text)
+                result = ModelResult(
                     success=True,
                     text=text,
                     model_name=self.model_name,
@@ -887,20 +1501,12 @@ class AnthropicProvider:
                     retries=attempt,
                     metadata=metadata,
                 )
-            except httpx.HTTPStatusError as exc:
-                body = exc.response.text.strip()
-                last_error = (
-                    f"{type(exc).__name__}: {exc.response.status_code} "
-                    f"{exc.response.reason_phrase} for {exc.request.method} {exc.request.url}"
-                )
-                if body:
-                    last_error = f"{last_error} :: {body}"
-                if attempt < opts.retries:
-                    await asyncio.sleep(min(2**attempt, 4))
+                _assert_contract(result, self.provider_name)
+                return result
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = _sdk_error(exc)
                 if attempt < opts.retries:
-                    await asyncio.sleep(min(2**attempt, 4))
+                    await _sleep_for_retry(attempt)
 
         return ModelResult(
             success=False,
@@ -920,7 +1526,11 @@ class AnthropicProvider:
         max_turns: int = 30,
         scoped_tools: Any | None = None,
     ) -> ModelResult:
+        import anthropic as _anthropic
+
         opts = options or ModelOptions()
+        if opts.json_mode:
+            _log_json_mode_ignored("anthropic")
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
         total_in = total_out = 0
@@ -931,28 +1541,20 @@ class AnthropicProvider:
         tool_ledger: list[dict[str, Any]] = []
         last_error: str | None = None
 
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key or "",
-            "anthropic-version": "2023-06-01",
-        }
-
         for turn in range(max_turns):
-            payload: dict[str, Any] = {
-                "model": self.model_name,
-                "max_tokens": opts.max_tokens,
-                "messages": messages,
-                "tools": STAGING_TOOLS_ANTHROPIC,
-            }
             try:
-                async with httpx.AsyncClient(timeout=opts.timeout_s) as client:
-                    resp = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                payload = _validated_payload(
+                    AnthropicMessagePayload,
+                    {
+                        "model": self.model_name,
+                        "max_tokens": opts.max_tokens,
+                        "messages": messages,
+                        "tools": STAGING_TOOLS_ANTHROPIC,
+                        **opts.provider_options,
+                    },
+                )
+                response = await self._client(opts.timeout_s).messages.create(**payload)
+                data = response.model_dump()
 
                 usage = data.get("usage") or {}
                 total_in += int(usage.get("input_tokens") or 0)
@@ -1009,7 +1611,7 @@ class AnthropicProvider:
                     final_text = "".join(
                         b.get("text", "") for b in content_blocks if b.get("type") == "text"
                     )
-                    return ModelResult(
+                    result = ModelResult(
                         success=True,
                         text=_apply_prefill(opts.prefill, final_text),
                         model_name=self.model_name,
@@ -1029,6 +1631,8 @@ class AnthropicProvider:
                             "context_bytes": 0,
                         },
                     )
+                    _assert_contract(result, self.provider_name)
+                    return result
 
                 # Append full assistant turn (content blocks)
                 messages.append({"role": "assistant", "content": content_blocks})
@@ -1065,20 +1669,13 @@ class AnthropicProvider:
                     })
                 messages.append({"role": "user", "content": tool_results})
 
-            except httpx.HTTPStatusError as exc:
-                body = exc.response.text.strip()
-                last_error = (
-                    f"{type(exc).__name__}: {exc.response.status_code} "
-                    f"{exc.response.reason_phrase} for {exc.request.method} {exc.request.url}"
-                )
-                if body:
-                    last_error = f"{last_error} :: {body}"
-                if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+            except (_anthropic.AuthenticationError, _anthropic.PermissionDeniedError) as exc:
+                last_error = _sdk_error(exc)
+                break
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = _sdk_error(exc)
                 if turn < max_turns - 1:
-                    await asyncio.sleep(min(2 ** turn, 8))
+                    await _sleep_for_retry(turn)
 
         return ModelResult(
             success=False,

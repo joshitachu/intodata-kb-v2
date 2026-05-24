@@ -8,6 +8,8 @@ import {
   ThumbsDown,
   ChevronDown,
   ChevronRight,
+  AlertCircle,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -22,6 +24,7 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
   hasSources?: boolean;
   usage?: UsageStats | null;
+  onRetry?: () => void;
 }
 
 export function MessageBubble({
@@ -30,14 +33,16 @@ export function MessageBubble({
   isStreaming,
   hasSources,
   usage,
+  onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const isFailed = !isUser && message.status === "failed";
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
 
   // message.id < 1 marks optimistic / streaming messages that haven't been
   // persisted yet — feedback is disabled until the server assigns a real id.
-  const canSubmitFeedback = !isUser && message.id > 0;
+  const canSubmitFeedback = !isUser && !isFailed && message.id > 0;
 
   function handleFeedback(next: "up" | "down") {
     if (!canSubmitFeedback) return;
@@ -104,7 +109,27 @@ export function MessageBubble({
             /* Assistant: raw text on page background */
             <div>
               <div className="chat-prose">
-                {message.content ? (
+                {isFailed ? (
+                  <div className="flex flex-col items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      <span>
+                        {message.error_message ||
+                          "Chat response failed before an answer was saved."}
+                      </span>
+                    </div>
+                    {onRetry && (
+                      <button
+                        type="button"
+                        onClick={onRetry}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 px-2 py-1 font-medium hover:bg-destructive/10"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                ) : message.content ? (
                   <MarkdownContent content={message.content} />
                 ) : isStreaming ? (
                   <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">

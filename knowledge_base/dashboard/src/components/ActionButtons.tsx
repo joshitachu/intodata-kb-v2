@@ -1,27 +1,22 @@
 import { useState } from "react";
 import { useScan, useGenerate, usePushToRag, useResetStatus, useDeleteProject } from "../hooks/useProjects";
-import { useProfiles } from "../hooks/useTemplates";
 
 interface Props {
   projectId: string;
   status: string;
-  platform?: string;
   onAction: (projectId: string) => void;
 }
 
-export default function ActionButtons({ projectId, status, platform, onAction }: Props) {
+export default function ActionButtons({ projectId, status, onAction }: Props) {
   const scan = useScan();
   const generate = useGenerate();
   const push = usePushToRag();
   const resetStatus = useResetStatus();
   const deleteProject = useDeleteProject();
-  const { data: profilesData } = useProfiles({ platform: platform || undefined });
 
-  const [selectedProfileId, setSelectedProfileId] = useState<number | undefined>(undefined);
   const [resumeGenerate, setResumeGenerate] = useState(true);
 
   const busy = status === "scanning" || status === "generating";
-  const profiles = profilesData?.profiles ?? [];
 
   return (
     <div className="card-actions flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
@@ -36,24 +31,6 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
           <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3" />
         </svg>
       </button>
-
-      {/* Profile selector (compact) */}
-      {profiles.length > 0 && (
-        <select
-          value={selectedProfileId ?? ""}
-          onChange={(e) => setSelectedProfileId(e.target.value ? Number(e.target.value) : undefined)}
-          className="bg-transparent border border-white/[0.08] rounded text-xs text-slate-500 px-1.5 py-1 max-w-[120px] focus:border-accent-primary/40 focus:outline-none"
-          title="Template profile"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <option value="">Default</option>
-          {profiles.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-      )}
 
       <label
         className="flex items-center gap-1 px-1.5 py-1 text-xs text-slate-500 select-none"
@@ -75,12 +52,13 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
         disabled={busy || generate.isPending}
         title="Generate Docs"
         onClick={() => {
+          const investigationModel = localStorage.getItem(`project_investigation_model_${projectId}`) || null;
           const writeModel = localStorage.getItem(`project_write_model_${projectId}`) || null;
           onAction(projectId);
           generate.mutate({
             projectId,
-            templateProfileId: selectedProfileId,
             resume: resumeGenerate,
+            investigationModel,
             model: null,
             writeModel,
           });
@@ -123,12 +101,12 @@ export default function ActionButtons({ projectId, status, platform, onAction }:
         </button>
       )}
 
-      {/* Reset (only when busy) */}
+      {/* Stop / reset (only when busy) */}
       {busy && (
         <button
           className="btn-icon-danger"
           disabled={resetStatus.isPending}
-          title="Reset status"
+          title={status === "generating" ? "Stop generation" : "Reset status"}
           onClick={() => resetStatus.mutate(projectId)}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

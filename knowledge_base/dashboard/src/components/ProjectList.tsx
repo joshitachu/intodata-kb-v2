@@ -1,6 +1,7 @@
 import { useProjects } from "../hooks/useProjects";
 import type { Project } from "../types";
 import ProjectCard from "./ProjectCard";
+import { parseApiError } from "../lib/errors";
 
 interface Props {
   onAction: (projectId: string) => void;
@@ -34,7 +35,7 @@ export default function ProjectList({
     return (
       <div className="card-dark p-6">
         <p className="text-red-400 text-sm font-mono">
-          Failed to load projects: {(error as Error).message}
+          Failed to load projects: {parseApiError(error)}
         </p>
       </div>
     );

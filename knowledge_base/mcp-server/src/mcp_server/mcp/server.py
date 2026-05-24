@@ -83,7 +83,9 @@ async def list_tools() -> list[Tool]:
             name="trigger_scan",
             description=(
                 "Runs `intodoc scan` subprocess for a project, updates cache. "
-                "Returns scan summary."
+                "Returns scan summary. "
+                "ONLY call if get_scan_status() shows the cache is stale or missing. "
+                "Never call proactively or as a first step."
             ),
             inputSchema={
                 "type": "object",
@@ -117,7 +119,11 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Push documents to the RAG pipeline for vector indexing. "
                 "If docs list provided, pushes those. Otherwise reads .md files "
-                "from the project output directory."
+                "from the project output directory. "
+                "DO NOT call during or after doc generation — the server pushes "
+                "to RAG automatically on generation success via RagBridge.push_docs(). "
+                "Only call manually if the dashboard Push button is unavailable "
+                "or a RAG push failed."
             ),
             inputSchema={
                 "type": "object",

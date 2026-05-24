@@ -92,7 +92,7 @@ class AuthService:
 
     async def create_tokens(self, user: User) -> tuple[str, str]:
         """Create access + refresh tokens. Stores refresh token hash in DB."""
-        access = create_access_token(user.id, user.username)
+        access = create_access_token(user.id, user.username, user.mfa_enabled)
         refresh, expires_at = create_refresh_token(user.id)
 
         token_record = RefreshToken(
@@ -115,7 +115,10 @@ class AuthService:
         token_record = result.scalar_one_or_none()
         if token_record is None:
             return None
-        if token_record.expires_at < datetime.now(timezone.utc):
+        expires_at = token_record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
             return None
 
         # Revoke old token
@@ -145,5 +148,18 @@ class AuthService:
         await self.db.execute(
             update(RefreshToken)
             .where(RefreshToken.user_id == user_id, RefreshToken.revoked == False)  # noqa: E712
+            .values(revoked=True)
+        )
+
+    async def revoke_other_user_tokens(self, user_id: int, keep_token: str) -> None:
+        """Revoke all refresh tokens for a user except the one provided (keeps current session alive)."""
+        keep_hash = hash_token(keep_token)
+        await self.db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.token_hash != keep_hash,
+                RefreshToken.revoked == False,  # noqa: E712
+            )
             .values(revoked=True)
         )

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import zipfile
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from sqlalchemy import select
 
 
@@ -155,7 +155,9 @@ async def test_list_projects_returns_added(client):
     })
     resp = await client.get("/mcp/projects")
     assert resp.status_code == 200
-    assert resp.json()["total"] == 1
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["projects"][0]["plugin_pack_id"] is None
 
 
 # --- Status ---
@@ -186,6 +188,93 @@ async def test_reset_status_not_generating(client):
     })
     resp = await client.post("/mcp/reset-status", json={"project_id": "resetproj"})
     assert resp.status_code == 400
+
+
+async def test_reset_status_cancels_live_generation_task(client, session_factory):
+    from mcp_server.api.routes import projects as project_routes
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    project_id = "cancelproj"
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project(
+            project_id=project_id,
+            local_path="/tmp/cancelproj",
+            platform="generic",
+            source_type="zip",
+        )
+        await registry.update_status(project_id, "generating")
+        run = await registry.create_generate_run(project_id, triggered_by="api")
+        await session.commit()
+
+    task = asyncio.create_task(asyncio.sleep(60))
+    project_routes._generation_tasks[project_id] = task
+    project_routes._currently_generating.add(project_id)
+
+    resp = await client.post("/mcp/reset-status", json={"project_id": project_id})
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+    assert task.cancelled() or task.cancelling()
+    assert project_id not in project_routes._generation_tasks
+    assert project_id not in project_routes._currently_generating
+
+    async with session_factory() as session:
+        from mcp_server.db.models import GenerateRun, Project
+
+        project = (await session.execute(select(Project).where(Project.id == project_id))).scalar_one()
+        saved_run = (await session.execute(select(GenerateRun).where(GenerateRun.id == run.id))).scalar_one()
+        assert project.status == "error"
+        assert project.error_message == "Generation cancelled by user"
+        assert saved_run.status == "failed"
+        assert saved_run.error_message == "Generation cancelled by user"
+        assert saved_run.run_verdict == "failed"
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def test_scan_repairs_stale_managed_repo_path(client, session_factory, tmp_path):
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    repo = config.repos_dir / "nexus"
+    repo.mkdir(parents=True)
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project(
+            project_id="nexus",
+            local_path="/home/intodata/intodata-kb/knowledge_base/data/repos/nexus",
+            platform="generic",
+            source_type="zip",
+        )
+        await session.commit()
+
+    with patch(
+        "mcp_server.api.routes.projects.ScannerService.run_scan",
+        new=AsyncMock(
+            return_value={
+                "success": True,
+                "job_count": 0,
+                "scan_result_path": str(tmp_path / "scan_result.json"),
+                "output_dir": str(tmp_path / "output"),
+            }
+        ),
+    ) as run_scan:
+        resp = await client.post("/mcp/scan", json={"project_id": "nexus"})
+
+    assert resp.status_code == 200
+    run_scan.assert_awaited_once()
+    assert run_scan.await_args.kwargs["repo_path"] == str(repo)
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.get_project("nexus")
+        assert project is not None
+        assert project.local_path == str(repo)
 
 
 # --- Logs ---
@@ -224,7 +313,7 @@ async def _completed_run(session_factory, project_id: str, **kwargs) -> int:
         return result.scalar_one().id
 
 
-async def test_generate_run_compare_includes_models_quality_deltas_and_template_diffs(client, session_factory):
+async def test_generate_run_compare_includes_models_quality_deltas(client, session_factory):
     from mcp_server.config import config
 
     await client.post("/mcp/add-repo", json={"url": "zip", "project_id": "cmp", "platform": "talend"})
@@ -239,7 +328,6 @@ async def test_generate_run_compare_includes_models_quality_deltas_and_template_
         model_name="moonshot/kimi-k2.6",
         write_model_name="openai/deepseek-v4-pro",
         quality_score=4.5,
-        template_snapshot={"overview": 1, "runbook": 1},
     )
     run_b = await _completed_run(
         session_factory,
@@ -252,7 +340,6 @@ async def test_generate_run_compare_includes_models_quality_deltas_and_template_
         model_name="openai/gpt-4o",
         write_model_name="anthropic/claude-sonnet-4-6",
         quality_score=4.0,
-        template_snapshot={"overview": 2, "runbook": 1},
     )
 
     logs_dir = config.project_root / "output" / "cmp" / "logs"
@@ -289,7 +376,6 @@ async def test_generate_run_compare_includes_models_quality_deltas_and_template_
     assert data["delta"]["quality"] == -0.5
     assert data["verdict"] == "FAIL"
     assert data["run_a"]["doc_quality"]["source_alignment"] == 4.0
-    assert data["template_diffs"] == [{"slug": "overview", "version_a": 1, "version_b": 2}]
 
 
 async def test_generate_run_compare_warns_when_metrics_missing(client, session_factory):

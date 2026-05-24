@@ -3,6 +3,96 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-05-21 — Read-only: confirmed git poller failure bugs
+
+### [Analysis]: Confirmed three bugs in git auto-reingest / poller flow
+
+- **Files changed**: none (read-only analysis session)
+- **Problem**: User presented a detailed failure analysis of the git poller and asked for code-level confirmation that the described failure mode exists.
+- **Root cause**: n/a (no change made)
+- **Change**: No code changed. The following bugs were confirmed by reading the source:
+  1. **No `GIT_TERMINAL_PROMPT=0` / `GIT_ASKPASS`**: Neither `git_poller.py:_fetch_remote` nor `git_diff_patcher.py:_run_diff_patch` nor the systemd unit (`deploy/mcp-server@.service`) set these env vars. `stdin=DEVNULL` is set but does not prevent a credential helper from opening `/dev/tty`. In a systemd service with no TTY, git fetch will abort with "could not read Password" if any credential helper is registered on the host.
+  2. **`last_ingested_commit_sha` never advances on fetch failure**: `git_poller.py:poll_git_projects_once` catches the exception at line 116 and only calls `update_auto_reingest_check` (which writes `auto_reingest_error`). `update_last_ingested_commit` is only called inside `git_diff_patcher.py:148` when `result.advance_commit is True and result.error is None`. A fetch exception means the baseline stays stuck at the original SHA permanently.
+  3. **`last_rag_push_at` not written by generate flow**: `_run_generate_background` (projects.py ~line 847) calls `_push_with_retry` → `bridge.push_docs()` but never calls `registry.update_rag_push()`. That method is only called at projects.py:1075 (explicit "Push to RAG" API endpoint) and mcp/server.py:511. Dashboard shows "LAST RAG PUSH: Never" even though docs are in RAG.
+  4. **Token URL left in git remote after fetch**: Both `_fetch_remote` and `_run_diff_patch` inject the PAT into the remote URL via `remote set-url` before fetching but never reset the URL afterward (pass or fail). Token persists in `.git/config` and leaks in journal on any subsequent error.
+- **Why this approach**: n/a
+- **Verification**: Code inspection only. Description claimed poller uses `git ls-remote` — code shows it uses `git fetch` directly; rest of the analysis matches the code exactly.
+
+## Session: 2026-05-20 — Enterprise documentation quality gates, scan hardening, verdicts, audit bundle
+
+### [Feature/Fix]: Quality-first enterprise publishing path — 350 backend tests pass, dashboard build passes
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/providers/base.py` — added `DocGenContext.enterprise_mode`, defaulting publishable generation to enterprise mode.
+  - `mcp-server/src/mcp_server/config.py` — added `doc_generation_enterprise_mode_default` and `doc_generation_quality_threshold`.
+  - `mcp-server/src/mcp_server/schemas.py` — added `GenerateRequest.mode` (`enterprise` or `draft`) and exposed `GenerateRunResponse.run_verdict` / `gate_results`.
+  - `mcp-server/src/mcp_server/db/models.py` — added `GenerateRun.run_verdict` and JSON `gate_results`.
+  - `mcp-server/alembic/versions/013_add_generate_run_enterprise_verdict.py` — migration for `run_verdict` and `gate_results`.
+  - `mcp-server/src/mcp_server/services/project_registry.py` — persists enterprise verdict metadata on completed runs.
+  - `mcp-server/src/mcp_server/services/claude_service.py` — threads enterprise/draft mode through generation startup and run manifest.
+  - `mcp-server/src/mcp_server/services/scanner_service.py` — clears stale `scan_result.json` / segmented `scan/` output before scans; fails closed if a successful subprocess does not produce valid `scan_result.json`.
+  - `mcp-server/src/mcp_server/api/routes/projects.py` — exception-safe `_run_generate_background`; preserves failed `docs_staging/`; records `draft`, `failed`, `published`, `published_with_rag_error`, or `client_ready`; stores gate results; marks manual reset runs as failed verdicts.
+  - `mcp-server/src/mcp_server/providers/custom/validators.py` — added final redaction, source provenance, and usefulness rubric validators; made invalid scan output fail closed.
+  - `mcp-server/src/mcp_server/providers/custom/harness.py` — made Phase 3 doc-depth validation blocking; added enterprise gate report, deterministic internal reviewer checks, final audit bundle, doc hashes, and gate artifacts.
+  - `dashboard/src/types.ts` — added run verdict and gate result fields.
+  - `dashboard/src/components/RunHistory.tsx` — shows structured run verdict badges before legacy PASS/FAIL comparison verdicts.
+  - `dashboard/src/tests/ep000-ui.test.tsx` — updated fixtures for new GenerateRun fields.
+  - `mcp-server/tests/test_services/test_scanner_service.py` — added stale scan cleanup / missing output failure coverage.
+  - `mcp-server/tests/test_providers/test_custom_provider.py`, `test_perf_regression.py` — updated fake docs to satisfy stricter blocking depth/section gates.
+- **Problem**: Publish could still proceed with shallow Phase 3 docs, missing final provenance/redaction checks, no structured client-ready verdict, possible stale scan artifacts, and generation crashes that could leave projects stuck in `generating`.
+- **Root cause**: The harness had strong intermediate gates, but Phase 3 depth was only a warning and publish-state lived mostly in implicit success/failure booleans. Scanner output was trusted after subprocess success, even if the result file was stale, absent, or malformed. Dashboard run history had only the older comparison PASS/FAIL verdict.
+- **Change**: Enterprise mode is now the default publish path and `draft` must be explicit. Enterprise gates block publish before `docs/` swap: fresh scan, Phase 2 coverage/depth, Phase 3 coverage/depth, final redaction, source provenance, internal reviewer approval, quality threshold, usefulness rubric, and pre-publish RAG gate placeholder. Failed enterprise runs preserve `docs_staging/` for resume/repair and write gate reports/audit artifacts. Successful runs get structured verdicts and gate JSON in the DB.
+- **Why this approach**: The system should fail closed for client-ready docs. Cost controls remain guardrails, not quality tradeoffs. Deterministic validators and reviewer checks provide stable CI coverage while still leaving room for future LLM reviewer loops. Staging preservation keeps recovery practical without ever promoting failed docs.
+- **Verification**:
+  - `cd mcp-server && uv run pytest -q` -> 350 passed.
+  - `cd dashboard && npm run build` -> TypeScript and Vite build passed.
+
+## Session: 2026-05-20 — Harness reliability campaign phases 1–6 (CSRF fix, INCOMPLETE kind, force-conclude, gather safety, atomic writes, provider fixes)
+
+### [Fix]: Full harness reliability campaign — 16 issues across 6 phases, 349 tests pass
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/middleware/csrf.py` (+11 lines) — added `_EXEMPT_PREFIXES` tuple for `/api/v1/ingest/` and `/api/v1/usage/`; updated `dispatch()` condition to skip CSRF for these paths
+  - `mcp-server/src/mcp_server/api/routes/projects.py` (+6 lines) — added `_PERMANENT_HTTP_CODES = {"400", "401", "403", "404", "422"}`; fast-fail break in `_push_with_retry` when any error string contains a permanent code
+  - `mcp-server/src/mcp_server/config.py` (+1 line) — `phase2_max_tokens` raised from `16_000` to `32_000`
+  - `mcp-server/src/mcp_server/providers/custom/agent_runtime.py` (+26 lines) — added `_atomic_write()` helper (tmp + rename); replaced 5 direct `.write_text()` calls in `AgentTaskRuntime.run()` final writes with `_atomic_write()`; broadened `accepted_output()` exception from `json.JSONDecodeError` to `(json.JSONDecodeError, OSError, UnicodeDecodeError)`; `status.json` write remains last (acceptance gate)
+  - `mcp-server/src/mcp_server/providers/custom/harness.py` (+118 lines) — added `FailureKind.INCOMPLETE`; `is_retryable_with_fallback` excludes INCOMPLETE; `_classify_failure()` checks `metadata["finish_reason"]` and `metadata["incomplete_reason"]` before returning UNKNOWN; force-conclude block in `_call_model_with_logging()` (calls `provider.complete()` without tools when INCOMPLETE + scoped_tools active); primary call logged to `state.calls` before fallback overwrites result; Phase 2/3 `asyncio.gather()` use `return_exceptions=True` with per-exception error logging; Phase 2/3 repair failures log at "error" not "warning"; plugin manifest `except Exception` now logs with `exc_info=True`; slice token aggregation reads from `state.calls[pre_calls_len:]`
+  - `mcp-server/src/mcp_server/providers/custom/providers.py` (+46 lines) — `OpenAIOfficialProvider.complete_with_tools()`: added `finish_reason=="incomplete"` → INCOMPLETE early-exit; auth error (401/403) breaks retry loop immediately; uses `_sleep_for_retry()` instead of bare `asyncio.sleep()`; all three `complete_with_tools()` implementations log DEBUG when `json_mode=True` is passed (it is ignored — tool contracts enforce structure)
+  - `mcp-server/tests/test_providers/test_custom_provider.py` (+407 lines) — 13 new tests covering: INCOMPLETE classification via metadata, INCOMPLETE not retryable, force-conclude fires and succeeds, primary call logged before fallback, slice token aggregation, atomic writes leave no .tmp files, `accepted_output` tolerates corrupt status file, OpenAIOfficialProvider maps `status="incomplete"` to failure, auth errors not retried
+- **Problem**: Live `cdc` generation revealed two blocking issues: (1) All 9 docs pushed to RAG failed 100% with 500 errors (CSRF middleware blocking mcp-server → backend server-to-server POST calls), each doc retried 3× unnecessarily. (2) Phase 2 group analysis silently fell back from DeepSeek to gpt-4.1 — DeepSeek hit the 16K `phase2_max_tokens` cap, got `finish_reason="length"`, but `_classify_failure()` returned UNKNOWN (never checked metadata), `is_retryable_with_fallback` was True, fallback fired. Three parallel audit agents then found 14 additional gaps.
+- **Root cause**: CSRF middleware had no path-prefix exemption — all non-GET requests to non-exempt exact paths were blocked regardless of origin. `_classify_failure()` only scanned `raw_error` string with regex, never checked `result.metadata["finish_reason"]`; `FailureKind.INCOMPLETE` didn't exist so all length-truncation failures classified as UNKNOWN (retryable). `asyncio.gather()` in Phase 2/3 had no `return_exceptions=True` — one failing group silently cancelled siblings. Final writes in `AgentTaskRuntime.run()` were non-atomic — crash mid-write could leave partial JSON. `OpenAIOfficialProvider.complete_with_tools()` retried auth errors and had no length check.
+- **Why this approach**: CSRF path-prefix exemption is the correct fix for server-to-server routes that are already behind Docker internal network and project-level auth — no shared secret needed. Force-conclude uses the same provider (no fallback) since the model already has context in scope; INCOMPLETE is excluded from `is_retryable_with_fallback` so no fallback fires regardless. Atomic writes use POSIX `rename()` which is guaranteed atomic — prevents partial status.json from blocking resume reads. `return_exceptions=True` ensures all sibling tasks complete before error propagates — prevents partial generation where some groups are missing.
+- **Verification**: 349 tests pass (`uv run pytest tests/ -x -q`). 13 new tests specifically exercise each fix.
+
+## Session: 2026-05-20 — P2/P3/P4: Investigation robustness, operational safety, validator correctness
+
+### [Fix/Feature]: Custom harness reliability campaign (8 steps, 336 tests pass)
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/config.py` — fixed non-existent fallback model (`"openai/gpt-5.4"` → `None`); added `_PROVIDER_KEY_MAP` and `check_provider_credentials()` for startup credential preflight
+  - `mcp-server/src/mcp_server/providers/custom/models.py` — added `json_mode: bool = False` to `ModelOptions`
+  - `mcp-server/src/mcp_server/providers/custom/providers.py` — added `_assert_contract()` helper (raises in dev, logs WARNING in prod); wired `json_mode` into `OpenAIOfficialProvider` (`text.format`), `OpenAICompatibleProvider` (`response_format`), `GoogleGeminiProvider` (`response_mime_type`); called `_assert_contract()` before all 8 success-return sites across 6 providers
+  - `mcp-server/src/mcp_server/providers/custom/investigator.py` — added `collect_partial_evidence()` to `EvidenceValidator` (returns valid/missing/errors without raising); rewrote `SingleShotInvestigator.run()` for evidence accumulation and targeted repair (retry only missing units, cap 15 per call); updated `_build_prompt()` to accept optional `repair_context`
+  - `mcp-server/src/mcp_server/providers/custom/validators.py` — changed coverage matching from substring `in` to word-boundary regex to eliminate false positives (e.g. "Map" matching inside "mapping")
+  - `mcp-server/src/mcp_server/providers/custom/harness.py` — added module-level `logger`; added `logger.warning()` on prompt-pack glob fallback in `_phase2_shared_context()` and `_phase3_context_files()`
+  - `mcp-server/src/mcp_server/services/generation_run_state.py` (new) — filesystem lock/manifest helpers (`acquire_generation_lock`, `refresh_generation_lock`, `release_generation_lock`, `write_run_manifest`, `record_manifest_chunks`) plus `LockHeartbeat` async context manager that refreshes lock every 60s via background asyncio task
+  - `mcp-server/src/mcp_server/services/claude_service.py` — imported `LockHeartbeat`; wrapped `provider.run()` with `async with LockHeartbeat(staging_dir, run_id=run_id):`
+  - `mcp-server/src/mcp_server/api/app.py` — added `_pid_alive()` and `_reconcile_orphaned_runs()` (marks `GenerateRun(status="running")` rows as failed if lock absent or PID dead); both wired into `lifespan()` startup; added `check_provider_credentials()` loop logging ERROR in prod, WARNING in dev
+  - `mcp-server/src/mcp_server/api/routes/projects.py` — minor fix
+  - `mcp-server/src/mcp_server/providers/custom/agent_runtime.py` — minor fix
+  - `mcp-server/entrypoint.sh` — minor fix
+  - `mcp-server/tests/test_providers/test_custom_provider.py` — new tests covering contract assertions, json_mode, targeted repair, partial evidence collection
+  - `mcp-server/tests/test_services/test_generation_run_state.py` (new) — lock acquire/refresh/release and LockHeartbeat tests
+  - `knowledge_base/.claude/PROJECT_MEMORY.md` — updated decisions table and lessons learned
+  - `knowledge_base/.claude/progress.md` — phase tracking update
+- **Problem**: Three distinct reliability gaps: (1) investigation retried entire groups when only 1-2 units were missing; Gemini had no native JSON enforcement; provider contract violations were silent; fallback model pointed to non-existent `openai/gpt-5.4`. (2) Lock had no heartbeat — crashes could block generation for 2h; DB `status="running"` rows from crashes were never cleaned up; no startup warning for missing API keys. (3) Coverage validator matched unit names as substrings causing false positives; prompt-pack glob fallback was silent.
+- **Root cause**: `SingleShotInvestigator.run()` re-sent the full group on every retry instead of accumulating good evidence and asking only for missing units. Fallback model value set to non-existent model in US-102, never corrected. `acquire_generation_lock` stored a timestamp but nothing refreshed it. `_run_generate_background` left DB rows stuck after crash because there was no startup reconciliation. `covered_ids` used `unit.name in text` substring matching.
+- **Change**: Targeted repair accumulates valid evidence across attempts and retries only missing units (cap 15 per call) — a group with 18/20 covered uses ~10% of the token budget on repair vs 100% on full retry. `_assert_contract()` makes C1/C2/C3 violations observable in dev (raises) and auditable in prod (WARNING). `json_mode` wired to provider-native JSON enforcement. `LockHeartbeat` wraps only `provider.run()` (not the full generation function). `_reconcile_orphaned_runs()` marks stuck rows failed at startup using PID liveness check. `check_provider_credentials()` maps provider prefix to required env var — no hard exit, just log. P4.2 (section validation for non-Talend) deliberately skipped: `REQUIRED_SECTION_NAMES` are Talend-specific; applying to Workato/Generic would break validation.
+- **Why this approach**: Accumulation is strictly additive — validated evidence is never discarded. asyncio background task for heartbeat matches all other async I/O in the codebase. No hard exit on missing API keys preserves the case where operators run with only some providers configured.
+- **Verification**: 336/336 tests pass. 1 intermediate failure (`test_phase3_context_prefers_doc_pack_over_family_bundle`) was caused by missing module-level `logger` in harness.py — fixed by adding `import logging` + `logger = logging.getLogger(__name__)`.
+
+---
+
 ## Session: 2026-05-11 — EP-001 Deployment Foundation Sweep
 
 ### [Fix/Docs]: EP-001 backlog refresh + nginx security headers
@@ -1624,6 +1714,28 @@ The fundamental fix for small models is one focused task per LLM call. Asking a 
 Restart mcp-server (`python3 -m mcp_server --serve --port 8002`) then re-run generation for localESBCHECK.
 Expected: Phase 2 analysis 20-40KB per group (vs 4-8KB), overall quality score 2.5-3.5 (vs 1.58).
 Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
+
+## Session: 2026-05-20
+
+### [Refactor]: .agent/ documentation audit and accuracy fix
+
+- **Files changed**: `knowledge_base/.agent/README.md`, `knowledge_base/.agent/SOP/add-new-project.md`, `knowledge_base/.agent/SOP/setup-dev-environment.md`, `knowledge_base/.agent/decisions/001-mcp-over-cli.md`, `knowledge_base/.agent/system/architecture.md`, `knowledge_base/.agent/system/dashboard.md`, `knowledge_base/.agent/system/mcp-server.md`, `knowledge_base/.agent/system/tech-stack.md` (updated); `knowledge_base/.agent/SOP/run-doc-generation.md`, `knowledge_base/.agent/system/lessons-learned.md` (deleted).
+- **Problem**: `.agent/` docs were significantly out of sync with the codebase -- wrong tool counts, deleted CLI commands described as functional, stale `vaxxinova/` paths, missing platforms, outdated component lists.
+- **Root cause**: `.agent/` docs written once during initial setup and never maintained. New features (Workato/Generic/Lobster platforms, 6 Hindsight tools, custom harness provider, template system, 11 more dashboard components) captured in CLAUDE.md and PROJECT_MEMORY but never backfilled into reference docs.
+- **Change**: Audited all 11 `.agent/` files against live code. Deleted 2 redundant files. Updated 8 files: tool count 8->14, prompt format 22 .txt->2 .md guides, removed legacy CLI section (no analyze/generate commands exist), platform support Talend-only->Talend/Workato/Generic/Lobster, `vaxxinova/` paths->`knowledge_base/`, dashboard component list 5->16, ADR-001 marked "partially superseded" by custom provider.
+- **Why this approach**: Spawned audit agent to compare docs against live code rather than editing from memory.
+- **Verification**: All file paths and tool names verified against live source. Commit `9913dc6`.
+
+### [Feature]: Level 6 PostToolUse hook -- automatic Python syntax check
+
+- **Files changed**: `~/.claude/hooks/py_compile_check.py` (new, global), `~/.claude/settings.json` (PostToolUse hook added). Not tracked in this repo.
+- **Problem**: Python syntax errors from edits were only caught at service startup, not at edit time.
+- **Change**: Global hook reads `tool_input.file_path` from stdin after every `Edit`/`Write`; runs `python3 -m py_compile` on `.py` files; exits 2 with error output on failure, silent on success.
+- **Why this approach**: `py_compile` checks syntax without importing. Exit 2 surfaces the error to the agent immediately and blocks continuation.
+- **Verification**: Wired via `PostToolUse` matcher `Edit|Write`. Applies globally across all projects.
+
+> **NOTE**: Uncommitted working tree changes exist in `knowledge_base/mcp-server/` (projects.py +23, claude_service.py +50, config.py +1) implementing a file-based generation lock (`acquire/release_generation_lock`, `write_run_manifest`, `.generation.lock` in staging_dir, 409 on concurrent generate). Not worked on this session -- commit or log separately.
+
 ## Session: 2026-05-05
 
 ### [Docs/Backlog]: EP-001 deployment foundation realignment
@@ -1634,3 +1746,14 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Change**: Reframed EP-001 as generic deployment foundation. Made nginx/certbot canonical, kept Caddy as legacy/deferred, added `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`, updated `deploy-client.sh` to generate MCP systemd env vars, and documented the state in CLAUDE files.
 - **Why this approach**: EP-001 should make deployment repeatable before any customer-specific rollout. Customer deployments can then use the generic runbook as validation evidence rather than being hardcoded into the foundation epic.
 - **Verification**: `bash -n deploy/deploy-client.sh` passed. Stale-reference searches for target EP-001 files found no old Lobster/Cronos/Strato/Caddy requirements except intentional Caddy legacy notes. EP-001 is still not accepted until the runbook and smoke test pass on a clean reference VPS.
+
+## Session: 2026-05-24
+
+### [Feature]: EP-005 Mission Control -- heartbeat receiver scaffolded and tested end-to-end
+
+- **Files changed**: `mission_control/src/mission_control/__init__.py` (new), `mission_control/src/mission_control/config.py` (new), `mission_control/src/mission_control/receiver.py` (new), `mission_control/src/mission_control/main.py` (new), `mission_control/src/mission_control/__main__.py` (new), `mission_control/pyproject.toml` (new), `mission_control/.env.example` (new), `.env` (appended ops telemetry vars -- gitignored)
+- **Problem**: No central visibility into customer instance health. EP-005 requires a Mission Control service that aggregates heartbeat snapshots pushed by each customer MCP server.
+- **Root cause**: The sender (`mcp_server/services/ops_telemetry.py`) was already fully built and pushing a rich `ops.telemetry.v1` payload (projects, tokens, cost, quality, run history). The receiver did not exist.
+- **Change**: Built minimal FastAPI receiver at `mission_control/`. Three endpoints: `POST /ops/clients/{slug}/telemetry` (stores snapshot as JSON file), `GET /ops/clients/{slug}/snapshot` (retrieve), `GET /ops/clients` (list). Bearer token auth via `MC_API_KEY` env var. Snapshots written to `mission_control/snapshots/{slug}.json`, one file per client, overwritten each push. Runs via `python -m mission_control`.
+- **Why this approach**: JSON file storage avoids any DB dependency for the localhost/tunnel test slice. Proves the architecture before adding Postgres, UI, or a permanent deploy.
+- **Verification**: (1) Local test -- local Docker mcp-server pointed at `host.docker.internal:9100`, pushed successfully every 60s. (2) Remote test -- cloudflared tunnel exposed localhost:9100; koopmans VPS at `koopmans.nexus.intodata.nl` set `MCP_OPS_TELEMETRY_URL` and restarted; first push received within 60s from IPv6 `2a01:239:4cd:ff00::1:0`. Real koopmans data confirmed: 20 projects, 218 docs, 865 jobs, 145.9M input tokens, 4.9M output tokens, $274.44 cost, avg quality 4.15.

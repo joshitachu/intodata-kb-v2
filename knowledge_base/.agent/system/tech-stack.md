@@ -9,8 +9,6 @@
 | Data models | Pydantic | v2 |
 | Build system | hatchling | latest |
 | XML parsing | lxml | latest |
-| LLM client (legacy) | LiteLLM | latest |
-| Templates (legacy) | Jinja2 | latest |
 | PDF export | WeasyPrint | latest |
 | Expression parsing | Custom recursive descent | -- |
 
@@ -25,6 +23,11 @@
 | Database driver | asyncpg | latest |
 | Migrations | Alembic | latest |
 | Data models | Pydantic | v2 |
+| LLM providers | openai, anthropic, google-genai, ollama | >=1.0 / >=0.40 / >=1.0 / >=0.4 |
+| Auth | python-jose[cryptography] | >=3.3 |
+| PDF generation | WeasyPrint | >=62 |
+| Templates | Jinja2 | >=3.1 |
+| SSE | sse-starlette | >=2.0 |
 
 ## Dashboard (dashboard/)
 
@@ -52,6 +55,7 @@
 | Category | Technology | Notes |
 |----------|-----------|-------|
 | Database | PostgreSQL | Project registry, scan runs |
-| LLM inference | Ollama | For embeddings (nomic-embed-text) |
+| LLM inference | Ollama | For embeddings (nomic-embed-text) + optional MCP server provider |
+| Long-context memory | Hindsight | Cross-project lesson storage (ports 8888/9999) |
 | Package managers | pip, npm | Python and Node.js |
 | Version control | Git | Monorepo structure |

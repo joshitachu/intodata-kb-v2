@@ -15,9 +15,10 @@ from src.api.middleware.metrics import PrometheusMiddleware
 from src.api.middleware.request_id import RequestIDMiddleware
 from src.config import settings
 from src.logging_config import configure_logging
-from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory
+from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory, ops_metrics as ops_metrics_routes
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
+from src.api.routes import usage_admin as usage_admin_routes
 from src.api.routes import sso as sso_routes
 from src.api.routes import onboarding as onboarding_routes
 from src.api.routes import notifications as notifications_routes
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
                 user = User(
                     id=1,
                     username="admin",
-                    email="joshua.kabel@intodata.nl",
+                    email=settings.admin_initial_email,
                     password_hash=hash_password(settings.admin_default_password),
                     is_superadmin=True,
                 )
@@ -191,6 +192,7 @@ app.include_router(health.router)
 app.include_router(auth_routes.router, prefix="/api/v1")
 app.include_router(sso_routes.router, prefix="/api/v1")
 app.include_router(admin_routes.router, prefix="/api/v1")
+app.include_router(usage_admin_routes.router, prefix="/api/v1")
 app.include_router(query.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
 app.include_router(ingest.router, prefix="/api/v1")
@@ -205,3 +207,4 @@ app.include_router(notifications_routes.router, prefix="/api/v1")
 app.include_router(telemetry_routes.router, prefix="/api/v1")
 app.include_router(tenant_routes.router, prefix="/api/v1")
 app.include_router(feedback_routes.router, prefix="/api/v1")
+app.include_router(ops_metrics_routes.router, prefix="/api/v1")

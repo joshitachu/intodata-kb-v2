@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { backendProxyHeaders } from "@/lib/proxyHeaders";
-
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
 interface RouteParams {
   params: Promise<{ id: string }>;

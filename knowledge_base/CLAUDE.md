@@ -96,9 +96,9 @@ Key files: `claude_service.py` (prompt + staging dir setup), `projects.py:_run_g
 
 - EP-001 has been realigned to generic deployment foundation, not a customer-specific rollout.
 - nginx/certbot is canonical for new deployments. Caddy is legacy/deferred.
-- Dashboard depends on MCP REST API, but MCP API runs as host systemd (`deploy/mcp-server@.service`), not in the six-service Docker Compose stack.
+- Dashboard depends on MCP REST API, and MCP API runs as the `mcp-server` service in the Docker Compose stack.
 - Runbook and smoke-test docs are in root `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`.
-- Before marking EP-001 done, validate on a clean reference VPS: six Docker healthchecks, MCP `/health`, HTTPS/security headers, login/logout, ingest, streaming query, dashboard, and IP allowlist.
+- Before marking EP-001 done, validate on a clean reference VPS: seven Docker healthchecks, MCP `/health`, HTTPS/security headers, login/logout, ingest, streaming query, dashboard, and IP allowlist.
 
 ## Project Structure
 

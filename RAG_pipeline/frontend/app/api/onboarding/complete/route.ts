@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { backendProxyHeaders } from "@/lib/proxyHeaders";
-
-const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
+import { FASTAPI_URL } from "@/lib/fastapi";
 
 export async function POST(request: NextRequest) {
   const res = await fetch(`${FASTAPI_URL}/api/v1/onboarding/complete`, {

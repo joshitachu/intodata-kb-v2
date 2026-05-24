@@ -1,5 +1,17 @@
 # Current State
 
+**Status** (2026-05-21): Kimi Chat timeout default is now 300s, matching Ollama so slower streamed answers do not fail at the previous 60s cap. Normal Chat stream failures no longer disappear silently. Failed streamed attempts persist assistant failure metadata via migration 027, render a failed-response bubble in chat, and keep a live Retry action while the exact failed request is still in memory; failed assistant rows are excluded from later RAG history. Chat image input can now be submitted without typed text. The existing image upload and vision request path remains unchanged; `ChatInput` supplies `Analyze the attached image.` for image-only sends so the backend's required query field stays populated. System prompts overhauled for Nexus coding assistant persona. `CODE_ASSISTANT_SYSTEM_PROMPT` now instructs multi-chunk reasoning, integration signal extraction (Talend/Workato/MuleSoft/dbt), structured debugging (Finding/Evidence/Cause/Fix/Verify), and Deep Dive escalation. CSRF exempt list consolidated to `/api/v1/auth/` prefix — no more manual per-route additions. Backend container rebuilt and running.
+
+**Status** (2026-05-19): Config cleanup complete. Admin email parameterized; `.env.production.template` aligned with Anthropic as default provider.
+
+**Config cleanup done (2026-05-19)**:
+- [x] `ADMIN_INITIAL_EMAIL` env var added to Settings + wired into bootstrap admin + migration seed
+- [x] `.env.production.template` defaults to Anthropic (not DeepSeek); all provider API keys + model tiers documented
+- [x] `docker-compose.yml` — mcp-server service added, Hindsight LLM model parameterized, MCP_JWT_SECRET_KEY removed from dashboard service
+- [ ] Ansible Nexus-Infra repo still needs updating: `LLM_API_KEY` → `ANTHROPIC_API_KEY`, port name mismatches, `ADMIN_INITIAL_EMAIL` in env.j2
+
+---
+
 **Status** (2026-05-12): Sprint 4 complete. 279 tests passing.
 
 **Sprint 2 done**:

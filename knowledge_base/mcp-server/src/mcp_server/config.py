@@ -50,6 +50,7 @@ class MCPServerConfig(BaseSettings):
     ingest_api_key: str = ""
     jwt_algorithm: str = "HS256"
     github_webhook_secret: str | None = None  # MCP_GITHUB_WEBHOOK_SECRET
+    dev_webhook_skip_signature: bool = False  # MCP_DEV_WEBHOOK_SKIP_SIGNATURE
     token_encryption_key: str = ""            # MCP_TOKEN_ENCRYPTION_KEY — Fernet key for PAT storage
     public_url: str = ""                      # MCP_PUBLIC_URL — public-facing base URL for webhook callbacks
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
@@ -66,6 +67,9 @@ class MCPServerConfig(BaseSettings):
     ops_environment: str = "production"
     ops_release_version: str = "unknown"
     ops_telemetry_interval_seconds: int = 300
+    # Mission Control inbound control key — set this to allow Mission Control to
+    # trigger scans and doc generation on this VPS remotely.
+    ops_control_key: str = ""
 
     # App env (development | staging | production) — toggles hard-fail secret validation
     app_env: str = "development"
@@ -73,28 +77,36 @@ class MCPServerConfig(BaseSettings):
     # Doc generation
     doc_generation_provider: str = "custom"
     # Supported values:
-    #   "custom" | "moonshot/<model>" | "openai/<model>" | "ollama/<model>" | "anthropic/<model>"
+    #   "custom" | "openai/<model>" | "anthropic/<model>" | "google/<model>" | "ollama/<model>"
     #   "claude-cli" (legacy subprocess fallback)
 
     # "single_shot" — Python pre-reads files, model extracts evidence in one call (works with any model)
     # "agentic"     — multi-turn action loop (requires Claude-level instruction following)
     investigation_strategy: str = "single_shot"
 
-    doc_generation_model: str = "moonshot/kimi-k2.6"
+    doc_generation_model: str = "anthropic/claude-sonnet-4-6"
     # write_model for Phase 3 (doc writing) — use "provider/model" format or "claude-cli".
-    # Example: "anthropic/claude-sonnet-4-6", "openai/gpt-4o", "moonshot/kimi-k2.6", "claude-cli"
-    # Set to same value as doc_generation_provider to use one model for all phases.
-    doc_generation_write_model: str = "openai/deepseek-v4-pro"
+    # Example: "anthropic/claude-sonnet-4-6", "google/gemini-2.5-pro", "openai/gpt-4.1", "claude-cli"
+    # Set to same value as doc_generation_model to use one model for all phases.
+    doc_generation_write_model: str = "anthropic/claude-sonnet-4-6"
     # Phase 1 investigation model. Defaults to doc_generation_model if not set.
-    doc_generation_investigation_model: str | None = None   # MCP_DOC_GENERATION_INVESTIGATION_MODEL
+    doc_generation_investigation_model: str | None = (
+        "google/gemini-2.5-flash"
+    )  # MCP_DOC_GENERATION_INVESTIGATION_MODEL
     # Fallback model on provider failure (rate-limit, network, auth). No fallback if not set.
-    doc_generation_fallback_model: str | None = None         # MCP_DOC_GENERATION_FALLBACK_MODEL
+    doc_generation_fallback_model: str | None = None  # MCP_DOC_GENERATION_FALLBACK_MODEL
+    doc_generation_enterprise_mode_default: bool = True
+    doc_generation_quality_threshold: float = 4.0
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
 
-    # API-based providers (anthropic/, openai/, google/, ollama/)
+    # API-based providers. First-party providers read ANTHROPIC_API_KEY,
+    # OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY directly. Keep the generic
+    # override for custom OpenAI-compatible endpoints and legacy DeepSeek setups.
     doc_generation_api_key: str | None = None
-    # Overrides ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY env vars
     doc_generation_base_url: str | None = None
+    doc_generation_deepseek_api_key: str | None = None
+    doc_generation_deepseek_base_url: str | None = None
+    doc_generation_lock_stale_seconds: int = 7200
     # For Ollama or custom OpenAI-compatible endpoints: "http://localhost:11434"
     model_pricing_json: str = ""
     # JSON object mapping model names to USD-per-million-token rates.
@@ -115,9 +127,11 @@ class MCPServerConfig(BaseSettings):
     git_diff_patch_max_files: int = 5
     git_diff_patch_max_chars: int = 50_000
     git_diff_patch_max_docs: int = 3
-    git_diff_patch_max_input_tokens: int = 30_000
+    git_diff_patch_max_input_tokens: int = 80_000
     git_diff_patch_context_lines: int = 80
     git_diff_patch_max_chunks: int = 4
+    git_diff_patch_max_summary_chunks: int = 12
+    git_diff_patch_summary_output_tokens: int = 6_000
     git_diff_patch_min_confidence: float = 0.7
     git_diff_patch_output_tokens_small: int = 8_000
     git_diff_patch_output_tokens_medium: int = 16_000
@@ -140,7 +154,7 @@ class MCPServerConfig(BaseSettings):
 
     # LLM output token limits per phase
     investigation_max_tokens: int = 10_000   # MCP_INVESTIGATION_MAX_TOKENS
-    phase2_max_tokens: int = 16_000          # MCP_PHASE2_MAX_TOKENS
+    phase2_max_tokens: int = 32_000          # MCP_PHASE2_MAX_TOKENS
     phase3_max_tokens: int = 32_000          # MCP_PHASE3_MAX_TOKENS
     context_max_tokens: int = 900_000        # MCP_CONTEXT_MAX_TOKENS — hard pre-flight ceiling
     core_context_soft_target_tokens: int = 80_000   # MCP_CORE_CONTEXT_SOFT_TARGET_TOKENS
@@ -174,7 +188,7 @@ class MCPServerConfig(BaseSettings):
 
     # Deep Dive repo-agent runtime
     deep_dive_engine: str = "repo_agent"               # MCP_DEEP_DIVE_ENGINE: repo_agent | claude_cli
-    deep_dive_model: str = "openai/deepseek-v4-pro"    # MCP_DEEP_DIVE_MODEL
+    deep_dive_model: str = "anthropic/claude-sonnet-4-6"  # MCP_DEEP_DIVE_MODEL
     deep_dive_api_key: str | None = None               # MCP_DEEP_DIVE_API_KEY
     deep_dive_base_url: str | None = None              # MCP_DEEP_DIVE_BASE_URL
     deep_dive_max_tool_calls: int = 40                 # MCP_DEEP_DIVE_MAX_TOOL_CALLS
@@ -185,6 +199,12 @@ class MCPServerConfig(BaseSettings):
 
     # Instruction pack directory (relative to project_root) — US-106
     instruction_pack_dir: str = "packs/default"  # MCP_INSTRUCTION_PACK_DIR
+
+    # Upload limits
+    max_upload_zip_bytes: int = 500 * 1024 * 1024  # MCP_MAX_UPLOAD_ZIP_BYTES — 500 MB default
+
+    # Local path security — comma-separated allowed roots; empty = no restriction
+    allowed_local_roots: str = ""            # MCP_ALLOWED_LOCAL_ROOTS
 
     # RAG bridge HTTP timeouts (seconds)
     rag_push_timeout_s: float = 60.0         # MCP_RAG_PUSH_TIMEOUT_S
@@ -215,6 +235,40 @@ config = MCPServerConfig()
 from mcp_server.platforms import supported_platform_ids  # noqa: E402
 
 SUPPORTED_PLATFORMS: frozenset[str] = supported_platform_ids()
+
+_PROVIDER_KEY_MAP: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
+    "deepseek": "MCP_DOC_GENERATION_DEEPSEEK_API_KEY",
+}
+
+
+def check_provider_credentials() -> list[str]:
+    """Return missing-key warnings for all configured doc generation providers."""
+    import os as _os
+
+    model_fields = [
+        config.doc_generation_model,
+        config.doc_generation_write_model,
+        config.doc_generation_investigation_model,
+        config.doc_generation_fallback_model,
+    ]
+    warnings_out: list[str] = []
+    seen: set[str] = set()
+    for model_str in model_fields:
+        if not model_str or model_str == "claude-cli":
+            continue
+        prefix = model_str.split("/")[0].lower()
+        required_var = _PROVIDER_KEY_MAP.get(prefix)
+        if required_var and prefix not in seen and not _os.environ.get(required_var):
+            warnings_out.append(
+                f"provider '{prefix}' is configured (model: {model_str}) "
+                f"but {required_var} is not set — generation will fail"
+            )
+            seen.add(prefix)
+    return warnings_out
 
 
 def validate_production_secrets() -> None:

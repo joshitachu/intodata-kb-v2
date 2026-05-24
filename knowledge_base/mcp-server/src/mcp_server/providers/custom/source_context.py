@@ -14,7 +14,8 @@ SOURCE_COVERAGE_NAME = "_source_coverage.json"
 
 _SECRET_VALUE_RE = re.compile(
     r"(?P<prefix>\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
-    r"private[_-]?key|license[_-]?key)\b\s*[:=]\s*)(?P<quote>['\"]?)(?P<value>[^'\";\s,}>\n]+)(?P=quote)",
+    r"private[_-]?key|license[_-]?key|authorization|x-api-key|x-auth-token)\b\s*[:=]\s*)"
+    r"(?P<quote>['\"]?)(?P<value>[^'\";\s,}>\n]+)(?P=quote)",
     re.IGNORECASE,
 )
 _CONNECTION_SECRET_RE = re.compile(
@@ -23,9 +24,38 @@ _CONNECTION_SECRET_RE = re.compile(
 )
 _XML_SENSITIVE_ADD_RE = re.compile(
     r"(?P<prefix>\bkey\s*=\s*['\"](?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
-    r"private[_-]?key|license[_-]?key)['\"][^>\n]*?\bvalue\s*=\s*)(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+    r"private[_-]?key|license[_-]?key|authorization|x-api-key)['\"][^>\n]*?\bvalue\s*=\s*)"
+    r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE,
 )
+# Simple substitution patterns — applied in sequence in _redact()
+_SIMPLE_REDACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # HTTP auth headers (Authorization first to avoid double-sub with Bearer)
+    (re.compile(r"(?i)\bAuthorization\s*[:=]\s*\S+\s+[A-Za-z0-9._+/=\-]{10,}"), "[AUTH_HEADER_REDACTED]"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._+/=\-]{10,}"), "[BEARER_TOKEN_REDACTED]"),
+    (re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/=]{10,}"), "[BASIC_AUTH_REDACTED]"),
+    (re.compile(r"(?i)\b(?:X-API-Key|X-Auth-Token|Api-Key|X-Access-Token|X-Token|X-Client-Secret)\s*[:=]\s*[A-Za-z0-9._+/=\-]{10,}"), "[API_KEY_REDACTED]"),
+    # JWTs
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "[JWT_REDACTED]"),
+    # Source-control tokens
+    (re.compile(r"\bgh[phosrux]_[A-Za-z0-9_]{10,}\b|\bgithub_pat_[A-Za-z0-9_]{10,}\b"), "[GITHUB_TOKEN_REDACTED]"),
+    (re.compile(r"\bglpat-[A-Za-z0-9_\-]{10,}\b|\bglptt-[A-Za-z0-9_\-]{10,}\b"), "[GITLAB_TOKEN_REDACTED]"),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b"), "[NPM_TOKEN_REDACTED]"),
+    (re.compile(r"\bpypi-[A-Za-z0-9_\-]{40,}\b"), "[PYPI_TOKEN_REDACTED]"),
+    # Cloud credentials
+    (re.compile(r"\b(?:AKIA|ASIA|AROA|ANPA|ANVA|AIDA)[0-9A-Z]{16}\b"), "[AWS_ACCESS_KEY_REDACTED]"),
+    (re.compile(r"(?i)\baws[_\-]?secret[_\-]?access[_\-]?key\s*[:=]\s*[\"']?[A-Za-z0-9+/]{40}[\"']?"), "[AWS_SECRET_KEY_REDACTED]"),
+    (re.compile(r"\bAIzaSy[A-Za-z0-9_\-]{33}\b"), "[GCP_API_KEY_REDACTED]"),
+    (re.compile(r"(?i)\bAccountKey\s*=\s*[A-Za-z0-9+/]{40,}={0,2}"), "[AZURE_ACCOUNT_KEY_REDACTED]"),
+    (re.compile(r"\bdapi[a-f0-9]{32}\b"), "[DATABRICKS_TOKEN_REDACTED]"),
+    # LLM provider keys
+    (re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}\b"), "[LLM_API_KEY_REDACTED]"),
+    # SaaS tokens
+    (re.compile(r"\bxox[bpaos]-[0-9A-Za-z\-]{10,}\b"), "[SLACK_TOKEN_REDACTED]"),
+    (re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b"), "[STRIPE_KEY_REDACTED]"),
+    (re.compile(r"\bSG\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "[SENDGRID_KEY_REDACTED]"),
+    (re.compile(r"\bkey-[a-f0-9]{32}\b"), "[MAILGUN_KEY_REDACTED]"),
+]
 _NOISE_PATH_PARTS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build",
     ".pytest_cache", ".mypy_cache", "coverage", "bin", "obj", "target",
@@ -213,6 +243,16 @@ def _redact(content: str) -> tuple[str, int]:
     redacted = _SECRET_VALUE_RE.sub(replace_secret, content)
     redacted = _CONNECTION_SECRET_RE.sub(replace_connection_secret, redacted)
     redacted = _XML_SENSITIVE_ADD_RE.sub(replace_secret, redacted)
+
+    for pattern, placeholder in _SIMPLE_REDACT_PATTERNS:
+        def _make_sub(ph: str = placeholder) -> re.Match[str]:
+            def _sub(m: re.Match[str]) -> str:
+                nonlocal count
+                count += 1
+                return ph
+            return _sub
+        redacted = pattern.sub(_make_sub(), redacted)
+
     return redacted, count
 
 

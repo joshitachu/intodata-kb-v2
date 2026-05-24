@@ -15,6 +15,8 @@ EnvironmentFile=/etc/intodata-kb/envs/%i.env
 # Using sh -c so env expansion happens at service start. REPO_ROOT allows
 # deployments outside /opt/intodata-kb/<client> when directory permissions allow it.
 ExecStart=/bin/sh -c 'cd "$${REPO_ROOT:?REPO_ROOT is required}/knowledge_base" && exec "$${REPO_ROOT}/venv/bin/python" -m mcp_server --serve --host 127.0.0.1 --port "$${MCP_PORT:-8002}"'
+Environment=GIT_TERMINAL_PROMPT=0
+Environment=GIT_ASKPASS=echo
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

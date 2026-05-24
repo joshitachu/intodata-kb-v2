@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type RowStage =
   | "pending"
@@ -837,6 +838,7 @@ function SourceRow({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [tokenDraft, setTokenDraft] = useState("");
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const stage: RowStage = row?.stage ?? "pending";
   const active = stage !== "pending" && stage !== "complete" && stage !== "failed";
@@ -922,6 +924,30 @@ function SourceRow({
           </div>
           {source.source_type === "git" && (
             <div className="rounded-md border border-border bg-muted/30 p-3 text-xs">
+              {(() => {
+                const summary = source.git_update_summary ?? null;
+                const action = typeof summary?.action === "string" ? summary.action : null;
+                const strategy = typeof summary?.strategy === "string" ? summary.strategy : null;
+                const confidence = typeof summary?.confidence === "number" ? summary.confidence : null;
+                const affectedDocs = Array.isArray(summary?.affected_docs)
+                  ? summary.affected_docs.filter((item): item is string => typeof item === "string")
+                  : [];
+                const touchedDocs = Array.isArray(summary?.touched_docs)
+                  ? summary.touched_docs.filter((item): item is string => typeof item === "string")
+                  : [];
+                const displayDocs = touchedDocs.length ? touchedDocs : affectedDocs;
+                const fallbackUsed = summary?.fallback_used === true;
+                const repairAttempts =
+                  typeof summary?.repair_attempts === "number" ? summary.repair_attempts : 0;
+                const toolCalls = Array.isArray(summary?.tool_calls)
+                  ? summary.tool_calls.length
+                  : typeof summary?.tool_call_count === "number"
+                    ? summary.tool_call_count
+                    : 0;
+                const manualReason =
+                  typeof summary?.manual_review_reason === "string" ? summary.manual_review_reason : null;
+                return (
+                  <>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="font-medium text-foreground">GitHub integration</p>
@@ -937,6 +963,26 @@ function SourceRow({
                   token {source.has_github_token ? "stored" : "missing"}
                 </Badge>
               </div>
+              {action && (
+                <p className="mt-2 text-muted-foreground">
+                  Last update: <span className="font-mono text-foreground">{action}</span>
+                  {strategy ? <> · <span className="font-mono text-foreground">{strategy}</span></> : null}
+                  {confidence !== null ? <> · {Math.round(confidence * 100)}%</> : null}
+                  {fallbackUsed ? <> · fallback</> : null}
+                  {toolCalls ? <> · {toolCalls} tools</> : null}
+                  {repairAttempts ? <> · {repairAttempts} repairs</> : null}
+                </p>
+              )}
+              {displayDocs.length > 0 && (
+                <p className="mt-1 truncate font-mono text-muted-foreground" title={displayDocs.join(", ")}>
+                  {displayDocs.join(", ")}
+                </p>
+              )}
+              {manualReason && (
+                <p className="mt-1 truncate text-amber-600" title={manualReason}>
+                  {manualReason}
+                </p>
+              )}
               {source.last_ingested_commit_sha && (
                 <p className="mt-2 font-mono text-muted-foreground">
                   commit {source.last_ingested_commit_sha.slice(0, 12)}
@@ -945,6 +991,9 @@ function SourceRow({
               {source.auto_reingest_error && (
                 <p className="mt-2 text-destructive">{source.auto_reingest_error}</p>
               )}
+                  </>
+                );
+              })()}
             </div>
           )}
           <div className="flex flex-wrap gap-2">
@@ -1014,18 +1063,22 @@ function SourceRow({
               size="sm"
               variant="ghost"
               isLoading={actionBusy === "deleteProject"}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Delete source '${source.id}'? This removes its scan data and generated docs.`,
-                  )
-                ) {
-                  runAction("deleteProject", onDeleteProject);
-                }
-              }}
+              onClick={() => setConfirmDeleteOpen(true)}
             >
               <Trash2 className="h-3.5 w-3.5" /> Delete source
             </Button>
+            <ConfirmDialog
+              open={confirmDeleteOpen}
+              title="Delete source"
+              message={`Delete source '${source.id}'? This removes its scan data and generated docs.`}
+              confirmLabel="Delete"
+              confirmVariant="danger"
+              onConfirm={() => {
+                setConfirmDeleteOpen(false);
+                runAction("deleteProject", onDeleteProject);
+              }}
+              onCancel={() => setConfirmDeleteOpen(false)}
+            />
           </div>
           {source.source_type === "git" && (
             <div className="flex gap-2">

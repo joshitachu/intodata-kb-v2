@@ -19,7 +19,7 @@ Each client stack is fully isolated:
 - Separate JWT secret, Postgres password, MCP ingest key, admin default
   password — all randomized by the deploy script on first run.
 - Separate nginx server block → separate TLS cert via certbot.
-- Separate MCP systemd instance (`mcp-server@<client>.service`).
+- Separate MCP API container in the client's Docker Compose project.
 
 Optional IntoData Ops telemetry is configured per client through the MCP env
 file. It is disabled by default and sends only operational metadata to the
@@ -30,13 +30,7 @@ scores, token/cost totals, and redacted error summaries.
 
 Once per VPS:
 
-```bash
-# Install the templated MCP systemd unit
-sudo cp deploy/mcp-server@.service /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# Make sure nginx, certbot, docker, envsubst, openssl are installed
-```
+Make sure nginx, certbot, docker, envsubst, and openssl are installed.
 
 ## Deploying a client
 
@@ -45,14 +39,15 @@ deploy/deploy-client.sh \
     --client-name acme \
     --port-offset 0 \
     --base-domain nexus.intodata.nl \
-    --admin-email ops@intodata.nl
+    --admin-email ops@intodata.nl \
+    --initial-admin-email owner@acme.example
 ```
 
 On first run the script:
 
-1. Generates `/etc/intodata-kb/envs/<client>.env` with fresh randomized secrets
-   and per-client port assignments. Ops telemetry variables are included but
-   left disabled until `MCP_OPS_TELEMETRY_URL` and
+1. Generates `/etc/intodata-kb/envs/<client>.env` with fresh randomized secrets,
+   the chosen `ADMIN_INITIAL_EMAIL`, and per-client port assignments. Ops
+   telemetry variables are included but left disabled until `MCP_OPS_TELEMETRY_URL` and
    `MCP_OPS_TELEMETRY_API_KEY` are set.
 2. Renders `/etc/nginx/sites-available/nexus-<client>.conf` from
    `deploy/nginx/nexus-client.conf.template` and symlinks it into
@@ -60,7 +55,7 @@ On first run the script:
 3. Brings up the Docker stack with
    `docker compose --env-file … -p <client> up -d`.
 4. Prints the remaining manual steps (`nginx -t && systemctl reload nginx`,
-   `certbot --nginx …`, `systemctl enable --now mcp-server@<client>.service`).
+   `certbot --nginx …`, and health checks).
 
 The script is idempotent — re-running with the same `--client-name` refreshes
 the nginx block and re-applies the compose stack without touching the
@@ -78,15 +73,41 @@ source upload and live logs go through the customer-facing Next.js API
 `/mcp/*`, or `/logs/*`; MCP remains reachable on the VPS-local port for the
 frontend container and operator SSH tunnels.
 
+## Ansible compatibility notes
+
+The app repo is compatible with source-build Ansible deployments that clone the
+repo and render a root `.env` from Vault. The `.env.production.template` file is
+the contract to mirror in Ansible.
+
+The current app-side compatibility shims accept older infra templates that use
+`SMTP_USER` and `LLM_API_KEY`, but new deployments should prefer
+`SMTP_USERNAME` and provider-specific keys such as `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `KIMI_API_KEY`, and `VOYAGE_API_KEY`.
+`ADMIN_INITIAL_EMAIL` should be rendered per VPS/customer run rather than baked
+into the app repo.
+
+Infra roles should still handle the following outside the app repo:
+
+- Run database migrations after Postgres is healthy and before app health
+  checks depend on migrated tables.
+- Use `docker compose exec -T postgres ...` instead of hard-coded container
+  names such as `nexus-postgres-1`.
+- Use `docker compose up -d --build` when deploying freshly cloned source,
+  unless the installed Compose version honors `pull_policy: build`.
+- Set nginx `client_max_body_size` for frontend upload routes as well as MCP
+  routes, because ZIP uploads enter through `/api/source/*`.
+- If `QDRANT_API_KEY` is set, include that key in any direct Ansible Qdrant
+  health checks or use a TCP readiness check.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `RUNBOOK.md` | Canonical EP-001 fresh VPS deployment runbook using Docker Compose, host Ollama, MCP systemd, and nginx/certbot. |
+| `RUNBOOK.md` | Canonical EP-001 fresh VPS deployment runbook using Docker Compose, host Ollama, and nginx/certbot. |
 | `SMOKE-TEST.md` | End-to-end deployment smoke checklist for health, HTTPS, auth, ingest, streaming, developer-route lockdown, and IP allowlisting. |
 | `deploy-client.sh` | Main deploy entry point. |
 | `docker-compose.yml` (root) | Compose file, ports parameterized via env vars. |
 | `nginx/nexus-client.conf.template` | Rendered per client by envsubst. |
-| `mcp-server@.service` | Systemd template unit (instance per client). |
-| `mcp-server.service` | Legacy single-tenant unit — superseded by the @ unit. |
+| `mcp-server@.service` | Legacy systemd template unit retained for reference. |
+| `mcp-server.service` | Legacy single-tenant systemd unit retained for reference. |
 | `.env.production.template` (root) | Reference for every env var a stack needs. |
