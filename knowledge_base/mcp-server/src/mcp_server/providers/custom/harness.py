@@ -1843,6 +1843,9 @@ class CustomHarnessProvider(DocGenerationProvider):
     def _phase3_repair_targets(self, ctx: DocGenContext, errors: list[str]) -> list[tuple[Path, list[str]]]:
         grouped: dict[str, list[str]] = {}
         for error in errors:
+            if "Runtime/external systems doc missing" in error:
+                grouped.setdefault("05_RUNTIME_CONFIG_AND_EXTERNALS.md", []).append(error)
+                continue
             matches = re.findall(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
             matched_required = [
                 name for name in matches

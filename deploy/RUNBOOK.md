@@ -79,6 +79,15 @@ The MCP API and `intodoc` scanner are installed into the `mcp-server` image
 during the Docker build. No host Python virtualenv is required for the deployed
 stack.
 
+Ensure the MCP output directory is owned by the `intodata` service user. If the repo
+was cloned as a different user, the MCP service will throw a PermissionError when
+writing generated docs:
+
+```bash
+sudo mkdir -p "$REPO_ROOT/knowledge_base/output"
+sudo chown intodata:intodata "$REPO_ROOT/knowledge_base/output"
+```
+
 ## 4. Install Ollama On The Host
 
 ```bash
@@ -168,6 +177,16 @@ If the env file existed before this runbook was updated, confirm these MCP value
 sudo grep -E '^(REPO_ROOT|PUBLIC_APP_URL|MCP_PUBLIC_URL|MCP_DATABASE_URL|MCP_RAG_BASE_URL|MCP_PROJECT_ROOT|MCP_INTODOC_COMMAND|MCP_PORT|SMTP_HOST|SMTP_PORT)=' "$ENV_FILE"
 ```
 
+After the stack is up, verify the `wizard_events` table has the `updated_at` column.
+A missing column causes 500 errors in the onboarding wizard. Alembic should cover this,
+but run as a safety check:
+
+```bash
+sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" \
+  exec postgres psql -U admin "intodata_kb_${CLIENT_SLUG}" \
+  -c "ALTER TABLE wizard_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW();"
+```
+
 ## 7. Configure Email (SMTP)
 
 The platform sends invite emails and login OTP codes via SMTP. Set these variables in the env file before starting services if email is required at launch:
@@ -202,6 +221,15 @@ sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" ps mcp-server
 MCP_PORT="$(grep '^MCP_PORT=' "$ENV_FILE" | cut -d= -f2)"
 curl -fsS "http://127.0.0.1:${MCP_PORT:-8002}/health"
 sudo docker compose --env-file "$ENV_FILE" -p "$CLIENT_SLUG" logs --tail=100 mcp-server
+```
+
+If using an external LLM provider (Deepseek, OpenAI, etc.) for doc generation, the default
+token limits are too low for large projects. Set these in the env file after MCP is running:
+
+```bash
+grep -q '^MCP_PHASE2_MAX_TOKENS' "$ENV_FILE" || echo "MCP_PHASE2_MAX_TOKENS=32000" | sudo tee -a "$ENV_FILE"
+grep -q '^MCP_PHASE3_MAX_TOKENS' "$ENV_FILE" || echo "MCP_PHASE3_MAX_TOKENS=64000" | sudo tee -a "$ENV_FILE"
+sudo systemctl restart "mcp-server@${CLIENT_SLUG}.service"
 ```
 
 Optional: enable central IntoData Ops telemetry after the central Ops API has a
