@@ -1,14 +1,14 @@
 import { z } from "zod";
 
-const MC_API_KEY = import.meta.env.VITE_MC_API_KEY ?? "mc-dev-local-secret";
+// No client-side API key — Authorization header is injected by the nginx
+// reverse proxy at /mc/ so the key is never exposed in the JS bundle.
 const MC_BASE = "/mc";
 
-function mcHeaders(): Record<string, string> {
-  return { Authorization: `Bearer ${MC_API_KEY}`, "Content-Type": "application/json" };
-}
-
 async function mcRequest<T>(path: string, schema: z.ZodType<T>, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${MC_BASE}${path}`, { ...options, headers: mcHeaders() });
+  const res = await fetch(`${MC_BASE}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers as Record<string, string>) },
+  });
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Mission Control ${res.status}: ${detail}`);
@@ -18,7 +18,7 @@ async function mcRequest<T>(path: string, schema: z.ZodType<T>, options: Request
 }
 
 async function mcPost(path: string): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${MC_BASE}${path}`, { method: "POST", headers: mcHeaders() });
+  const res = await fetch(`${MC_BASE}${path}`, { method: "POST", headers: { "Content-Type": "application/json" } });
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`Mission Control ${res.status}: ${detail}`);

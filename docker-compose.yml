@@ -264,11 +264,13 @@ services:
       args:
         VITE_LOGIN_URL: ${VITE_LOGIN_URL:-${PUBLIC_APP_URL:-http://localhost:3000}/login}
         VITE_FLEET_ENABLED: ${FLEET_ENABLED:-true}
-        VITE_MC_API_KEY: ${MC_API_KEY:-mc-dev-local-secret}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8001}:8001"
     environment:
       MCP_ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8001}
+      # MC_API_KEY is injected into nginx at runtime via envsubst — never a build arg.
+      MC_API_KEY: ${MC_API_KEY:-mc-dev-local-secret}
+      NGINX_ENVSUBST_TEMPLATE_VARS: MC_API_KEY
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

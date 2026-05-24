@@ -13,6 +13,9 @@ RUN npm run build
 
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# nginx processes *.template files in /etc/nginx/templates/ at startup via envsubst.
+# NGINX_ENVSUBST_TEMPLATE_VARS limits substitution to MC_API_KEY only, so nginx
+# variables like $host and $remote_addr are left untouched.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 8001
 CMD ["nginx", "-g", "daemon off;"]
