@@ -67,6 +67,9 @@ class MCPServerConfig(BaseSettings):
     ops_environment: str = "production"
     ops_release_version: str = "unknown"
     ops_telemetry_interval_seconds: int = 300
+    # Mission Control inbound control key — set this to allow Mission Control to
+    # trigger scans and doc generation on this VPS remotely.
+    ops_control_key: str = ""
 
     # App env (development | staging | production) — toggles hard-fail secret validation
     app_env: str = "development"

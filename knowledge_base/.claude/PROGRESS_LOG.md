@@ -1746,3 +1746,14 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Change**: Reframed EP-001 as generic deployment foundation. Made nginx/certbot canonical, kept Caddy as legacy/deferred, added `deploy/RUNBOOK.md` and `deploy/SMOKE-TEST.md`, updated `deploy-client.sh` to generate MCP systemd env vars, and documented the state in CLAUDE files.
 - **Why this approach**: EP-001 should make deployment repeatable before any customer-specific rollout. Customer deployments can then use the generic runbook as validation evidence rather than being hardcoded into the foundation epic.
 - **Verification**: `bash -n deploy/deploy-client.sh` passed. Stale-reference searches for target EP-001 files found no old Lobster/Cronos/Strato/Caddy requirements except intentional Caddy legacy notes. EP-001 is still not accepted until the runbook and smoke test pass on a clean reference VPS.
+
+## Session: 2026-05-24
+
+### [Feature]: EP-005 Mission Control -- heartbeat receiver scaffolded and tested end-to-end
+
+- **Files changed**: `mission_control/src/mission_control/__init__.py` (new), `mission_control/src/mission_control/config.py` (new), `mission_control/src/mission_control/receiver.py` (new), `mission_control/src/mission_control/main.py` (new), `mission_control/src/mission_control/__main__.py` (new), `mission_control/pyproject.toml` (new), `mission_control/.env.example` (new), `.env` (appended ops telemetry vars -- gitignored)
+- **Problem**: No central visibility into customer instance health. EP-005 requires a Mission Control service that aggregates heartbeat snapshots pushed by each customer MCP server.
+- **Root cause**: The sender (`mcp_server/services/ops_telemetry.py`) was already fully built and pushing a rich `ops.telemetry.v1` payload (projects, tokens, cost, quality, run history). The receiver did not exist.
+- **Change**: Built minimal FastAPI receiver at `mission_control/`. Three endpoints: `POST /ops/clients/{slug}/telemetry` (stores snapshot as JSON file), `GET /ops/clients/{slug}/snapshot` (retrieve), `GET /ops/clients` (list). Bearer token auth via `MC_API_KEY` env var. Snapshots written to `mission_control/snapshots/{slug}.json`, one file per client, overwritten each push. Runs via `python -m mission_control`.
+- **Why this approach**: JSON file storage avoids any DB dependency for the localhost/tunnel test slice. Proves the architecture before adding Postgres, UI, or a permanent deploy.
+- **Verification**: (1) Local test -- local Docker mcp-server pointed at `host.docker.internal:9100`, pushed successfully every 60s. (2) Remote test -- cloudflared tunnel exposed localhost:9100; koopmans VPS at `koopmans.nexus.intodata.nl` set `MCP_OPS_TELEMETRY_URL` and restarted; first push received within 60s from IPv6 `2a01:239:4cd:ff00::1:0`. Real koopmans data confirmed: 20 projects, 218 docs, 865 jobs, 145.9M input tokens, 4.9M output tokens, $274.44 cost, avg quality 4.15.

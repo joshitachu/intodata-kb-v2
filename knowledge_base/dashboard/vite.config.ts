@@ -11,6 +11,11 @@ export default defineConfig({
       "/github": "http://localhost:8001",
       "/health": "http://localhost:8001",
       "/logs": "http://localhost:8001",
+      "/mc": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/mc/, ""),
+      },
       "/auth": {
         target: "http://localhost:8000",
         changeOrigin: true,

@@ -12,7 +12,8 @@
 #       --client-name acme \
 #       --port-offset 0 \
 #       --base-domain nexus.intodata.nl \
-#       --admin-email ops@intodata.nl
+#       --admin-email ops@intodata.nl \
+#       --initial-admin-email owner@acme.example
 #
 # The script is idempotent: re-running with the same --client-name updates the
 # rendered nginx block and env file, then re-applies the compose stack.
@@ -34,6 +35,9 @@ Optional:
                              Default: nexus.intodata.nl
   --admin-email <email>      Email used by certbot for ACME registration.
                              Default: support@intodata.nl
+  --initial-admin-email <email>
+                             Email seeded for the first Nexus admin account.
+                             Default: admin@<client>.<base-domain>
   --no-certbot               Do not print the certbot command. Use when DNS is
                              not ready yet or on CI.
   --env-dir <path>           Directory for rendered env files.
@@ -52,6 +56,7 @@ CLIENT=""
 PORT_OFFSET=0
 BASE_DOMAIN="nexus.intodata.nl"
 ADMIN_EMAIL="support@intodata.nl"
+INITIAL_ADMIN_EMAIL=""
 RUN_CERTBOT=1
 ENV_DIR="/etc/intodata-kb/envs"
 NGINX_AVAILABLE="/etc/nginx/sites-available"
@@ -67,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --port-offset) PORT_OFFSET="$2"; shift 2 ;;
         --base-domain) BASE_DOMAIN="$2"; shift 2 ;;
         --admin-email) ADMIN_EMAIL="$2"; shift 2 ;;
+        --initial-admin-email) INITIAL_ADMIN_EMAIL="$2"; shift 2 ;;
         --no-certbot) RUN_CERTBOT=0; shift ;;
         --env-dir) ENV_DIR="$2"; shift 2 ;;
         --nginx-sites-available) NGINX_AVAILABLE="$2"; shift 2 ;;
@@ -86,6 +92,7 @@ done
     echo "--port-offset must be a non-negative integer" >&2
     exit 2
 }
+INITIAL_ADMIN_EMAIL="${INITIAL_ADMIN_EMAIL:-admin@$CLIENT.$BASE_DOMAIN}"
 
 REPO_ROOT="${REPO_ROOT:-$REPO_ROOT_DEFAULT}"
 [[ -f "$REPO_ROOT/docker-compose.yml" ]] || {
@@ -132,6 +139,7 @@ CLIENT_SLUG=$CLIENT
 JWT_SECRET_KEY=$JWT_SECRET
 MCP_JWT_SECRET_KEY=$JWT_SECRET
 ADMIN_DEFAULT_PASSWORD=$ADMIN_DEFAULT_PASSWORD
+ADMIN_INITIAL_EMAIL=$INITIAL_ADMIN_EMAIL
 COOKIE_SECURE=true
 COOKIE_DOMAIN=$CLIENT.$BASE_DOMAIN
 ALLOWED_ORIGINS=https://$CLIENT.$BASE_DOMAIN

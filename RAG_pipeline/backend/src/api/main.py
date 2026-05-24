@@ -15,7 +15,7 @@ from src.api.middleware.metrics import PrometheusMiddleware
 from src.api.middleware.request_id import RequestIDMiddleware
 from src.config import settings
 from src.logging_config import configure_logging
-from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory
+from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory, ops_metrics as ops_metrics_routes
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
 from src.api.routes import usage_admin as usage_admin_routes
@@ -207,3 +207,4 @@ app.include_router(notifications_routes.router, prefix="/api/v1")
 app.include_router(telemetry_routes.router, prefix="/api/v1")
 app.include_router(tenant_routes.router, prefix="/api/v1")
 app.include_router(feedback_routes.router, prefix="/api/v1")
+app.include_router(ops_metrics_routes.router, prefix="/api/v1")

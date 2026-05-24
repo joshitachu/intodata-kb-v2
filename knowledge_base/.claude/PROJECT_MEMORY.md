@@ -17,6 +17,10 @@
 | Analysis cache | After every successful generation, `docs/_analysis/` is copied to `output/{project_id}/analysis_cache/` | Enables incremental webhook regen: unchanged groups skip Phase 2 by restoring cached summaries into `docs_staging/_analysis/` before generation with `resume=True` | 2026-04 |
 | Deploy user | Dedicated `intodoc` user on VPS | Security isolation for production deployment | 2026-03 |
 | .agent folder pattern | AI Jason pattern: CLAUDE.md (rules) + .agent/ (system, SOPs, decisions, tasks) | CLAUDE.md stays concise (~100 lines), detailed docs are discoverable via README.md index | 2026-02 |
+| Mission Control architecture | Push-based: customer MCP server calls `POST /ops/clients/{slug}/telemetry` on Mission Control; MC never calls out to customer VPS | Avoids inbound firewall rules on customer servers; sender already implemented in `mcp_server/services/ops_telemetry.py` | 2026-05 |
+| Mission Control storage (MVP) | JSON file per client slug at `mission_control/snapshots/{slug}.json`, overwritten each push | No DB dependency for the initial slice; Postgres can replace it when the UI needs historical data | 2026-05 |
+| Docker-to-host communication | Use `host.docker.internal` (not `localhost`) when a Docker container must reach a service on the Mac host | `localhost` inside a container resolves to the container itself, not the host | 2026-05 |
+| Tunnel for remote VPS testing | `cloudflared tunnel --url http://localhost:9100` gives a temporary public HTTPS URL; useful to prove remote push flow before deploying Mission Control permanently | URL changes each run -- not for production | 2026-05 |
 | Dual server mode | `--mcp` (stdio) and `--serve` (HTTP) in same codebase | Share business logic between Claude Code and dashboard | 2026-02 |
 | Scanner plugins | `platforms/<name>/` plugin architecture | Each platform self-contained with parser, prompts, best practices | 2026-02 |
 | Chunk size | ~30K tokens (~120KB) per chunk | Fits Claude Code context with room for instructions; overhead added on top | 2026-02 |

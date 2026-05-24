@@ -13,13 +13,16 @@ import ValidationReviewPanel from "./components/ValidationReviewPanel";
 import ABComparison from "./components/ABComparison";
 import HelpPanel from "./components/HelpPanel";
 import PluginPacksPage from "./components/PluginPacksPage";
+import FleetPage from "./components/FleetPage";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
 import type { AuthUser } from "./hooks/useAuth";
 import type { GenerateRun } from "./types";
 
-type TopNav = "projects" | "docs" | "packs";
+const FLEET_ENABLED = import.meta.env.VITE_FLEET_ENABLED === "true";
+
+type TopNav = "projects" | "docs" | "packs" | "fleet";
 
 export default function App() {
   const auth = useAuth();
@@ -132,6 +135,18 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   Packs
                 </button>
               )}
+              {FLEET_ENABLED && user?.is_superadmin && (
+                <button
+                  className={`px-3 py-1.5 text-sm rounded transition-all ${
+                    topNav === "fleet"
+                      ? "text-slate-200 bg-white/[0.06]"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                  onClick={() => setTopNav("fleet")}
+                >
+                  Fleet
+                </button>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -229,6 +244,9 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
 
           {/* Plugin packs page (superadmin only) */}
           {topNav === "packs" && user?.is_superadmin && <PluginPacksPage />}
+
+          {/* Fleet / Mission Control — nexus operator server only */}
+          {topNav === "fleet" && FLEET_ENABLED && user?.is_superadmin && <FleetPage />}
         </div>
       </main>
 
