@@ -27,6 +27,8 @@ RUN pip install --no-cache-dir /tmp/intodoc && rm -rf /tmp/intodoc
 # Install mcp-server
 COPY mcp-server/pyproject.toml .
 COPY mcp-server/src/ src/
+COPY mcp-server/alembic/ alembic/
+COPY mcp-server/alembic.ini .
 RUN pip install --no-cache-dir .
 
 # Run as non-root user
@@ -40,4 +42,4 @@ RUN chmod +x /app/entrypoint.sh
 EXPOSE 8002
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["python", "-m", "mcp_server", "--serve", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["sh", "-c", "alembic upgrade head && python -m mcp_server --serve --host 0.0.0.0 --port 8002"]
