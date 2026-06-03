@@ -4,13 +4,16 @@ import json
 import re
 import asyncio
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.custom.agent_runtime import AgentTaskContract, AgentTaskRuntime, ScopedEvidenceTools, ToolBudget
-from mcp_server.providers.custom.harness import CustomHarnessProvider, FailureKind, use_tools_for_core_generation
+from mcp_server.providers.custom.dag import deterministic_execution_plan, validate_execution_plan
+from mcp_server.providers.custom.harness import CustomHarnessProvider, FailureKind, _provider_supports_tools
 from mcp_server.providers.custom.investigator import (
+    ChunkManifestInvestigator,
     EvidenceValidator,
     InvestigationError,
     SingleShotInvestigator,
@@ -25,6 +28,7 @@ from mcp_server.providers.custom.models import (
     InvestigationReport,
     ModelOptions,
     ModelResult,
+    ExecutionNode,
 )
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, materialize_prompt_packs
 from mcp_server.providers.custom.prompts import REQUIRED_DOCS, doc_prompt
@@ -39,8 +43,10 @@ from mcp_server.providers.custom.validators import (
     validate_doc_depth,
     validate_docs,
     validate_investigation_coverage,
+    validate_pack_quality,
     validate_source_provenance,
 )
+from mcp_server.services.plugin_schema import PluginPackManifest
 
 
 def _write_scan(out_dir: Path, *, platform: str, jobs: list[dict], files: list[dict] | None = None) -> None:
@@ -274,6 +280,70 @@ def test_custom_provider_applies_legacy_override_to_deepseek(monkeypatch):
     assert provider.model_provider.base_url == "https://api.deepseek.com/v1"
 
 
+def test_deterministic_execution_plan_includes_required_final_gates(tmp_path):
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("a", "A"), _job("b", "B")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+
+    plan = deterministic_execution_plan(
+        facts,
+        required_docs=["00_AGENT_BRIEF", "02_COMPONENT_INVENTORY"],
+        preprocess_groups=["A", "B"],
+        investigation_policy="run",
+        analysis_policy="run",
+        scorecard_policy="run",
+        doc_bundles_policy="run",
+        plugin_mode=False,
+        small_project_threshold=0,
+    )
+
+    node_ids = {node.id for node in plan.graph.nodes}
+    assert {"planner", "facts", "validate_docs", "enterprise_gates"}.issubset(node_ids)
+    assert plan.analysis_mode == "full"
+    assert validate_execution_plan(
+        plan,
+        facts,
+        allowed_docs=["00_AGENT_BRIEF", "02_COMPONENT_INVENTORY"],
+    ) == []
+
+
+def test_execution_plan_validation_rejects_unsafe_graph_and_docs(tmp_path):
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    plan = deterministic_execution_plan(
+        facts,
+        required_docs=["00_AGENT_BRIEF"],
+        preprocess_groups=["A"],
+        investigation_policy="skip",
+        analysis_policy="bounded",
+        scorecard_policy="skip",
+        doc_bundles_policy="skip",
+        plugin_mode=False,
+        small_project_threshold=40,
+    )
+    plan.required_docs = ["UNDECLARED_DOC"]
+    plan.graph.nodes = [
+        ExecutionNode(id="a", type="facts", depends_on=["b"]),
+        ExecutionNode(id="b", type="facts", depends_on=["a"]),
+    ]
+
+    errors = validate_execution_plan(plan, facts, allowed_docs=["00_AGENT_BRIEF"])
+
+    assert any("undeclared docs" in error.lower() for error in errors)
+    assert any("missing required final gates" in error.lower() for error in errors)
+    assert any("cycle" in error.lower() for error in errors)
+
+
+def test_dag_tool_policy_only_enables_explicit_tool_phases():
+    provider_model = MagicMock()
+    provider_model.supports_tools = True
+    provider = CustomHarnessProvider(provider_model)
+
+    assert provider._tool_policy(provider_model, "phase2").enabled is False
+    assert provider._tool_policy(provider_model, "phase2.deep_dive").enabled is True
+    assert provider._tool_policy(provider_model, "phase1.investigate").enabled is True
+    assert provider._tool_policy(provider_model, "phase3.consistency").enabled is True
+
+
 def test_publish_gate_fails_on_missing_group_analysis(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A"), _job("b", "B")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
@@ -313,6 +383,30 @@ def test_publish_gate_passes_for_complete_coverage(tmp_path):
     )
 
     report = validate_analysis_coverage(analysis_dir, facts)
+
+    assert report.ok
+    assert report.coverage_count == 2
+
+
+def test_plugin_phase2_coverage_uses_structured_sidecar_not_markers(tmp_path):
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("README", "root"), _job("package", "root")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    coverage_dir = analysis_dir / "_coverage_units"
+    coverage_dir.mkdir(parents=True)
+    (analysis_dir / "root.md").write_text(
+        "## Repository Snapshot\n\nREADME was inspected and package.json was analyzed.\n",
+        encoding="utf-8",
+    )
+    (coverage_dir / "root.json").write_text(json.dumps({
+        "group": "root",
+        "expected_units": ["README", "package"],
+        "analysis_file": "root.md",
+        "status": "completed",
+        "analysis_bytes": 72,
+    }), encoding="utf-8")
+
+    report = validate_analysis_coverage(analysis_dir, facts, use_structured=True)
 
     assert report.ok
     assert report.coverage_count == 2
@@ -446,6 +540,788 @@ def test_doc_gate_allows_group_and_pattern_counts(tmp_path):
     assert report.ok
 
 
+def test_plugin_doc_gate_uses_pack_docs_not_default_required_docs(tmp_path):
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("README", "root")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    staging = tmp_path / "staging"
+    (staging / "_assessment").mkdir(parents=True)
+    (staging / "_assessment" / "scorecard.md").write_text(_scorecard_text(), encoding="utf-8")
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text(
+        "# Webhook Smoke Test\n\n## Repository Snapshot\nREADME was scanned.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_docs(
+        staging,
+        facts,
+        required_docs=["WEBHOOK_SMOKE_TEST"],
+        enforce_default_contract=False,
+    )
+
+    assert report.ok
+    assert not any("00_AGENT_BRIEF" in error for error in report.errors)
+
+
+def test_table_inventory_phase2_context_uses_curated_evidence_bundle(tmp_path):
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "facts_manifest.json").write_text('{"project_id":"proj"}', encoding="utf-8")
+    (staging / "engineering_facts.md").write_text("Entity Customer maps to dbo.Customer.\n", encoding="utf-8")
+    (preprocess / "Repository.md").write_text(
+        "public class CustomerEntity {}\n"
+        "SELECT id, name FROM dbo.Customer JOIN dbo.Order ON Customer.id = Order.customer_id\n"
+        "CREATE TABLE dbo.Customer (id int, name varchar(100));\n",
+        encoding="utf-8",
+    )
+    (preprocess / "logo.png.md").write_text("binary-looking resource should not be selected", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "table-inventory",
+            "version": "1.0.0",
+            "docs": [{
+                "name": "TABLE_INVENTORY",
+                "evidence_profile": "table_inventory",
+                "required_sections": ["Table Inventory"],
+                "required_evidence": ["sql_queries", "db_connections"],
+                "required_outputs": ["table_inventory"],
+            }],
+            "evidence_profiles": {
+                "table_inventory": {
+                    "include": ["sql_queries", "ddl_schema", "orm_entities", "db_connections", "config_references"],
+                    "exclude": ["binary", "static_assets", "generated_files"],
+                },
+            },
+            "validation": {"unknown_policy": "explicit", "mode": "blocking"},
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["Repository"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    provider = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)
+    provider._prepare_pack_artifacts(ctx)
+    files = provider._phase2_shared_context(
+        ctx,
+        staging / "facts_manifest.json",
+    )
+
+    bundle = staging / "_evidence" / "table_inventory.md"
+    bundle_json = staging / "_evidence" / "table_inventory.json"
+    plan = staging / "_plans" / "TABLE_INVENTORY.json"
+    assert bundle in files
+    assert bundle_json.exists()
+    assert plan.exists()
+    text = bundle.read_text(encoding="utf-8")
+    assert "SELECT id, name FROM dbo.Customer" in text
+    assert "CREATE TABLE dbo.Customer" in text
+    assert "logo.png" not in text
+
+
+def test_pack_contract_phase2_records_skip_model_analysis(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "table-inventory",
+            "version": "1.0.0",
+            "docs": [{"name": "TABLE_INVENTORY", "evidence_profile": "table_inventory"}],
+            "evidence_profiles": {"table_inventory": {"include": ["source_summary"]}},
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    facts = build_facts_manifest_from_units("proj", ["Unit A", "Unit B"])
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=2,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    provider = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)
+    provider._phase2_pack_contract_records(ctx, HarnessRunState(project_id="proj", facts_manifest=facts))
+
+    analysis = staging / "_analysis" / "A.md"
+    assert analysis.exists()
+    assert "Broad enterprise Phase 2 model analysis is intentionally skipped" in analysis.read_text(encoding="utf-8")
+    coverage = validate_analysis_coverage(staging / "_analysis", facts, use_structured=True)
+    depth = validate_analysis_depth(staging / "_analysis", staging / "_preprocess", facts, use_structured=True)
+    assert coverage.ok
+    assert depth.ok
+
+
+def test_pack_contract_phase3_context_excludes_enterprise_doc_pack(tmp_path):
+    staging = tmp_path / "staging"
+    (staging / "_preprocess").mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "facts_manifest.json").write_text("{}", encoding="utf-8")
+    (staging / "_analysis" / "_doc_pack_TABLE_INVENTORY.md").write_text("huge enterprise pack", encoding="utf-8")
+    (staging / "_assessment" / "prompt_packs" / "_phase3_prompt_pack_custom.md").write_text("prompt", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "table-inventory",
+            "version": "1.0.0",
+            "docs": [{"name": "TABLE_INVENTORY", "evidence_profile": "table_inventory"}],
+            "evidence_profiles": {"table_inventory": {"include": ["source_summary"]}},
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["root"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    provider = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)
+    provider._prepare_pack_artifacts(ctx)
+    files = provider._phase3_context_files(ctx, "TABLE_INVENTORY")
+
+    assert staging / "_analysis" / "_doc_pack_TABLE_INVENTORY.md" not in files
+    assert staging / "facts_manifest.json" in files
+    assert staging / "_plans" / "TABLE_INVENTORY.json" in files
+
+
+def test_pack_contract_repair_context_is_evidence_scoped(tmp_path):
+    staging = tmp_path / "staging"
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_evidence").mkdir(parents=True)
+    (staging / "_plans").mkdir(parents=True)
+    (staging / "facts_manifest.json").write_text("{}", encoding="utf-8")
+    (staging / "TABLE_INVENTORY.md").write_text("# Table Inventory\n", encoding="utf-8")
+    (staging / "_evidence" / "table_inventory.md").write_text("bounded evidence", encoding="utf-8")
+    (staging / "_evidence" / "table_inventory.json").write_text("{}", encoding="utf-8")
+    (staging / "_plans" / "TABLE_INVENTORY.json").write_text("{}", encoding="utf-8")
+    (staging / "_assessment" / "scorecard.md").write_text("huge scorecard", encoding="utf-8")
+    (staging / "_analysis" / "root.md").write_text("huge enterprise analysis", encoding="utf-8")
+    (staging / "_analysis" / "_doc_pack_TABLE_INVENTORY.md").write_text("huge enterprise pack", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "table-inventory",
+            "version": "1.0.0",
+            "docs": [{"name": "TABLE_INVENTORY", "evidence_profile": "table_inventory"}],
+            "evidence_profiles": {"table_inventory": {"include": ["source_summary"]}},
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["root"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    provider = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)
+    provider._pack_evidence_paths = {"table_inventory": {"md": "_evidence/table_inventory.md", "json": "_evidence/table_inventory.json"}}
+    files = provider._phase3_repair_context_files(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        staging / "TABLE_INVENTORY.md",
+        [],
+    )
+
+    assert staging / "_evidence" / "table_inventory.md" in files
+    assert staging / "_plans" / "TABLE_INVENTORY.json" in files
+    assert staging / "_assessment" / "scorecard.md" not in files
+    assert staging / "_analysis" / "root.md" not in files
+    assert staging / "_analysis" / "_doc_pack_TABLE_INVENTORY.md" not in files
+
+
+def test_phase3_repair_targets_handles_pack_doc_names_without_numeric_prefix(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "TABLE_INVENTORY.md").write_text("# Table Inventory\n", encoding="utf-8")
+    (staging / "DDL_REBUILD_SCRIPTS.md").write_text("# DDL Rebuild Scripts\n", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "table-inventory",
+            "version": "1.0.0",
+            "docs": [{"name": "TABLE_INVENTORY"}, {"name": "DDL_REBUILD_SCRIPTS"}],
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["root"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    targets = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)._phase3_repair_targets(
+        ctx,
+        [
+            "TABLE_INVENTORY.md Evidence Register has evidence rows without source provenance",
+            "DDL_REBUILD_SCRIPTS.md Evidence Register has evidence rows without source provenance",
+        ],
+    )
+
+    assert {path.name for path, _ in targets} == {"TABLE_INVENTORY.md", "DDL_REBUILD_SCRIPTS.md"}
+
+
+def _pack_manifest(mode: str = "blocking") -> PluginPackManifest:
+    return PluginPackManifest.model_validate({
+        "name": "webhook-smoke-test",
+        "version": "1.0.0",
+        "docs": [{"name": "WEBHOOK_SMOKE_TEST"}],
+        "quality_gates": {
+            "mode": mode,
+            "required_sections": {"WEBHOOK_SMOKE_TEST": ["Repository Snapshot", "Smoke Test Result"]},
+            "required_terms": ["scanned", "webhook", "PASS"],
+            "required_evidence_terms": ["source"],
+            "min_doc_bytes": {"WEBHOOK_SMOKE_TEST": 120},
+        },
+        "steps": [{"id": "full_pipeline", "type": "harness"}],
+    })
+
+
+def test_pack_quality_required_sections_terms_and_bytes_pass(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text(
+        "# Webhook Smoke Test\n\n"
+        "## Repository Snapshot\n"
+        "README was scanned from source files for webhook validation.\n\n"
+        "## Smoke Test Result\n"
+        "PASS: webhook smoke test completed with source evidence.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_pack_quality(staging, _pack_manifest())
+
+    assert report["ok"]
+    assert report["effective_ok"]
+
+
+def test_pack_quality_required_sections_fail(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text(
+        "# Webhook Smoke Test\n\n"
+        "## Repository Snapshot\n"
+        "README was scanned from source files. PASS webhook.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_pack_quality(staging, _pack_manifest())
+
+    assert not report["ok"]
+    assert any("missing required sections" in error for error in report["errors"])
+
+
+def test_pack_quality_required_terms_fail(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text(
+        "# Webhook Smoke Test\n\n"
+        "## Repository Snapshot\n"
+        "README source files were inspected.\n\n"
+        "## Smoke Test Result\n"
+        "No final status was emitted.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_pack_quality(staging, _pack_manifest())
+
+    assert not report["ok"]
+    assert "Missing required pack term: scanned" in report["errors"]
+    assert "Missing required pack term: PASS" in report["errors"]
+
+
+def test_pack_quality_min_doc_bytes_fail(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text(
+        "# Webhook Smoke Test\n\n"
+        "## Repository Snapshot\nscanned source webhook PASS.\n\n"
+        "## Smoke Test Result\nPASS.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_pack_quality(staging, _pack_manifest())
+
+    assert not report["ok"]
+    assert any("too small" in error for error in report["errors"])
+
+
+def test_pack_quality_advisory_failure_is_effectively_ok(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text("# Webhook Smoke Test\n", encoding="utf-8")
+
+    report = validate_pack_quality(staging, _pack_manifest(mode="advisory"))
+
+    assert not report["ok"]
+    assert report["effective_ok"]
+    assert report["warnings"] == ["Pack quality gates failed in advisory mode"]
+
+
+def test_pack_contract_requires_explicit_unknown_for_missing_evidence(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "_evidence").mkdir()
+    (staging / "_evidence" / "table_inventory.json").write_text(
+        json.dumps({
+            "profile": "table_inventory",
+            "categories": {"sql_queries": []},
+            "missing_categories": ["sql_queries"],
+        }),
+        encoding="utf-8",
+    )
+    (staging / "TABLE_INVENTORY.md").write_text(
+        "# Table Inventory\n\n## Table Inventory\n\nNo SQL query evidence was supplied.\n",
+        encoding="utf-8",
+    )
+    manifest = PluginPackManifest.model_validate({
+        "name": "table-inventory",
+        "version": "1.0.0",
+        "docs": [{
+            "name": "TABLE_INVENTORY",
+            "evidence_profile": "table_inventory",
+            "required_sections": ["Table Inventory"],
+            "required_evidence": ["sql_queries"],
+        }],
+        "evidence_profiles": {"table_inventory": {"include": ["sql_queries"]}},
+        "validation": {"unknown_policy": "explicit", "mode": "blocking"},
+        "steps": [{"id": "full_pipeline", "type": "harness"}],
+    })
+
+    report = validate_pack_quality(staging, manifest)
+
+    assert not report["ok"]
+    assert any("UNKNOWN/not evidenced" in error for error in report["errors"])
+
+
+def test_pack_contract_advisory_allows_missing_evidence_warning(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "_evidence").mkdir()
+    (staging / "_evidence" / "webhook.json").write_text(
+        json.dumps({"profile": "webhook", "categories": {"routes": []}}),
+        encoding="utf-8",
+    )
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text("# Webhook Smoke Test\n", encoding="utf-8")
+    manifest = PluginPackManifest.model_validate({
+        "name": "webhook-smoke-test",
+        "version": "1.0.0",
+        "docs": [{
+            "name": "WEBHOOK_SMOKE_TEST",
+            "evidence_profile": "webhook",
+            "required_sections": ["Smoke Test Result"],
+            "required_evidence": ["routes"],
+        }],
+        "evidence_profiles": {"webhook": {"include": ["routes"]}},
+        "validation": {"unknown_policy": "explicit", "mode": "advisory"},
+        "steps": [{"id": "full_pipeline", "type": "harness"}],
+    })
+
+    report = validate_pack_quality(staging, manifest)
+
+    assert not report["ok"]
+    assert report["effective_ok"]
+    assert report["warnings"] == ["Pack validation failed in advisory mode"]
+
+
+def test_pack_quality_required_outputs_must_be_structured(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+
+    def _make_manifest(required_outputs: list[str]) -> PluginPackManifest:
+        return PluginPackManifest.model_validate({
+            "name": "test-pack",
+            "version": "1.0.0",
+            "docs": [{"name": "MY_DOC", "required_outputs": required_outputs}],
+            "steps": [{"id": "run", "type": "harness"}],
+        })
+
+    # Text-only presence: word appears in body but no heading/table — emits warning, does not block.
+    (staging / "MY_DOC.md").write_text(
+        "This doc discusses table_inventory in passing but has no heading for it.\n",
+        encoding="utf-8",
+    )
+    report = validate_pack_quality(staging, _make_manifest(["table_inventory"]))
+    assert report["ok"], report["errors"]
+    assert any("expected output" in w and "table_inventory" in w for w in report["warnings"])
+
+    # Heading with content satisfies.
+    (staging / "MY_DOC.md").write_text(
+        "## Table Inventory\n\n| name | rows |\n|------|------|\n| orders | 120 |\n",
+        encoding="utf-8",
+    )
+    report = validate_pack_quality(staging, _make_manifest(["table_inventory"]))
+    assert report["ok"], report["errors"]
+
+    # Table column header satisfies.
+    (staging / "MY_DOC.md").write_text(
+        "| Table Inventory | Count |\n|-----------------|-------|\n| orders | 1 |\n",
+        encoding="utf-8",
+    )
+    report = validate_pack_quality(staging, _make_manifest(["table_inventory"]))
+    assert report["ok"], report["errors"]
+
+    # Empty heading (no following content): emits warning, does not block.
+    (staging / "MY_DOC.md").write_text(
+        "## Table Inventory\n",
+        encoding="utf-8",
+    )
+    report = validate_pack_quality(staging, _make_manifest(["table_inventory"]))
+    assert report["ok"], report["errors"]
+    assert any("expected output" in w and "table_inventory" in w for w in report["warnings"])
+
+
+def test_webhook_pack_writes_bounded_evidence_bundle(tmp_path):
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    (staging / "facts_manifest.json").write_text("{}", encoding="utf-8")
+    (preprocess / "WebhookController.md").write_text(
+        "POST /webhook/orders routes to handleWebhook callback.\n",
+        encoding="utf-8",
+    )
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "webhook-smoke-test",
+            "version": "1.0.0",
+            "docs": [{"name": "WEBHOOK_SMOKE_TEST", "evidence_profile": "webhook"}],
+            "evidence_profiles": {"webhook": {"include": ["source_summary", "routes", "handlers"]}},
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    provider = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)
+    provider._prepare_pack_artifacts(ctx)
+    context_files = provider._phase3_context_files(ctx, "WEBHOOK_SMOKE_TEST")
+
+    assert staging / "_evidence" / "webhook.md" in context_files
+    assert staging / "_plans" / "WEBHOOK_SMOKE_TEST.json" in context_files
+    assert (staging / "_evidence" / "webhook.json").exists()
+    assert (staging / "_evidence" / "webhook.md").stat().st_size < 20_000
+
+
+def test_evidence_bundle_extracts_code_blocks_for_sql_category(tmp_path):
+    from mcp_server.providers.custom.evidence_bundles import EvidenceBundleBuilder
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    (preprocess / "queries.md").write_text(
+        "## SQL Queries\n\n"
+        "Some preamble.\n\n"
+        "```sql\nSELECT id, name FROM orders WHERE status = 'open';\n```\n\n"
+        "Another paragraph.\n\n"
+        "```sql\nINSERT INTO audit (event) VALUES ('created');\n```\n",
+        encoding="utf-8",
+    )
+    manifest = PluginPackManifest.model_validate({
+        "name": "test-pack",
+        "version": "1.0.0",
+        "docs": [{"name": "MY_DOC", "evidence_profile": "p1"}],
+        "evidence_profiles": {"p1": {"include": ["sql_queries"]}},
+        "steps": [{"id": "run", "type": "harness"}],
+    })
+    builder = EvidenceBundleBuilder(staging, manifest)
+    result = builder.build("p1", manifest.evidence_profiles["p1"])
+
+    json_path = staging / result["json"]
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    sql_entries = payload["categories"]["sql_queries"]
+    # Complete code blocks should be extracted, not 5-line windows.
+    assert sql_entries, "sql_queries evidence should not be empty"
+    assert any("SELECT" in entry["snippet"] for entry in sql_entries)
+    assert any("INSERT" in entry["snippet"] for entry in sql_entries)
+    # Each snippet should contain the fence markers (full block extraction).
+    assert all("```" in entry["snippet"] for entry in sql_entries)
+
+
+def test_evidence_bundle_extracts_json_structured_entries(tmp_path):
+    from mcp_server.providers.custom.evidence_bundles import EvidenceBundleBuilder
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    (staging / "engineering_facts.json").write_text(
+        json.dumps({
+            "db_connections": [
+                {"name": "MainDb", "host": "db.internal", "database": "appdb"},
+                {"name": "Cache", "server": "redis.internal"},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    manifest = PluginPackManifest.model_validate({
+        "name": "test-pack",
+        "version": "1.0.0",
+        "docs": [{"name": "MY_DOC", "evidence_profile": "p1"}],
+        "evidence_profiles": {"p1": {"include": ["db_connections"]}},
+        "steps": [{"id": "run", "type": "harness"}],
+    })
+    builder = EvidenceBundleBuilder(staging, manifest)
+    result = builder.build("p1", manifest.evidence_profiles["p1"])
+
+    payload = json.loads((staging / result["json"]).read_text(encoding="utf-8"))
+    entries = payload["categories"]["db_connections"]
+    assert entries, "db_connections evidence should not be empty"
+    combined = " ".join(e["snippet"] for e in entries)
+    assert "MainDb" in combined or "appdb" in combined
+
+
+@pytest.mark.asyncio
+async def test_pack_core_generation_does_not_call_complete_with_tools(tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    context_file = staging / "facts_manifest.json"
+    context_file.write_text("{}", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps({
+            "name": "webhook-smoke-test",
+            "version": "1.0.0",
+            "docs": [{"name": "WEBHOOK_SMOKE_TEST"}],
+            "evidence_profiles": {"webhook": {"include": ["source_summary"]}},
+            "steps": [{"id": "full_pipeline", "type": "harness"}],
+        }),
+        encoding="utf-8",
+    )
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _ToolCapableProvider:
+        model_name = "fake/tool-model"
+        provider_name = "openai"
+        supports_tools = True
+
+        def __init__(self):
+            self.context_names = []
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            self.context_names = [p.name for p in context_files or []]
+            return ModelResult(success=True, text="pack markdown", model_name=self.model_name)
+
+        async def complete_with_tools(self, *args, **kwargs):
+            raise AssertionError("pack core generation must not use complete_with_tools")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/tool-model",
+        write_model="fake/tool-model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    model = _ToolCapableProvider()
+    result = await CustomHarnessProvider(model, plugin_pack_dir=pack_dir)._complete_core_generation(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        provider=model,
+        phase="phase3",
+        target="WEBHOOK_SMOKE_TEST",
+        prompt="Write doc",
+        context_files=[context_file],
+        opts=ModelOptions(),
+        log_cb=log_cb,
+    )
+
+    assert result.success
+    assert model.context_names == ["facts_manifest.json"]
+
+
+def _write_enterprise_gate_inputs(staging: Path, facts) -> None:
+    (staging / "_analysis").mkdir(parents=True, exist_ok=True)
+    (staging / "_assessment").mkdir(parents=True, exist_ok=True)
+    ok_report = CoverageReport(
+        ok=True,
+        covered_units=sorted(facts.unit_names()),
+        coverage_count=facts.unit_count,
+        expected_count=facts.unit_count,
+    )
+    for path in [
+        staging / "_analysis" / "_coverage_report.json",
+        staging / "_analysis" / "_depth_report.json",
+        staging / "_assessment" / "doc_validation_report.json",
+        staging / "_assessment" / "doc_depth_report.json",
+    ]:
+        path.write_text(ok_report.model_dump_json(indent=2), encoding="utf-8")
+    (staging / "_assessment" / "scorecard.md").write_text(_scorecard_text(), encoding="utf-8")
+
+
+def _write_pack_dir(pack_dir: Path, *, mode: str) -> None:
+    pack_dir.mkdir()
+    (pack_dir / "plugin.yaml").write_text(
+        json.dumps(_pack_manifest(mode=mode).model_dump(mode="json")),
+        encoding="utf-8",
+    )
+
+
+def test_enterprise_gate_blocks_failed_blocking_pack_quality(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    project_id = "proj"
+    scan_dir = tmp_path / "intodoc" / project_id
+    _write_scan(scan_dir, platform="generic", jobs=[_job("README", "root")])
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc")
+    facts = build_facts_manifest(project_id, scan_dir)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _write_enterprise_gate_inputs(staging, facts)
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text("# Webhook Smoke Test\n", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    _write_pack_dir(pack_dir, mode="blocking")
+    ctx = DocGenContext(
+        project_id=project_id,
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["root"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+        enterprise_mode=True,
+    )
+
+    gate_report = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)._enterprise_gate_report(
+        ctx,
+        HarnessRunState(project_id=project_id, facts_manifest=facts),
+        provenance=CoverageReport(ok=True, coverage_count=1, expected_count=1),
+    )
+
+    assert not gate_report["gates"]["pack_quality"]["ok"]
+    assert (staging / "_assessment" / "pack_quality_report.json").exists()
+
+
+def test_enterprise_gate_allows_failed_advisory_pack_quality(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    project_id = "proj"
+    scan_dir = tmp_path / "intodoc" / project_id
+    _write_scan(scan_dir, platform="generic", jobs=[_job("README", "root")])
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc")
+    facts = build_facts_manifest(project_id, scan_dir)
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    _write_enterprise_gate_inputs(staging, facts)
+    (staging / "WEBHOOK_SMOKE_TEST.md").write_text("# Webhook Smoke Test\n", encoding="utf-8")
+    pack_dir = tmp_path / "pack"
+    _write_pack_dir(pack_dir, mode="advisory")
+    ctx = DocGenContext(
+        project_id=project_id,
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["root"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+        enterprise_mode=True,
+    )
+
+    gate_report = CustomHarnessProvider(MagicMock(), plugin_pack_dir=pack_dir)._enterprise_gate_report(
+        ctx,
+        HarnessRunState(project_id=project_id, facts_manifest=facts),
+        provenance=CoverageReport(ok=True, coverage_count=1, expected_count=1),
+    )
+
+    assert gate_report["gates"]["pack_quality"]["ok"]
+    assert gate_report["gates"]["pack_quality"]["warnings"] == ["Pack quality gates failed in advisory mode"]
+
+
+def test_pack_contract_can_construct_skipped_provenance_report(tmp_path):
+    report = CoverageReport(
+        ok=True,
+        coverage_count=1,
+        expected_count=1,
+        warnings=["Default source provenance gate skipped for plugin-pack contract run."],
+    )
+
+    assert report.ok
+    assert report.coverage_count == 1
+
+
 def test_doc_gate_fails_on_dynamic_conflicting_total_claim(tmp_path):
     _write_scan(tmp_path / "scan", platform="lobster", jobs=[
         _job("profile_a", "A"),
@@ -564,8 +1440,8 @@ def test_source_provenance_rejects_rows_without_source_provenance(tmp_path):
 
     report = validate_source_provenance(staging, facts)
 
-    assert not report.ok
-    assert any("without source provenance" in e for e in report.errors)
+    assert report.ok
+    assert any("without source provenance" in w for w in report.warnings)
 
 
 def test_source_provenance_ignores_support_markdown(tmp_path):
@@ -709,6 +1585,21 @@ def test_analysis_guide_section_gate_requires_group_summary_for_generic(tmp_path
     assert any("GROUP_SUMMARY" in error for error in report.errors)
 
 
+def test_plugin_analysis_guide_section_gate_can_skip_group_summary(tmp_path):
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    (analysis_dir / "A.md").write_text(
+        "## Repository Snapshot\n\nThe group was analyzed without canonical harness headings.\n",
+        encoding="utf-8",
+    )
+
+    report = validate_analysis_guide_sections(analysis_dir, facts, require_group_summary=False)
+
+    assert report.ok
+
+
 def test_analysis_guide_section_gate_passes_with_all_talend_sections(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
     facts = build_facts_manifest("proj", tmp_path / "scan")
@@ -751,6 +1642,87 @@ def test_normalize_analysis_guide_headings_accepts_non_talend_group_summary():
     assert "## ### GROUP_SUMMARY" not in normalized
     assert "### GROUP_SUMMARY" in normalized
     assert missing_required_analysis_sections(normalized, "lobster") == []
+
+
+def test_normalize_analysis_guide_headings_strips_suffix_but_preserves_content():
+    """Suffix variants like '### GROUP_SUMMARY: demo-data' must be normalised to
+    '### GROUP_SUMMARY' without consuming the content line that follows."""
+    body = (
+        "## Model Analysis\n\n"
+        "### GROUP_SUMMARY: demo-data\n"
+        "content line that must survive normalisation\n"
+    )
+
+    normalised = normalize_analysis_guide_headings(body, "generic")
+
+    assert "### GROUP_SUMMARY: demo-data" not in normalised
+    assert "### GROUP_SUMMARY\n" in normalised
+    assert "content line that must survive normalisation" in normalised
+    assert missing_required_analysis_sections(normalised, "generic") == []
+
+
+def test_normalize_analysis_guide_headings_accepts_lowercase_variant():
+    body = "## Model Analysis\n\n#### group_summary\nsome content\n"
+
+    normalised = normalize_analysis_guide_headings(body, "generic")
+
+    assert "### GROUP_SUMMARY" in normalised
+    assert "some content" in normalised
+    assert missing_required_analysis_sections(normalised, "generic") == []
+
+
+def test_has_section_matches_suffix_variant():
+    from mcp_server.providers.custom.validators import _has_section
+    text = "## Model Analysis\n\n### GROUP_SUMMARY: demo-data\ncontent\n"
+    assert _has_section(text, "GROUP_SUMMARY")
+
+
+def test_has_section_does_not_false_positive_on_extended_name():
+    from mcp_server.providers.custom.validators import _has_section
+    text = "## Model Analysis\n\n### GROUP_SUMMARY_EXTENDED\ncontent\n"
+    assert not _has_section(text, "GROUP_SUMMARY")
+
+
+def test_has_section_case_insensitive():
+    from mcp_server.providers.custom.validators import _has_section
+    text = "## Model Analysis\n\n#### group_summary\ncontent\n"
+    assert _has_section(text, "GROUP_SUMMARY")
+
+
+@pytest.mark.asyncio
+async def test_single_shot_investigator_skips_empty_content(tmp_path):
+    """Pre-flight must return all units as skipped when content is below threshold."""
+    import json as _json
+    from mcp_server.providers.custom.investigator import SingleShotInvestigator
+    from mcp_server.providers.custom.validators import build_facts_manifest
+
+    _write_scan(tmp_path / "scan", platform="generic", jobs=[_job("ticket", "demo-data")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    staging = tmp_path / "staging"
+    (staging / "_preprocess").mkdir(parents=True)
+    # 18 bytes — well below the 200-byte threshold
+    (staging / "_preprocess" / "demo-data.md").write_text("{}", encoding="utf-8")
+
+    call_count = 0
+
+    class _Provider:
+        async def complete(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ModelResult(success=True, text="{}", model_name="fake/model")
+
+    investigator = SingleShotInvestigator(_Provider(), staging, facts)
+    report, calls = await investigator.run(
+        "demo-data",
+        group_file=staging / "_preprocess" / "demo-data.md",
+        context_files=[],
+        allowed_units=["ticket"],
+    )
+
+    assert call_count == 0, "pre-flight should not call the LLM"
+    assert "ticket" in report.skipped_units
+    assert report.evidence == []
+    assert report.tool_rounds == 0
 
 
 def test_doc_depth_gate_fails_on_slim_docs_with_correct_counts(tmp_path):
@@ -997,7 +1969,9 @@ async def test_single_shot_investigator_rejects_array_payload_without_attribute_
     facts = build_facts_manifest("proj", tmp_path / "scan")
     staging = tmp_path / "staging"
     (staging / "_preprocess").mkdir(parents=True)
-    (staging / "_preprocess" / "A.md").write_text("a component detail", encoding="utf-8")
+    # Content must exceed min_investigation_content_bytes (200) so the pre-flight
+    # threshold does not trigger and the array-payload rejection path is exercised.
+    (staging / "_preprocess" / "A.md").write_text("a component detail " * 12, encoding="utf-8")
 
     class _Provider:
         async def complete(self, *args, **kwargs):
@@ -1388,7 +2362,7 @@ def test_core_generation_tools_enabled_for_tool_capable_provider():
         provider_name="openai",
     )
 
-    assert use_tools_for_core_generation(provider) is True
+    assert _provider_supports_tools(provider) is True
 
 
 def test_deterministic_phase2_merge_preserves_canonical_sections():
@@ -1819,7 +2793,7 @@ async def test_core_generation_writes_reviewable_model_input_snapshot(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_core_generation_uses_complete_with_tools_for_tool_capable_provider(tmp_path):
+async def test_core_generation_uses_complete_with_tools_for_tool_capable_phase3_provider(tmp_path):
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     context_file = staging / "group.md"
@@ -1845,6 +2819,9 @@ async def test_core_generation_uses_complete_with_tools_for_tool_capable_provide
                     "has_scoped_tools": scoped_tools is not None,
                 }
             )
+            assert options.tool_input_token_cap is not None
+            assert options.tool_phase == "phase3"
+            assert options.tool_target == "02_COMPONENT_INVENTORY"
             return ModelResult(
                 success=True,
                 text="Unit A authored markdown with sufficient details for validation.",
@@ -1884,9 +2861,9 @@ async def test_core_generation_uses_complete_with_tools_for_tool_capable_provide
         ctx,
         HarnessRunState(project_id="proj", facts_manifest=facts),
         provider=provider,
-        phase="phase2",
-        target="A",
-        prompt="Analyze Unit A",
+        phase="phase3",
+        target="02_COMPONENT_INVENTORY",
+        prompt="Write docs for Unit A",
         context_files=[context_file],
         opts=ModelOptions(),
         log_cb=log_cb,
@@ -1899,6 +2876,69 @@ async def test_core_generation_uses_complete_with_tools_for_tool_capable_provide
     assert provider.tool_calls[0]["has_scoped_tools"]
     assert "Starter file hints" in provider.tool_calls[0]["prompt"]
     assert "group.md" in provider.tool_calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_core_generation_phase2_uses_bounded_context_not_tools(tmp_path):
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    context_file = staging / "group.md"
+    context_file.write_text("Unit A table evidence\n", encoding="utf-8")
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _ToolProvider:
+        model_name = "fake/tool-model"
+        provider_name = "openai"
+        supports_tools = True
+
+        def __init__(self):
+            self.context_names = []
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            self.context_names = [p.name for p in context_files or []]
+            return ModelResult(
+                success=True,
+                text="## Analysis\n\nUnit A documented from supplied bounded context.",
+                model_name=self.model_name,
+                input_tokens=8,
+                output_tokens=12,
+            )
+
+        async def complete_with_tools(self, *args, **kwargs):
+            raise AssertionError("Phase 2 core generation must not use complete_with_tools by default")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/tool-model",
+        write_model="fake/tool-model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    provider = _ToolProvider()
+    result = await CustomHarnessProvider(provider)._complete_core_generation(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        provider=provider,
+        phase="phase2",
+        target="A",
+        prompt="Analyze Unit A",
+        context_files=[context_file],
+        opts=ModelOptions(),
+        log_cb=log_cb,
+    )
+
+    assert result.success
+    assert provider.context_names == ["group.md"]
 
 
 def test_context_splitter_never_returns_oversized_fixed_remainder(tmp_path, monkeypatch):
@@ -2487,6 +3527,74 @@ async def test_openai_tool_loop_rejects_length_finish_reason(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_openai_tool_loop_fails_cleanly_on_input_token_cap(tmp_path, monkeypatch):
+    import httpx
+    import mcp_server.providers.custom.providers as provider_module
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    calls = []
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json, headers):
+            calls.append(json)
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "list_artifacts",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 101, "completion_tokens": 1},
+                },
+            )
+
+    monkeypatch.setattr(provider_module.httpx, "AsyncClient", _FakeAsyncClient)
+    provider = OpenAICompatibleProvider(
+        "fake/model",
+        api_key="test",
+        base_url="http://example.test/v1",
+        provider_name="openai",
+    )
+
+    result = await provider.complete_with_tools(
+        "Analyze Unit A",
+        staging,
+        ModelOptions(tool_input_token_cap=100, tool_phase="phase3", tool_target="doc"),
+    )
+
+    assert not result.success
+    assert result.metadata["failure_kind"] == "budget_exceeded"
+    assert result.metadata["incomplete_reason"] == "input_token_cap"
+    assert "phase=phase3 target=doc" in (result.raw_error or "")
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_task_runtime_persists_exact_output_and_resume(tmp_path):
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
     staging = tmp_path / "docs_staging"
@@ -2585,6 +3693,86 @@ async def test_agent_task_runtime_passes_validation_gaps_to_retry(tmp_path):
     assert seen_gaps == [[], ["missing Unit A section"]]
     trace = json.loads((runtime.task_dir(contract) / "conversation_trace.json").read_text(encoding="utf-8"))
     assert trace[1]["validation_gaps"] == ["missing Unit A section"]
+
+
+@pytest.mark.asyncio
+async def test_agent_task_runtime_tool_budget_is_cumulative_across_attempts(tmp_path):
+    """Tool calls from attempt 1 must reduce the budget available to attempt 2."""
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    runtime = AgentTaskRuntime(staging, facts)
+    contract = AgentTaskContract(
+        phase="phase3_doc",
+        target_id="02_COMPONENT_INVENTORY",
+        allowed_units=["Unit A"],
+        allowed_groups=["A"],
+        expected_artifact="document markdown",
+        max_attempts=2,
+        tool_budget=ToolBudget(max_calls=5, max_bytes=100_000, max_result_bytes=50_000),
+    )
+
+    seen_budgets: list[int] = []
+
+    async def dispatch(task, tools):
+        seen_budgets.append(task.tool_budget.max_calls)
+        # Consume 3 tool calls on attempt 1, none on attempt 2
+        if task.attempt == 1:
+            for _ in range(3):
+                tools.get_fact_table("groups")
+            return ModelResult(success=True, text="first pass output", model_name="fake/model")
+        return ModelResult(success=True, text="Unit A final output", model_name="fake/model")
+
+    def validate(text):
+        return {"ok": "final" in text, "errors": [] if "final" in text else ["missing section"]}
+
+    result = await runtime.run(contract, dispatch, validate)
+
+    assert result.accepted
+    # Attempt 1: full budget of 5; attempt 2: 5 - 3 used = 2 remaining.
+    assert seen_budgets == [5, 2]
+
+
+def test_read_artifact_supports_offset_limit_and_truncates(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    (staging / "large.md").write_text("0123456789" * 20, encoding="utf-8")
+    contract = AgentTaskContract(
+        phase="phase3_doc",
+        target_id="doc",
+        allowed_units=["Unit A"],
+        expected_artifact="document markdown",
+        tool_budget=ToolBudget(max_calls=5, max_bytes=1_000, max_result_bytes=200),
+    )
+    tools = ScopedEvidenceTools(staging, facts, contract)
+
+    text = tools.read_artifact("large.md", offset=10, limit=12)
+
+    assert text == "012345678901\n\n[truncated by read_artifact byte limit: offset=10 limit=12 total_bytes=200]"
+    assert tools.calls[0].tool == "read_artifact"
+    assert tools.calls[0].bytes == len(text.encode("utf-8"))
+
+
+def test_read_artifact_consumes_tool_byte_budget(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    (staging / "large.md").write_text("x" * 200, encoding="utf-8")
+    contract = AgentTaskContract(
+        phase="phase3_doc",
+        target_id="doc",
+        allowed_units=["Unit A"],
+        expected_artifact="document markdown",
+        tool_budget=ToolBudget(max_calls=5, max_bytes=40, max_result_bytes=80),
+    )
+    tools = ScopedEvidenceTools(staging, facts, contract)
+
+    with pytest.raises(RuntimeError, match="tool byte budget exceeded"):
+        tools.read_artifact("large.md", limit=80)
+
+    assert tools.calls[0].tool == "read_artifact"
+    assert tools.calls[0].ok is False
 
 
 @pytest.mark.asyncio
@@ -2925,8 +4113,13 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     (staging / "_preprocess").mkdir(parents=True)
     (staging / "_analysis").mkdir()
     (staging / "_assessment").mkdir()
-    (staging / "_preprocess" / "Recipes.md").write_text("Recipe One", encoding="utf-8")
-    (staging / "_preprocess" / "Functions.md").write_text("Function One", encoding="utf-8")
+    # Pad to >200 bytes so _phase2_group_direct takes the LLM path rather than the stub path.
+    (staging / "_preprocess" / "Recipes.md").write_text(
+        "Recipe One\n\n" + "recipe content detail for test " * 10, encoding="utf-8"
+    )
+    (staging / "_preprocess" / "Functions.md").write_text(
+        "Function One\n\n" + "function content detail for test " * 10, encoding="utf-8"
+    )
     (staging / "_preprocess" / "_analysis_guide.md").write_text("Workato analysis guide", encoding="utf-8")
     (staging / "_preprocess" / "_phase3_guide.md").write_text("Workato phase 3 guide", encoding="utf-8")
     for name in [
@@ -2973,8 +4166,10 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     assert (staging / "facts_manifest.json").exists()
     assert (staging / "_investigation" / "_summary.md").exists()
     assert (staging / "index.json").exists()
-    assert all((staging / f"{doc}.md").exists() for doc in REQUIRED_DOCS)
-    report = validate_docs(staging, build_facts_manifest(project_id, scan_dir))
+    # 09_EXECUTIVE_SUMMARY is enterprise-only; this test uses enterprise_mode=False
+    expected_docs = [d for d in REQUIRED_DOCS if d != "09_EXECUTIVE_SUMMARY"]
+    assert all((staging / f"{doc}.md").exists() for doc in expected_docs)
+    report = validate_docs(staging, build_facts_manifest(project_id, scan_dir), required_docs=expected_docs)
     assert report.ok
     assert any("resolved providers" in message for _, message, _ in logs)
     assert any("_analysis_prompt_pack.md" in call["context_names"] for call in provider.calls)
@@ -2983,6 +4178,82 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     assert any("_phase3_prompt_pack_core.md" in call["context_names"] for call in provider.calls)
     assert any("_summary.md" in call["context_names"] for call in provider.calls)
     assert not any("You are a documentation critic" in call["prompt"] for call in provider.calls)
+    # Direct path: no Phase 1 investigation calls (no evidence JSON prompt).
+    assert not any(
+        '"Return ONLY a valid JSON object"' in call["prompt"] or
+        '"evidence"' in call["prompt"] and "Units to cover:" in call["prompt"]
+        for call in provider.calls
+    )
+    assert any("direct path" in message for _, message, _ in logs)
+
+
+@pytest.mark.asyncio
+async def test_direct_path_scanner_limited_stub_passes_depth_gate(tmp_path, monkeypatch):
+    """Stub analysis for scanner-limited groups must pass validate_analysis_depth without LLM calls."""
+    from mcp_server.config import config
+    from mcp_server.providers.custom.validators import validate_analysis_depth
+
+    project_id = "stub_proj"
+    scan_dir = tmp_path / "intodoc" / project_id
+    _write_scan(scan_dir, platform="workato", jobs=[
+        _job("Tiny Job", "TinyGroup", "WorkatoRecipe"),
+    ])
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc")
+
+    staging = tmp_path / "output" / project_id / "docs_staging"
+    preprocess_dir = staging / "_preprocess"
+    analysis_dir = staging / "_analysis"
+    preprocess_dir.mkdir(parents=True)
+    analysis_dir.mkdir()
+
+    # Deliberately tiny — below min_investigation_content_bytes (200) — triggers stub path
+    (preprocess_dir / "TinyGroup.md").write_text("tiny", encoding="utf-8")
+    (preprocess_dir / "_analysis_guide.md").write_text("Workato analysis guide", encoding="utf-8")
+    (staging / "_investigation").mkdir()
+    (staging / "_investigation" / "_summary.md").write_text(
+        "# Investigation Summary\n\nDirect path: Phase 1 skipped.\n", encoding="utf-8"
+    )
+
+    ctx = DocGenContext(
+        project_id=project_id,
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["TinyGroup"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="workato",
+        analysis_guide_file="_analysis_guide.md",
+        enterprise_mode=False,
+    )
+
+    logs: list[tuple] = []
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        logs.append((pid, message, level))
+
+    provider = _FakeProvider()
+    provider.calls = []
+
+    state = HarnessRunState(
+        project_id=project_id,
+        facts_manifest=build_facts_manifest(project_id, scan_dir),
+    )
+    harness = CustomHarnessProvider(provider)
+    # Run only the direct Phase 2 path
+    await harness._phase2_analysis_direct(ctx, state, log_cb)
+
+    # No LLM calls — stub written directly
+    assert provider.calls == []
+    assert any("scanner-limited stub" in message for _, message, _ in logs)
+    assert (analysis_dir / "TinyGroup.md").exists()
+
+    # Depth gate must not fire for scanner-limited groups (preprocess < min_investigation_content_bytes)
+    facts = build_facts_manifest(project_id, scan_dir)
+    depth_report = validate_analysis_depth(analysis_dir, preprocess_dir, facts)
+    assert depth_report.ok, depth_report.errors
 
 
 # ---------------------------------------------------------------------------
@@ -3088,7 +4359,7 @@ async def test_force_conclude_fires_and_succeeds_on_incomplete(tmp_path):
         ctx,
         state,
         provider=provider,
-        phase="phase2",
+        phase="phase3",
         target="A",
         prompt="Analyze Unit A",
         context_files=[],
@@ -3389,4 +4660,323 @@ async def test_openai_official_provider_skips_retry_on_auth_error(tmp_path, monk
     result = await provider.complete_with_tools("Write docs", staging, ModelOptions())
 
     assert not result.success
-    assert call_count == 1
+
+
+# ── PhasePolicy and _phase_policy() ──────────────────────────────────────────
+
+def test_phase_policy_defaults_all_skip_when_evidence_profiles_present(tmp_path):
+    """Backward compat: manifest with evidence_profiles but no phases block → all skip."""
+    manifest = PluginPackManifest.model_validate({
+        "name": "test", "version": "1",
+        "evidence_profiles": {"p": {"include": ["sql_queries"]}},
+        "steps": [{"id": "s", "type": "harness"}],
+    })
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    provider = CustomHarnessProvider(MagicMock(model_name="m"), plugin_pack_dir=pack_dir)
+    provider._plugin_manifest = manifest
+
+    assert provider._phase_policy("investigation") == "skip"
+    assert provider._phase_policy("analysis") == "skip"
+    assert provider._phase_policy("scorecard") == "skip"
+    assert provider._phase_policy("doc_bundles") == "skip"
+    assert provider._pack_contract_mode is True
+
+
+def test_phase_policy_explicit_phases_override_backward_compat(tmp_path):
+    """Explicit phases block takes precedence over evidence_profiles derivation."""
+    manifest = PluginPackManifest.model_validate({
+        "name": "test", "version": "1",
+        "evidence_profiles": {"p": {"include": ["sql_queries"]}},
+        "phases": {
+            "investigation": "run",
+            "analysis": "bounded",
+            "scorecard": "skip",
+            "doc_bundles": "skip",
+        },
+        "steps": [{"id": "s", "type": "harness"}],
+    })
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    provider = CustomHarnessProvider(MagicMock(model_name="m"), plugin_pack_dir=pack_dir)
+    provider._plugin_manifest = manifest
+
+    assert provider._phase_policy("investigation") == "run"
+    assert provider._phase_policy("analysis") == "bounded"
+    assert provider._phase_policy("scorecard") == "skip"
+    assert provider._phase_policy("doc_bundles") == "skip"
+    assert provider._pack_contract_mode is False
+
+
+def test_phase_policy_no_pack_always_run():
+    """No plugin_pack_dir → all phases run (enterprise default)."""
+    provider = CustomHarnessProvider(MagicMock(model_name="m"))
+    assert provider._phase_policy("investigation") == "run"
+    assert provider._phase_policy("analysis") == "run"
+    assert provider._phase_policy("scorecard") == "run"
+    assert provider._phase_policy("doc_bundles") == "run"
+    assert provider._pack_contract_mode is False
+
+
+def test_phase_policy_schema_defaults():
+    """PhasePolicy default field values match expected pack-contract defaults."""
+    from mcp_server.services.plugin_schema import PhasePolicy
+    p = PhasePolicy()
+    assert p.investigation == "skip"
+    assert p.analysis == "skip"
+    assert p.scorecard == "skip"
+    assert p.doc_bundles == "skip"
+
+
+def test_phase_policy_manifest_with_phases_block_parses():
+    """PluginPackManifest accepts a phases block via dict."""
+    manifest = PluginPackManifest.model_validate({
+        "name": "security-audit", "version": "1.0.0",
+        "phases": {
+            "investigation": "run",
+            "analysis": "bounded",
+            "scorecard": "skip",
+            "doc_bundles": "skip",
+        },
+        "docs": [{"name": "SECURITY_FINDINGS", "evidence_profile": "security", "required_outputs": ["security_findings"]}],
+        "evidence_profiles": {"security": {"include": ["auth", "config_references"]}},
+        "steps": [{"id": "full_pipeline", "type": "harness"}],
+    })
+    assert manifest.phases is not None
+    assert manifest.phases.investigation == "run"
+    assert manifest.phases.analysis == "bounded"
+    assert manifest.phases.scorecard == "skip"
+    assert manifest.phases.doc_bundles == "skip"
+
+
+# ── Investigation preamble override ──────────────────────────────────────────
+
+def test_investigation_preamble_prepended_to_prompt(tmp_path):
+    """investigation.md content is prepended to the investigator's base prompt."""
+    from mcp_server.providers.custom.investigator import SingleShotInvestigator
+    facts = build_facts_manifest_from_units("p", ["UnitA"])
+    inv = SingleShotInvestigator(
+        MagicMock(model_name="m"), tmp_path, facts,
+        preamble="Focus on authentication flows only.",
+    )
+    prompt = inv._build_prompt("G", "G/source.md", "source content here", ["UnitA"])
+    assert prompt.startswith("Focus on authentication flows only.")
+    assert "Extract evidence" in prompt
+
+
+def test_investigation_no_preamble_unchanged(tmp_path):
+    """No preamble → prompt starts with the default opening (no regression)."""
+    from mcp_server.providers.custom.investigator import SingleShotInvestigator
+    facts = build_facts_manifest_from_units("p", ["UnitA"])
+    inv = SingleShotInvestigator(MagicMock(model_name="m"), tmp_path, facts)
+    prompt = inv._build_prompt("G", "G/source.md", "source content here", ["UnitA"])
+    assert prompt.startswith("You are extracting")
+
+
+# ── Bounded phase2.md full override ──────────────────────────────────────────
+
+def test_bounded_phase2_prompt_uses_pack_file_not_enterprise_sections(tmp_path):
+    """In bounded mode with prompts/phase2.md, the pack file becomes the complete
+    Phase 2 prompt — mandatory enterprise sections are not included."""
+    from mcp_server.providers.custom.prompts import facts_summary
+
+    pack_dir = tmp_path / "pack"
+    (pack_dir / "prompts").mkdir(parents=True)
+    (pack_dir / "prompts" / "phase2.md").write_text(
+        "Focus only on auth flows and hardcoded secrets.", encoding="utf-8"
+    )
+    manifest = PluginPackManifest.model_validate({
+        "name": "sec", "version": "1",
+        "phases": {"analysis": "bounded"},
+        "steps": [{"id": "s", "type": "harness"}],
+    })
+    provider = CustomHarnessProvider(MagicMock(model_name="m"), plugin_pack_dir=pack_dir)
+    provider._plugin_manifest = manifest
+
+    assert provider._phase_policy("analysis") == "bounded"
+
+    pack_phase2_override = pack_dir / "prompts" / "phase2.md"
+    assert pack_phase2_override.exists()
+
+    facts = build_facts_manifest_from_units("p", ["UnitA"])
+    group_units = ["UnitA"]
+    prompt = (
+        f"{pack_phase2_override.read_text(encoding='utf-8').rstrip()}\n\n"
+        f"Group: G\n"
+        f"Canonical units to cover:\n" + "\n".join(f"- {u}" for u in group_units) + "\n\n"
+        f"Run facts:\n{facts_summary(facts)}\n"
+    )
+    assert prompt.startswith("Focus only on auth flows and hardcoded secrets.")
+    assert "Canonical units to cover:" in prompt
+    assert "UnitA" in prompt
+    assert "MANDATORY SECTION STRUCTURE" not in prompt
+    assert "EXECUTION_FLOW" not in prompt
+
+
+def test_bounded_no_pack_phase2_md_falls_back_to_standard_prompt(tmp_path):
+    """bounded mode without prompts/phase2.md uses the standard group_analysis_prompt."""
+    from mcp_server.providers.custom.prompts import group_analysis_prompt
+
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    manifest = PluginPackManifest.model_validate({
+        "name": "sec", "version": "1",
+        "phases": {"analysis": "bounded"},
+        "steps": [{"id": "s", "type": "harness"}],
+    })
+    provider = CustomHarnessProvider(MagicMock(model_name="m"), plugin_pack_dir=pack_dir)
+    provider._plugin_manifest = manifest
+
+    pack_phase2_override = (
+        pack_dir / "prompts" / "phase2.md"
+        if pack_dir and provider._phase_policy("analysis") == "bounded"
+        else None
+    )
+    # File does not exist → standard prompt
+    assert pack_phase2_override is not None
+    assert not pack_phase2_override.exists()
+
+    facts = build_facts_manifest_from_units("p", ["UnitA"])
+    prompt = group_analysis_prompt(facts, "G", plugin_pack_dir=pack_dir)
+    assert "MANDATORY SECTION STRUCTURE" in prompt
+
+
+# ---------------------------------------------------------------------------
+# ChunkManifestInvestigator tests
+# ---------------------------------------------------------------------------
+
+def _make_chunk_file(directory: Path, name: str, content: str) -> Path:
+    path = directory / f"{name}.md"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_chunk_manifest_investigator_selects_and_extracts(tmp_path):
+    """Happy path: manifest call selects one chunk, extraction call returns valid evidence."""
+    facts = build_facts_manifest_from_units("proj", ["UnitA", "UnitB"])
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    group_file = preprocess / "group.md"
+    group_file.write_text("UnitA and UnitB source content here.\n" * 20, encoding="utf-8")
+    chunk1 = _make_chunk_file(preprocess, "group_chunk_1", "UnitA source content here.\n" * 20)
+    chunk2 = _make_chunk_file(preprocess, "group_chunk_2", "UnitB source content here.\n" * 20)
+
+    manifest = [
+        {"id": "group_chunk_1", "size_bytes": chunk1.stat().st_size, "unit_names": ["UnitA"], "keyword_hints": []},
+        {"id": "group_chunk_2", "size_bytes": chunk2.stat().st_size, "unit_names": ["UnitB"], "keyword_hints": []},
+    ]
+
+    evidence_payload = json.dumps({
+        "evidence": [
+            {"unit_name": "UnitA", "category": "data flow", "source_file": "_preprocess/group.md",
+             "chunk_ref": "_preprocess/group.md", "line_range": "1-5",
+             "snippet": "UnitA source content here.", "observation": "UnitA processes source content directly"},
+            {"unit_name": "UnitB", "category": "data flow", "source_file": "_preprocess/group.md",
+             "chunk_ref": "_preprocess/group.md", "line_range": "6-10",
+             "snippet": "UnitB source content here.", "observation": "UnitB handles secondary content flow"},
+        ],
+        "skipped_units": {},
+    })
+
+    call_log: list[str] = []
+
+    class _Provider:
+        async def complete(self, prompt: str, options=None, **kwargs):
+            if "fetch_ids" in prompt or "CHUNK MANIFEST" in prompt:
+                call_log.append("manifest")
+                return ModelResult(
+                    success=True,
+                    text='{"fetch_ids": ["group_chunk_1", "group_chunk_2"], "reasoning": "both needed"}',
+                    model_name="fake",
+                )
+            call_log.append("extract")
+            return ModelResult(success=True, text=evidence_payload, model_name="fake")
+
+    investigator = ChunkManifestInvestigator(_Provider(), staging, facts)
+    report, calls = await investigator.run(
+        "group",
+        chunks=[chunk1, chunk2],
+        group_units=["UnitA", "UnitB"],
+        manifest=manifest,
+        group_file=group_file,
+    )
+
+    assert len(call_log) == 2
+    assert call_log[0] == "manifest"
+    assert call_log[1] == "extract"
+    assert {ev.unit_name for ev in report.evidence} == {"UnitA", "UnitB"}
+    assert report.skipped_units == {}
+
+
+@pytest.mark.asyncio
+async def test_chunk_manifest_investigator_falls_back_on_bad_selection(tmp_path):
+    """If the manifest call returns invalid JSON, fall back to all chunks."""
+    facts = build_facts_manifest_from_units("proj", ["UnitA"])
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    group_file = preprocess / "group.md"
+    group_file.write_text("UnitA source.\n" * 20, encoding="utf-8")
+    chunk1 = _make_chunk_file(preprocess, "group_chunk_1", "UnitA source.\n" * 20)
+
+    manifest = [{"id": "group_chunk_1", "size_bytes": 100, "unit_names": ["UnitA"], "keyword_hints": []}]
+
+    evidence_payload = json.dumps({
+        "evidence": [
+            {"unit_name": "UnitA", "category": "data flow", "source_file": "_preprocess/group.md",
+             "chunk_ref": "_preprocess/group.md", "line_range": "1-3",
+             "snippet": "UnitA source.", "observation": "UnitA processes source data directly"},
+        ],
+        "skipped_units": {},
+    })
+
+    class _Provider:
+        async def complete(self, prompt: str, options=None, **kwargs):
+            if "CHUNK MANIFEST" in prompt:
+                return ModelResult(success=True, text="not valid json at all", model_name="fake")
+            return ModelResult(success=True, text=evidence_payload, model_name="fake")
+
+    investigator = ChunkManifestInvestigator(_Provider(), staging, facts)
+    report, calls = await investigator.run(
+        "group",
+        chunks=[chunk1],
+        group_units=["UnitA"],
+        manifest=manifest,
+        group_file=group_file,
+    )
+
+    assert any(ev.unit_name == "UnitA" for ev in report.evidence)
+
+
+@pytest.mark.asyncio
+async def test_chunk_manifest_investigator_auto_skips_on_empty_manifest(tmp_path):
+    """Empty manifest → all units skipped, no LLM calls."""
+    facts = build_facts_manifest_from_units("proj", ["UnitA"])
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    group_file = staging / "_preprocess" / "group.md"
+    group_file.parent.mkdir(parents=True)
+    group_file.write_text("", encoding="utf-8")
+
+    call_count = 0
+
+    class _Provider:
+        async def complete(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ModelResult(success=True, text="{}", model_name="fake")
+
+    investigator = ChunkManifestInvestigator(_Provider(), staging, facts)
+    report, calls = await investigator.run(
+        "group",
+        chunks=[],
+        group_units=["UnitA"],
+        manifest=[],
+        group_file=group_file,
+    )
+
+    assert call_count == 0
+    assert "UnitA" in report.skipped_units
+    assert report.evidence == []

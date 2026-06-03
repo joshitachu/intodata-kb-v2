@@ -282,15 +282,22 @@ class ProjectRegistry:
 
     # --- GenerateRun CRUD ---
 
+    async def get_generate_run(self, run_id: int) -> GenerateRun | None:
+        from sqlalchemy import select
+        result = await self.db.execute(select(GenerateRun).where(GenerateRun.id == run_id))
+        return result.scalar_one_or_none()
+
     async def create_generate_run(
         self,
         project_id: str,
         triggered_by: str = "api",
+        model_name: str | None = None,
     ) -> GenerateRun:
         run = GenerateRun(
             project_id=project_id,
             triggered_by=triggered_by,
             status="running",
+            model_name=model_name,
         )
         self.db.add(run)
         await self.db.flush()

@@ -13,9 +13,8 @@ Disable in test environments by setting CSRF_ENABLED=false.
 from __future__ import annotations
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-
-from src.api.errors import api_error
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -54,5 +53,13 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             csrf_header = request.headers.get("X-CSRF-Token", "")
             csrf_cookie = request.cookies.get("csrf_token", "")
             if not csrf_header or not csrf_cookie or csrf_header != csrf_cookie:
-                raise api_error(403, "csrf_invalid", "CSRF token mismatch or missing")
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": {
+                            "code": "csrf_invalid",
+                            "message": "CSRF token mismatch or missing",
+                        }
+                    },
+                )
         return await call_next(request)

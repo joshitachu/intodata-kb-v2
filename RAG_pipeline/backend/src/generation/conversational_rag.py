@@ -13,6 +13,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, QueryUsage
+from src.generation.agent_orchestrator import AgentStep, AgentTool, AgentTrace
 from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
 from src.generation.prompt_builder import build_conversation_summary_messages
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
@@ -56,6 +57,41 @@ ENCODING_NAME = "cl100k_base"
 MAX_HISTORY_TOKENS = 24000
 MAX_CONTEXT_TOKENS = 16000
 MAX_HISTORY_MESSAGES = 40
+
+
+def build_context(
+    sources: list[Source],
+    reference_numbers: dict[int, int] | None = None,
+    max_tokens: int = MAX_CONTEXT_TOKENS,
+) -> str:
+    """Backward-compatible context helper for tests and legacy imports."""
+    if not sources:
+        return ""
+
+    enc = tiktoken.get_encoding(ENCODING_NAME)
+    parts: list[str] = []
+    total_tokens = 0
+
+    for src in sources:
+        fname_parts = src.filename.split("/", 1)
+        display_name = (
+            f"{fname_parts[1]} (Project: {fname_parts[0]})"
+            if len(fname_parts) == 2
+            else src.filename
+        )
+        if reference_numbers and src.document_id in reference_numbers:
+            header = f"[Reference {reference_numbers[src.document_id]}: {display_name}]"
+        else:
+            header = f"[Source: {display_name}, chunk {src.chunk_index}]"
+
+        block = f"{header}\n{src.text}\n"
+        block_tokens = len(enc.encode(block))
+        if total_tokens + block_tokens > max_tokens:
+            break
+        parts.append(block)
+        total_tokens += block_tokens
+
+    return "\n".join(parts)
 
 CONVERSATIONAL_SYSTEM_PROMPT = (
     "You are a helpful knowledge-base assistant for a company. "
@@ -354,6 +390,8 @@ class RAGContext:
     """Non-None when the answer was already computed (RESPOND / SUMMARY / context-first hit)."""
     analysis: QueryAnalysis | None = None
     """Intent classifier output, passed through to retention for gating decisions."""
+    agent_steps: list[AgentStep] | None = None
+    """Read-only agent tool steps used to prepare the answer."""
 
 
 async def _prepare_rag_context(
@@ -376,6 +414,7 @@ async def _prepare_rag_context(
     """
     existing_messages = list(conversation.messages)
     has_history = len(existing_messages) > 0
+    trace = AgentTrace()
 
     # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
     user_memories: list[str] = []
@@ -383,6 +422,7 @@ async def _prepare_rag_context(
     corrections: list[str] = []
     project_memories: list[str] = []
     if user_id:
+        trace.complete(AgentTool.RECALL_MEMORY)
         # Ensure banks exist (idempotent)
         bank_tasks = [ensure_user_bank(user_id), ensure_quality_bank(), ensure_corrections_bank()]
         if project_ids and settings.hindsight_project_banks_enabled:
@@ -440,6 +480,7 @@ async def _prepare_rag_context(
         # Metadata query — answer from PostgreSQL
         logger.info("Conversational metadata query: intent=%s, project=%s",
                      analysis.metadata_intent, analysis.extracted_project)
+        trace.complete(AgentTool.FETCH_METADATA)
         metadata = await fetch_metadata(
             db, analysis.metadata_intent, project_ids, analysis.extracted_project,
             user_id=int(user_id) if user_id else None,
@@ -502,6 +543,7 @@ async def _prepare_rag_context(
             document_sources=document_sources,
             precomputed_answer=answer,
             analysis=analysis,
+            agent_steps=trace.steps,
         )
 
     if analysis.action == Action.RESPOND:
@@ -517,6 +559,7 @@ async def _prepare_rag_context(
             document_sources=[],
             precomputed_answer=answer,
             analysis=analysis,
+            agent_steps=trace.steps,
         )
 
     if analysis.action == Action.CONVERSATION_SUMMARY:
@@ -534,11 +577,13 @@ async def _prepare_rag_context(
             document_sources=[],
             precomputed_answer=answer,
             analysis=analysis,
+            agent_steps=trace.steps,
         )
 
     if analysis.query_type == QueryType.SUMMARY:
         # SUMMARY — map-reduce pipeline for full-document summarization
         logger.info("Summary query detected in conversation — resolving document")
+        trace.complete(AgentTool.SUMMARIZE_DOCUMENT)
         resolved = await resolve_document_id(qdrant, analysis.cleaned_query, user_groups)
         if resolved:
             doc_id, filename = resolved
@@ -548,6 +593,7 @@ async def _prepare_rag_context(
                 document_sources=[doc_source],
                 precomputed_answer=answer,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
         elif has_history:
             logger.info("Document not found for summary — falling back to conversation summary")
@@ -563,6 +609,7 @@ async def _prepare_rag_context(
                 document_sources=[],
                 precomputed_answer=answer,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
@@ -576,6 +623,7 @@ async def _prepare_rag_context(
                 document_sources=[],
                 precomputed_answer=answer,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
 
     # QA — try context-first, search only if needed
@@ -587,6 +635,7 @@ async def _prepare_rag_context(
         # memory_context excluded: this check only needs to know if prior docs cover the follow-up;
         # injecting memory here causes a three-way topic collision that triggers hallucination.
         logger.info("Trying to answer from previous context (no search)")
+        trace.complete(AgentTool.REUSE_PREVIOUS_SOURCES)
         context = build_context_from_document_sources(previous_doc_sources)
         llm_messages = build_conversational_messages_with_context(
             query, context, existing_messages,
@@ -602,6 +651,7 @@ async def _prepare_rag_context(
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
         else:
             # LLM needs more info — fall through to search
@@ -611,6 +661,7 @@ async def _prepare_rag_context(
         # Streaming path: run context-first check (same as non-streaming)
         # memory_context excluded for the same reason as the non-streaming path above.
         logger.info("Streaming mode — running context-first check")
+        trace.complete(AgentTool.REUSE_PREVIOUS_SOURCES)
         context = build_context_from_document_sources(previous_doc_sources)
         llm_messages = build_conversational_messages_with_context(
             query, context, existing_messages,
@@ -624,6 +675,7 @@ async def _prepare_rag_context(
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
         else:
             logger.info("[NEED_SEARCH] detected in streaming — running search")
@@ -631,6 +683,7 @@ async def _prepare_rag_context(
 
     if not previous_doc_sources:
         # Search path (first message, or LLM requested search)
+        trace.complete(AgentTool.SEARCH_DOCUMENTS)
         if settings.query_expansion_enabled:
             sources = await search_multi_query(
                 client=qdrant,
@@ -697,6 +750,7 @@ async def _prepare_rag_context(
                 document_sources=document_sources,
                 precomputed_answer=None,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
         else:
             # No results — let LLM respond helpfully
@@ -717,6 +771,7 @@ async def _prepare_rag_context(
                 document_sources=[],
                 precomputed_answer=answer,
                 analysis=analysis,
+                agent_steps=trace.steps,
             )
 
 
@@ -934,6 +989,11 @@ async def run_conversational_rag_stream(
     )
 
     import json
+
+    # Emit bounded read-only agent steps before the answer stream. Existing
+    # clients can ignore this optional event type.
+    for step in ctx.agent_steps or []:
+        yield ("step", json.dumps(step.model_dump()))
 
     # Emit sources
     sources_data = [s.model_dump() for s in ctx.document_sources] if ctx.document_sources else []

@@ -51,6 +51,7 @@ _CONFIG_EXTS: frozenset[str] = frozenset({
 })
 
 MAX_FILE_SIZE = 200_000  # 200 KB
+MAX_SCHEMA_FILE_SIZE = 2_000_000  # DDL can be large but still cheap to parse deterministically.
 MAX_LINES_SOURCE = 1500
 MAX_LINES_CONFIG = 600
 MAX_LINES_DEFAULT = 300
@@ -118,10 +119,19 @@ _IMPORT_TO_SYSTEM: dict[str, str] = {
     "System.Net.Http": "HTTP API", "RestSharp": "HTTP API",
     "celery": "Celery",
     "ldap3": "LDAP", "Microsoft.Identity": "Azure AD",
-    "sqlalchemy": "SQL DB", "django.db": "SQL DB",
+    "ServiceStack.OrmLite": "OrmLite/DB", "ServiceStack": "ServiceStack",
+    "Funq": "Funq IoC", "Jose": "JWT", "pyotp": "TOTP/MFA",
+    "PyJWT": "JWT", "sqlalchemy": "SQLAlchemy/ORM", "alembic": "Alembic/Migrations",
+    "django.db": "SQL DB",
     "spring.data": "SQL DB", "hibernate": "SQL DB",
     "Microsoft.EntityFrameworkCore": "SQL DB",
 }
+
+_SENSITIVE_CONFIG_KEY_RE = re.compile(
+    r"(password|passwd|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|credential|"
+    r"connectionstring|clientsecret|client[_-]?secret)",
+    re.IGNORECASE,
+)
 
 
 class GenericParser(BaseParser):
@@ -198,9 +208,9 @@ class GenericParser(BaseParser):
                     if routine:
                         routines.append(routine)
                 if f.file_type == FileType.CONFIG:
-                    conn = self._detect_connection(Path(f.path))
-                    if conn:
-                        connections.append(conn)
+                    detected, app_settings = self._detect_connection(Path(f.path), f.relative_path)
+                    connections.extend(detected)
+                    context_groups.extend(app_settings)
 
         # Also extract context/routines/connections from entry-point files
         for f in files:
@@ -214,8 +224,15 @@ class GenericParser(BaseParser):
                 ctx = self._parse_config_as_context(Path(f.path))
                 if ctx:
                     context_groups.append(ctx)
+            if f.file_type == FileType.CONFIG:
+                detected, app_settings = self._detect_connection(Path(f.path), f.relative_path)
+                connections.extend(detected)
+                context_groups.extend(app_settings)
+
+        self._apply_component_connection_refs(jobs, connections)
 
         manifest = self._build_manifest(jobs, connections)
+        schema_definitions = self._extract_schema_definitions(files, repo_root)
 
         stats = {
             "total_files": len(all_files),
@@ -225,6 +242,7 @@ class GenericParser(BaseParser):
             "routines": len(routines),
             "context_groups": len(context_groups),
             "connections": len(connections),
+            "schema_definitions": len(schema_definitions),
             "total_warnings": len(self._warnings),
         }
 
@@ -244,6 +262,7 @@ class GenericParser(BaseParser):
             context_groups=context_groups,
             routines=routines,
             manifest=manifest,
+            schema_definitions=schema_definitions,
             stats=stats,
             warnings=list(self._warnings),
         )
@@ -262,8 +281,8 @@ class GenericParser(BaseParser):
         try:
             if path.stat().st_size > MAX_FILE_SIZE:
                 return f"[FILE TOO LARGE: {path.stat().st_size} bytes, skipped]"
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
+            text = self._read_text_with_encoding_detection(path)
+        except OSError:
             return "[BINARY OR UNREADABLE FILE]"
         text = self.cred_filter.filter_text(text, filename=str(path))
         lines = text.splitlines()
@@ -278,10 +297,40 @@ class GenericParser(BaseParser):
     def _read_file_snippet(self, path: Path, lines: int = 50) -> str:
         """Read only the first N lines for entry-point detection."""
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
+            text = self._read_text_with_encoding_detection(path)
+        except OSError:
             return ""
         return "\n".join(text.splitlines()[:lines])
+
+    def _read_schema_content(self, path: Path) -> str:
+        """Read SQL DDL for deterministic schema extraction without prompt truncation."""
+        try:
+            if path.stat().st_size > MAX_SCHEMA_FILE_SIZE:
+                return ""
+            text = self._read_text_with_encoding_detection(path)
+        except OSError:
+            return ""
+        return self.cred_filter.filter_text(text, filename=str(path))
+
+    @staticmethod
+    def _read_text_with_encoding_detection(path: Path) -> str:
+        raw = path.read_bytes()
+        if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+            return raw.decode("utf-16", errors="replace")
+        if raw.startswith(b"\xef\xbb\xbf"):
+            return raw.decode("utf-8-sig", errors="replace")
+
+        # SQL Server exports are often UTF-16 LE without a useful extension hint.
+        sample = raw[:4096]
+        if sample:
+            even_nulls = sample[0::2].count(0)
+            odd_nulls = sample[1::2].count(0)
+            if odd_nulls > max(8, len(sample) // 10) and even_nulls < odd_nulls // 4:
+                return raw.decode("utf-16-le", errors="replace")
+            if even_nulls > max(8, len(sample) // 10) and odd_nulls < even_nulls // 4:
+                return raw.decode("utf-16-be", errors="replace")
+
+        return raw.decode("utf-8", errors="replace")
 
     # ── Entry-point detection ─────────────────────────────────────────────────
 
@@ -549,6 +598,31 @@ class GenericParser(BaseParser):
 
         return params
 
+    # ── SQL Server DDL extraction ───────────────────────────────────────────────
+
+    def _extract_schema_definitions(self, files: list, repo_root: Path) -> list[dict]:
+        definitions: list[dict] = []
+        by_key: dict[tuple[str, str], dict] = {}
+
+        for f in files:
+            if getattr(f, "file_type", None) != FileType.SQL_PATTERN:
+                continue
+            path = Path(getattr(f, "path"))
+            rel = getattr(f, "relative_path")
+            content = self._read_schema_content(path)
+            if not content:
+                continue
+            parsed = _parse_sql_server_schema(content, rel)
+            for definition in parsed:
+                key = (definition["schema"].lower(), definition["table"].lower())
+                if key in by_key:
+                    by_key[key]["duplicate_sources"].append(rel)
+                    continue
+                by_key[key] = definition
+                definitions.append(definition)
+
+        return definitions
+
     # ── Context parsing ───────────────────────────────────────────────────────
 
     def _parse_config_as_context(self, path: Path) -> ContextGroup | None:
@@ -592,17 +666,17 @@ class GenericParser(BaseParser):
 
     # ── Connection detection ──────────────────────────────────────────────────
 
-    def _detect_connection(self, path: Path) -> MetadataConnection | None:
+    def _detect_connection(self, path: Path, relative_path: str = "") -> tuple[list[MetadataConnection], list[ContextGroup]]:
         """Detect connection info from config files (JSON, YAML, XML)."""
         suffix = path.suffix.lower()
         if suffix in (".xml", ".config"):
-            return self._detect_connection_xml(path)
+            return self._detect_connection_xml(path, relative_path)
         if suffix not in (".json", ".yaml", ".yml"):
-            return None
+            return [], []
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return None
+            return [], []
 
         data: dict = {}
         if suffix == ".json":
@@ -610,17 +684,17 @@ class GenericParser(BaseParser):
                 data = json.loads(text)
             except json.JSONDecodeError as e:
                 self._warn(kind="parse_error", file=path, message=str(e), phase="connection")
-                return None
+                return [], []
         else:
             try:
                 import yaml
                 data = yaml.safe_load(text) or {}
             except Exception as e:
                 self._warn(kind="parse_error", file=path, message=str(e), phase="connection")
-                return None
+                return [], []
 
         if not isinstance(data, dict):
-            return None
+            return [], []
 
         flat = self._flatten_dict(data)
         host = port = database = conn_type = ""
@@ -641,37 +715,40 @@ class GenericParser(BaseParser):
                 host = vs
 
         if not (host or database or conn_type):
-            return None
+            return [], []
 
-        return MetadataConnection(
+        return [MetadataConnection(
             xmi_id=path.stem,
             name=path.stem,
             connection_type=self.cred_filter.filter_text(conn_type or "unknown"),
             host=self.cred_filter.filter_text(host),
             port=port,
             database=self.cred_filter.filter_text(database),
-        )
+            file_path=relative_path or path.name,
+        )], []
 
-    def _detect_connection_xml(self, path: Path) -> MetadataConnection | None:
+    def _detect_connection_xml(self, path: Path, relative_path: str = "") -> tuple[list[MetadataConnection], list[ContextGroup]]:
         """Parse Web.config / app.config <connectionStrings> entries."""
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return None
+            return [], []
 
         # Quick pre-check to avoid parsing unrelated XML
         if (
             "connectionString" not in text
             and "ConnectionString" not in text
             and "connectionStrings" not in text
+            and "appSettings" not in text
         ):
-            return None
+            return [], []
 
         try:
             root = ElementTree.fromstring(text)
         except ElementTree.ParseError:
-            return None
+            return [], []
 
+        connections: list[MetadataConnection] = []
         # Look for <connectionStrings><add name="..." connectionString="..."/>
         # and appSettings keys such as FooConnectionString.
         for elem in root.iter():
@@ -695,15 +772,93 @@ class GenericParser(BaseParser):
                     if marker in type_source:
                         conn_type = ctype
                         break
-                return MetadataConnection(
+                parts = self._parse_connection_string_parts(cs_filtered)
+                connections.append(MetadataConnection(
                     xmi_id=name,
                     name=name,
                     connection_type=conn_type,
-                    host=cs_filtered[:200],
-                    port="",
-                    database="",
-                )
-        return None
+                    host=parts.get("host", cs_filtered[:200]),
+                    port=parts.get("port", ""),
+                    database=parts.get("database", ""),
+                    schema_name=parts.get("schema_name", ""),
+                    file_path=relative_path or path.name,
+                    additional_params={
+                        key: value for key, value in parts.items()
+                        if key in {"user_id", "password"}
+                    },
+                ))
+        return connections, self._detect_appsettings_xml(root, path)
+
+    @staticmethod
+    def _parse_connection_string_parts(connection_string: str) -> dict[str, str]:
+        parts: dict[str, str] = {}
+        for segment in connection_string.split(";"):
+            if "=" not in segment:
+                continue
+            key, _, value = segment.partition("=")
+            key_l = key.strip().lower()
+            value = value.strip()
+            if key_l in {"data source", "server", "host"}:
+                host, _, port = value.partition(",")
+                parts["host"] = host
+                if port:
+                    parts["port"] = port
+            elif key_l in {"initial catalog", "database"}:
+                parts["database"] = value
+                parts["schema_name"] = value
+            elif key_l in {"user id", "uid"}:
+                parts["user_id"] = value
+            elif key_l in {"password", "pwd"}:
+                parts["password"] = "[REDACTED]"
+        return parts
+
+    def _detect_appsettings_xml(self, root: ElementTree.Element, path: Path) -> list[ContextGroup]:
+        variables: list[ContextVariable] = []
+        for parent in root.iter():
+            if parent.tag.split("}")[-1] != "appSettings":
+                continue
+            for elem in parent:
+                key = elem.get("key") or elem.get("name") or ""
+                if not key:
+                    continue
+                value = elem.get("value", "")
+                if self.cred_filter.is_sensitive_var_name(key) or _SENSITIVE_CONFIG_KEY_RE.search(key):
+                    value = "[REDACTED]"
+                else:
+                    value = self.cred_filter.filter_text(value)
+                variables.append(ContextVariable(name=key, values={"default": value}))
+        if not variables:
+            return []
+        return [ContextGroup(name=f"{path.name}_appSettings", variables=variables)]
+
+    @staticmethod
+    def _apply_component_connection_refs(
+        jobs: list[ParsedJob],
+        connections: list[MetadataConnection],
+    ) -> None:
+        by_file: dict[str, list[str]] = {}
+        for conn in connections:
+            if conn.file_path:
+                by_file.setdefault(conn.file_path, []).append(conn.name)
+
+        for job in jobs:
+            for comp in job.components:
+                params = comp.compact_params()
+                file_path = params.get("file_path", "")
+                if file_path in by_file:
+                    comp.metadata_connection_ref = ",".join(by_file[file_path])
+                    continue
+
+                conn_text = params.get("connection_string", "")
+                if conn_text:
+                    matches = [
+                        conn.name for conn in connections
+                        if conn.name.lower() in conn_text.lower()
+                    ]
+                    if not matches and len(connections) == 1:
+                        matches = [connections[0].name]
+                    if matches:
+                        comp.metadata_connection_ref = ",".join(matches)
 
     @staticmethod
     def _flatten_dict(d: dict, prefix: str = "") -> dict[str, str]:
@@ -815,3 +970,364 @@ class GenericParser(BaseParser):
             job_connections_used=job_connections_used,
             connection_used_by=connection_used_by,
         )
+
+
+_SQL_IDENTIFIER = r"(?:\[[^\]]+\]|[A-Za-z_][\w$#]*)"
+_CREATE_TABLE_RE = re.compile(
+    rf"\bCREATE\s+TABLE\s+(?P<name>(?:{_SQL_IDENTIFIER}\s*\.\s*)?{_SQL_IDENTIFIER})\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _parse_sql_server_schema(content: str, source_path: str) -> list[dict]:
+    normalized = _strip_sql_comments(content)
+    definitions: list[dict] = []
+    by_key: dict[tuple[str, str], dict] = {}
+
+    for match in _CREATE_TABLE_RE.finditer(normalized):
+        open_paren = normalized.find("(", match.end() - 1)
+        close_paren = _find_matching_paren(normalized, open_paren)
+        if open_paren < 0 or close_paren < 0:
+            continue
+
+        schema, table = _parse_table_name(match.group("name"))
+        body = normalized[open_paren + 1:close_paren]
+        definition = {
+            "dialect": "sqlserver",
+            "object_type": "table",
+            "schema": schema,
+            "table": table,
+            "name": f"{schema}.{table}",
+            "source_path": source_path,
+            "source_line": _line_no(normalized, match.start()),
+            "columns": [],
+            "constraints": [],
+            "indexes": [],
+            "default_constraints": [],
+            "duplicate_sources": [],
+        }
+        for item in _split_top_level_commas(body):
+            parsed = _parse_table_body_item(item)
+            if parsed is None:
+                continue
+            if parsed["kind"] == "column":
+                definition["columns"].append(parsed["value"])
+            else:
+                definition["constraints"].append(parsed["value"])
+        definitions.append(definition)
+        by_key[(schema.lower(), table.lower())] = definition
+
+    _apply_alter_defaults(normalized, by_key)
+    _apply_alter_primary_keys(normalized, by_key)
+    _apply_alter_foreign_keys(normalized, by_key)
+    _apply_create_indexes(normalized, by_key)
+    return definitions
+
+
+def _strip_sql_comments(content: str) -> str:
+    without_block = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+    return re.sub(r"--[^\n\r]*", "", without_block)
+
+
+def _parse_table_name(raw: str) -> tuple[str, str]:
+    parts = [_unquote_identifier(part) for part in re.findall(_SQL_IDENTIFIER, raw)]
+    if len(parts) >= 2:
+        return parts[-2], parts[-1]
+    if parts:
+        return "dbo", parts[-1]
+    return "dbo", raw.strip()
+
+
+def _unquote_identifier(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.strip()
+    if value.startswith("[") and value.endswith("]"):
+        return value[1:-1].replace("]]", "]")
+    return value
+
+
+def _find_matching_paren(text: str, open_index: int) -> int:
+    if open_index < 0:
+        return -1
+    depth = 0
+    in_string = False
+    i = open_index
+    while i < len(text):
+        ch = text[i]
+        if ch == "'":
+            if in_string and i + 1 < len(text) and text[i + 1] == "'":
+                i += 2
+                continue
+            in_string = not in_string
+        elif not in_string:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return -1
+
+
+def _split_top_level_commas(body: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    in_string = False
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "'":
+            if in_string and i + 1 < len(body) and body[i + 1] == "'":
+                i += 2
+                continue
+            in_string = not in_string
+        elif not in_string:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif ch == "," and depth == 0:
+                item = body[start:i].strip()
+                if item:
+                    parts.append(item)
+                start = i + 1
+        i += 1
+    tail = body[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _parse_table_body_item(item: str) -> dict | None:
+    stripped = " ".join(item.strip().split())
+    if not stripped:
+        return None
+    if re.match(r"^(CONSTRAINT|PRIMARY\s+KEY|UNIQUE|FOREIGN\s+KEY|CHECK)\b", stripped, re.IGNORECASE):
+        return {"kind": "constraint", "value": _parse_table_constraint(stripped)}
+
+    match = re.match(rf"^(?P<name>{_SQL_IDENTIFIER})\s+(?P<rest>.+)$", stripped, re.DOTALL)
+    if not match:
+        return None
+    name = _unquote_identifier(match.group("name"))
+    rest = match.group("rest").strip()
+    computed_match = re.match(r"AS\s+(?P<expr>.+)$", rest, re.IGNORECASE)
+    if computed_match:
+        return {
+            "kind": "column",
+            "value": {
+                "name": name,
+                "data_type": "computed",
+                "base_type": "computed",
+                "max_length": None,
+                "precision": None,
+                "scale": None,
+                "nullable": None,
+                "default": None,
+                "identity": None,
+                "computed": True,
+                "computed_expression": computed_match.group("expr").strip(),
+                "collation": None,
+                "raw_definition": stripped,
+            },
+        }
+
+    type_info, tail = _parse_column_type(rest)
+    nullable = None
+    if re.search(r"\bNOT\s+NULL\b", tail, re.IGNORECASE):
+        nullable = False
+    elif re.search(r"\bNULL\b", tail, re.IGNORECASE):
+        nullable = True
+
+    return {
+        "kind": "column",
+        "value": {
+            "name": name,
+            **type_info,
+            "nullable": nullable,
+            "default": _parse_inline_default(tail),
+            "identity": _parse_identity(tail),
+            "computed": False,
+            "computed_expression": None,
+            "collation": _parse_collation(tail),
+            "raw_definition": stripped,
+        },
+    }
+
+
+def _parse_column_type(rest: str) -> tuple[dict, str]:
+    match = re.match(
+        rf"(?P<base>{_SQL_IDENTIFIER})(?P<args>\s*\([^)]*\))?(?P<tail>.*)$",
+        rest,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return {"data_type": rest.split()[0], "base_type": rest.split()[0].lower(), "max_length": None, "precision": None, "scale": None}, ""
+    base = " ".join(str(_unquote_identifier(part)) for part in re.findall(_SQL_IDENTIFIER, match.group("base"))).lower()
+    args = (match.group("args") or "").strip()
+    tail = match.group("tail") or ""
+    max_length = precision = scale = None
+    if args:
+        values = [v.strip() for v in args[1:-1].split(",")]
+        if len(values) == 1:
+            max_length = values[0]
+        elif len(values) >= 2:
+            precision = values[0]
+            scale = values[1]
+    return {
+        "data_type": f"{base}{args}".strip(),
+        "base_type": base,
+        "max_length": max_length,
+        "precision": precision,
+        "scale": scale,
+    }, tail
+
+
+def _parse_identity(tail: str) -> dict | None:
+    match = re.search(r"\bIDENTITY\s*\((?P<seed>[^,]+),(?P<increment>[^)]+)\)", tail, re.IGNORECASE)
+    if not match:
+        return None
+    return {"seed": match.group("seed").strip(), "increment": match.group("increment").strip()}
+
+
+def _parse_inline_default(tail: str) -> str | None:
+    match = re.search(r"\bDEFAULT\s+(?P<value>\(.+?\)|'[^']*'|[^\s,]+)", tail, re.IGNORECASE)
+    return match.group("value").strip() if match else None
+
+
+def _parse_collation(tail: str) -> str | None:
+    match = re.search(r"\bCOLLATE\s+([A-Za-z0-9_]+)", tail, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _parse_table_constraint(text: str) -> dict:
+    name = None
+    name_match = re.match(rf"CONSTRAINT\s+(?P<name>{_SQL_IDENTIFIER})\s+(?P<body>.+)$", text, re.IGNORECASE)
+    if name_match:
+        name = _unquote_identifier(name_match.group("name"))
+        body = name_match.group("body")
+    else:
+        body = text
+    kind = "constraint"
+    if re.search(r"\bPRIMARY\s+KEY\b", body, re.IGNORECASE):
+        kind = "primary_key"
+    elif re.search(r"\bFOREIGN\s+KEY\b", body, re.IGNORECASE):
+        kind = "foreign_key"
+    elif re.search(r"\bUNIQUE\b", body, re.IGNORECASE):
+        kind = "unique"
+    elif re.search(r"\bCHECK\b", body, re.IGNORECASE):
+        kind = "check"
+    return {"name": name, "kind": kind, "columns": _parse_column_list(body), "raw_definition": text}
+
+
+def _parse_column_list(text: str) -> list[str]:
+    match = re.search(r"\((?P<cols>[^)]*)\)", text, re.DOTALL)
+    if not match:
+        return []
+    return _identifier_list_without_sort_tokens(match.group("cols"))
+
+
+def _identifier_list_without_sort_tokens(text: str) -> list[str]:
+    names = [str(_unquote_identifier(col)) for col in re.findall(_SQL_IDENTIFIER, text)]
+    return [name for name in names if name.upper() not in {"ASC", "DESC"}]
+
+
+def _apply_alter_defaults(content: str, by_key: dict[tuple[str, str], dict]) -> None:
+    pattern = re.compile(
+        rf"\bALTER\s+TABLE\s+(?P<table>(?:{_SQL_IDENTIFIER}\s*\.\s*)?{_SQL_IDENTIFIER})\s+ADD\s+"
+        rf"(?:(?:CONSTRAINT\s+(?P<constraint>{_SQL_IDENTIFIER})\s+)?DEFAULT\s+(?P<value>.*?)\s+FOR\s+(?P<column>{_SQL_IDENTIFIER}))",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(content):
+        definition = _definition_for_match(match.group("table"), by_key)
+        if not definition:
+            continue
+        column = str(_unquote_identifier(match.group("column")))
+        value = " ".join(match.group("value").split())
+        entry = {
+            "name": _unquote_identifier(match.group("constraint")) if match.group("constraint") else None,
+            "column": column,
+            "value": value,
+            "source_line": _line_no(content, match.start()),
+        }
+        definition["default_constraints"].append(entry)
+        for col in definition["columns"]:
+            if col["name"].lower() == column.lower() and not col.get("default"):
+                col["default"] = value
+                break
+
+
+def _apply_alter_primary_keys(content: str, by_key: dict[tuple[str, str], dict]) -> None:
+    pattern = re.compile(
+        rf"\bALTER\s+TABLE\s+(?P<table>(?:{_SQL_IDENTIFIER}\s*\.\s*)?{_SQL_IDENTIFIER}).*?"
+        rf"ADD\s+CONSTRAINT\s+(?P<name>{_SQL_IDENTIFIER})\s+PRIMARY\s+KEY(?:\s+\w+)?\s*\((?P<cols>.*?)\)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(content):
+        definition = _definition_for_match(match.group("table"), by_key)
+        if not definition:
+            continue
+        definition["constraints"].append({
+            "name": _unquote_identifier(match.group("name")),
+            "kind": "primary_key",
+            "columns": _identifier_list_without_sort_tokens(match.group("cols")),
+            "source_line": _line_no(content, match.start()),
+            "raw_definition": " ".join(match.group(0).split()),
+        })
+
+
+def _apply_alter_foreign_keys(content: str, by_key: dict[tuple[str, str], dict]) -> None:
+    pattern = re.compile(
+        rf"\bALTER\s+TABLE\s+(?P<table>(?:{_SQL_IDENTIFIER}\s*\.\s*)?{_SQL_IDENTIFIER}).*?"
+        rf"ADD\s+CONSTRAINT\s+(?P<name>{_SQL_IDENTIFIER})\s+FOREIGN\s+KEY\s*\((?P<cols>.*?)\)\s+"
+        rf"REFERENCES\s+(?P<ref_table>(?:{_SQL_IDENTIFIER}\s*\.\s*)?{_SQL_IDENTIFIER})\s*\((?P<ref_cols>.*?)\)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(content):
+        definition = _definition_for_match(match.group("table"), by_key)
+        if not definition:
+            continue
+        ref_schema, ref_table = _parse_table_name(match.group("ref_table"))
+        definition["constraints"].append({
+            "name": _unquote_identifier(match.group("name")),
+            "kind": "foreign_key",
+            "columns": _identifier_list_without_sort_tokens(match.group("cols")),
+            "references": {
+                "schema": ref_schema,
+                "table": ref_table,
+                "columns": _identifier_list_without_sort_tokens(match.group("ref_cols")),
+            },
+            "source_line": _line_no(content, match.start()),
+            "raw_definition": " ".join(match.group(0).split()),
+        })
+
+
+def _apply_create_indexes(content: str, by_key: dict[tuple[str, str], dict]) -> None:
+    pattern = re.compile(
+        rf"\bCREATE\s+(?P<unique>UNIQUE\s+)?(?P<kind>CLUSTERED|NONCLUSTERED)?\s*INDEX\s+(?P<name>{_SQL_IDENTIFIER})\s+"
+        rf"ON\s+(?P<table>(?:{_SQL_IDENTIFIER}\s*\.\s*)?{_SQL_IDENTIFIER})\s*\((?P<cols>.*?)\)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(content):
+        definition = _definition_for_match(match.group("table"), by_key)
+        if not definition:
+            continue
+        definition["indexes"].append({
+            "name": _unquote_identifier(match.group("name")),
+            "unique": bool(match.group("unique")),
+            "kind": (match.group("kind") or "").upper() or None,
+            "columns": _identifier_list_without_sort_tokens(match.group("cols")),
+            "source_line": _line_no(content, match.start()),
+            "raw_definition": " ".join(match.group(0).split()),
+        })
+
+
+def _definition_for_match(raw_table: str, by_key: dict[tuple[str, str], dict]) -> dict | None:
+    schema, table = _parse_table_name(raw_table)
+    return by_key.get((schema.lower(), table.lower()))
+
+
+def _line_no(content: str, offset: int) -> int:
+    return content.count("\n", 0, offset) + 1

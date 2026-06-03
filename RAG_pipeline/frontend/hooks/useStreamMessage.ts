@@ -5,7 +5,9 @@ import { z } from "zod";
 import {
   type ConversationMessageRequest,
   type DocumentSource,
+  type AgentStep,
   type UsageStats,
+  AgentStepSchema,
   DocumentSourceSchema,
   UsageStatsSchema,
   SseDoneSchema,
@@ -19,6 +21,7 @@ export interface StreamState {
   messageId: number | null;
   latencyMs: number | null;
   usage: UsageStats | null;
+  steps: AgentStep[];
 }
 
 const INITIAL_STATE: StreamState = {
@@ -29,6 +32,7 @@ const INITIAL_STATE: StreamState = {
   messageId: null,
   latencyMs: null,
   usage: null,
+  steps: [],
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -63,6 +67,7 @@ export function useStreamMessage(conversationId: number | null) {
         messageId: null,
         latencyMs: null,
         usage: null,
+        steps: [],
       });
 
       try {
@@ -129,6 +134,21 @@ export function useStreamMessage(conversationId: number | null) {
             try {
               const usage = UsageStatsSchema.parse(JSON.parse(data));
               setStreamState((prev) => ({ ...prev, usage }));
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "step") {
+            try {
+              const step = AgentStepSchema.parse(JSON.parse(data));
+              setStreamState((prev) => {
+                const existingIndex = prev.steps.findIndex((s) => s.id === step.id);
+                if (existingIndex === -1) {
+                  return { ...prev, steps: [...prev.steps, step] };
+                }
+                const nextSteps = [...prev.steps];
+                nextSteps[existingIndex] = step;
+                return { ...prev, steps: nextSteps };
+              });
             } catch {
               // ignore parse error
             }

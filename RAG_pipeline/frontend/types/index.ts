@@ -60,6 +60,16 @@ export const UsageStatsSchema = z.object({
 
 export type UsageStats = z.infer<typeof UsageStatsSchema>;
 
+// --- Agent Steps ---
+
+export const AgentStepSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: z.enum(["running", "completed", "skipped", "failed"]),
+});
+
+export type AgentStep = z.infer<typeof AgentStepSchema>;
+
 // --- Conversations ---
 
 export const ConversationMessageRequestSchema = z.object({

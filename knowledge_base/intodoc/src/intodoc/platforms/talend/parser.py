@@ -47,6 +47,12 @@ _INTERNAL_COMPONENTS: frozenset[str] = frozenset({
     "tFileCopy", "tFileExist",
     "tMsgBox", "tWarn", "tDie", "tBufferInput", "tBufferOutput",
     "tNormalize", "tDenormalize", "tIterateToFlow",
+    # ESB/Camel infrastructure — pure routing/transformation, no external system
+    "cDirect", "cSplitter", "cAggregator", "cMessageRouter", "cRecipientList",
+    "cProcessor", "cSetBody", "cSetHeader", "cSetProperty", "cRemoveHeader",
+    "cConvertBodyTo", "cMarshal", "cUnmarshal",
+    "cConfig", "cLog", "cTalendJob", "cBeanRegister", "cBeanValidate",
+    "cRouteWhen", "cRouteOtherwise", "cWireTap",
 })
 
 # Component name prefix -> generic system name
@@ -87,6 +93,16 @@ _TALEND_SYSTEM_MAP: dict[str, str] = {
     "tMarketo": "Marketo",
     "tNetSuite": "NetSuite",
     "tSendMail": "Email",
+    # ESB/Camel components that represent external systems
+    "cREST": "REST API",
+    "cRESTClient": "REST API",
+    "cJMS": "JMS Broker",
+    "cActiveMQ": "ActiveMQ",
+    "cKafkaInput": "Kafka",
+    "cKafkaOutput": "Kafka",
+    "cMQConnectionFactory": "JMS Broker",
+    "cMessagingEndpoint": "Messaging",
+    "cRoute": "ESB Route",
 }
 
 # Suffixes to strip when falling back to component-name heuristic

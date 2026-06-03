@@ -98,6 +98,7 @@ class MCPServerConfig(BaseSettings):
     doc_generation_enterprise_mode_default: bool = True
     doc_generation_quality_threshold: float = 4.0
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
+    small_project_threshold: int = 40   # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
 
     # API-based providers. First-party providers read ANTHROPIC_API_KEY,
     # OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY directly. Keep the generic
@@ -152,6 +153,11 @@ class MCPServerConfig(BaseSettings):
     qs_large_job_threshold: int = 10         # MCP_QS_LARGE_JOB_THRESHOLD
     qs_complex_tmap_threshold: int = 3       # MCP_QS_COMPLEX_TMAP_THRESHOLD
 
+    # Minimum preprocess content bytes to attempt LLM investigation.
+    # Groups with stripped content below this threshold are skipped immediately
+    # (all units marked as scanner-limited) rather than burning retries on empty source.
+    min_investigation_content_bytes: int = 200  # MCP_MIN_INVESTIGATION_CONTENT_BYTES
+
     # LLM output token limits per phase
     investigation_max_tokens: int = 10_000   # MCP_INVESTIGATION_MAX_TOKENS
     phase2_max_tokens: int = 32_000          # MCP_PHASE2_MAX_TOKENS
@@ -166,15 +172,29 @@ class MCPServerConfig(BaseSettings):
     direct_source_chunk_bytes: int = 80_000  # MCP_DIRECT_SOURCE_CHUNK_BYTES
 
     # Bounded internal multi-agent runtime
+    agent_phase1_concurrency: int = 4        # MCP_AGENT_PHASE1_CONCURRENCY
+    agent_phase1_agentic: bool = False       # MCP_AGENT_PHASE1_AGENTIC — use chunk-manifest investigator
+    agent_phase1_batch_size: int = 20        # MCP_AGENT_PHASE1_BATCH_SIZE — units per extraction call
     agent_phase2_concurrency: int = 6        # MCP_AGENT_PHASE2_CONCURRENCY
     agent_phase3_concurrency: int = 4        # MCP_AGENT_PHASE3_CONCURRENCY
     agent_repair_concurrency: int = 3        # MCP_AGENT_REPAIR_CONCURRENCY
     agent_max_tool_calls: int = 12           # MCP_AGENT_MAX_TOOL_CALLS
     agent_max_tool_bytes: int = 80_000       # MCP_AGENT_MAX_TOOL_BYTES
     agent_max_tool_result_bytes: int = 12_000  # MCP_AGENT_MAX_TOOL_RESULT_BYTES
+    agent_phase2_tool_input_token_cap: int = 180_000  # MCP_AGENT_PHASE2_TOOL_INPUT_TOKEN_CAP
+    agent_phase3_tool_input_token_cap: int = 320_000  # MCP_AGENT_PHASE3_TOOL_INPUT_TOKEN_CAP
     agent_max_task_attempts: int = 2         # MCP_AGENT_MAX_TASK_ATTEMPTS
     agent_max_repair_attempts: int = 3       # MCP_AGENT_MAX_REPAIR_ATTEMPTS
     agent_max_split_depth: int = 2           # MCP_AGENT_MAX_SPLIT_DEPTH
+    agent_dag_enabled: bool = False          # MCP_AGENT_DAG_ENABLED — use validated DAG orchestration
+    agent_planner_enabled: bool = False      # MCP_AGENT_PLANNER_ENABLED — ask model for execution graph
+    agent_planner_mode: str = "llm"          # MCP_AGENT_PLANNER_MODE: llm | deterministic
+    agent_planner_max_tokens: int = 8_000    # MCP_AGENT_PLANNER_MAX_TOKENS
+    agent_planner_require_valid_json: bool = True  # MCP_AGENT_PLANNER_REQUIRE_VALID_JSON
+    agent_dag_strict_validation: bool = True # MCP_AGENT_DAG_STRICT_VALIDATION
+    agent_dag_max_nodes: int = 200           # MCP_AGENT_DAG_MAX_NODES
+    agent_dag_max_depth: int = 20            # MCP_AGENT_DAG_MAX_DEPTH
+    agent_smart_repair_enabled: bool = False # MCP_AGENT_SMART_REPAIR_ENABLED — classify failures before repair
 
     # Doc generation safety guards. These are model/provider agnostic and stop
     # runaway retry storms without reducing prompt/evidence depth.
@@ -185,6 +205,7 @@ class MCPServerConfig(BaseSettings):
     docgen_call_budget_base: int = 50                 # MCP_DOCGEN_CALL_BUDGET_BASE
     docgen_call_budget_per_group: int = 8             # MCP_DOCGEN_CALL_BUDGET_PER_GROUP
     docgen_adaptive_concurrency: bool = True          # MCP_DOCGEN_ADAPTIVE_CONCURRENCY
+    phase_cost_warning_input_tokens: int = 500_000   # MCP_PHASE_COST_WARNING_INPUT_TOKENS
 
     # Deep Dive repo-agent runtime
     deep_dive_engine: str = "repo_agent"               # MCP_DEEP_DIVE_ENGINE: repo_agent | claude_cli
@@ -196,6 +217,7 @@ class MCPServerConfig(BaseSettings):
     deep_dive_max_search_results: int = 50             # MCP_DEEP_DIVE_MAX_SEARCH_RESULTS
     deep_dive_timeout_s: float = 300.0                 # MCP_DEEP_DIVE_TIMEOUT_S
     deep_dive_allow_claude_cli_fallback: bool = False  # MCP_DEEP_DIVE_ALLOW_CLAUDE_CLI_FALLBACK
+    deep_dive_max_answer_tokens: int = 8_000          # MCP_DEEP_DIVE_MAX_ANSWER_TOKENS
 
     # Instruction pack directory (relative to project_root) — US-106
     instruction_pack_dir: str = "packs/default"  # MCP_INSTRUCTION_PACK_DIR

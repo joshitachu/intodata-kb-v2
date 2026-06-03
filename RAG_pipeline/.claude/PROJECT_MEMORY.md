@@ -76,6 +76,7 @@
 | Wizard "Ready" step | Step 6 `SetupCompleteStep` between Provisioning and the product tour | Tour no longer auto-starts after wizard — the new step owns kick-off via an explicit "Take the quick tour" / "Skip and explore" CTA. Fixes the jarring transition and makes the "your workspace is ready" moment land | 2026-04-20 |
 | Wizard telemetry | Raw `wizard_events` table + whitelist-validated POST ingest + admin aggregate endpoint | Need to know what users pick before wiring any integration end-to-end. Whitelist on `event_type` prevents abuse; 2KB payload cap keeps rows small; JSONB `payload->>'key'` aggregation is a pure-SQL admin summary. No dashboards yet — raw + one aggregate endpoint. Fire-and-forget from client via `sendBeacon` for terminal events | 2026-04-20 |
 | Tenant identity | Env vars (`TENANT_NAME`/`TENANT_SLUG`/`TENANT_ENVIRONMENT`) surfaced via public `GET /api/v1/tenant/config`; `TenantProvider` in frontend; shared `<TenantMark />` component in sidebar/login/wizard | One-VPS-per-client means tenant is a deploy-time artifact, not runtime state — no shared tenants table, no subdomain parsing. Public endpoint is required because the login page brands before auth. Single `<TenantMark />` component prevents drift. Only "production" hides the env pill; everything else (staging/dev/preview) renders one | 2026-04-20 |
+| Chat agent model | Constrained read-only RAG agent layered over existing conversational RAG | Existing Chat already has valuable grounded routing: memory recall, previous-source reuse, metadata, summaries, search, RBAC, citations, and usage logging. A free-form autonomous agent would add latency and permission risk. V1 exposes fixed backend-owned read-only steps via optional SSE `step` events and keeps Deep Dive/action tools separate. | 2026-06-02 |
 
 ## Code Patterns
 
@@ -117,6 +118,7 @@
 | Deep Dive Mode | 2026-03-01 | Full-stack: DeepDiveService (subprocess), API endpoints (SSE), BFF routes, hooks, components, search page integration. Build passing |
 | JWT Authentication System | 2026-03-04 | Full auth: JWT cookies, bcrypt passwords, refresh token rotation, admin panel, rate limiting, MCP server JWT validation, dashboard auth. Alembic migration 004 |
 | EP-002 Mandatory MFA Enforcement | 2026-05-05 | Backend `CurrentUser` blocks normal protected APIs with `403 mfa_required` until MFA enrollment; frontend redirects authenticated non-enrolled users to `/settings/security`; TOTP verify refreshes auth state without reload. Request Access/email/invite-token/self-service account creation deferred. |
+| Constrained RAG Agent Layer | 2026-06-02 | Added backend-owned read-only agent trace/tool registry, optional streaming `step` events, frontend parsing/display, and tests. Preserves existing RAG endpoints and answer contract. |
 
 ## Pending Tasks
 

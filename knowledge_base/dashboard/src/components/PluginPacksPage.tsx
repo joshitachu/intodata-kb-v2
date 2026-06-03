@@ -303,6 +303,7 @@ function AddPackModal({ onClose }: { onClose: () => void }) {
               <code className="font-mono">prompts/</code> and{" "}
               <code className="font-mono">examples/</code> folders. Max 10 MB.
             </p>
+            <PackStructureHint />
             <input
               ref={fileInputRef}
               type="file"
@@ -322,8 +323,10 @@ function AddPackModal({ onClose }: { onClose: () => void }) {
         {tab === "github" && (
           <div className="space-y-3">
             <p className="text-xs text-slate-500">
-              Provide a GitHub repository URL. The server will clone it and register the pack.
+              Provide a GitHub repository URL. The server clones the repository and validates{" "}
+              <code className="font-mono">plugin.yaml</code> at the repository root.
             </p>
+            <PackStructureHint />
             <input
               type="text"
               className="input-dark w-full text-xs font-mono"
@@ -345,6 +348,25 @@ function AddPackModal({ onClose }: { onClose: () => void }) {
           <p className="text-xs text-red-400 font-mono break-all">{error}</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function PackStructureHint() {
+  return (
+    <div className="rounded border border-white/[0.08] bg-black/20 p-3">
+      <div className="text-[11px] font-mono text-slate-500 mb-2">Expected pack root</div>
+      <pre className="text-[11px] leading-5 font-mono text-slate-400 whitespace-pre-wrap">{`plugin.yaml
+prompts/
+  phase2.md
+  phase3.md
+  scorecard.md
+  docs/
+    YOUR_DOC_NAME.md`}</pre>
+      <p className="text-[11px] text-slate-500 mt-2">
+        Document prompt names should match the <code className="font-mono">docs.name</code> entries in{" "}
+        <code className="font-mono">plugin.yaml</code>.
+      </p>
     </div>
   );
 }

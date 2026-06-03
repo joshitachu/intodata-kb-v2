@@ -77,6 +77,7 @@ KEEP_CLOSED_LIST_PARAMS = frozenset({
     "TABLE_ACTION", "DATA_ACTION", "ACTION_ON_DATA", "ACTION_ON_TABLE",
     "WRITE_MODE", "DBTYPE", "TYPE", "DB_VERSION",
     "DATA_WRITE_MODEL", "KEYS_MANAGEMENT",
+    "HTTP_METHOD", "VERB", "METHOD", "HTTP_VERB",
 })
 
 # Structural components kept even when all params are stripped

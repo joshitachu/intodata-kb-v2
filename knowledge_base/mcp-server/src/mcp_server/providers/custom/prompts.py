@@ -21,6 +21,7 @@ REQUIRED_DOCS = [
     "06_OPERATIONS_TESTING_AND_DEBUGGING",
     "07_QUALITY_SECURITY_RISK_SCORECARD",
     "08_CHANGE_PLAYBOOK",
+    "09_EXECUTIVE_SUMMARY",
 ]
 
 DOC_ASSIGNMENTS = {
@@ -38,6 +39,9 @@ DOC_ASSIGNMENTS = {
     "patterns_user": [
         "07_QUALITY_SECURITY_RISK_SCORECARD",
         "08_CHANGE_PLAYBOOK",
+    ],
+    "executive": [
+        "09_EXECUTIVE_SUMMARY",
     ],
 }
 
@@ -65,6 +69,13 @@ DOC_SECTION_REQUIREMENTS = {
     "06_OPERATIONS_TESTING_AND_DEBUGGING": ["Run", "Debug", "Verify", "Recovery", "Testing"],
     "07_QUALITY_SECURITY_RISK_SCORECARD": ["Score", "Confidence", "Evidence", "Red Flags", "Quick Wins", "Unknowns"],
     "08_CHANGE_PLAYBOOK": ["Change Impact", "Inspect", "Test", "Rollback"],
+    "09_EXECUTIVE_SUMMARY": [
+        "Executive Risk Summary",
+        "Modernisation Priorities",
+        "Integration Health Scorecard",
+        "Confidence and Limitations",
+        "Recommended Next Actions",
+    ],
 }
 
 
@@ -369,6 +380,14 @@ CRITICAL / HIGH / MEDIUM / LOW with affected recipes and specific remediation:
 - Recipes with no error handling
 - Concurrency risks (recipe callable from multiple triggers simultaneously)
 - Rate limit exposure on high-frequency triggers
+
+WORKATO EXPORT CAVEATS (include in each section where applicable):
+- This analysis is based on the JSON export, which may not reflect the live VQL (Visual Query Language) state.
+  If the export is more than 30 days old relative to the scan date, flag affected recipes as [EXPORT_DRIFT_RISK].
+- Recipe steps that appear unused may be called dynamically via callable recipe references that are not
+  visible in the export. Flag such steps as [POSSIBLY_DYNAMIC] rather than removing them from analysis.
+- CSRF token and export authentication quirks may cause recipe parameters to be absent or masked in the export.
+  Do not conclude a field is empty if only its export representation is missing.
 """
 
     if platform == "lobster":
@@ -607,7 +626,16 @@ _SCORECARD_PREAMBLE_DEFAULT = """\
 Generate a structured assessment scorecard from the supplied Phase 2 analysis files and investigation evidence.
 Use ONLY the supplied analysis files, investigation evidence, and this facts manifest.
 Follow the scoring rubric, anti-pattern catalog, red-flag catalog, and security checklist
-in the supplied scorecard prompt pack exactly -- do not invent scoring criteria."""
+in the supplied scorecard prompt pack exactly -- do not invent scoring criteria.
+
+Confidence classification -- annotate every dimension score with HIGH, MEDIUM, or LOW:
+- Architecture and connectivity (structural, code-confirmed from static analysis): HIGH
+- Operational and reliability (error handling, recovery, monitoring): LOW -- requires runtime data, mark as (INFERRED)
+- Security (credential handling, auth patterns): MEDIUM -- static evidence necessary but not sufficient
+- Business and platform context (SLA, ownership, operational procedures): LOW without stakeholder input, mark as (INFERRED)
+
+For every LOW score add the line: "Requires runtime validation to confirm."
+Prefix the overall score with: "Preliminary X.X/5.0 -- expect up to 10% adjustment after runtime validation.\""""
 
 
 def scorecard_prompt(
@@ -661,6 +689,7 @@ analyze, plan, debug, refactor, assess risk, and make changes without rediscover
 
 Follow the Phase 3 synthesis guide, document templates, and reference docs in the supplied context.
 Use supplied EngineeringFacts artifacts as normalized evidence where relevant:
+- SQL/table/field docs: prioritize `sql_usage` for runtime usage and `schema_dictionary` for DDL column metadata
 - 01_ARCHITECTURE_MAP and 02_COMPONENT_INVENTORY: prioritize `architecture_map` and `dependency_map`
 - 03_DATA_FLOWS_AND_LINEAGE: prioritize `entity_index`, `usage_index`, and `data_flow_map`
 - 05_RUNTIME_CONFIG_AND_EXTERNALS: prioritize `api_surface` and `config_runtime_map`
@@ -779,13 +808,21 @@ SPECIFIC REQUIREMENTS:
 - Include known traps and do-not-miss items with evidence references.
 - Include a glossary of project/platform terms found in evidence, not a generic platform glossary.
 """,
-        "01_ARCHITECTURE_MAP": """\
-SPECIFIC REQUIREMENTS:
-- Describe the system topology and execution/orchestration shape.
-- Identify group boundaries, entry points, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and cross-system interactions.
-- Include per-group or per-domain architecture summary with exact unit examples.
-- Explain scanner-limited architecture gaps explicitly.
-""",
+        "01_ARCHITECTURE_MAP": (
+            "SPECIFIC REQUIREMENTS:\n"
+            "- Describe the system topology and execution/orchestration shape.\n"
+            "- Identify group boundaries, entry points, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and cross-system interactions.\n"
+            "- Include per-group or per-domain architecture summary with exact unit examples.\n"
+            "- Explain scanner-limited architecture gaps explicitly.\n"
+        ) + (
+            "\nTALEND CONNECTION SEMANTIC TABLE:\n"
+            "Include a `## Connection Semantic Table` section with this exact table structure:\n"
+            "| Connection Name | Type | Purpose | Consuming Jobs | Risk Notes |\n"
+            "|----------------|------|---------|---------------|------------|\n"
+            "List every unique connection (tMSSqlInput source, tFileInput path, tJMS destination, etc.) found in the scanner evidence.\n"
+            "If connection names are unavailable, write UNKNOWN for that field.\n"
+            if facts.platform.lower() == "talend" else ""
+        ),
         "02_COMPONENT_INVENTORY": """\
 SPECIFIC REQUIREMENTS:
 - Provide a canonical unit inventory table covering every unit: name | group | source artifact/path | type | purpose | key dependencies | evidence confidence.
@@ -831,6 +868,32 @@ SPECIFIC REQUIREMENTS:
 - Include a matrix: change target | inspect first | affected units | required tests/checks | rollback risk | confidence.
 - Cover changes to mappings/transformations, schemas/entities, config/env, connections/external systems, shared dependencies, business rules, and operational schedules/triggers.
 - Include safe-edit guidance and scanner-limited warnings when impact cannot be proven.
+""",
+        "09_EXECUTIVE_SUMMARY": """\
+SPECIFIC REQUIREMENTS:
+This document translates the technical assessment into business language for non-technical stakeholders.
+DO NOT use technical jargon without immediately explaining it. DO NOT reproduce raw code or SQL.
+Write from the scorecard and generated documentation only — not from raw scanner output.
+
+Required sections:
+  ## Executive Risk Summary
+  - List top 3 risks in business terms: what could go wrong, what business process is affected, estimated severity.
+  - Map each risk to the scorecard severity rating.
+
+  ## Modernisation Priorities
+  - Ranked table: priority | initiative | business rationale | estimated effort | confidence.
+
+  ## Integration Health Scorecard (Business View)
+  - Summary table: dimension | score | plain-English meaning | key concern.
+  - Translate each scorecard dimension into one sentence a CFO or CTO can understand.
+
+  ## Confidence and Limitations
+  - State what the documentation is based on (scanned code, no runtime observation).
+  - List specific gaps where confidence is LOW or where runtime validation is required.
+
+  ## Recommended Next Actions
+  - Numbered list: 3-5 concrete steps a decision-maker can authorise.
+  - Each step: what to do, who owns it (SOLO/PAIR/TEAM), estimated time-to-value.
 """,
     }
     return instructions.get(doc_name, "")

@@ -209,17 +209,27 @@ STAGING_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Path is relative to staging root "
                 "(e.g. '_preprocess/Item.md', '_analysis/_bundle_core.md')."
             ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path within staging (e.g. '_preprocess/Item.md')",
-                    }
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path within staging (e.g. '_preprocess/Item.md')",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Byte offset to start reading from.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum bytes to return. Capped by the task tool budget.",
+                        },
+                    },
+                    "required": ["path"],
                 },
-                "required": ["path"],
             },
-        },
     },
     {
         "type": "function",
@@ -316,6 +326,55 @@ def _safe_limit(args: dict[str, Any], default: int) -> int:
         return default
 
 
+def _tool_loop_cap_result(
+    provider_name: str,
+    model_name: str,
+    start: float,
+    *,
+    phase: str | None,
+    target: str | None,
+    turn: int,
+    total_in: int,
+    total_out: int,
+    tool_call_count: int,
+    tool_result_bytes: int,
+    finish_reasons: list[str],
+    conversation_trace: list[dict[str, Any]],
+    tool_ledger: list[dict[str, Any]],
+    cap: int,
+) -> ModelResult:
+    detail = (
+        "tool input token cap exceeded"
+        f": phase={phase or 'unknown'} target={target or 'unknown'} turns={turn} "
+        f"tool_calls={tool_call_count} tool_result_bytes={tool_result_bytes} "
+        f"input_tokens={total_in} cap={cap}"
+    )
+    logger.warning("[provider] %s", detail)
+    return ModelResult(
+        success=False,
+        model_name=model_name,
+        input_tokens=total_in,
+        output_tokens=total_out,
+        latency_ms=int((time.monotonic() - start) * 1000),
+        retries=turn - 1,
+        raw_error=detail,
+        metadata={
+            "provider": provider_name,
+            "phase": phase,
+            "target": target,
+            "turns": turn,
+            "tool_calls": tool_call_count,
+            "tool_result_bytes": tool_result_bytes,
+            "finish_reasons": finish_reasons,
+            "conversation_trace": conversation_trace,
+            "tool_call_ledger": tool_ledger,
+            "failure_kind": "budget_exceeded",
+            "incomplete_reason": "input_token_cap",
+            "input_token_cap": cap,
+        },
+    )
+
+
 def _execute_staging_tool(
     name: str,
     args: dict[str, Any],
@@ -323,6 +382,8 @@ def _execute_staging_tool(
     scoped_tools: Any | None = None,
 ) -> str:
     if name == "list_artifacts":
+        if scoped_tools is not None:
+            return scoped_tools.list_artifacts(args.get("subdir"))
         subdir = args.get("subdir")
         target = (staging_dir / subdir).resolve() if subdir else staging_dir.resolve()
         if not str(target).startswith(str(staging_dir.resolve())):
@@ -333,14 +394,31 @@ def _execute_staging_tool(
         return "\n".join(files) if files else "(empty)"
 
     if name == "read_artifact":
-        path = args.get("path", "")
+        path = str(args.get("path", ""))
+        if not path:
+            raise ValueError("read_artifact requires non-empty path")
+        offset = max(0, int(args.get("offset") or 0))
+        limit = _safe_limit(args, config.agent_max_tool_result_bytes)
+        if scoped_tools is not None:
+            return scoped_tools.read_artifact(path, offset=offset, limit=limit)
         target = (staging_dir / path).resolve()
         # Block path traversal
         if not str(target).startswith(str(staging_dir.resolve())):
             return "ERROR: path outside staging directory"
         if not target.exists():
             return f"ERROR: not found: {path}"
-        return target.read_text(encoding="utf-8", errors="replace")
+        if not target.is_file():
+            return f"ERROR: not a file: {path}"
+        raw = target.read_bytes()
+        capped_limit = min(limit, config.agent_max_tool_result_bytes)
+        chunk = raw[offset : offset + capped_limit]
+        text = chunk.decode("utf-8", errors="replace")
+        if offset + capped_limit < len(raw) or limit > capped_limit:
+            text += (
+                "\n\n[truncated by read_artifact byte limit: "
+                f"offset={offset} limit={capped_limit} total_bytes={len(raw)}]"
+            )
+        return text
 
     if scoped_tools is None:
         return f"ERROR: scoped evidence tool '{name}' unavailable for this call"
@@ -640,6 +718,23 @@ class OpenAIOfficialProvider:
                     ],
                     "content_bytes": len(_response_output_text(response).encode("utf-8")),
                 })
+                if opts.tool_input_token_cap and total_in > opts.tool_input_token_cap:
+                    return _tool_loop_cap_result(
+                        self.provider_name,
+                        self.model_name,
+                        start,
+                        phase=opts.tool_phase,
+                        target=opts.tool_target,
+                        turn=turn + 1,
+                        total_in=total_in,
+                        total_out=total_out,
+                        tool_call_count=tool_call_count,
+                        tool_result_bytes=tool_result_bytes,
+                        finish_reasons=finish_reasons,
+                        conversation_trace=conversation_trace,
+                        tool_ledger=tool_ledger,
+                        cap=opts.tool_input_token_cap,
+                    )
 
                 if not function_calls:
                     # Responses API returns status="incomplete" when max_output_tokens is hit.
@@ -955,6 +1050,23 @@ class OpenAICompatibleProvider:
                     ],
                     "content_bytes": len(_chat_completion_message_text(message).encode("utf-8")),
                 })
+                if opts.tool_input_token_cap and total_in > opts.tool_input_token_cap:
+                    return _tool_loop_cap_result(
+                        self.provider_name,
+                        self.model_name,
+                        start,
+                        phase=opts.tool_phase,
+                        target=opts.tool_target,
+                        turn=turn + 1,
+                        total_in=total_in,
+                        total_out=total_out,
+                        tool_call_count=tool_call_count,
+                        tool_result_bytes=tool_result_bytes,
+                        finish_reasons=finish_reasons,
+                        conversation_trace=conversation_trace,
+                        tool_ledger=tool_ledger,
+                        cap=opts.tool_input_token_cap,
+                    )
 
                 if finish_reason == "length":
                     text = _apply_prefill(opts.prefill, _chat_completion_message_text(message))
@@ -1579,6 +1691,23 @@ class AnthropicProvider:
                         if b.get("type") == "text"
                     ),
                 })
+                if opts.tool_input_token_cap and total_in > opts.tool_input_token_cap:
+                    return _tool_loop_cap_result(
+                        self.provider_name,
+                        self.model_name,
+                        start,
+                        phase=opts.tool_phase,
+                        target=opts.tool_target,
+                        turn=turn + 1,
+                        total_in=total_in,
+                        total_out=total_out,
+                        tool_call_count=tool_call_count,
+                        tool_result_bytes=tool_result_bytes,
+                        finish_reasons=finish_reasons,
+                        conversation_trace=conversation_trace,
+                        tool_ledger=tool_ledger,
+                        cap=opts.tool_input_token_cap,
+                    )
 
                 if stop_reason == "max_tokens":
                     final_text = "".join(

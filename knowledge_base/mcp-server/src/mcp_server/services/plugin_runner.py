@@ -55,6 +55,7 @@ class PluginRunnerProvider(DocGenerationProvider):
         total_in = 0
         total_out = 0
         t_start = time.monotonic()
+        self._harness_required_docs: list[str] = []
 
         for step in self.manifest.steps:
             await log_cb(ctx.project_id, f"[STEP:start] {step.id}", "info")
@@ -89,12 +90,16 @@ class PluginRunnerProvider(DocGenerationProvider):
             f"({total_in}in/{total_out}out tokens, {elapsed_ms}ms)",
             "info",
         )
+        # Collect required_docs from harness steps so the RAG push knows which
+        # non-numbered pack docs to include (e.g. TABLE_INVENTORY.md).
+        harness_required_docs = self._harness_required_docs
         return AgentResult(
             success=True,
             input_tokens=total_in,
             output_tokens=total_out,
             duration_ms=elapsed_ms,
             model_name=self.manifest.name,
+            required_docs=harness_required_docs,
         )
 
     async def _run_harness_step(
@@ -104,6 +109,8 @@ class PluginRunnerProvider(DocGenerationProvider):
         log_cb: LogCallback,
     ) -> ModelResult:
         result = await self.inner_provider.run(ctx, log_cb)
+        if result.required_docs:
+            self._harness_required_docs = result.required_docs
         return ModelResult(
             success=result.success,
             text="",

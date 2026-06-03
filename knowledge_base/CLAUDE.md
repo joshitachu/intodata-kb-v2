@@ -56,7 +56,7 @@ This is the primary method for generating project documentation. Follow it exact
 - Phase 3 dispatches one document task per required markdown document, with configurable concurrency (`MCP_AGENT_PHASE3_CONCURRENCY`, default 4).
 - Runtime task directories store `contract.json`, exact LLM `output.md`, `validation_report.json`, `tool_call_ledger.json`, `provider_metrics.json`, and `status.json`. Resume should skip accepted task artifacts and retry rejected/incomplete tasks independently.
 - Python may construct contracts, constrain context/tools, validate coverage, trigger retries/repairs, and persist exact LLM output. Python must not synthesize business explanations or fill final documentation prose itself.
-- Generic `list_artifacts` / `read_artifact` tools must not be exposed to Phase 2/3 core generation. Use scoped evidence tools and bounded context files instead.
+- Generic `list_artifacts` / `read_artifact` tools must not be exposed to Phase 2/3 core generation without hard byte and accumulated input-token caps. Phase 2 core writing uses bounded context files by default; retrieval may be agentic only in budgeted selection/repair steps.
 
 ### Steven Project Finding
 

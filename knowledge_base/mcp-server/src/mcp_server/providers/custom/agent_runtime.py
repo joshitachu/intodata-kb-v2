@@ -150,6 +150,20 @@ class ScopedEvidenceTools:
             lambda: self._fact_table(table_name, filters or {}, limit),
         )
 
+    def list_artifacts(self, subdir: str | None = None) -> str:
+        return self._record(
+            "list_artifacts",
+            {"subdir": subdir},
+            lambda: self._list_artifacts(subdir),
+        )
+
+    def read_artifact(self, path: str, offset: int = 0, limit: int | None = None) -> str:
+        return self._record(
+            "read_artifact",
+            {"path": path, "offset": offset, "limit": limit},
+            lambda: self._read_artifact(path, offset, limit),
+        )
+
     def _record(self, tool: str, args: dict[str, Any], func: Callable[[], str]) -> str:
         if len(self.calls) >= self.contract.tool_budget.max_calls:
             raise RuntimeError("tool call budget exceeded")
@@ -220,6 +234,36 @@ class ScopedEvidenceTools:
             data = self.facts.key_systems[:limit]
         return json.dumps(data, indent=2)
 
+    def _list_artifacts(self, subdir: str | None = None) -> str:
+        target = (self.staging_dir / subdir).resolve() if subdir else self.staging_dir.resolve()
+        if not str(target).startswith(str(self.staging_dir.resolve())):
+            return "ERROR: path outside staging directory"
+        if not target.exists():
+            return f"Directory not found: {subdir or '.'}"
+        files = sorted(p.relative_to(self.staging_dir).as_posix() for p in target.iterdir())
+        return "\n".join(files) if files else "(empty)"
+
+    def _read_artifact(self, path: str, offset: int = 0, limit: int | None = None) -> str:
+        target = (self.staging_dir / path).resolve()
+        if not str(target).startswith(str(self.staging_dir.resolve())):
+            return "ERROR: path outside staging directory"
+        if not target.exists():
+            return f"ERROR: not found: {path}"
+        if not target.is_file():
+            return f"ERROR: not a file: {path}"
+        raw = target.read_bytes()
+        start = max(0, int(offset or 0))
+        requested = self.contract.tool_budget.max_result_bytes if limit is None else max(1, int(limit))
+        capped_limit = min(requested, self.contract.tool_budget.max_result_bytes)
+        chunk = raw[start : start + capped_limit]
+        text = chunk.decode("utf-8", errors="replace")
+        if start + capped_limit < len(raw) or requested > capped_limit:
+            text += (
+                "\n\n[truncated by read_artifact byte limit: "
+                f"offset={start} limit={capped_limit} total_bytes={len(raw)}]"
+            )
+        return text
+
     def _evidence_files(self) -> list[Path]:
         names = [
             "engineering_facts.md",
@@ -289,14 +333,19 @@ class AgentTaskRuntime:
         result = ModelResult(success=False, raw_error="task did not run")
         output = ""
         validation: dict[str, Any] = {"ok": False, "errors": ["task did not run"]}
-        tools = ScopedEvidenceTools(self.staging_dir, self.facts, contract)
         conversation_attempts: list[dict[str, Any]] = []
         tool_ledgers: list[dict[str, Any]] = []
         provider_attempts: list[dict[str, Any]] = []
         incomplete_reason: str | None = None
         attempts = max(1, contract.max_attempts)
+        # Track cumulative tool calls across all attempts so retries cannot exceed the
+        # stated per-task budget. Without this each attempt resets the counter to zero,
+        # allowing up to max_calls × max_attempts actual calls.
+        cumulative_tool_calls = 0
         for attempt in range(1, attempts + 1):
-            attempt_contract = contract.model_copy(update={"attempt": attempt})
+            remaining_calls = max(0, contract.tool_budget.max_calls - cumulative_tool_calls)
+            attempt_budget = contract.tool_budget.model_copy(update={"max_calls": remaining_calls})
+            attempt_contract = contract.model_copy(update={"attempt": attempt, "tool_budget": attempt_budget})
             if attempt > 1:
                 attempt_contract.validation_gaps = list(validation.get("errors") or [])
             attempt_dir = task_dir / "attempts" / f"{attempt:02d}"
@@ -305,6 +354,7 @@ class AgentTaskRuntime:
             (attempt_dir / "contract.json").write_text(attempt_contract.model_dump_json(indent=2), encoding="utf-8")
             tools = ScopedEvidenceTools(self.staging_dir, self.facts, attempt_contract)
             result = await dispatch(attempt_contract, tools)
+            cumulative_tool_calls += len(tools.calls)
             output = result.text.strip()
             (task_dir / "output.md").write_text(output, encoding="utf-8")
             (attempt_dir / "output.md").write_text(output, encoding="utf-8")

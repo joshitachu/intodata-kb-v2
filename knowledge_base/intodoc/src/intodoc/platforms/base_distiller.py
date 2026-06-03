@@ -222,7 +222,11 @@ class BaseDistiller:
         for job in jobs:
             for comp in job.components:
                 if comp.metadata_connection_ref:
-                    ref_names.add(comp.metadata_connection_ref)
+                    ref_names.update(
+                        ref.strip()
+                        for ref in comp.metadata_connection_ref.split(",")
+                        if ref.strip()
+                    )
 
         matched: dict[str, MetadataConnection] = {}
         for conn in scan_result.metadata_connections:

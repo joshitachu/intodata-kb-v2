@@ -123,6 +123,77 @@ class TestLoadPluginManifest:
         step = PluginStep(id="x", type="harness")
         assert step.prompt_file is None
 
+    def test_loads_manifest_without_quality_gates(self, tmp_path: Path):
+        data = {"name": "pack", "version": "1.0", "steps": [{"id": "s", "type": "harness"}]}
+        (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
+
+        manifest = load_plugin_manifest(tmp_path)
+
+        assert manifest.quality_gates is None
+
+    def test_loads_manifest_with_quality_gates(self, tmp_path: Path):
+        data = {
+            "name": "pack",
+            "version": "1.0",
+            "docs": [{"name": "WEBHOOK_SMOKE_TEST"}],
+            "quality_gates": {
+                "mode": "blocking",
+                "required_terms": ["webhook", "PASS"],
+                "required_sections": {"WEBHOOK_SMOKE_TEST": ["Smoke Test Result"]},
+                "min_doc_bytes": {"WEBHOOK_SMOKE_TEST": 300},
+                "required_evidence_terms": ["source"],
+            },
+            "steps": [{"id": "s", "type": "harness"}],
+        }
+        (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
+
+        manifest = load_plugin_manifest(tmp_path)
+
+        assert manifest.quality_gates is not None
+        assert manifest.quality_gates.mode == "blocking"
+        assert manifest.quality_gates.required_terms == ["webhook", "PASS"]
+
+    def test_loads_manifest_with_pack_contract_fields(self, tmp_path: Path):
+        data = {
+            "name": "pack",
+            "version": "1.0",
+            "docs": [{
+                "name": "TABLE_INVENTORY",
+                "evidence_profile": "table_inventory",
+                "required_sections": ["Table Inventory"],
+                "required_evidence": ["sql_queries"],
+                "required_outputs": ["table_inventory"],
+            }],
+            "evidence_profiles": {
+                "table_inventory": {
+                    "include": ["sql_queries", "ddl_schema"],
+                    "exclude": ["binary"],
+                },
+            },
+            "validation": {"unknown_policy": "explicit", "mode": "advisory"},
+            "steps": [{"id": "s", "type": "harness"}],
+        }
+        (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
+
+        manifest = load_plugin_manifest(tmp_path)
+
+        assert manifest.docs[0].evidence_profile == "table_inventory"
+        assert manifest.docs[0].required_evidence == ["sql_queries"]
+        assert manifest.evidence_profiles["table_inventory"].include == ["sql_queries", "ddl_schema"]
+        assert manifest.validation.mode == "advisory"
+
+    def test_invalid_quality_gate_mode_fails(self, tmp_path: Path):
+        data = {
+            "name": "pack",
+            "version": "1.0",
+            "quality_gates": {"mode": "strict"},
+            "steps": [{"id": "s", "type": "harness"}],
+        }
+        (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
+
+        with pytest.raises(Exception, match="mode"):
+            load_plugin_manifest(tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # PluginRunnerProvider — harness step

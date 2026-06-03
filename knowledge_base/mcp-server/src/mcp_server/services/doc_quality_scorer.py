@@ -390,6 +390,13 @@ def score_doc(path: Path, unit_count: int = _SCALE_REFERENCE_UNITS) -> DocScore:
     )
 
 
+class DocQualityScorer:
+    """Thin wrapper around score_project for backwards-compatible usage."""
+
+    def score(self, project_id: str, docs_dir: Path | None = None) -> RunQualityReport:
+        return score_project(project_id, docs_dir=docs_dir)
+
+
 def score_project(
     project_id: str,
     docs_dir: Path | None = None,

@@ -471,6 +471,18 @@ class TestCSRFExemptions:
             assert path not in _EXEMPT_PATHS
             assert not any(path.startswith(prefix) for prefix in _EXEMPT_PREFIXES)
 
+    async def test_missing_csrf_token_returns_structured_403(self):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/auth/change-password",
+                headers={"cookie": "access_token=access_tok"},
+                json={"current_password": "old", "new_password": "new-password"},
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["code"] == "csrf_invalid"
+
 
 class TestTOTPEnrollment:
     async def test_totp_verify_reissues_auth_cookies_with_fresh_mfa_claim(self):
@@ -628,7 +640,10 @@ class TestAccessRequestsAndInvites:
         app.dependency_overrides[get_current_user] = lambda: non_admin
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            forbidden = await client.post(f"/api/v1/admin/access-requests/{req.id}/approve")
+            forbidden = await client.post(
+                f"/api/v1/admin/access-requests/{req.id}/approve",
+                headers={"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"},
+            )
 
         app.dependency_overrides[get_current_user] = lambda: admin
         try:
@@ -636,7 +651,8 @@ class TestAccessRequestsAndInvites:
                 send_invite.return_value = "http://localhost:3000/onboarding?token=dev"
                 async with AsyncClient(transport=transport, base_url="http://test") as client:
                     approved = await client.post(
-                        f"/api/v1/admin/access-requests/{req.id}/approve"
+                        f"/api/v1/admin/access-requests/{req.id}/approve",
+                        headers={"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"},
                     )
         finally:
             app.dependency_overrides.clear()

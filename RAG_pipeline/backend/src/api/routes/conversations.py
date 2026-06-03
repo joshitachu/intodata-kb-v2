@@ -282,6 +282,7 @@ async def send_message_stream(
     """Send a message and stream the RAG-powered response via SSE.
 
     Returns Server-Sent Events with:
+    - event: step    → optional read-only agent tool progress
     - event: sources → JSON array of DocumentSource objects
     - event: token   → individual LLM tokens (JSON-encoded string)
     - event: done    → {message_id, latency_ms}

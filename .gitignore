@@ -71,3 +71,6 @@ knowledge_base/mcp-server/mcp_server.db
 knowledge_base/mcp-server/screenlog.0
 knowledge_base/mcp-server/packs/
 knowledge_base/mcp-server/data/logs/
+mission_control/clients.json
+mission_control/snapshots/
+knowledge_base/dashboard/tsconfig.tsbuildinfo

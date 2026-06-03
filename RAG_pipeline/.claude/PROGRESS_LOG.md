@@ -1,5 +1,66 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-06-02
+
+### [Feature]: Constrained read-only RAG agent layer for normal Chat
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/generation/agent_orchestrator.py` - new bounded read-only agent trace/tool registry
+  - `RAG_pipeline/backend/src/generation/conversational_rag.py` - records agent steps through existing RAG routing branches and emits optional `step` SSE events in streaming chat
+  - `RAG_pipeline/backend/src/api/routes/conversations.py` - documents the optional `step` SSE event
+  - `RAG_pipeline/frontend/types/index.ts` - adds `AgentStepSchema` / `AgentStep`
+  - `RAG_pipeline/frontend/hooks/useStreamMessage.ts` - parses `event: step` and stores bounded step state
+  - `RAG_pipeline/frontend/components/MessageBubble.tsx`, `frontend/components/MessageList.tsx` - show the latest agent step as the streaming assistant status
+  - `RAG_pipeline/backend/tests/test_generation/test_agent_orchestrator.py`, `frontend/tests/hooks/useStreamMessage.test.ts`, `frontend/tests/components/MessageList.test.tsx` - regression coverage
+- **Problem**: The product needed to move beyond a classic chatbot feel, but the existing RAG pipeline already had valuable routing logic, memory recall, metadata handling, summary handling, source reuse, RBAC, citations, and usage logging. Replacing it wholesale with a free-form autonomous agent would increase latency, cost, and permission risk.
+- **Change**: Added a constrained read-only agent layer behind the existing conversation endpoints. The agent layer does not let the model execute arbitrary tools. Backend code owns a fixed registry of allowed read-only steps: memory recall, previous-source reuse, metadata fetch, document summarization, and document search. The trace is capped at 3 steps and is exposed to streaming clients as optional `step` SSE events while preserving the existing `sources`, `token`, `usage`, `error`, and `done` contract.
+- **Why this approach**: This gives users visible agentic behavior ("Checking previous sources", "Searching documents", etc.) without weakening the grounded RAG guarantees. The implementation keeps normal Chat as the primary UX, keeps Deep Dive separate, and avoids action tools like scan/generate/ingest until stronger approval and permission workflows are designed.
+- **Compatibility notes**:
+  - Existing clients can ignore `event: step`; answer streaming still works with the previous event set.
+  - No new database schema or migrations.
+  - No write/action tools in v1.
+  - RBAC filtering remains in the existing search/metadata paths.
+- **Verification**:
+  - `uv run pytest tests/test_generation/test_agent_orchestrator.py tests/test_generation/test_conversational_rag.py tests/test_api/test_conversations.py` - 57/57 tests passed.
+  - `npm test -- tests/hooks/useStreamMessage.test.ts tests/components/MessageList.test.tsx` - 5/5 tests passed.
+  - `npm run build` in `RAG_pipeline/frontend` - passed.
+
+### [Fix]: Conversation API tests now send CSRF headers on state-changing requests
+
+- **Files changed**:
+  - `RAG_pipeline/backend/tests/test_api/test_conversations.py` - adds shared `CSRF_HEADERS` and applies it to POST/PATCH/DELETE conversation API tests
+- **Problem**: `uv run pytest tests/test_api/test_conversations.py` failed with 403 before reaching conversation route handlers.
+- **Root cause**: CSRF middleware is registered at app import time and now correctly protects state-changing routes. Most conversation tests were still written as if `CSRF_ENABLED=false` or middleware was absent, while one stream test already sent the double-submit token pair.
+- **Change**: Made the test file consistent by sending `cookie: csrf_token=test_csrf` and `X-CSRF-Token: test_csrf` on all state-changing conversation requests.
+- **Why this approach**: It tests the route behavior under the same CSRF contract used by the frontend/BFF rather than disabling middleware or broadening CSRF exemptions for authenticated conversation APIs.
+- **Verification**:
+  - `uv run pytest tests/test_api/test_conversations.py` - 19/19 tests passed.
+
+## Session: 2026-06-01
+
+### [Fix]: Surface CSRF upload failures as 403 instead of raw 500
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/middleware/csrf.py` - return structured `JSONResponse` for CSRF mismatch/missing token from middleware dispatch
+  - `RAG_pipeline/backend/tests/test_api/test_auth.py` - add regression coverage for structured CSRF errors and update admin mutation test requests to include CSRF headers
+  - `RAG_pipeline/frontend/lib/fastapi.ts` - send the double-submit `X-CSRF-Token` header on multipart uploads while still letting the browser/runtime set multipart `Content-Type`
+  - `RAG_pipeline/.claude/context.md`, `RAG_pipeline/.claude/PROGRESS_LOG.md` - record incident triage and fix
+- **Problem**: Documents-page uploads could show a 500 when the actual failure was missing or mismatched CSRF. This hid the actionable cause from the UI and logs surfaced a Starlette middleware exception group.
+- **Root cause**: The Next upload proxy used cookie-only forwarding, so it did not send the required `X-CSRF-Token` header to FastAPI. Then `CSRFMiddleware` raised `HTTPException` inside `BaseHTTPMiddleware.dispatch()`, causing the CSRF rejection to escape as an internal server error instead of FastAPI's normal JSON error response.
+- **Change**: Multipart uploads now use the same auth header helper as JSON requests, including `Cookie` and `X-CSRF-Token`, while avoiding an explicit multipart `Content-Type`. CSRF failures now return `403` JSON directly from the middleware:
+  `{"detail":{"code":"csrf_invalid","message":"CSRF token mismatch or missing"}}`.
+- **Incident findings**:
+  - Backend/MCP `MCP_INGEST_API_KEY` are both empty, so this was not an expired shared ingest API key.
+  - Direct markdown ingestion through `/api/v1/ingest/md` succeeded with Voyage embeddings.
+  - `/mcp/push-to-rag` is registered on MCP; unauthenticated direct/proxied probes return 401, not 404.
+  - After backend rebuild, `/health` reports database, Qdrant, Ollama, and Hindsight all `ok`.
+- **Verification**:
+  - `uv run pytest tests/test_api/test_auth.py tests/test_api/test_ingest_delete.py` - 28/28 tests passed.
+  - `npm run build` in `RAG_pipeline/frontend` - passed.
+  - `docker compose up -d --build frontend` - rebuilt/restarted frontend plus dependent backend/MCP; services healthy.
+  - `curl -F ... http://127.0.0.1:8000/api/v1/ingest` without CSRF now returns HTTP 403 with structured `csrf_invalid`, not 500.
+  - `curl -F ... http://127.0.0.1:3000/api/ingest` with `csrf_token` cookie and invalid access token now reaches FastAPI auth (`401 Invalid or expired token`), confirming the CSRF header is forwarded.
+
 ## Session: 2026-05-21
 
 ### [Config]: Allow slower Kimi Chat responses

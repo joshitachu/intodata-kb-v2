@@ -7,6 +7,8 @@ from httpx import ASGITransport, AsyncClient
 from src.api.main import app
 from src.db.models import User, Role, Conversation, ConversationMessage
 
+CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
+
 
 def _mock_user(id: int = 1):
     role = MagicMock(spec=Role)
@@ -128,6 +130,7 @@ class TestCreateConversation:
             resp = await client.post(
                 "/api/v1/conversations",
                 json={"title": "New Chat"},
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 201
@@ -148,7 +151,7 @@ class TestCreateConversation:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/api/v1/conversations")
+            resp = await client.post("/api/v1/conversations", headers=CSRF_HEADERS)
 
         assert resp.status_code == 201
 
@@ -218,6 +221,7 @@ class TestUpdateConversation:
             resp = await client.patch(
                 "/api/v1/conversations/1",
                 json={"title": "New Title"},
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 200
@@ -235,6 +239,7 @@ class TestUpdateConversation:
             resp = await client.patch(
                 "/api/v1/conversations/999",
                 json={"title": "New"},
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 404
@@ -252,7 +257,7 @@ class TestDeleteConversation:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/api/v1/conversations/1")
+            resp = await client.delete("/api/v1/conversations/1", headers=CSRF_HEADERS)
 
         assert resp.status_code == 204
 
@@ -265,7 +270,7 @@ class TestDeleteConversation:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/api/v1/conversations/999")
+            resp = await client.delete("/api/v1/conversations/999", headers=CSRF_HEADERS)
 
         assert resp.status_code == 404
 
@@ -279,7 +284,7 @@ class TestDeleteConversation:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/api/v1/conversations/1")
+            resp = await client.delete("/api/v1/conversations/1", headers=CSRF_HEADERS)
 
         assert resp.status_code == 403
 
@@ -314,6 +319,7 @@ class TestSendMessage:
                 resp = await client.post(
                     "/api/v1/conversations/1/messages",
                     json={"query": "What is the meaning of life?"},
+                    headers=CSRF_HEADERS,
                 )
 
         assert resp.status_code == 200
@@ -333,6 +339,7 @@ class TestSendMessage:
             resp = await client.post(
                 "/api/v1/conversations/999/messages",
                 json={"query": "Hello"},
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 404
@@ -350,6 +357,7 @@ class TestSendMessage:
             resp = await client.post(
                 "/api/v1/conversations/1/messages",
                 json={"query": "Hello"},
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 403
@@ -382,6 +390,7 @@ class TestSendMessage:
                 resp = await client.post(
                     "/api/v1/conversations/1/messages",
                     json={"query": "Question", "top_k": 10, "threshold": 0.8},
+                    headers=CSRF_HEADERS,
                 )
 
         assert resp.status_code == 200
@@ -420,7 +429,7 @@ class TestSendMessageStream:
                 resp = await client.post(
                     "/api/v1/conversations/1/messages/stream",
                     json={"query": "Slow question"},
-                    headers={"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"},
+                    headers=CSRF_HEADERS,
                 )
 
         assert resp.status_code == 200
@@ -511,7 +520,7 @@ async def test_conversation_messages_soft_deleted_on_cascade(db_session):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete(f"/api/v1/conversations/{conv.id}")
+            resp = await client.delete(f"/api/v1/conversations/{conv.id}", headers=CSRF_HEADERS)
     finally:
         app.dependency_overrides.clear()
 

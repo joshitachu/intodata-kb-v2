@@ -173,6 +173,7 @@ export function MessageList({
               isStreaming={streamingMessage.isStreaming}
               hasSources={streamingMessage.sources.length > 0}
               usage={streamingMessage.usage}
+              steps={streamingMessage.steps}
               onRetry={streamingMessage.error ? onRetryMessage : undefined}
             />
           )}

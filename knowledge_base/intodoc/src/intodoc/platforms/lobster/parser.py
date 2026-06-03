@@ -313,6 +313,7 @@ class LobsterParser(BaseParser):
             context_groups=context_groups,
             trunjob_refs=trunjob_refs,
             group=group,
+            active=active.strip().lower() == "true",
         )
 
         return job, connections, context_groups, cross_refs
@@ -379,6 +380,10 @@ class LobsterParser(BaseParser):
             unique_name="agent",
             component_type=comp_type,
             params=params,
+            metadata_connection_ref=(
+                f"{partner}:{channel}" if partner and channel
+                else (f"{host}:{port}" if host and port else "")
+            ),
         )
         return comp, connections, cross_refs
 
@@ -698,18 +703,22 @@ class LobsterParser(BaseParser):
                 known_tags=set(_UNIT_KEYS) | {"label", "active", "description"},
             )
 
-            comp = Component(
-                unique_name=f"response_{idx}_{label}",
-                component_type=f"LobsterResponse_{unit_type}",
-                params=params,
-            )
-            components.append(comp)
-
-            # Build connection from response unit
             partner = self._text(unit_el, "comm_channel_partner") or ""
             channel = self._text(unit_el, "comm_channel_name") or ""
             host = self._text(unit_el, "host") or ""
             port = self._text(unit_el, "port") or ""
+            comp = Component(
+                unique_name=f"response_{idx}_{label}",
+                component_type=f"LobsterResponse_{unit_type}",
+                params=params,
+                metadata_connection_ref=(
+                    f"{partner}:{channel}" if partner and channel
+                    else (f"{host}:{port}" if host and port else "")
+                ),
+            )
+            components.append(comp)
+
+            # Build connection from response unit
             if partner or host:
                 connections.append(MetadataConnection(
                     xmi_id=self._text(unit_el, "comm_channel_id") or f"ru_{idx}",

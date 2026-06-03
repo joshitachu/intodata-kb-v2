@@ -27,6 +27,61 @@ def _make_project(tmp_path, monkeypatch, project_id: str = "proj") -> Path:
     return repo
 
 
+def _write_scan_result(tmp_path, project_id: str = "proj") -> None:
+    """Write a minimal scan_result.json for scan-tool tests."""
+    scan_dir = tmp_path / "intodoc-output" / project_id
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    import json as _json
+    data = {
+        "platform": "talend",
+        "repo_root": "/some/repo",
+        "jobs": [
+            {
+                "name": "LoadCustomers",
+                "path": "jobs/CRM/LoadCustomers.item",
+                "group": "CRM",
+                "subgroup": "",
+                "components": [{"type": "tJDBCInput"}, {"type": "tMap"}],
+                "connections": [],
+                "context_groups": ["connection_CRM_Oracle"],
+            },
+            {
+                "name": "ExportInvoices",
+                "path": "jobs/Finance/ExportInvoices.item",
+                "group": "Finance",
+                "subgroup": "",
+                "components": [{"type": "tOracleInput"}, {"type": "tFileOutputDelimited"}],
+                "connections": [],
+                "context_groups": ["connection_Finance_Oracle"],
+            },
+        ],
+        "metadata_connections": [
+            {
+                "xmi_id": "abc123",
+                "name": "connection_CRM_Oracle",
+                "connection_type": "Oracle",
+                "host": "[HOST_REDACTED]",
+                "port": "context.connection_CRM_Oracle_Port",
+                "database": "context.connection_CRM_Oracle_DB",
+                "additional_params": {"driver_class": "oracle.jdbc.OracleDriver"},
+            },
+        ],
+        "context_groups": [
+            {
+                "name": "connection_CRM_Oracle",
+                "variables": [
+                    {"name": "connection_CRM_Oracle_Port", "type": "id_String",
+                     "values": {"Default": "", "PROD": "1521", "TEST": "1521"}},
+                    {"name": "connection_CRM_Oracle_DB", "type": "id_String",
+                     "values": {"Default": "", "PROD": "CRMDB", "TEST": "CRMTEST"}},
+                ],
+            },
+        ],
+        "warnings": [],
+    }
+    (scan_dir / "scan_result.json").write_text(_json.dumps(data), encoding="utf-8")
+
+
 def test_repo_toolbox_rejects_path_traversal(tmp_path, monkeypatch):
     _make_project(tmp_path, monkeypatch)
     toolbox = RepoToolbox("proj")
@@ -336,3 +391,188 @@ async def test_repo_agent_model_failure_emits_done(tmp_path, monkeypatch):
 
     assert any(event["type"] == "error" and "provider unavailable" in event["data"] for event in events)
     assert events[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_repo_agent_recovers_partial_answer_on_max_tokens(tmp_path, monkeypatch):
+    """When the model is truncated (stop_reason=max_tokens) but has partial text, yield it
+    as a token event rather than surfacing a hard error."""
+    _make_project(tmp_path, monkeypatch)
+
+    class _TruncatedProvider:
+        model_name = "fake"
+        supports_tools = False
+
+        async def complete(self, prompt, context_files=None, options=None):
+            return ModelResult(
+                success=False,
+                text="# Partial Answer\n\nSome useful content here.",
+                model_name=self.model_name,
+                raw_error="incomplete: stop_reason=max_tokens",
+                input_tokens=1000,
+                output_tokens=500,
+            )
+
+    events = [event async for event in RepoAgentEngine(provider=_TruncatedProvider()).query("proj", "question")]
+
+    token_events = [e for e in events if e["type"] == "token"]
+    error_events = [e for e in events if e["type"] == "error"]
+    assert token_events, "expected partial answer to be emitted as token event"
+    assert "Partial Answer" in token_events[0]["data"]
+    assert not error_events, "expected no error event when partial text is available"
+    assert events[-1]["type"] == "done"
+
+
+def test_prune_transcript_reduces_large_transcript():
+    """_prune_transcript stubs old TOOL_RESULTS blocks and keeps the last 3 intact."""
+    marker = "\n\nMODEL_DECISION:\n"
+    tool_marker = "\n\nTOOL_RESULTS:\n"
+    header = "SYSTEM PROMPT\n\nUser question: what is this?"
+
+    large_result = "x" * 50_000  # ~12,500 tokens each
+    turns = [
+        f'{{"tool": "read_file", "arguments": {{"path": "file{i}.xml"}}}}' + tool_marker + large_result
+        for i in range(5)
+    ]
+    transcript = header + marker + marker.join(turns)
+
+    pruned = RepoAgentEngine._prune_transcript(transcript, target_tokens=10_000)
+
+    assert len(pruned) < len(transcript), "pruned transcript should be shorter"
+    # Last 3 turns must be verbatim
+    for turn in turns[-3:]:
+        assert large_result in pruned, "last 3 TOOL_RESULTS blocks must be intact"
+    # Older turns must be stubbed
+    assert pruned.count("[pruned]") >= 2, "at least 2 old turns should be stubbed"
+    # Header must be preserved
+    assert "SYSTEM PROMPT" in pruned
+    assert "User question" in pruned
+
+
+def test_get_scan_connections_returns_connections(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.get_scan_connections()
+    assert result.ok
+    assert "connection_CRM_Oracle" in result.content
+    assert "Oracle" in result.content
+    # xmi_id should be stripped
+    assert "xmi_id" not in result.content
+    assert result.metadata["count"] == 1
+
+
+def test_get_scan_connections_missing_scan(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.get_scan_connections()
+    assert not result.ok
+
+
+def test_get_context_group_exact_match(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.get_context_group("connection_CRM_Oracle")
+    assert result.ok
+    assert "1521" in result.content
+    assert "CRMDB" in result.content
+
+
+def test_get_context_group_partial_match(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.get_context_group("CRM_Oracle")
+    assert result.ok
+    assert "connection_CRM_Oracle" in result.content
+
+
+def test_get_context_group_not_found(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.get_context_group("nonexistent_group")
+    assert not result.ok
+    assert "not found" in result.content
+
+
+def test_search_scan_jobs_by_component(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.search_scan_jobs("tJDBCInput")
+    assert result.ok
+    assert "LoadCustomers" in result.content
+    assert "ExportInvoices" not in result.content  # only LoadCustomers uses tJDBCInput
+
+
+def test_search_scan_jobs_by_context_group(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.search_scan_jobs("connection_Finance_Oracle")
+    assert result.ok
+    assert "ExportInvoices" in result.content
+
+
+def test_search_scan_jobs_no_match(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    toolbox = RepoToolbox("proj")
+    result = toolbox.search_scan_jobs("tSalesforceInput")
+    assert result.ok
+    assert result.metadata["count"] == 0
+
+
+def test_build_project_briefing_includes_scan_and_docs(tmp_path, monkeypatch):
+    _make_project(tmp_path, monkeypatch)
+    _write_scan_result(tmp_path)
+    # Create a fake docs directory
+    docs_dir = tmp_path / "kb" / "output" / "proj" / "docs"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "00_EXECUTIVE_SUMMARY.md").write_text("# Summary")
+    (docs_dir / "03_DATA_FLOWS.md").write_text("# Flows")
+
+    briefing = RepoToolbox.build_project_briefing("proj")
+
+    assert briefing["platform"] == "talend"
+    assert briefing["job_count"] == 2
+    assert briefing["connection_count"] == 1
+    assert briefing["connections"][0]["name"] == "connection_CRM_Oracle"
+    assert "00_EXECUTIVE_SUMMARY.md" in briefing["generated_docs"]
+    assert "03_DATA_FLOWS.md" in briefing["generated_docs"]
+
+
+def test_search_repo_files_only(tmp_path, monkeypatch):
+    repo = _make_project(tmp_path, monkeypatch)
+    (repo / "job_a.item").write_text("<component type='tJDBCInput'/>")
+    (repo / "job_b.item").write_text("<component type='tFileInput'/>")
+    (repo / "job_c.xml").write_text("<component type='tJDBCInput'/>")
+    toolbox = RepoToolbox("proj")
+
+    result = toolbox.search_repo("tJDBCInput", files_only=True)
+    assert result.ok
+    lines = result.content.strip().splitlines()
+    # Should return file paths, not file:line:content
+    assert all(":" not in line.split("/")[-1] for line in lines if line != "(no matches)")
+    # Both .item and .xml should match
+    assert any("job_a.item" in line for line in lines)
+    assert any("job_c.xml" in line for line in lines)
+    assert not any("job_b.item" in line for line in lines)
+
+
+def test_cap_transcript_keeps_header_and_tail():
+    """_cap_transcript keeps the first 2 KB and the most recent content."""
+    header_content = "A" * 2_000
+    middle = "B" * 400_000
+    tail_content = "C" * 50_000
+    transcript = header_content + middle + tail_content
+
+    capped = RepoAgentEngine._cap_transcript(transcript, max_tokens=100_000)
+
+    max_chars = 100_000 * 4
+    assert len(capped) <= max_chars + 100  # allow small overhead for the pruning notice
+    assert capped.startswith(header_content[:2_000])
+    assert capped.endswith(tail_content[-1_000:])
+    assert "[...earlier tool results pruned" in capped

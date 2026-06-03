@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
 import { submitFeedback } from "@/lib/feedback";
-import type { MessageResponse, UsageStats } from "@/types";
+import type { AgentStep, MessageResponse, UsageStats } from "@/types";
 
 interface MessageBubbleProps {
   message: MessageResponse;
@@ -24,6 +24,7 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
   hasSources?: boolean;
   usage?: UsageStats | null;
+  steps?: AgentStep[];
   onRetry?: () => void;
 }
 
@@ -33,6 +34,7 @@ export function MessageBubble({
   isStreaming,
   hasSources,
   usage,
+  steps,
   onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
@@ -63,6 +65,8 @@ export function MessageBubble({
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const sourceCount = message.sources?.length ?? 0;
   const imageList = message.image_data;
+  const latestRunningStep = steps?.findLast((step) => step.status === "running");
+  const latestStep = latestRunningStep ?? steps?.at(-1);
 
   const closeLightbox = useCallback(() => setLightboxImage(null), []);
 
@@ -134,7 +138,7 @@ export function MessageBubble({
                 ) : isStreaming ? (
                   <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
                     <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
-                    {hasSources ? "Thinking..." : "Searching documents..."}
+                    {latestStep?.label ?? (hasSources ? "Thinking..." : "Searching documents...")}
                   </span>
                 ) : null}
                 {isStreaming && message.content && (

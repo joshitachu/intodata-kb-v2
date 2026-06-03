@@ -94,6 +94,7 @@ class WorkatoParser(BaseParser):
         super().__init__(cred_filter)
         self._connection_index: dict[str, MetadataConnection] = {}
         self._connection_id_index: dict[int, str] = {}  # numeric ID -> conn name
+        self._connection_alias_index: dict[str, str] = {}  # manifest alias -> conn name
         self._provider_to_conn: dict[str, str] = {}  # provider -> conn name
         self._topic_index: dict[str, MetadataConnection] = {}
         self._schema_index: dict[str, dict] = {}
@@ -304,6 +305,7 @@ class WorkatoParser(BaseParser):
 
         # Phase 3: Build connection index (from registry)
         self._build_connection_index(workato_root)
+        self._index_manifest_connection_aliases(manifest_data)
 
         # Phase 4: Build recipe ID index (from registry)
         self._build_recipe_id_index(workato_root)
@@ -361,6 +363,7 @@ class WorkatoParser(BaseParser):
             context_groups=context_groups,
             routines=routines,
             manifest=project_manifest,
+            schema_definitions=list(self._schema_index.values()),
             stats=stats,
             warnings=list(self._warnings),
         )
@@ -485,6 +488,37 @@ class WorkatoParser(BaseParser):
                 "schema": data.get("schema", {}),
             },
         )
+
+    def _index_manifest_connection_aliases(self, manifest_data: object) -> None:
+        """Build best-effort alias resolution for manifest dependency formats."""
+        for item in self._iter_dicts(manifest_data):
+            ids: list[int] = []
+            aliases: list[str] = []
+            for key, value in item.items():
+                key_l = str(key).lower()
+                if key_l in {"id", "connection_id", "account_id"}:
+                    try:
+                        ids.append(int(value))
+                    except (TypeError, ValueError):
+                        pass
+                elif key_l in {"alias", "key", "name", "dependency", "dependency_name"} and isinstance(value, str):
+                    aliases.append(value)
+            resolved = next((self._connection_id_index[id_] for id_ in ids if id_ in self._connection_id_index), "")
+            if not resolved:
+                resolved = next((alias for alias in aliases if alias in self._connection_index), "")
+            if resolved:
+                for alias in aliases:
+                    self._connection_alias_index[alias] = resolved
+
+    @staticmethod
+    def _iter_dicts(obj: object):
+        if isinstance(obj, dict):
+            yield obj
+            for value in obj.values():
+                yield from WorkatoParser._iter_dicts(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                yield from WorkatoParser._iter_dicts(item)
 
     # ── Phase 4: Build recipe ID index ──────────────────────────────
 
@@ -666,10 +700,13 @@ class WorkatoParser(BaseParser):
 
         # Build single component with all cleaned recipe keys as params
         params = self._dict_to_params(data)
+        conns_used: set[str] = set()
+        self._scan_connection_refs(data, conns_used)
         comp = Component(
             unique_name=re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower() or "recipe",
             component_type="WorkatoRecipe",
             params=params,
+            metadata_connection_ref=",".join(sorted(conns_used)),
         )
 
         return ParsedJob(
@@ -1004,15 +1041,17 @@ class WorkatoParser(BaseParser):
     def _scan_connection_refs(self, obj: object, conns: set[str]) -> None:
         """Recursively scan JSON for connection references."""
         if isinstance(obj, dict):
-            # Numeric connection_id
-            conn_id = obj.get("connection_id")
+            # Numeric connection_id / account_id
+            conn_id = obj.get("connection_id", obj.get("account_id"))
             if conn_id is not None:
                 try:
                     name = self._connection_id_index.get(int(conn_id))
                     if name:
                         conns.add(name)
                 except (ValueError, TypeError):
-                    pass
+                    alias_name = self._connection_alias_index.get(str(conn_id))
+                    if alias_name:
+                        conns.add(alias_name)
             # Provider / application / trigger_application fields
             for key in ("provider", "application", "trigger_application"):
                 val = obj.get(key)

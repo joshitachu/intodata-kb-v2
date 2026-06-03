@@ -679,6 +679,7 @@ async def _push_with_retry(
     project_id: str,
     output_dir,
     filenames: set[str] | None = None,
+    extra_doc_names: set[str] | None = None,
     max_attempts: int = 3,
 ):
     """Push docs to RAG with exponential backoff retry. Returns (result, errors_or_None)."""
@@ -692,6 +693,7 @@ async def _push_with_retry(
             project_id=project_id,
             output_dir=str(output_dir),
             filenames=filenames,
+            extra_doc_names=extra_doc_names,
         )
         if not result.get("errors"):
             return result, None
@@ -891,11 +893,18 @@ async def _run_generate_background(
                         f"Failed to delete stale RAG doc {filename}: {e}",
                         level="error",
                     )
+            # Pack-generated docs use non-numeric names (e.g. TABLE_INVENTORY.md).
+            # Include them explicitly so they aren't filtered out by the digit-prefix gate.
+            pack_doc_names = {
+                f"{name}.md" for name in (result.get("required_docs") or [])
+                if not name[0].isdigit()
+            }
             _rag_result, rag_errors = await _push_with_retry(
                 bridge,
                 project_id=project_id,
                 output_dir=docs_dir,
                 filenames=changed_rag_docs,
+                extra_doc_names=pack_doc_names or None,
             )
             if rag_errors:
                 await log_mgr.emit(
@@ -1116,8 +1125,17 @@ async def push_to_rag(req: PushToRagRequest, request: Request):
         docs_dir = config.project_root / "output" / req.project_id / "docs"
         if not docs_dir.exists():
             raise HTTPException(status_code=404, detail=f"No docs found at {docs_dir}")
+        # Include any non-numbered docs (plugin pack outputs like TABLE_INVENTORY.md)
+        pack_docs = {
+            f.name for f in docs_dir.glob("*.md")
+            if not f.name[0].isdigit() and not f.name.startswith("_")
+        }
         bridge = RagBridge(log_manager=log_mgr)
-        result = await bridge.push_docs(project_id=req.project_id, output_dir=str(docs_dir))
+        result = await bridge.push_docs(
+            project_id=req.project_id,
+            output_dir=str(docs_dir),
+            extra_doc_names=pack_docs or None,
+        )
 
         if result["pushed"] > 0:
             await registry.update_rag_push(req.project_id)

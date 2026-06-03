@@ -107,6 +107,13 @@ class TestLobsterParser:
         assert groups["API_Products"] == "Product API"
         assert groups["Minimal_Test"] == "Test"
 
+    def test_parse_profile_active_flag_and_connection_ref(self, scan_result):
+        minimal = self._find_job(scan_result, "Minimal")
+        assert minimal.active is False
+        ftp = self._find_job(scan_result, "Sync_Orders")
+        agent = next(comp for comp in ftp.components if comp.unique_name == "agent")
+        assert agent.metadata_connection_ref
+
     def test_profile_discovery_handles_long_xml_header(self, parser, tmp_path):
         profile = tmp_path / "long_header.xml"
         profile.write_text(

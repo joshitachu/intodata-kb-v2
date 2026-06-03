@@ -54,4 +54,30 @@ describe("useStreamMessage", () => {
     expect(result.current.streamState.messageId).toBe(7);
     expect(result.current.streamState.latencyMs).toBe(10);
   });
+
+  it("parses agent step events", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: step\ndata: {"id":"search_documents","label":"Searching documents","status":"completed"}\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":10}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "Question" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.streamState.isStreaming).toBe(false);
+    });
+
+    expect(result.current.streamState.steps).toEqual([
+      {
+        id: "search_documents",
+        label: "Searching documents",
+        status: "completed",
+      },
+    ]);
+  });
 });

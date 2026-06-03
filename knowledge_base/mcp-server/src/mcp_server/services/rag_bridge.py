@@ -91,22 +91,26 @@ class RagBridge:
         docs: list[dict] | None = None,
         output_dir: str | None = None,
         filenames: set[str] | list[str] | None = None,
+        extra_doc_names: set[str] | list[str] | None = None,
     ) -> dict:
         """Push multiple docs to RAG.
 
         If `docs` list provided, push those directly.
         If `output_dir` provided, read .md files from that directory.
         If `filenames` provided, only push docs whose filename is in that set.
+        `extra_doc_names` lists non-numbered pack doc filenames to include alongside
+        standard numbered enterprise docs (e.g. TABLE_INVENTORY.md).
 
         Returns: {pushed: int, errors: list[str]}
         """
         result = {"pushed": 0, "errors": []}
         filename_filter = set(filenames) if filenames is not None else None
+        extra_set = set(extra_doc_names) if extra_doc_names else None
 
         if docs:
             items = docs
         elif output_dir:
-            items = self._read_md_files(output_dir)
+            items = self._read_md_files(output_dir, extra_filenames=extra_set)
         else:
             result["errors"].append("No docs or output_dir provided")
             return result
@@ -191,12 +195,16 @@ class RagBridge:
         except Exception as e:
             logger.warning("Failed to post usage record: %s", e)
 
-    def _read_md_files(self, output_dir: str) -> list[dict]:
-        """Read only user-facing doc .md files (NN_*.md) from the top-level docs/ directory.
+    def _read_md_files(
+        self,
+        output_dir: str,
+        extra_filenames: set[str] | None = None,
+    ) -> list[dict]:
+        """Read user-facing doc .md files from the top-level docs/ directory.
 
-        Internal orchestration artifacts in _assessment/, _analysis/, _investigation/
-        subdirectories are excluded — they contain system prompts and debug output
-        that must not appear in RAG query results.
+        Includes numbered enterprise docs (NN_*.md) plus any filenames in
+        extra_filenames (for plugin-pack docs that don't use numeric prefixes).
+        Internal artifacts starting with '_' are always excluded.
         """
         docs: list[dict] = []
         base = Path(output_dir)
@@ -204,12 +212,15 @@ class RagBridge:
             return docs
 
         for md_file in sorted(base.glob("*.md")):
-            if not md_file.name[0].isdigit():
+            name = md_file.name
+            is_numbered = name[0].isdigit()
+            is_pack_doc = extra_filenames is not None and name in extra_filenames
+            if not is_numbered and not is_pack_doc:
                 continue
             try:
                 content = md_file.read_text(encoding="utf-8")
                 docs.append({
-                    "filename": md_file.name,
+                    "filename": name,
                     "content": content,
                 })
             except Exception as e:

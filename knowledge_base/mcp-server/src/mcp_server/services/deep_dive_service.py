@@ -118,7 +118,12 @@ class RepoToolbox:
             ),
             ToolSpec(
                 name="search_repo",
-                description="Search raw repository files with ripgrep-style literal search.",
+                description=(
+                    "Search raw repository files with ripgrep-style literal search. "
+                    "Use glob to filter by extension (e.g. '*.item', '*.xml', '*.py'). "
+                    "Set files_only=true to get just the matching file paths without content — "
+                    "useful for 'which files contain X' before deciding what to read."
+                ),
                 parameters={
                     "type": "object",
                     "properties": {
@@ -126,6 +131,7 @@ class RepoToolbox:
                         "path": {"type": "string", "default": ""},
                         "glob": {"type": "string"},
                         "max_results": {"type": "integer", "default": 50},
+                        "files_only": {"type": "boolean", "default": False},
                     },
                     "required": ["query"],
                 },
@@ -153,6 +159,43 @@ class RepoToolbox:
                     "required": ["filename"],
                 },
             ),
+            ToolSpec(
+                name="get_scan_connections",
+                description=(
+                    "Return all database and API connections extracted by the scanner — "
+                    "name, type (e.g. JDBC, SQL Server, Oracle), host reference, port, "
+                    "database, and driver class. Use this first for any question about "
+                    "what external systems this codebase connects to."
+                ),
+                parameters={"type": "object", "properties": {}},
+            ),
+            ToolSpec(
+                name="get_context_group",
+                description=(
+                    "Return the context variables for a named context group, with their "
+                    "values per environment (Default, PROD, TEST, etc.). Use this to resolve "
+                    "context.* references found in connections or job parameters."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+            ),
+            ToolSpec(
+                name="search_scan_jobs",
+                description=(
+                    "Search jobs by name, group, component type, or context group reference. "
+                    "Returns matching job names, file paths, component types, and context groups. "
+                    "Use this to find which jobs use a specific component (e.g. 'tJDBCInput', "
+                    "'tBigQueryInput') or a specific connection, without reading individual files."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            ),
         ]
 
     def run(self, name: str, args: dict[str, Any], state: AgentState) -> ToolResult:
@@ -174,6 +217,7 @@ class RepoToolbox:
                     str(args.get("path") or ""),
                     str(args["glob"]) if args.get("glob") else None,
                     int(args.get("max_results") or config.deep_dive_max_search_results),
+                    bool(args.get("files_only") or False),
                 )
             if name == "file_info":
                 return self.file_info(str(args.get("path") or ""))
@@ -181,6 +225,12 @@ class RepoToolbox:
                 return self.read_scan_summary()
             if name == "read_generated_doc":
                 return self.read_generated_doc(str(args.get("filename") or ""))
+            if name == "get_scan_connections":
+                return self.get_scan_connections()
+            if name == "get_context_group":
+                return self.get_context_group(str(args.get("name") or ""))
+            if name == "search_scan_jobs":
+                return self.search_scan_jobs(str(args.get("query") or ""))
             return ToolResult(False, f"Unknown tool: {name}")
         except Exception as exc:
             return ToolResult(False, f"{type(exc).__name__}: {exc}")
@@ -250,7 +300,14 @@ class RepoToolbox:
             truncated=truncated or start_line - 1 + max_lines < len(lines),
         )
 
-    def search_repo(self, query: str, path: str = "", glob: str | None = None, max_results: int = 50) -> ToolResult:
+    def search_repo(
+        self,
+        query: str,
+        path: str = "",
+        glob: str | None = None,
+        max_results: int = 50,
+        files_only: bool = False,
+    ) -> ToolResult:
         if not query.strip():
             return ToolResult(False, "query is required")
         target = self._resolve_repo_path(path)
@@ -258,7 +315,10 @@ class RepoToolbox:
         rg = shutil.which("rg")
         rows: list[str] = []
         if rg:
-            cmd = [rg, "--line-number", "--no-heading", "--color", "never", "-F", query, target.as_posix()]
+            if files_only:
+                cmd = [rg, "--files-with-matches", "--color", "never", "-F", query, target.as_posix()]
+            else:
+                cmd = [rg, "--line-number", "--no-heading", "--color", "never", "-F", query, target.as_posix()]
             if glob:
                 cmd[1:1] = ["-g", glob]
             completed = subprocess.run(
@@ -271,19 +331,35 @@ class RepoToolbox:
             )
             for line in completed.stdout.splitlines():
                 if line:
+                    # Make paths relative when files_only
+                    if files_only:
+                        try:
+                            line = str(Path(line).relative_to(self.repo_root))
+                        except ValueError:
+                            pass
                     rows.append(line)
                 if len(rows) >= max_results:
                     break
         else:
+            seen_files: set[str] = set()
             for file in target.rglob("*") if target.is_dir() else [target]:
                 if not file.is_file() or file.name.startswith("."):
                     continue
                 try:
-                    for idx, line in enumerate(file.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                        if query in line:
-                            rows.append(f"{file.relative_to(self.repo_root).as_posix()}:{idx}:{line}")
+                    content = file.read_text(encoding="utf-8", errors="replace")
+                    rel = file.relative_to(self.repo_root).as_posix()
+                    if files_only:
+                        if query in content and rel not in seen_files:
+                            seen_files.add(rel)
+                            rows.append(rel)
                             if len(rows) >= max_results:
                                 break
+                    else:
+                        for idx, line in enumerate(content.splitlines(), 1):
+                            if query in line:
+                                rows.append(f"{rel}:{idx}:{line}")
+                                if len(rows) >= max_results:
+                                    break
                 except OSError:
                     continue
                 if len(rows) >= max_results:
@@ -340,6 +416,131 @@ class RepoToolbox:
                 return ToolResult(True, text, {"source": resolved.as_posix()}, truncated=truncated)
         return ToolResult(False, f"generated markdown doc not found: {filename}")
 
+    def get_scan_connections(self) -> ToolResult:
+        """Return all metadata connections extracted by the scanner."""
+        scan = self.scan_root / "scan_result.json"
+        if not scan.exists():
+            return ToolResult(False, f"scan_result.json not found under {self.scan_root}")
+        data = json.loads(scan.read_text(encoding="utf-8", errors="replace"))
+        connections = data.get("metadata_connections") or []
+        if not connections:
+            return ToolResult(True, "No metadata connections found in scan output.", {"count": 0})
+        # Strip internal xmi_id and empty fields to reduce noise
+        cleaned = [
+            {k: v for k, v in c.items() if k != "xmi_id" and v not in (None, "", {}, [])}
+            for c in connections
+        ]
+        text, truncated = self._bounded_text(json.dumps(cleaned, indent=2, ensure_ascii=False))
+        return ToolResult(True, text, {"count": len(connections)}, truncated=truncated)
+
+    def get_context_group(self, name: str) -> ToolResult:
+        """Return context variables for a named group, with per-environment values."""
+        if not name.strip():
+            return ToolResult(False, "name is required")
+        scan = self.scan_root / "scan_result.json"
+        if not scan.exists():
+            return ToolResult(False, f"scan_result.json not found under {self.scan_root}")
+        data = json.loads(scan.read_text(encoding="utf-8", errors="replace"))
+        groups = data.get("context_groups") or []
+        # Exact match first, then case-insensitive partial
+        match = next((g for g in groups if g.get("name") == name), None)
+        if not match:
+            match = next((g for g in groups if name.lower() in (g.get("name") or "").lower()), None)
+        if not match:
+            available = [g.get("name", "") for g in groups[:30]]
+            return ToolResult(False, f"Context group {name!r} not found. Available: {available}")
+        variables = match.get("variables") or []
+        text, truncated = self._bounded_text(json.dumps(match, indent=2, ensure_ascii=False))
+        return ToolResult(
+            True, text,
+            {"name": match.get("name"), "variable_count": len(variables)},
+            truncated=truncated,
+        )
+
+    def search_scan_jobs(self, query: str) -> ToolResult:
+        """Search jobs by name, group, component type, or context group reference."""
+        if not query.strip():
+            return ToolResult(False, "query is required")
+        scan = self.scan_root / "scan_result.json"
+        if not scan.exists():
+            return ToolResult(False, f"scan_result.json not found under {self.scan_root}")
+        data = json.loads(scan.read_text(encoding="utf-8", errors="replace"))
+        jobs = data.get("jobs") or []
+        q = query.lower()
+        results: list[dict[str, Any]] = []
+        for job in jobs:
+            name_lower = (job.get("name") or "").lower()
+            group_lower = (job.get("group") or "").lower()
+            subgroup_lower = (job.get("subgroup") or "").lower()
+            component_types = [(c.get("type") or "").lower() for c in (job.get("components") or [])]
+            ctx_groups = [(cg or "").lower() for cg in (job.get("context_groups") or [])]
+            if (
+                q in name_lower
+                or q in group_lower
+                or q in subgroup_lower
+                or any(q in ct for ct in component_types)
+                or any(q in cg for cg in ctx_groups)
+            ):
+                results.append({
+                    "name": job.get("name"),
+                    "path": job.get("path"),
+                    "group": job.get("group"),
+                    "subgroup": job.get("subgroup") or None,
+                    "components": [c.get("type") for c in (job.get("components") or [])[:15]],
+                    "context_groups": (job.get("context_groups") or [])[:10],
+                })
+            if len(results) >= config.deep_dive_max_search_results:
+                break
+        if not results:
+            return ToolResult(True, f"No jobs found matching {query!r}.", {"count": 0, "total_jobs": len(jobs)})
+        text, truncated = self._bounded_text(json.dumps(results, indent=2, ensure_ascii=False))
+        return ToolResult(True, text, {"count": len(results), "total_jobs": len(jobs)}, truncated=truncated)
+
+    @staticmethod
+    def build_project_briefing(project_id: str) -> dict[str, Any]:
+        """Build a concise project briefing from scan output — injected into the system prompt.
+
+        Reads scan_result.json and the docs directory. No model call, no tool call.
+        Gives the agent platform/structure awareness before turn 1.
+        """
+        scan = config.intodoc_output_dir / project_id / "scan_result.json"
+        docs_dir = config.project_root / "output" / project_id / "docs"
+        briefing: dict[str, Any] = {"project_id": project_id}
+
+        if scan.exists():
+            try:
+                data = json.loads(scan.read_text(encoding="utf-8", errors="replace"))
+                jobs = data.get("jobs") or []
+                groups: dict[str, int] = {}
+                for job in jobs:
+                    g = job.get("group") or "Global"
+                    groups[g] = groups.get(g, 0) + 1
+
+                connections = data.get("metadata_connections") or []
+                briefing.update({
+                    "platform": data.get("platform", "unknown"),
+                    "job_count": len(jobs),
+                    "groups": groups,
+                    "connection_count": len(connections),
+                    "connections": [
+                        {"name": c.get("name"), "type": c.get("connection_type")}
+                        for c in connections
+                    ],
+                    "context_group_count": len(data.get("context_groups") or []),
+                    "context_group_names": [
+                        g.get("name") for g in (data.get("context_groups") or [])[:30]
+                    ],
+                })
+            except Exception:
+                pass
+
+        if docs_dir.exists():
+            briefing["generated_docs"] = sorted(
+                f.name for f in docs_dir.glob("*.md") if f.name[0].isdigit()
+            )
+
+        return briefing
+
 
 def _provider_config(model_id: str) -> dict[str, str | None]:
     model_id = normalize_model_id(model_id)
@@ -390,22 +591,30 @@ class RepoAgentEngine:
 
         toolbox = RepoToolbox(project_id)
         state.messages.append({"role": "user", "content": question})
-        transcript = self._initial_transcript(project_id, question, toolbox)
+        briefing = RepoToolbox.build_project_briefing(project_id)
+        transcript = self._initial_transcript(project_id, question, toolbox, briefing)
         total_input = total_output = 0
 
         for turn in range(max(1, config.deep_dive_max_tool_calls) + 1):
             result = await self.provider.complete(
                 transcript,
                 options=ModelOptions(
-                    max_tokens=4_000,
+                    max_tokens=config.deep_dive_max_answer_tokens,
                     temperature=0.1,
                     timeout_s=config.deep_dive_timeout_s,
-                    retries=1,
+                    retries=0,
                 ),
             )
             total_input += result.input_tokens
             total_output += result.output_tokens
             if not result.success:
+                if "stop_reason=max_tokens" in (result.raw_error or "") and result.text:
+                    answer = self._strip_internal_transcript(result.text).strip()
+                    if answer:
+                        state.messages.append({"role": "assistant", "content": answer})
+                        yield {"type": "token", "data": answer}
+                        yield {"type": "done", "data": {"duration_ms": int((time.monotonic() - start) * 1000)}}
+                        return
                 yield {"type": "error", "data": f"Model failed: {result.raw_error}"}
                 yield {"type": "done", "data": {"duration_ms": int((time.monotonic() - start) * 1000)}}
                 return
@@ -448,7 +657,7 @@ class RepoAgentEngine:
             for tool_name, args in tool_calls:
                 if state.tool_calls >= config.deep_dive_max_tool_calls:
                     async for event in self._force_final_answer(
-                        transcript,
+                        self._cap_transcript(transcript),
                         start,
                         total_input,
                         total_output,
@@ -475,9 +684,10 @@ class RepoAgentEngine:
                 "TOOL_RESULTS:\n"
                 f"{json.dumps(tool_results, ensure_ascii=False)}\n"
             )
+            transcript = self._prune_transcript(transcript)
 
         async for event in self._force_final_answer(
-            transcript,
+            self._cap_transcript(transcript),
             start,
             total_input,
             total_output,
@@ -509,62 +719,88 @@ Return only the user-facing markdown answer. If the evidence is incomplete, say 
         result = await self.provider.complete(
             final_prompt,
             options=ModelOptions(
-                max_tokens=4_000,
+                max_tokens=config.deep_dive_max_answer_tokens,
                 temperature=0.1,
                 timeout_s=config.deep_dive_timeout_s,
-                retries=1,
+                retries=0,
             ),
         )
         total_input += result.input_tokens
         total_output += result.output_tokens
 
+        answer_text: str | None = None
         if result.success and result.text.strip():
-            answer = self._strip_internal_transcript(result.text).strip()
-            if answer:
-                state.messages.append({"role": "assistant", "content": answer})
-                yield {"type": "token", "data": answer}
-                yield {
-                    "type": "usage",
-                    "data": {
-                        "model": getattr(self.provider, "model_name", config.deep_dive_model),
-                        "provider": getattr(self.provider, "provider_name", "custom"),
-                        "input_tokens": total_input,
-                        "output_tokens": total_output,
-                        "duration_ms": int((time.monotonic() - start) * 1000),
-                    },
-                }
-                yield {"type": "done", "data": {"duration_ms": int((time.monotonic() - start) * 1000)}}
-                return
+            answer_text = self._strip_internal_transcript(result.text).strip()
+        elif "stop_reason=max_tokens" in (result.raw_error or "") and result.text.strip():
+            answer_text = self._strip_internal_transcript(result.text).strip()
+
+        if answer_text:
+            state.messages.append({"role": "assistant", "content": answer_text})
+            yield {"type": "token", "data": answer_text}
+            yield {
+                "type": "usage",
+                "data": {
+                    "model": getattr(self.provider, "model_name", config.deep_dive_model),
+                    "provider": getattr(self.provider, "provider_name", "custom"),
+                    "input_tokens": total_input,
+                    "output_tokens": total_output,
+                    "duration_ms": int((time.monotonic() - start) * 1000),
+                },
+            }
+            yield {"type": "done", "data": {"duration_ms": int((time.monotonic() - start) * 1000)}}
+            return
 
         yield {"type": "error", "data": f"{reason} The model did not produce a usable final answer."}
         yield {"type": "done", "data": {"duration_ms": int((time.monotonic() - start) * 1000)}}
 
     @staticmethod
-    def _initial_transcript(project_id: str, question: str, toolbox: RepoToolbox) -> str:
+    def _initial_transcript(
+        project_id: str,
+        question: str,
+        toolbox: RepoToolbox,
+        briefing: dict[str, Any] | None = None,
+    ) -> str:
         tools = [
             {"name": spec.name, "description": spec.description, "parameters": spec.parameters}
             for spec in toolbox.specs()
         ]
+
+        briefing_block = ""
+        if briefing:
+            briefing_block = f"""
+Project context (already loaded — no tool call needed for this information):
+{json.dumps(briefing, indent=2, ensure_ascii=False)}
+"""
+
         return f"""\
 You are a read-only repository analysis agent for project {project_id!r}.
+{briefing_block}
+Navigation strategy — follow this order:
+1. For questions about external systems, databases, or APIs: call get_scan_connections() first.
+   Use get_context_group(name) to resolve the actual host/port/database values.
+2. For questions about which jobs do something: call search_scan_jobs(query) with a component
+   type (e.g. "tJDBCInput"), connection name, or keyword. Returns file paths directly.
+3. For code-level questions: use search_repo(query, glob="*.ext", files_only=true) to find
+   which files are relevant, then read_file(path, start_line, max_lines) to read only the
+   section you need. Prefer targeted reads over reading whole files.
+4. Batch independent lookups in one turn: {{"tool_calls": [...]}}
+5. Stop as soon as you have sufficient evidence — do not keep reading once the answer is clear.
 
-Answer the user's question by inspecting raw repo files, scan output, or generated docs with tools.
-Do not guess. If evidence is missing, say what you inspected and what is still unknown.
-Cite concrete paths or generated document names when you use evidence.
+Do not guess or infer from training data. Cite the actual file path or scan data field in your answer.
 
 Available tools:
 {json.dumps(tools, indent=2)}
 
 Respond with exactly one JSON object and no markdown fences.
 
-To call a tool:
-{{"tool": "search_repo", "arguments": {{"query": "customer", "path": ""}}}}
+To call a single tool:
+{{"tool": "search_repo", "arguments": {{"query": "tJDBCInput", "glob": "*.item", "files_only": true}}}}
 
-To call multiple tools in the same turn:
-{{"tool_calls": [{{"tool": "list_files", "arguments": {{"path": "", "max_depth": 2}}}}, {{"tool": "read_scan_summary", "arguments": {{}}}}]}}
+To call multiple tools in one turn:
+{{"tool_calls": [{{"tool": "get_scan_connections", "arguments": {{}}}}, {{"tool": "list_files", "arguments": {{"path": "", "max_depth": 2}}}}]}}
 
 To finish:
-{{"final": "Markdown answer with cited file paths."}}
+{{"final": "Markdown answer citing file paths or scan fields."}}
 
 Do not emit XML, HTML, <function_calls>, or prose around tool calls. Only JSON is valid.
 
@@ -711,6 +947,55 @@ User question: {question}
         if value.lower() == "false":
             return False
         return value
+
+    @staticmethod
+    def _estimate_transcript_tokens(transcript: str) -> int:
+        return len(transcript) // 4
+
+    @staticmethod
+    def _prune_transcript(transcript: str, target_tokens: int = 150_000) -> str:
+        """Drop content of old TOOL_RESULTS blocks when transcript approaches context limit.
+
+        Keeps the system prompt + question, all MODEL_DECISION lines (small, preserve reasoning
+        trail), and the last 3 TOOL_RESULTS blocks verbatim. Older results are stubbed out.
+        """
+        if RepoAgentEngine._estimate_transcript_tokens(transcript) <= target_tokens:
+            return transcript
+
+        marker = "\n\nMODEL_DECISION:\n"
+        parts = transcript.split(marker)
+        # parts[0] = system prompt + question; parts[1:] = per-turn (decision + results)
+        if len(parts) <= 4:  # header + ≤3 turns — nothing to prune without destroying evidence
+            return transcript
+
+        header = parts[0]
+        turns = parts[1:]
+        keep_intact = 3
+        tool_results_marker = "\n\nTOOL_RESULTS:\n"
+
+        pruned: list[str] = []
+        for i, turn in enumerate(turns):
+            if i >= len(turns) - keep_intact:
+                pruned.append(turn)
+            elif tool_results_marker in turn:
+                decision_part = turn.split(tool_results_marker)[0]
+                pruned.append(decision_part + tool_results_marker + "[pruned]\n")
+            else:
+                pruned.append(turn)
+
+        return marker.join([header] + pruned)
+
+    @staticmethod
+    def _cap_transcript(transcript: str, max_tokens: int = 120_000) -> str:
+        """Hard cap for force-synthesis calls: keep the first 2 KB (system prompt + question)
+        and the most recent tail so the model always has the original question plus latest evidence.
+        """
+        max_chars = max_tokens * 4
+        if len(transcript) <= max_chars:
+            return transcript
+        header = transcript[:2_000]
+        tail = transcript[-(max_chars - 2_000):]
+        return header + "\n\n[...earlier tool results pruned to fit context window...]\n\n" + tail
 
 
 _QA_PROMPT = """You are a code analyst for project '{project_id}'. Answer this question by reading the scan data:

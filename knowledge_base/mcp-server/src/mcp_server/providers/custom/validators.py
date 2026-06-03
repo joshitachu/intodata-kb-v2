@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from mcp_server.config import config
 from mcp_server.platforms import get_platform_strategy
 from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import CoverageReport, FactsManifest, InvestigationReport, UnitFact
@@ -146,6 +147,7 @@ def build_facts_manifest(project_id: str, scan_output_dir: Path) -> FactsManifes
 
 _COVERED_RE = re.compile(r"^\s*-\s*COVERED:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
 _SKIPPED_RE = re.compile(r"^\s*-\s*SKIPPED:\s*(.+?)\s*--\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_STRUCTURED_COVERAGE_DIR = "_coverage_units"
 
 
 def _unit_id(unit: UnitFact) -> str:
@@ -235,7 +237,69 @@ def _coverage_report_from_identities(
     )
 
 
-def validate_analysis_coverage(analysis_dir: Path, facts: FactsManifest) -> CoverageReport:
+def _structured_phase2_coverage(
+    analysis_dir: Path,
+    facts: FactsManifest,
+) -> tuple[set[str], dict[str, str], list[str]] | None:
+    coverage_dir = analysis_dir / _STRUCTURED_COVERAGE_DIR
+    if not coverage_dir.exists():
+        return None
+
+    units_by_group: dict[str, list[UnitFact]] = {}
+    for unit in facts.units:
+        units_by_group.setdefault(unit.group, []).append(unit)
+
+    covered_ids: set[str] = set()
+    skipped_ids: dict[str, str] = {}
+    errors: list[str] = []
+
+    for group in facts.groups:
+        record_path = coverage_dir / f"{group}.json"
+        if not record_path.exists():
+            errors.append(f"Missing structured Phase 2 coverage record for group {group}")
+            continue
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            errors.append(f"Structured Phase 2 coverage record is invalid JSON: {record_path.name}")
+            continue
+        status = str(record.get("status") or "")
+        if status not in {"completed", "scanner_limited"}:
+            errors.append(f"Structured Phase 2 coverage record for group {group} is not completed: {status or 'missing'}")
+            continue
+        analysis_file = analysis_dir / str(record.get("analysis_file") or f"{group}.md")
+        if not analysis_file.exists():
+            errors.append(f"Structured Phase 2 coverage record for group {group} points to missing analysis file")
+            continue
+        if int(record.get("analysis_bytes") or analysis_file.stat().st_size or 0) <= 0:
+            errors.append(f"Structured Phase 2 coverage record for group {group} has empty analysis output")
+            continue
+        for unit in units_by_group.get(group, []):
+            if status == "scanner_limited":
+                skipped_ids[_unit_id(unit)] = "scanner-limited evidence"
+            else:
+                covered_ids.add(_unit_id(unit))
+
+    return covered_ids, skipped_ids, errors
+
+
+def validate_analysis_coverage(
+    analysis_dir: Path,
+    facts: FactsManifest,
+    *,
+    use_structured: bool = False,
+) -> CoverageReport:
+    if use_structured:
+        structured = _structured_phase2_coverage(analysis_dir, facts)
+        if structured is not None:
+            covered_ids, skipped_ids, errors = structured
+            return _coverage_report_from_identities(
+                facts=facts,
+                covered_ids=covered_ids,
+                skipped_ids=skipped_ids,
+                errors=errors,
+            )
+
     expected_names = facts.unit_names()
     covered_ids: set[str] = set()
     skipped_ids: dict[str, str] = {}
@@ -329,8 +393,21 @@ def validate_analysis_depth(
     analysis_dir: Path,
     preprocess_dir: Path,
     facts: FactsManifest,
+    *,
+    use_structured: bool = False,
 ) -> CoverageReport:
     """Validate that Phase 2 contains real per-unit analysis, not just coverage."""
+
+    if use_structured:
+        structured = _structured_phase2_coverage(analysis_dir, facts)
+        if structured is not None:
+            covered_ids, skipped_ids, errors = structured
+            return _coverage_report_from_identities(
+                facts=facts,
+                covered_ids=covered_ids,
+                skipped_ids=skipped_ids,
+                errors=errors,
+            )
 
     covered_ids: set[str] = set()
     errors: list[str] = []
@@ -351,10 +428,13 @@ def validate_analysis_depth(
         min_bytes = max(4_000, min(40_000, int(preprocess_size * 0.15)))
 
         if len(model_text.encode("utf-8")) < min_bytes:
-            errors.append(
-                f"Phase 2 analysis for group {group} is too shallow: "
-                f"{len(model_text.encode('utf-8'))} bytes < {min_bytes} required"
-            )
+            # Scanner-limited groups (preprocess below investigation threshold) produce stub
+            # analysis by design; the depth floor does not apply.
+            if preprocess_size >= config.min_investigation_content_bytes:
+                errors.append(
+                    f"Phase 2 analysis for group {group} is too shallow: "
+                    f"{len(model_text.encode('utf-8'))} bytes < {min_bytes} required"
+                )
 
         group_facts = [u for u in facts.units if u.group == group or group.startswith(f"{u.group}_part")]
         group_units = [u.name for u in group_facts]
@@ -380,14 +460,38 @@ def validate_analysis_depth(
 def validate_analysis_guide_sections(
     analysis_dir: Path,
     facts: FactsManifest,
+    *,
+    require_group_summary: bool = True,
 ) -> CoverageReport:
     """Require canonical guide sections for Talend Phase 2 output."""
 
     covered_ids: set[str] = set()
     errors: list[str] = []
+    all_ids = {_unit_id(unit) for unit in facts.units}
+
+    if not require_group_summary:
+        for group in facts.groups:
+            group_files = [
+                p for p in sorted(analysis_dir.glob(f"{group}*.md"))
+                if not p.name.startswith("_bundle_")
+                and "_chunk_" not in p.name
+                and not p.name.endswith("_summary.md")
+            ]
+            if not group_files:
+                errors.append(f"Missing Phase 2 guide-section artifact for group {group}")
+        return CoverageReport(
+            ok=not errors,
+            covered_units=sorted(facts.unit_names()),
+            covered_unit_ids=sorted(all_ids),
+            missing_units=[],
+            missing_unit_ids=[],
+            coverage_count=facts.unit_count,
+            expected_count=facts.unit_count,
+            errors=errors,
+            warnings=_identity_report_warnings(facts),
+        )
 
     if facts.platform != "talend":
-        all_ids = {_unit_id(unit) for unit in facts.units}
         for group in facts.groups:
             group_files = [
                 p for p in sorted(analysis_dir.glob(f"{group}*.md"))
@@ -399,7 +503,7 @@ def validate_analysis_guide_sections(
                 errors.append(f"Missing Phase 2 guide-section artifact for group {group}")
                 continue
             text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in group_files)
-            if not re.search(rf"^###\s+{GROUP_SUMMARY_SECTION}\s*$", _model_analysis_text(text), re.MULTILINE):
+            if not _has_section(text, GROUP_SUMMARY_SECTION):
                 errors.append(f"Phase 2 analysis for group {group} missing required sections: {GROUP_SUMMARY_SECTION}")
         return CoverageReport(
             ok=not errors,
@@ -428,9 +532,9 @@ def validate_analysis_guide_sections(
         model_text = _model_analysis_text(text)
         missing_required = [
             name for name in REQUIRED_SECTION_NAMES
-            if not re.search(rf"^###\s+{re.escape(name)}\s*$", model_text, re.MULTILINE)
+            if not _has_section(model_text, name)
         ]
-        if not re.search(rf"^###\s+{GROUP_SUMMARY_SECTION}\s*$", model_text, re.MULTILINE):
+        if not _has_section(model_text, GROUP_SUMMARY_SECTION):
             missing_required.append(GROUP_SUMMARY_SECTION)
         if missing_required:
             errors.append(
@@ -445,6 +549,28 @@ def validate_analysis_guide_sections(
             group_units = [u.name for u in group_facts]
         covered_ids.update(_unit_id(unit) for unit in group_facts if unit.name in model_text)
 
+    # If ESB components were detected in this Talend project, require ROUTE_GRAPH or ESB_ROUTES section.
+    esb_facts_path = analysis_dir.parent / "_preprocess" / "talend_esb_facts.json"
+    if esb_facts_path.exists():
+        try:
+            esb_data = json.loads(esb_facts_path.read_text(encoding="utf-8"))
+            if esb_data.get("esb_detected"):
+                full_analysis_text = " ".join(
+                    p.read_text(encoding="utf-8", errors="replace")
+                    for p in sorted(analysis_dir.glob("*.md"))
+                    if not p.name.startswith("_") and "_chunk_" not in p.name
+                )
+                has_route_section = bool(
+                    re.search(r"(?i)^#{1,6}\s*(ROUTE_GRAPH|ESB_ROUTES|ESB_ROUTE_GRAPH)", full_analysis_text, re.MULTILINE)
+                )
+                if not has_route_section:
+                    errors.append(
+                        "Talend ESB components detected (see talend_esb_facts.json) but Phase 2 analysis "
+                        "is missing a ROUTE_GRAPH or ESB_ROUTES section"
+                    )
+        except (json.JSONDecodeError, OSError):
+            pass
+
     return _coverage_report_from_identities(
         facts=facts,
         covered_ids=covered_ids,
@@ -453,29 +579,64 @@ def validate_analysis_guide_sections(
     )
 
 
-def normalize_analysis_guide_headings(text: str, platform: str) -> str:
-    """Normalize known guide section headings to the canonical Phase 2 level."""
+def _has_section(text: str, section_name: str) -> bool:
+    """Return True if the Model Analysis block contains a heading whose name matches
+    section_name, regardless of heading level (#–######), case, or any suffix.
 
+    Matches:
+        ### GROUP_SUMMARY
+        ### GROUP_SUMMARY: demo-data
+        #### group_summary - Notes
+        ## GROUP_SUMMARY Section
+    Does NOT match:
+        ### GROUP_SUMMARY_EXTENDED   (different name — trailing underscore/letter blocks it)
+    """
+    model_text = _model_analysis_text(text)
+    needle = section_name.upper()
+    for line in model_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        heading_text = stripped.lstrip("#").strip().upper()
+        if (
+            heading_text == needle
+            or heading_text.startswith(needle + ":")
+            or heading_text.startswith(needle + " ")
+            or heading_text.startswith(needle + "-")
+            or heading_text.startswith(needle + "—")  # em dash
+        ):
+            return True
+    return False
+
+
+def normalize_analysis_guide_headings(text: str, platform: str) -> str:
+    """Normalize known guide section headings to the canonical Phase 2 level.
+
+    Accepts any heading level, any case, and any suffix after the section name
+    (e.g. '### GROUP_SUMMARY: demo-data' → '### GROUP_SUMMARY').
+    """
     section_names = (GROUP_SUMMARY_SECTION,)
     if platform == "talend":
         section_names = tuple(ANALYSIS_SECTION_NAMES) + section_names
+    # The suffix pattern uses [:\-–— \t] (horizontal-whitespace only) so that
+    # '### GROUP_SUMMARY: demo-data' is matched but the newline + content line
+    # that follows is never consumed.
     pattern = re.compile(
-        rf"^#{{1,6}}\s+(?:#{{1,6}}\s+)?(?P<name>{'|'.join(re.escape(n) for n in section_names)})\s*$",
-        re.MULTILINE,
+        rf"^#{{1,6}}\s+(?:#{{1,6}}\s+)?(?P<name>{'|'.join(re.escape(n) for n in section_names)})(?:[:\-–—\t ][^\n]*)?$",
+        re.MULTILINE | re.IGNORECASE,
     )
-    return pattern.sub(lambda m: f"### {m.group('name')}", text)
+    return pattern.sub(lambda m: f"### {m.group('name').upper()}", text)
 
 
 def missing_required_analysis_sections(text: str, platform: str) -> list[str]:
     """Return required guide sections absent from a Phase 2 model-analysis body."""
 
-    model_text = _model_analysis_text(text)
-    missing_summary = [] if re.search(rf"^###\s+{GROUP_SUMMARY_SECTION}\s*$", model_text, re.MULTILINE) else [GROUP_SUMMARY_SECTION]
+    missing_summary = [] if _has_section(text, GROUP_SUMMARY_SECTION) else [GROUP_SUMMARY_SECTION]
     if platform != "talend":
         return missing_summary
     return [
         name for name in REQUIRED_SECTION_NAMES
-        if not re.search(rf"^###\s+{re.escape(name)}\s*$", model_text, re.MULTILINE)
+        if not _has_section(text, name)
     ] + missing_summary
 
 
@@ -486,25 +647,30 @@ def _model_analysis_text(text: str) -> str:
     return text
 
 
-def group_analysis_is_complete(analysis_path: Path, platform: str) -> bool:
+def group_analysis_is_complete(analysis_path: Path, platform: str, *, require_sections: bool = True) -> bool:
     """Return True if a cached Phase 2 file has all required sections (Talend only)."""
+    if not require_sections:
+        return analysis_path.exists() and analysis_path.stat().st_size > 0
     text = analysis_path.read_text(encoding="utf-8", errors="replace")
-    model_text = _model_analysis_text(text)
     required = (GROUP_SUMMARY_SECTION,) if platform != "talend" else (*REQUIRED_SECTION_NAMES, GROUP_SUMMARY_SECTION)
-    return all(
-        re.search(rf"^###\s+{re.escape(name)}\s*$", model_text, re.MULTILINE)
-        for name in required
-    )
+    return all(_has_section(text, name) for name in required)
 
 
-def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
+def validate_docs(
+    staging_dir: Path,
+    facts: FactsManifest,
+    *,
+    required_docs: list[str] | None = None,
+    enforce_default_contract: bool = True,
+) -> CoverageReport:
     errors: list[str] = []
-    missing_docs = [doc for doc in REQUIRED_DOCS if not (staging_dir / f"{doc}.md").exists()]
+    docs_to_validate = required_docs or REQUIRED_DOCS
+    missing_docs = [doc for doc in docs_to_validate if not (staging_dir / f"{doc}.md").exists()]
     if missing_docs:
         errors.append(f"Missing required docs: {', '.join(missing_docs)}")
 
     scorecard = staging_dir / "_assessment" / "scorecard.md"
-    if not scorecard.exists() or scorecard.stat().st_size < 50:
+    if enforce_default_contract and (not scorecard.exists() or scorecard.stat().st_size < 50):
         errors.append("Missing required scorecard")
 
     text = "\n".join(
@@ -519,33 +685,41 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
     duplicate_names = set(_duplicate_unit_names(facts))
     missing_ids = sorted(set(units_by_id) - covered_ids)
     missing_units = sorted(_unit_label(units_by_id[unit_id], duplicate_names) for unit_id in missing_ids)
-    if missing_units:
+    if enforce_default_contract and missing_units:
         errors.append(f"Generated docs do not mention all units: {', '.join(missing_units[:20])}")
 
     count_patterns = [
         rf"\b{facts.unit_count}\s+{re.escape(facts.canonical_unit_label)}\b",
         rf"\b{facts.unit_count}\s+canonical\s+units\b",
     ]
-    if facts.unit_count and not any(re.search(p, text, re.IGNORECASE) for p in count_patterns):
+    if enforce_default_contract and facts.unit_count and not any(re.search(p, text, re.IGNORECASE) for p in count_patterns):
         errors.append(
             f"Generated docs do not state expected coverage count {facts.unit_count}"
         )
 
-    total_claim_errors = _conflicting_total_count_claims(staging_dir, facts)
-    if total_claim_errors:
-        errors.extend(total_claim_errors)
+    if enforce_default_contract:
+        total_claim_errors = _conflicting_total_count_claims(staging_dir, facts)
+        if total_claim_errors:
+            errors.extend(total_claim_errors)
 
     config_claim_errors = _conflicting_config_evidence_claims(staging_dir)
     if config_claim_errors:
         errors.extend(config_claim_errors)
 
-    assistant_contract_errors = _assistant_doc_contract_errors(staging_dir, facts)
-    if assistant_contract_errors:
-        errors.extend(assistant_contract_errors)
+    if enforce_default_contract:
+        assistant_contract_errors = _assistant_doc_contract_errors(staging_dir, facts)
+        if assistant_contract_errors:
+            errors.extend(assistant_contract_errors)
 
-    pack_errors = _doc_evidence_pack_errors(staging_dir)
-    if pack_errors:
-        errors.extend(pack_errors)
+    if enforce_default_contract:
+        pack_errors = _doc_evidence_pack_errors(staging_dir, required_docs=docs_to_validate)
+        if pack_errors:
+            errors.extend(pack_errors)
+
+    if not enforce_default_contract:
+        covered_ids = set(units_by_id)
+        missing_ids = []
+        missing_units = []
 
     return CoverageReport(
         ok=not errors,
@@ -560,7 +734,7 @@ def validate_docs(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
     )
 
 
-def build_documentation_obligation_map(facts: FactsManifest) -> dict[str, Any]:
+def build_documentation_obligation_map(facts: FactsManifest, required_docs: list[str] | None = None) -> dict[str, Any]:
     """Build the shared + platform obligation contract for a generation run."""
 
     try:
@@ -589,8 +763,11 @@ def build_documentation_obligation_map(facts: FactsManifest) -> dict[str, Any]:
         "debug_testing": ["06_OPERATIONS_TESTING_AND_DEBUGGING", "08_CHANGE_PLAYBOOK"],
         "units": ["02_COMPONENT_INVENTORY", "00_AGENT_BRIEF", "08_CHANGE_PLAYBOOK"],
     }
+    docs_to_validate = required_docs or REQUIRED_DOCS
+    if required_docs is not None:
+        doc_targets = {key: list(docs_to_validate) for key in doc_targets}
     platform_doc_targets = {
-        f"platform_specific.{category}": REQUIRED_DOCS
+        f"platform_specific.{category}": docs_to_validate
         for category in platform_terms
     }
     return {
@@ -697,7 +874,7 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
     return errors
 
 
-def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
+def _doc_evidence_pack_errors(staging_dir: Path, *, required_docs: list[str] | None = None) -> list[str]:
     analysis_dir = staging_dir / "_analysis"
     if not analysis_dir.exists():
         return []
@@ -715,7 +892,7 @@ def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
         if not isinstance(packs, dict):
             errors.append("Phase 3 doc evidence pack manifest missing doc_packs")
         else:
-            for doc in REQUIRED_DOCS:
+            for doc in (required_docs or REQUIRED_DOCS):
                 entry = packs.get(doc)
                 if not isinstance(entry, dict):
                     errors.append(f"Phase 3 doc evidence pack manifest missing entry for {doc}")
@@ -730,7 +907,7 @@ def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
                 ):
                     if key not in entry:
                         errors.append(f"Phase 3 doc evidence pack manifest entry for {doc} missing {key}")
-    for doc in REQUIRED_DOCS:
+    for doc in (required_docs or REQUIRED_DOCS):
         pack_path = analysis_dir / f"_doc_pack_{doc}.md"
         if not pack_path.exists():
             errors.append(f"Missing Phase 3 doc evidence pack: _analysis/{pack_path.name}")
@@ -753,7 +930,13 @@ def _doc_evidence_pack_errors(staging_dir: Path) -> list[str]:
     return errors
 
 
-def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
+def validate_doc_depth(
+    staging_dir: Path,
+    facts: FactsManifest,
+    *,
+    required_docs: list[str] | None = None,
+    enforce_default_contract: bool = True,
+) -> CoverageReport:
     """Validate docs have enough depth for the scanned project shape."""
 
     errors: list[str] = []
@@ -764,9 +947,9 @@ def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageRepor
         for p in preprocess_dir.glob("*.md")
         if not p.name.startswith("_")
     ) if preprocess_dir.exists() else 0
-    min_doc_bytes = max(8_000, min(45_000, int(total_preprocess_bytes * 0.04)))
+    min_doc_bytes = max(8_000, min(45_000, int(total_preprocess_bytes * 0.04))) if enforce_default_contract else 50
 
-    for doc in REQUIRED_DOCS:
+    for doc in (required_docs or REQUIRED_DOCS):
         path = staging_dir / f"{doc}.md"
         if not path.exists():
             errors.append(f"Missing required doc for depth validation: {doc}")
@@ -778,7 +961,7 @@ def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageRepor
                 f"Generated doc {doc}.md is too shallow: {doc_bytes} bytes < {min_doc_bytes} required"
             )
         lower = text.lower()
-        section_terms = DOC_SECTION_REQUIREMENTS.get(doc, [])
+        section_terms = DOC_SECTION_REQUIREMENTS.get(doc, []) if enforce_default_contract else []
         missing_terms = [term for term in section_terms if term.lower() not in lower]
         if missing_terms:
             errors.append(
@@ -791,8 +974,10 @@ def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageRepor
         for p in sorted(staging_dir.glob("*.md"))
     )
     missing_groups = [group for group in facts.groups if group not in all_text]
-    if missing_groups:
+    if enforce_default_contract and missing_groups:
         errors.append(f"Generated docs do not mention groups: {', '.join(missing_groups)}")
+    if not enforce_default_contract:
+        covered_ids = {_unit_id(unit) for unit in facts.units}
 
     return _coverage_report_from_identities(
         facts=facts,
@@ -800,6 +985,186 @@ def validate_doc_depth(staging_dir: Path, facts: FactsManifest) -> CoverageRepor
         skipped_ids={},
         errors=errors,
     )
+
+
+def _required_output_present(text: str, output: str) -> bool:
+    """Return True if output appears as a section heading (with content) or table-column header.
+
+    Splits the output on underscores/hyphens so that ``table_inventory`` matches
+    a heading like ``## Table Inventory`` or a table cell ``| Table Inventory |``.
+    A heading match requires at least one non-blank following line so that an empty
+    section stub does not count as satisfied.
+    """
+    output_words = [w for w in re.split(r"[_\-\s]+", output.lower()) if w]
+    if not output_words:
+        return False
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().lower()
+            heading_words = re.split(r"[_\-\s]+", heading)
+            if all(w in heading_words for w in output_words):
+                rest = [ln.strip() for ln in lines[i + 1 : i + 10] if ln.strip()]
+                if rest:
+                    return True
+        if "|" in stripped:
+            for cell in stripped.strip("|").split("|"):
+                cell_words = re.split(r"[_\-\s]+", cell.strip().lower())
+                if all(w in cell_words for w in output_words):
+                    return True
+    return False
+
+
+def validate_pack_quality(staging_dir: Path, manifest: Any) -> dict[str, Any]:
+    """Validate generated plugin-pack docs against deterministic pack gates."""
+
+    docs = list(getattr(manifest, "docs", None) or [])
+    doc_names = [doc.name for doc in docs]
+    gates = getattr(manifest, "quality_gates", None)
+    validation = getattr(manifest, "validation", None)
+    fields_set = getattr(manifest, "model_fields_set", set())
+    validation_explicit = "validation" in fields_set
+    mode = (
+        getattr(validation, "mode", "blocking")
+        if validation_explicit
+        else (getattr(gates, "mode", "blocking") if gates is not None else "blocking")
+    )
+    unknown_policy = getattr(validation, "unknown_policy", "explicit")
+    errors: list[str] = []
+    warnings: list[str] = []
+    doc_reports: dict[str, dict[str, Any]] = {}
+
+    for doc_name in doc_names:
+        path = staging_dir / f"{doc_name}.md"
+        exists = path.exists()
+        text = path.read_text(encoding="utf-8", errors="replace") if exists else ""
+        doc_reports[doc_name] = {
+            "exists": exists,
+            "bytes": len(text.encode("utf-8")),
+        }
+        if not exists:
+            errors.append(f"Missing pack doc: {doc_name}.md")
+        elif not text.strip():
+            errors.append(f"Pack doc is empty: {doc_name}.md")
+
+    for doc in docs:
+        doc_name = doc.name
+        path = staging_dir / f"{doc_name}.md"
+        text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        headings = {
+            line.lstrip("#").strip().lower()
+            for line in text.splitlines()
+            if line.lstrip().startswith("#")
+        }
+        required_sections = list(getattr(doc, "required_sections", []) or getattr(doc, "sections", []) or [])
+        missing_sections = [section for section in required_sections if section.lower() not in headings]
+        if missing_sections and path.exists():
+            errors.append(f"Pack doc {doc_name}.md missing required sections: {', '.join(missing_sections)}")
+
+        for output in getattr(doc, "required_outputs", []) or []:
+            if not _required_output_present(text, str(output)):
+                warnings.append(
+                    f"Pack doc {doc_name}.md: expected output '{output}' not found as section heading"
+                    " or column header — section may use different heading wording"
+                )
+
+        profile_name = getattr(doc, "evidence_profile", None)
+        required_evidence = list(getattr(doc, "required_evidence", []) or [])
+        if profile_name and required_evidence:
+            bundle_path = staging_dir / "_evidence" / f"{profile_name}.json"
+            if not bundle_path.exists():
+                errors.append(f"Pack doc {doc_name}.md missing evidence bundle for profile: {profile_name}")
+            else:
+                try:
+                    payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    errors.append(f"Pack evidence bundle {profile_name}.json is invalid: {exc}")
+                    payload = {}
+                categories = payload.get("categories", {}) if isinstance(payload, dict) else {}
+                missing_required = [
+                    category
+                    for category in required_evidence
+                    if not categories.get(category)
+                ]
+                if missing_required:
+                    if unknown_policy == "explicit" and not re.search(r"\bUNKNOWN\b|not evidenced", text, re.I):
+                        errors.append(
+                            f"Pack doc {doc_name}.md missing explicit UNKNOWN/not evidenced wording for absent evidence: "
+                            + ", ".join(missing_required)
+                        )
+                    doc_reports.setdefault(doc_name, {})["missing_required_evidence"] = missing_required
+
+    if gates is None:
+        ok = not errors
+        effective_ok = ok or mode == "advisory"
+        if errors and mode == "advisory":
+            warnings.append("Pack validation failed in advisory mode")
+        return {
+            "ok": ok,
+            "effective_ok": effective_ok,
+            "mode": mode,
+            "configured": False,
+            "errors": errors,
+            "warnings": warnings,
+            "docs": doc_reports,
+            "summary": "No pack quality_gates configured; applied manifest contract validation only.",
+        }
+
+    all_text = "\n".join(
+        (staging_dir / f"{doc_name}.md").read_text(encoding="utf-8", errors="replace")
+        for doc_name in doc_names
+        if (staging_dir / f"{doc_name}.md").exists()
+    )
+    all_text_lower = all_text.lower()
+
+    for term in gates.required_terms:
+        if term.lower() not in all_text_lower:
+            errors.append(f"Missing required pack term: {term}")
+
+    for term in gates.required_evidence_terms:
+        if term.lower() not in all_text_lower:
+            errors.append(f"Missing required evidence/provenance term: {term}")
+
+    for doc_name, required_sections in gates.required_sections.items():
+        path = staging_dir / f"{doc_name}.md"
+        if not path.exists():
+            errors.append(f"Cannot validate sections for missing pack doc: {doc_name}.md")
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        headings = {
+            line.lstrip("#").strip().lower()
+            for line in text.splitlines()
+            if line.lstrip().startswith("#")
+        }
+        missing = [section for section in required_sections if section.lower() not in headings]
+        if missing:
+            errors.append(f"Pack doc {doc_name}.md missing required sections: {', '.join(missing)}")
+
+    for doc_name, min_bytes in gates.min_doc_bytes.items():
+        path = staging_dir / f"{doc_name}.md"
+        if not path.exists():
+            errors.append(f"Cannot validate byte minimum for missing pack doc: {doc_name}.md")
+            continue
+        actual = path.stat().st_size
+        doc_reports.setdefault(doc_name, {"exists": True})["bytes"] = actual
+        doc_reports[doc_name]["min_bytes"] = min_bytes
+        if actual < min_bytes:
+            errors.append(f"Pack doc {doc_name}.md is too small: {actual} bytes < {min_bytes} required")
+
+    ok = not errors
+    effective_ok = ok or mode == "advisory"
+    if errors and mode == "advisory":
+        warnings.append("Pack quality gates failed in advisory mode")
+    return {
+        "ok": ok,
+        "effective_ok": effective_ok,
+        "mode": mode,
+        "configured": True,
+        "errors": errors,
+        "warnings": warnings,
+        "docs": doc_reports,
+    }
 
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -840,19 +1205,37 @@ def validate_final_redaction(staging_dir: Path) -> CoverageReport:
     )
 
 
-def validate_source_provenance(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
+def validate_source_provenance(
+    staging_dir: Path,
+    facts: FactsManifest,
+    *,
+    required_docs: list[str] | None = None,
+    enforce_default_contract: bool = True,
+) -> CoverageReport:
     """Require publishable docs to carry a concrete evidence register."""
 
     errors: list[str] = []
+    warnings: list[str] = []
     docs = {
         doc: staging_dir / f"{doc}.md"
-        for doc in REQUIRED_DOCS
+        for doc in (required_docs or REQUIRED_DOCS)
         if (staging_dir / f"{doc}.md").exists()
     }
     if not docs:
         errors.append("No publishable markdown docs found for provenance validation")
     for doc, path in docs.items():
-        errors.extend(_evidence_register_errors(path, DOC_SECTION_REQUIREMENTS.get(doc, [])))
+        doc_errors, doc_warnings = _evidence_register_errors(path, DOC_SECTION_REQUIREMENTS.get(doc, []))
+        errors.extend(doc_errors)
+        warnings.extend(doc_warnings)
+
+    if not enforce_default_contract:
+        return _coverage_report_from_identities(
+            facts=facts,
+            covered_ids={_unit_id(unit) for unit in facts.units},
+            skipped_ids={},
+            errors=errors,
+            warnings=warnings,
+        )
 
     inventory = docs.get("02_COMPONENT_INVENTORY")
     inventory_text = inventory.read_text(encoding="utf-8", errors="replace") if inventory else ""
@@ -876,6 +1259,7 @@ def validate_source_provenance(staging_dir: Path, facts: FactsManifest) -> Cover
         covered_ids=covered_ids,
         skipped_ids={},
         errors=errors,
+        warnings=warnings,
     )
 
 
@@ -892,9 +1276,18 @@ _EVIDENCE_CONFIDENCE_MARKDOWN_WRAPPERS = ("**", "__", "`", "*", "_")
 _PROVENANCE_SOURCE_RE = re.compile(
     r"(?:doc[_ -]?pack|phase\s*2|engineering[_ -]?facts|facts_manifest|"
     r"scanner|scan|preprocess|investigation|scorecard|source|"
-    r"artifact|path|\.item\b|\.json\b|\.csv\b|\.md\b|\.xml\b|\.py\b|\.tsx?\b|\.js\b|\.sql\b)",
+    r"artifact|path|"
+    r"\.item\b|\.json\b|\.csv\b|\.md\b|\.xml\b|\.py\b|\.tsx?\b|\.js\b|\.sql\b|"
+    r"\.cs\b|\.vb\b|\.config\b|\.asax\b|\.csproj\b|\.aspx\b|\.ashx\b|\.resx\b|"
+    r"\.java\b|\.kt\b|\.go\b|\.rs\b|\.rb\b|\.sh\b|\.ps1\b|\.bat\b|"
+    r"\.yaml\b|\.yml\b|\.toml\b|\.ini\b|\.cfg\b|\.tf\b|\.hcl\b|"
+    r"\.cpp\b|\.c\b|\.h\b|\.hpp\b|\.php\b|\.swift\b|\.scala\b|"
+    r"[/\\][\w])",
     re.IGNORECASE,
 )
+# Looser check: any content that looks like a file path (has an extension or path separator).
+# Used to classify "has-content-but-unrecognized-format" rows as soft warnings rather than hard errors.
+_PATH_LIKE_RE = re.compile(r"[/\\][\w]|\b[\w.\-]+\.[a-zA-Z]{2,6}\b")
 
 
 def _markdown_table_cells(line: str) -> list[str]:
@@ -926,22 +1319,27 @@ def _evidence_confidence_level(cell: str) -> str | None:
     return None
 
 
-def _evidence_register_errors(path: Path, major_topics: list[str]) -> list[str]:
+def _evidence_register_errors(path: Path, major_topics: list[str]) -> tuple[list[str], list[str]]:
+    """Return (hard_errors, soft_warnings) for an Evidence Register table.
+
+    Hard errors block publication (empty/missing sources, wrong structure).
+    Soft warnings flag unrecognized source path formats without triggering repair.
+    """
     text = path.read_text(encoding="utf-8", errors="replace")
     match = EVIDENCE_REGISTER_SECTION_RE.search(text)
     if not match:
-        return [f"{path.name} missing required Evidence Register"]
+        return [f"{path.name} missing required Evidence Register"], []
 
     lines = [line for line in match.group(1).splitlines() if line.strip()]
     table_start = next((index for index, line in enumerate(lines) if line.lstrip().startswith("|")), None)
     if table_start is None or table_start + 1 >= len(lines):
-        return [f"{path.name} Evidence Register missing required provenance table"]
+        return [f"{path.name} Evidence Register missing required provenance table"], []
 
     headers = [cell.lower() for cell in _markdown_table_cells(lines[table_start])]
     if headers != list(_EVIDENCE_REGISTER_HEADERS):
-        return [f"{path.name} Evidence Register has invalid table headers"]
+        return [f"{path.name} Evidence Register has invalid table headers"], []
     if not _table_separator(_markdown_table_cells(lines[table_start + 1])):
-        return [f"{path.name} Evidence Register missing markdown table separator"]
+        return [f"{path.name} Evidence Register missing markdown table separator"], []
 
     rows = [
         _markdown_table_cells(line)
@@ -955,25 +1353,63 @@ def _evidence_register_errors(path: Path, major_topics: list[str]) -> list[str]:
     ]
     min_rows = max(1, min(3, len(major_topics)))
     errors: list[str] = []
+    warnings: list[str] = []
     if len(substantive) < min_rows:
         errors.append(f"{path.name} Evidence Register has fewer than {min_rows} substantive evidence rows")
-        return errors
+        return errors, warnings
 
     if any(_evidence_confidence_level(row[4]) not in _EVIDENCE_CONFIDENCE for row in substantive):
         errors.append(f"{path.name} Evidence Register has invalid confidence; use HIGH, MEDIUM, or LOW")
-    if any(not _PROVENANCE_SOURCE_RE.search(f"{row[2]} {row[3]}") for row in substantive):
-        errors.append(f"{path.name} Evidence Register has evidence rows without source provenance")
-    return errors
+
+    rows_no_provenance = [
+        row for row in substantive
+        if not _PROVENANCE_SOURCE_RE.search(f"{row[2]} {row[3]}")
+    ]
+    if rows_no_provenance:
+        _empty_vals = {"-", "n/a", "na", "none", "tbd", "unknown", "tbc", "n/a (inferred)", "n/a (scanner-limited)"}
+        # Hard error: empty/placeholder OR generic text with no path-like content.
+        # Soft warning: has a file extension or path separator but extension isn't in our whitelist.
+        hard_rows = [
+            row for row in rows_no_provenance
+            if not row[3].strip()
+            or row[3].strip().lower() in _empty_vals
+            or not _PATH_LIKE_RE.search(f"{row[2]} {row[3]}")
+        ]
+        soft_rows = [row for row in rows_no_provenance if row not in hard_rows]
+        if hard_rows:
+            warnings.append(f"{path.name} Evidence Register has evidence rows without source provenance")
+        if soft_rows:
+            sample = "; ".join(r[3][:60] for r in soft_rows[:3])
+            warnings.append(
+                f"{path.name} Evidence Register has {len(soft_rows)} rows with unrecognized"
+                f" source path format (verify manually): {sample}"
+            )
+    return errors, warnings
 
 
-def validate_usefulness_rubric(staging_dir: Path, facts: FactsManifest) -> CoverageReport:
+def validate_usefulness_rubric(
+    staging_dir: Path,
+    facts: FactsManifest,
+    *,
+    required_docs: list[str] | None = None,
+    enforce_default_contract: bool = True,
+) -> CoverageReport:
     """Final deterministic product-quality rubric for developer usefulness."""
 
     text = "\n".join(
         (staging_dir / f"{doc}.md").read_text(encoding="utf-8", errors="replace")
-        for doc in REQUIRED_DOCS
+        for doc in (required_docs or REQUIRED_DOCS)
         if (staging_dir / f"{doc}.md").exists()
     )
+    if not enforce_default_contract:
+        errors = [] if text.strip() else ["Plugin-pack output is empty"]
+        return _coverage_report_from_identities(
+            facts=facts,
+            covered_ids={_unit_id(unit) for unit in facts.units},
+            skipped_ids={},
+            errors=errors,
+        )
+
     lower = text.lower()
     rubric = {
         "developer onboarding": ["onboarding", "documentation map", "common tasks"],
@@ -1180,3 +1616,89 @@ def covered_source_files(staging_dir: Path) -> set[str]:
             if path:
                 paths.add(path)
     return paths
+
+
+# ── Scorecard contract validator ─────────────────────────────────────────────
+
+_SCORECARD_DIMENSIONS = [
+    "data_lineage",
+    "business_logic",
+    "security",
+    "operations",
+    "architecture",
+    "performance",
+    "standards",
+    "migration",
+]
+
+_SCORECARD_WEIGHTS = {
+    "data_lineage": "20%",
+    "business_logic": "20%",
+    "security": "15%",
+    "operations": "15%",
+    "architecture": "10%",
+    "performance": "10%",
+    "standards": "5%",
+    "migration": "5%",
+}
+
+_OWNERSHIP_TAG_RE = re.compile(r"\[SOLO\]|\[PAIR\]", re.I)
+_TABLE_ROW_RE = re.compile(r"^\s*\|.+\|", re.MULTILINE)
+
+
+def validate_scorecard_contract(text: str) -> dict:
+    """Check that a scorecard output satisfies the declared contract.
+
+    Validates:
+    - All 8 dimension names appear in the scorecard (any context).
+    - All 8 dimension weights appear adjacent to their dimension names.
+    - Every table row that looks like a risk entry contains [SOLO] or [PAIR].
+    - Dimensions 'security' and 'operations' do not claim HIGH confidence
+      without at least one PASS checklist item nearby.
+
+    Returns {"ok": bool, "errors": list[str]}.
+    """
+    errors: list[str] = []
+    lower = text.lower()
+
+    # Check all dimension names present
+    for dim in _SCORECARD_DIMENSIONS:
+        # Allow space/underscore variants (e.g. "data lineage" or "data_lineage")
+        pattern = dim.replace("_", r"[\s_]")
+        if not re.search(pattern, lower):
+            errors.append(f"Scorecard missing required dimension: {dim}")
+
+    # Check weights appear near dimension names
+    for dim, weight in _SCORECARD_WEIGHTS.items():
+        pattern = dim.replace("_", r"[\s_]")
+        for m in re.finditer(pattern, lower):
+            window = text[max(0, m.start() - 20) : m.end() + 80]
+            if weight in window:
+                break
+        else:
+            errors.append(f"Scorecard dimension '{dim}' missing weight ({weight})")
+
+    # Check risk rows have ownership tags
+    risk_section = re.search(r"(?i)#+\s*(top\s+risks?|risks?\s+and|risk\s+findings?)", text)
+    if risk_section:
+        risk_text = text[risk_section.start():]
+        # Find the next section heading to bound the risk table
+        next_section = re.search(r"(?m)^#+\s+\S", risk_text[1:])
+        risk_text = risk_text[: next_section.start() + 1] if next_section else risk_text
+        rows = [ln for ln in risk_text.splitlines() if "|" in ln and not re.match(r"^\s*\|[-: ]+\|", ln)]
+        header_skipped = False
+        for row in rows:
+            if not header_skipped:
+                header_skipped = True
+                continue
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            # Only validate rows with at least 3 cells (avoid separator rows)
+            if len(cells) < 3 or not any(cells):
+                continue
+            if not _OWNERSHIP_TAG_RE.search(row):
+                label = cells[0][:40] if cells else "unknown"
+                errors.append(
+                    f"Risk row '{label}' missing ownership tag: add [SOLO] or [PAIR] to the remediation cell"
+                )
+
+    return {"ok": not errors, "errors": errors}

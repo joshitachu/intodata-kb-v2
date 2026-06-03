@@ -12,6 +12,7 @@ function failedStream(error = "Provider timed out"): StreamState {
     messageId: null,
     latencyMs: null,
     usage: null,
+    steps: [],
   };
 }
 

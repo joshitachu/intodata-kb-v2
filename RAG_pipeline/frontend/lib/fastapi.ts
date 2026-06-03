@@ -24,22 +24,6 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return {};
 }
 
-async function getCookieHeaders(): Promise<Record<string, string>> {
-  try {
-    const cookieStore = await cookies();
-    const cookieHeader = cookieStore
-      .getAll()
-      .map((cookie) => `${cookie.name}=${cookie.value}`)
-      .join("; ");
-    if (cookieHeader) {
-      return { Cookie: cookieHeader };
-    }
-  } catch {
-    // cookies() not available in client context - that's fine
-  }
-  return {};
-}
-
 export async function fastapiFetch<T>(
   path: string,
   options: FetchOptions = {},
@@ -73,7 +57,7 @@ export async function fastapiUpload<T>(
   path: string,
   formData: FormData,
 ): Promise<T> {
-  const authHeaders = await getCookieHeaders();
+  const authHeaders = await getAuthHeaders();
 
   const res = await fetch(`${FASTAPI_URL}${path}`, {
     method: "POST",

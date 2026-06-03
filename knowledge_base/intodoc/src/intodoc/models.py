@@ -111,6 +111,7 @@ class ParsedJob(BaseModel):
     raw_routines: list[str] = Field(default_factory=list)
     group: str = ""
     subgroup: str = ""
+    active: bool = True
 
 
 class MetadataConnection(BaseModel):
@@ -172,6 +173,7 @@ class ScanResult(BaseModel):
     context_groups: list[ContextGroup] = Field(default_factory=list)
     routines: list[Routine] = Field(default_factory=list)
     manifest: ProjectManifest = Field(default_factory=ProjectManifest)
+    schema_definitions: list[dict] = Field(default_factory=list)
     stats: dict = Field(default_factory=dict)
     warnings: list[ScanWarning] = Field(default_factory=list)
 

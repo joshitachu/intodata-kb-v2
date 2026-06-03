@@ -12,6 +12,7 @@ import logging
 import re
 import shutil
 import time
+from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from mcp_server.config import config
 from mcp_server.providers.base import AgentResult, DocGenContext, DocGenerationProvider, LogCallback
 from mcp_server.services.pack_loader import InstructionPack
 from mcp_server.providers.custom.investigator import (
+    ChunkManifestInvestigator,
     InvestigationError,
     InvestigatorLimits,
     SingleShotInvestigator,
@@ -28,6 +30,8 @@ from mcp_server.providers.custom.investigator import (
     write_investigation_artifacts,
 )
 from mcp_server.providers.custom.engineering_facts import EngineeringFactsService
+from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, EvidenceBundleBuilder
+from mcp_server.providers.custom.talend_intelligence import write_talend_intelligence
 from mcp_server.providers.custom.agent_runtime import (
     AgentTaskContract,
     AgentTaskRuntime,
@@ -35,7 +39,14 @@ from mcp_server.providers.custom.agent_runtime import (
     default_input_budget,
     default_tool_budget,
 )
+from mcp_server.providers.custom.dag import (
+    build_execution_graph,
+    deterministic_execution_plan,
+    validate_execution_plan,
+)
 from mcp_server.providers.custom.models import (
+    CoverageReport,
+    ExecutionPlan,
     HarnessRunState,
     InvestigationReport,
     ModelOptions,
@@ -48,6 +59,7 @@ from mcp_server.providers.custom.prompts import (
     DOC_BUNDLE_MAP,
     REQUIRED_DOCS,
     doc_prompt,
+    facts_summary,
     group_analysis_prompt,
     phase2_section_repair_prompt,
     scorecard_prompt,
@@ -65,6 +77,8 @@ from mcp_server.providers.custom.validators import (
     validate_doc_depth,
     validate_docs,
     validate_final_redaction,
+    validate_pack_quality,
+    validate_scorecard_contract,
     validate_source_provenance,
     validate_usefulness_rubric,
     build_documentation_obligation_map,
@@ -112,6 +126,9 @@ DOC_SECTION_BUNDLE_MAP = {
     "06_OPERATIONS_TESTING_AND_DEBUGGING": {"SCHEDULING", "ERROR_HANDLING", "ENVIRONMENT_CONFIG", "EXTERNAL_SYSTEMS", "RISK_FLAGS"},
     "07_QUALITY_SECURITY_RISK_SCORECARD": {"ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SOURCE_SQL", "CUSTOM_CODE", "RISK_FLAGS"},
     "08_CHANGE_PLAYBOOK": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SCHEDULING", "ENVIRONMENT_CONFIG", "CROSS_GROUP_REFS", "RISK_FLAGS"},
+    # 09_EXECUTIVE_SUMMARY reads from scorecard + completed docs, not from analysis bundle.
+    # Its context is injected specially in _phase3_context_files().
+    "09_EXECUTIVE_SUMMARY": set(),
 }
 def _evidence_register_section(text: str) -> str | None:
     match = EVIDENCE_REGISTER_SECTION_RE.search(text)
@@ -134,6 +151,195 @@ def _evidence_register_section(text: str) -> str | None:
     return f"{lines[0].strip()}\n\n" + "\n".join(table_lines).rstrip()
 
 
+def _parse_register_rows(text: str) -> list[list[str]]:
+    """Return Evidence Register data rows as lists of 5 cell strings."""
+    match = EVIDENCE_REGISTER_SECTION_RE.search(text)
+    if not match:
+        return []
+    lines = [line for line in match.group(1).splitlines() if line.strip()]
+    table_start = next((i for i, line in enumerate(lines) if line.lstrip().startswith("|")), None)
+    if table_start is None or table_start + 2 >= len(lines):
+        return []
+    rows = []
+    for line in lines[table_start + 2:]:
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 5:
+            rows.append(cells)
+    return rows
+
+
+def _build_register_section(rows: list[list[str]]) -> str:
+    """Build a ## Evidence Register markdown section from parsed row lists."""
+    header = "| Topic | Units / Scope | Evidence Source | Source Artifact / Path | Confidence |"
+    separator = "|---|---|---|---|---|"
+    row_lines = [f"| {' | '.join(row)} |" for row in rows]
+    return "## Evidence Register\n\n" + "\n".join([header, separator, *row_lines])
+
+
+# Synthesis docs cite sibling generated docs in their Evidence Register, not raw scanner paths.
+_SYNTHESIS_DOCS = frozenset({"09_EXECUTIVE_SUMMARY.md", "07_QUALITY_SECURITY_RISK_SCORECARD.md"})
+
+_SQL_NOISE = frozenset({
+    "SELECT", "FROM", "WHERE", "JOIN", "INNER", "OUTER", "LEFT", "RIGHT", "FULL",
+    "CROSS", "ON", "AND", "OR", "NOT", "NULL", "TRUE", "FALSE", "INTO", "VALUES",
+    "UPDATE", "DELETE", "INSERT", "CREATE", "ALTER", "DROP", "TABLE", "VIEW", "INDEX",
+    "ORDER", "GROUP", "BY", "HAVING", "DISTINCT", "TOP", "WITH", "UNION", "ALL",
+    "CASE", "WHEN", "THEN", "ELSE", "END", "AS", "SET", "EXEC", "CAST", "CONVERT",
+    "NOLOCK", "WITH", "BEGIN", "COMMIT", "ROLLBACK", "DECLARE", "RETURN", "GOTO",
+    "DATAAREAID", "PARTITION", "RECID",  # AX ubiquitous system columns — not distinctive
+})
+
+_IDENT_SQL_TABLE = re.compile(
+    r'\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:\[?\w+\]?\.)?\[?([A-Za-z_]\w{2,})\]?\b',
+    re.IGNORECASE,
+)
+_IDENT_CONNECTION = re.compile(
+    r'(?:RegisterConnection|OpenDbConnection|connectionStringName|connectionString\s+name)\s*[=(,"\']+\s*["\']?(\w{2,})',
+    re.IGNORECASE,
+)
+_IDENT_URL = re.compile(r'(?:Route|route|path|endpoint|url)\s*[=("\']+\s*["\']?(/[\w/{}\[\]-]{3,})', re.IGNORECASE)
+_IDENT_CAMEL = re.compile(r'\b([A-Z][a-z]{2,}(?:[A-Z][a-z]{2,})+)\b')
+_IDENT_ALLCAPS = re.compile(r'\b([A-Z][A-Z0-9_]{3,})\b')
+_IDENT_CONFIG_KEY = re.compile(r'(?:appSettings|key|setting)\s*[=\["\']+\s*["\']?([\w.:\-]{4,})["\']', re.IGNORECASE)
+
+
+def _extract_chunk_identifiers(text: str, max_items: int = 25) -> list[str]:
+    """Extract distinctive named identifiers from chunk text for manifest hints.
+
+    Pulls SQL table names, connection names, URL paths, CamelCase class/method names,
+    ALL_CAPS constants, and config keys. Works for any platform or language.
+    Returns a deduplicated list ranked by specificity (longer = more specific).
+    """
+    seen: set[str] = set()
+
+    def _add(val: str) -> None:
+        v = val.strip().strip("[]\"'`")
+        if len(v) >= 3 and v not in _SQL_NOISE and v.upper() not in _SQL_NOISE:
+            seen.add(v)
+
+    for m in _IDENT_SQL_TABLE.finditer(text):
+        _add(m.group(1).upper())
+    for m in _IDENT_CONNECTION.finditer(text):
+        _add(m.group(1))
+    for m in _IDENT_URL.finditer(text):
+        _add(m.group(1))
+    for m in _IDENT_CAMEL.finditer(text):
+        if 6 <= len(m.group(1)) <= 50:
+            _add(m.group(1))
+    for m in _IDENT_ALLCAPS.finditer(text):
+        if m.group(1) not in _SQL_NOISE and len(m.group(1)) >= 4:
+            _add(m.group(1))
+    for m in _IDENT_CONFIG_KEY.finditer(text):
+        _add(m.group(1))
+
+    # Rank: longer identifiers are more specific; deduplicate case-insensitively
+    ranked = sorted(seen, key=len, reverse=True)
+    deduped: list[str] = []
+    lower_seen: set[str] = set()
+    for item in ranked:
+        low = item.lower()
+        if low not in lower_seen:
+            lower_seen.add(low)
+            deduped.append(item)
+        if len(deduped) >= max_items:
+            break
+    return deduped
+
+
+def _empty_group_stub(group: str, units: list[str]) -> str:
+    """Produce a minimal but structurally valid Phase 2 analysis for a group whose
+    preprocess content is below the investigation threshold (data-only / empty source).
+
+    The stub satisfies the coverage, depth, and guide-sections gates without any LLM call.
+    """
+    covered = "\n".join(f"- COVERED: {u}" for u in units)
+    unit_lines = "\n".join(
+        f"- {u}: scanner-limited; no source code in scanner output" for u in units
+    )
+    return (
+        f"# Phase 2 Analysis: {group}\n\n"
+        "## Coverage\n\n"
+        f"{covered}\n\n"
+        "## Model Analysis\n\n"
+        "### GROUP_SUMMARY\n\n"
+        f"Scanner-limited group. The source artifact for `{group}` contains no analysable "
+        "source code, logic, or configuration. All units are documented as data-only stubs.\n\n"
+        f"Units:\n{unit_lines}\n"
+    )
+
+
+def _groups_from_errors(errors: list[str], known_groups: set[str]) -> set[str]:
+    """Extract group names explicitly mentioned in validator error strings.
+
+    Parses patterns like 'Phase 2 analysis for group demo-data missing...'
+    Returns only names that are in the known_groups set.
+    """
+    found: set[str] = set()
+    for err in errors:
+        m = re.search(r"for group\s+[`']?(\S+?)[`']?[\s,.]", err)
+        if m and m.group(1) in known_groups:
+            found.add(m.group(1))
+    return found
+
+
+def _line_marks_table_ddl_only(line: str, table: str, short: str) -> bool:
+    """True when a single table-specific row/line marks that table as DDL-only."""
+
+    if not re.search(r"\b(?:DDL[_ -]?ONLY|PRESENT_IN_DDL_ONLY|DDL only)\b", line, re.IGNORECASE):
+        return False
+    # Avoid broad summary prose such as "All other DDL-only tables".
+    if not line.lstrip().startswith("|") and len(line) > 300:
+        return False
+
+    cells = [cell.strip(" `") for cell in line.strip().strip("|").split("|")] if "|" in line else [line]
+    table_names = {
+        table.lower(),
+        short.lower(),
+        f"dbo.{short}".lower(),
+    }
+    for cell in cells[:3]:
+        normalized = cell.strip("[]` ").lower()
+        if normalized in table_names:
+            return True
+    return False
+
+
+def _sql_usage_tables(sql_usage_path: Path) -> list[str]:
+    if not sql_usage_path.exists():
+        return []
+    try:
+        payload = json.loads(sql_usage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    tables = {
+        str(table.get("table") or "")
+        for record in payload.get("records", []) or []
+        if isinstance(record, dict)
+        for table in record.get("tables", []) or []
+        if isinstance(table, dict) and table.get("table")
+    }
+    return sorted(tables, key=lambda value: (-len(value), value.lower()))
+
+
+def _mark_line_sql_used(line: str) -> str:
+    """Replace DDL-only classification tokens on a table row with SQL-used status."""
+
+    replacements = [
+        (r"\bPRESENT_IN_DDL_ONLY\b", "USED_BY_CURRENT_CODE"),
+        (r"\bDDL[_ -]?ONLY\b", "USED_BY_CURRENT_CODE"),
+        (r"\bDDL only\b", "SQL usage"),
+        (r"\bNone \(USED_BY_CURRENT_CODE\)\b", "SQL usage"),
+    ]
+    updated = line
+    for pattern, repl in replacements:
+        updated = re.sub(pattern, repl, updated, flags=re.IGNORECASE)
+    # Common generated wording in DDL scripts: "None (PRESENT_IN_DDL_ONLY)".
+    updated = re.sub(r"\bNone\s*\(\s*USED_BY_CURRENT_CODE\s*\)", "SQL usage", updated, flags=re.IGNORECASE)
+    return updated
+
+
 class FailureKind(str, Enum):
     CONTEXT_TOO_LARGE = "context_too_large"
     EMPTY_OUTPUT = "empty_output"
@@ -151,6 +357,58 @@ class FailureKind(str, Enum):
             FailureKind.BUDGET_EXCEEDED,
             FailureKind.INCOMPLETE,
         }
+
+
+@dataclass(frozen=True)
+class ToolPolicy:
+    """Explicit per-phase tool-use policy replacing the implicit use_tools_for_core_generation()."""
+
+    enabled: bool
+    max_input_tokens: int
+    max_calls: int
+
+
+class _PipelineLog:
+    """Accumulates per-phase telemetry during a generation run and writes _pipeline_log.md."""
+
+    def __init__(self) -> None:
+        self._entries: list[dict] = []
+
+    def add(
+        self,
+        phase: str,
+        state: "HarnessRunState",
+        calls_before: int,
+        validation: str,
+        notes: str = "",
+    ) -> None:
+        new_calls = state.calls[calls_before:]
+        self._entries.append({
+            "phase": phase,
+            "calls": len(new_calls),
+            "input_tokens": sum(c.result.input_tokens for c in new_calls),
+            "output_tokens": sum(c.result.output_tokens for c in new_calls),
+            "latency_ms": sum(c.result.latency_ms for c in new_calls),
+            "validation": validation,
+            "notes": notes[:80],
+        })
+
+    def flush(self, staging_dir: "Path") -> None:
+        rows = [
+            "| Phase | Calls | Tokens In | Tokens Out | Duration (ms) | Validation | Notes |",
+            "|-------|-------|-----------|-----------|--------------|-----------|-------|",
+        ]
+        for e in self._entries:
+            rows.append(
+                f"| {e['phase']} | {e['calls']} | {e['input_tokens']} | {e['output_tokens']} | "
+                f"{e['latency_ms']} | {e['validation']} | {e['notes']} |"
+            )
+        if not self._entries:
+            rows.append("| - | - | - | - | - | - | - |")
+        (staging_dir / "_pipeline_log.md").write_text(
+            "# Pipeline Log\n\n" + "\n".join(rows) + "\n",
+            encoding="utf-8",
+        )
 
 
 def estimate_input_tokens(prompt: str, context_files: list[Path] | None = None) -> int:
@@ -176,9 +434,17 @@ def context_bytes(context_files: list[Path] | None = None) -> int:
     return total
 
 
-def use_tools_for_core_generation(provider: ModelProvider) -> bool:
-    """Use bounded native tool loops for providers that advertise tool support."""
+def _json_object(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return stripped
+    match = re.search(r"\{.*\}", stripped, re.DOTALL)
+    if not match:
+        raise ValueError("no JSON object found")
+    return match.group(0)
 
+
+def _provider_supports_tools(provider: ModelProvider) -> bool:
     return bool(getattr(provider, "supports_tools", False))
 
 
@@ -249,17 +515,20 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._doc_assignments: dict[str, list[str]] = dict(DOC_ASSIGNMENTS)
         self._doc_bundle_map: dict[str, str] = dict(DOC_BUNDLE_MAP)
         self._doc_section_requirements_extra: dict[str, list[str]] = {}
+        self._plugin_manifest = None
+        self._pack_evidence_paths: dict[str, dict[str, str]] = {}
 
         if plugin_pack_dir:
             from mcp_server.services.plugin_schema import load_plugin_manifest
             try:
                 _manifest = load_plugin_manifest(plugin_pack_dir)
+                self._plugin_manifest = _manifest
                 if _manifest.docs:
                     self._required_docs = [d.name for d in _manifest.docs]
                     self._doc_assignments = {"custom": list(self._required_docs)}
                     self._doc_bundle_map = {d: "custom" for d in self._required_docs}
                     self._doc_section_requirements_extra = {
-                        d.name: d.sections for d in _manifest.docs if d.sections
+                        d.name: d.required_sections for d in _manifest.docs if d.required_sections
                     }
             except Exception as exc:
                 logger.warning(
@@ -267,6 +536,296 @@ class CustomHarnessProvider(DocGenerationProvider):
                     exc,
                     exc_info=True,
                 )
+
+    @property
+    def _plugin_mode(self) -> bool:
+        return self.plugin_pack_dir is not None
+
+    def _phase_policy(self, phase: str) -> str:
+        """Return the execution policy for a harness phase.
+
+        Resolution order:
+        1. Explicit phases block in the manifest.
+        2. Backward-compat: if evidence_profiles are present → skip all phases.
+        3. No pack or no manifest → run all phases (enterprise default).
+        """
+        if not self._plugin_mode or self._plugin_manifest is None:
+            return "run"
+        declared = getattr(self._plugin_manifest, "phases", None)
+        if declared is not None:
+            return getattr(declared, phase, "skip")
+        # backward compat: evidence_profiles present implies pack-contract (skip all)
+        if getattr(self._plugin_manifest, "evidence_profiles", None):
+            return "skip"
+        return "run"
+
+    def _pack_investigation_categories(self) -> set[str]:
+        """Return the set of evidence categories the pack cares about, or empty set if all."""
+        if not self._plugin_mode or self._plugin_manifest is None:
+            return set()
+        profiles = getattr(self._plugin_manifest, "evidence_profiles", {}) or {}
+        cats: set[str] = set()
+        for profile in profiles.values():
+            cats.update(getattr(profile, "include", []))
+        return cats
+
+    def _chunk_has_pack_relevant_content(self, chunk_text: str) -> bool:
+        """Return True if chunk text contains keywords matching any pack evidence category.
+
+        Pack runs screen against their declared evidence profile categories.
+        Enterprise runs (no pack) screen against all specific categories, excluding
+        'source_summary' which matches nearly any file and would defeat the purpose.
+        Chunks with no category match (DTO stubs, namespace files, CSS/UI) are skipped,
+        saving ~15k input tokens per irrelevant LLM call.
+        """
+        cats = self._pack_investigation_categories()
+        if not cats:
+            # Enterprise run: use all specific categories as the default filter.
+            # 'source_summary' is excluded because it matches almost any code file.
+            return any(
+                pattern.search(chunk_text)
+                for cat, pattern in CATEGORY_PATTERNS.items()
+                if cat != "source_summary"
+            )
+        return any(
+            pattern.search(chunk_text)
+            for cat, pattern in CATEGORY_PATTERNS.items()
+            if cat in cats
+        )
+
+    @property
+    def _pack_contract_mode(self) -> bool:
+        """True when both investigation and analysis are skipped (pack-contract path)."""
+        return (
+            self._plugin_mode
+            and self._phase_policy("investigation") == "skip"
+            and self._phase_policy("analysis") == "skip"
+        )
+
+    def _tool_policy(self, provider: ModelProvider, phase: str) -> ToolPolicy:
+        """Return the tool-use policy for a given provider/phase combination.
+
+        Repair phases always run with tools (reduced budget) regardless of the
+        base phase — phase2.repair and phase3.repair both need evidence retrieval.
+        Phase 2 and scorecard core generation run without tools (bounded context only).
+        Pack mode disables tools for Phase 2/3 core generation to keep generation bounded.
+        """
+        if not _provider_supports_tools(provider):
+            return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
+        # Repair check must come before phase-prefix checks: "phase2.repair" would
+        # otherwise be caught by startswith("phase2") and silently disable tools.
+        if "repair" in phase:
+            return ToolPolicy(
+                enabled=True,
+                max_input_tokens=config.agent_phase3_tool_input_token_cap // 2,
+                max_calls=max(1, config.agent_max_tool_calls // 2),
+            )
+        if phase.startswith("phase1.investigate"):
+            return ToolPolicy(
+                enabled=True,
+                max_input_tokens=config.agent_phase2_tool_input_token_cap // 2,
+                max_calls=max(1, config.agent_max_tool_calls // 2),
+            )
+        if phase.startswith("phase2.deep_dive"):
+            return ToolPolicy(
+                enabled=True,
+                max_input_tokens=config.agent_phase2_tool_input_token_cap,
+                max_calls=config.agent_max_tool_calls,
+            )
+        if phase in {"phase3.consistency", "consistency", "critic"}:
+            return ToolPolicy(
+                enabled=True,
+                max_input_tokens=config.agent_phase3_tool_input_token_cap,
+                max_calls=config.agent_max_tool_calls,
+            )
+        if phase.startswith("phase1") or phase.startswith("phase2") or phase in {"scorecard", "phase2.6"}:
+            return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
+        if self._plugin_mode and phase.startswith(("phase2", "phase3")):
+            return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
+        # Phase 3 and other tool-capable phases
+        return ToolPolicy(
+            enabled=True,
+            max_input_tokens=config.agent_phase3_tool_input_token_cap,
+            max_calls=config.agent_max_tool_calls,
+        )
+
+    async def _prepare_execution_plan(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        facts_path: Path,
+        log_cb: LogCallback,
+    ) -> ExecutionPlan:
+        """Create and persist the validated DAG execution plan for this run."""
+
+        plans_dir = ctx.staging_dir / "_plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        fallback = deterministic_execution_plan(
+            state.facts_manifest,
+            required_docs=self._required_docs,
+            preprocess_groups=list(ctx.preprocess_groups),
+            investigation_policy=self._phase_policy("investigation"),
+            analysis_policy=self._phase_policy("analysis"),
+            scorecard_policy=self._phase_policy("scorecard"),
+            doc_bundles_policy=self._phase_policy("doc_bundles"),
+            plugin_mode=self._plugin_mode,
+            small_project_threshold=config.small_project_threshold,
+        )
+        plan = fallback
+
+        if config.agent_planner_enabled and config.agent_planner_mode.lower() == "llm":
+            prompt = self._planner_prompt(ctx, state, fallback)
+            opts = ModelOptions(
+                max_tokens=config.agent_planner_max_tokens,
+                temperature=0.0,
+                retries=1,
+                timeout_s=180.0,
+                json_mode=config.agent_planner_require_valid_json,
+                provider_options=self._provider_options(self.investigation_provider),
+            )
+            result = await self.investigation_provider.complete(
+                prompt,
+                [facts_path],
+                opts,
+            )
+            state.calls.append(ProviderCallLog(phase="planner", target="execution_plan", result=result))
+            await self._log_call_metrics(ctx, "planner:execution_plan", result, log_cb)
+            if result.success:
+                try:
+                    candidate = ExecutionPlan.model_validate_json(_json_object(result.text))
+                    candidate.mode = "llm"
+                    candidate.planner_enabled = True
+                    candidate.dag_enabled = True
+                    candidate.required_docs = candidate.required_docs or list(self._required_docs)
+                    candidate.graph = build_execution_graph(candidate, state.facts_manifest)
+                    errors = validate_execution_plan(
+                        candidate,
+                        state.facts_manifest,
+                        allowed_docs=self._required_docs,
+                        max_nodes=config.agent_dag_max_nodes,
+                        max_depth=config.agent_dag_max_depth,
+                    )
+                    if errors:
+                        candidate.fallback_reason = "; ".join(errors[:5])
+                        plan = fallback.model_copy(update={"fallback_reason": candidate.fallback_reason})
+                    else:
+                        plan = candidate
+                except Exception as exc:
+                    plan = fallback.model_copy(update={"fallback_reason": f"planner output invalid: {exc}"})
+            else:
+                plan = fallback.model_copy(update={"fallback_reason": result.raw_error or "planner call failed"})
+
+        plan.dag_enabled = True
+        if not plan.graph.nodes:
+            plan.graph = build_execution_graph(plan, state.facts_manifest)
+        errors = validate_execution_plan(
+            plan,
+            state.facts_manifest,
+            allowed_docs=self._required_docs,
+            max_nodes=config.agent_dag_max_nodes,
+            max_depth=config.agent_dag_max_depth,
+        )
+        if errors and config.agent_dag_strict_validation:
+            plan = fallback.model_copy(update={"fallback_reason": "; ".join(errors[:5])})
+        (plans_dir / "execution_plan.json").write_text(plan.model_dump_json(indent=2), encoding="utf-8")
+        (plans_dir / "execution_graph.json").write_text(plan.graph.model_dump_json(indent=2), encoding="utf-8")
+        (plans_dir / "node_results.json").write_text("[]\n", encoding="utf-8")
+        (plans_dir / "graph_events.jsonl").write_text("", encoding="utf-8")
+        await log_cb(
+            ctx.project_id,
+            "[custom] DAG execution plan prepared: "
+            f"mode={plan.mode}, analysis={plan.analysis_mode}, investigation={plan.investigation_mode}"
+            + (f", fallback={plan.fallback_reason}" if plan.fallback_reason else ""),
+            "info",
+        )
+        return plan
+
+    def _planner_prompt(self, ctx: DocGenContext, state: HarnessRunState, fallback: ExecutionPlan) -> str:
+        groups = "\n".join(
+            f"- {group}: {count} units"
+            for group, count in sorted(state.facts_manifest.groups.items())
+        )
+        docs = "\n".join(f"- {doc}" for doc in self._required_docs)
+        fallback_json = fallback.model_dump_json(indent=2)
+        return f"""\
+You are planning a documentation-generation DAG for a bounded enterprise harness.
+Return only JSON matching the ExecutionPlan shape implied by the fallback example.
+
+Hard constraints:
+- Use only the declared docs listed below.
+- Do not omit validation_gate nodes from the graph.
+- Choose deep analysis only for groups with material complexity or risk.
+- Keep final validators and publish gates enabled.
+- Python will reject unsafe or invalid plans.
+
+Declared docs:
+{docs}
+
+Groups:
+{groups or "- none"}
+
+Project facts:
+- Project: {state.facts_manifest.project_id}
+- Platform: {state.facts_manifest.platform}
+- Units: {state.facts_manifest.unit_count} {state.facts_manifest.canonical_unit_label}
+- Plugin mode: {self._plugin_mode}
+- Enterprise mode: {ctx.enterprise_mode}
+
+Fallback plan example:
+{fallback_json}
+"""
+
+    @staticmethod
+    def _record_dag_node_result(
+        ctx: DocGenContext,
+        node_id: str,
+        status: str,
+        *,
+        artifacts: list[str] | None = None,
+        validation: str = "",
+        error: str | None = None,
+    ) -> None:
+        path = ctx.staging_dir / "_plans" / "node_results.json"
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        except json.JSONDecodeError:
+            existing = []
+        existing.append({
+            "node_id": node_id,
+            "status": status,
+            "artifacts": artifacts or [],
+            "validation": validation,
+            "error": error,
+            "updated_at": time.time(),
+        })
+        path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        events = ctx.staging_dir / "_plans" / "graph_events.jsonl"
+        with events.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(existing[-1]) + "\n")
+
+    def _write_phase2_coverage_record(
+        self,
+        ctx: DocGenContext,
+        group: str,
+        units: list[str],
+        analysis_path: Path,
+        *,
+        status: str = "completed",
+    ) -> None:
+        coverage_dir = ctx.staging_dir / "_analysis" / "_coverage_units"
+        coverage_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            rel_analysis = analysis_path.relative_to(ctx.staging_dir / "_analysis").as_posix()
+        except ValueError:
+            rel_analysis = analysis_path.name
+        record = {
+            "group": group,
+            "expected_units": list(units),
+            "analysis_file": rel_analysis,
+            "status": status,
+            "analysis_bytes": analysis_path.stat().st_size if analysis_path.exists() else 0,
+        }
+        (coverage_dir / f"{group}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
 
     @staticmethod
     def _describe_provider(provider: ModelProvider) -> str:
@@ -427,11 +986,29 @@ class CustomHarnessProvider(DocGenerationProvider):
 
     async def run(self, ctx: DocGenContext, log_cb: LogCallback) -> AgentResult:
         start_ms = int(time.time() * 1000)
+        _pipeline_log = _PipelineLog()
+        _phase_calls_start = 0
+
+        # 09_EXECUTIVE_SUMMARY is enterprise-only — remove it for non-enterprise or pack runs.
+        if not ctx.enterprise_mode or self._plugin_mode:
+            self._required_docs = [d for d in self._required_docs if d != "09_EXECUTIVE_SUMMARY"]
+
         scan_output_dir = config.intodoc_output_dir / ctx.project_id
         facts = build_facts_manifest(ctx.project_id, scan_output_dir)
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         facts_path = ctx.staging_dir / "facts_manifest.json"
         facts.write(facts_path)
+
+        # Talend-specific intelligence: ESB detection + activity flags.
+        if facts.platform.lower() == "talend":
+            try:
+                scan_json_path = scan_output_dir / "scan_result.json"
+                if scan_json_path.exists():
+                    scan_result = json.loads(scan_json_path.read_text(encoding="utf-8", errors="replace"))
+                    write_talend_intelligence(scan_result, ctx.staging_dir)
+            except Exception as exc:
+                logger.warning("[custom] Talend intelligence extraction failed (non-fatal): %s", exc)
+
         _, engineering_artifacts = EngineeringFactsService().extract_and_write(
             project_id=ctx.project_id,
             scan_output_dir=scan_output_dir,
@@ -442,6 +1019,8 @@ class CustomHarnessProvider(DocGenerationProvider):
             path.name for path in engineering_artifacts if path.parent == ctx.staging_dir
         ]
         materialize_prompt_packs(ctx.staging_dir, ctx.analysis_guide_file)
+        if self._plugin_mode:
+            self._prepare_pack_artifacts(ctx)
 
         await log_cb(
             ctx.project_id,
@@ -462,43 +1041,131 @@ class CustomHarnessProvider(DocGenerationProvider):
             f"[custom] engineering facts artifacts: {len(state.engineering_fact_artifacts)} files",
             "info",
         )
+        execution_plan: ExecutionPlan | None = None
+        if config.agent_dag_enabled:
+            execution_plan = await self._prepare_execution_plan(ctx, state, facts_path, log_cb)
+            self._required_docs = list(execution_plan.required_docs)
 
         try:
-            failed_groups = await self._phase1_investigation(ctx, state, log_cb)
+            investigation_policy = self._phase_policy("investigation")
+            analysis_policy = self._phase_policy("analysis")
+            if execution_plan is not None:
+                investigation_policy = "skip" if execution_plan.investigation_mode == "skip" else "run"
+                analysis_policy = {
+                    "skip": "skip",
+                    "direct": "bounded",
+                    "skeleton_plus_deep_dive": "dag_tiered",
+                    "full": "run",
+                }[execution_plan.analysis_mode]
+            use_direct_path = facts.unit_count <= config.small_project_threshold
             investigation_dir = ctx.staging_dir / "_investigation"
             investigation_dir.mkdir(parents=True, exist_ok=True)
-            if failed_groups:
-                ctx.preprocess_groups = [g for g in ctx.preprocess_groups if g not in failed_groups]
-                await log_cb(
-                    ctx.project_id,
-                    f"[custom] WARNING: {len(failed_groups)} group(s) skipped due to investigation failure: "
-                    f"{', '.join(sorted(failed_groups))}",
-                    "warning",
-                )
-                if not ctx.preprocess_groups:
-                    raise RuntimeError("Investigation failed for all groups — cannot generate any docs")
-            investigation_coverage = validate_investigation_coverage(state.investigation_reports, facts)
-            (investigation_dir / "_coverage_report.json").write_text(
-                investigation_coverage.model_dump_json(indent=2), encoding="utf-8"
-            )
-            if not investigation_coverage.ok or investigation_coverage.coverage_count != facts.unit_count:
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] WARNING: investigation coverage incomplete — proceeding to Phase 2: "
-                    + ("; ".join(investigation_coverage.errors) or "partial coverage"),
-                    "warning",
-                )
-            else:
-                await log_cb(ctx.project_id, "[custom] Investigation coverage gate passed", "info")
 
-            await self._phase2_analysis(ctx, state, log_cb)
-            coverage = validate_analysis_coverage(ctx.staging_dir / "_analysis", facts)
+            # ── Phase 1: investigation ────────────────────────────────────────
+            if investigation_policy == "skip":
+                inv_reason = (
+                    "Pack-contract run: Phase 1 investigation is replaced by declared evidence profiles."
+                    if self._pack_contract_mode
+                    else f"Phase 1 skipped: investigation policy=skip (analysis={analysis_policy})."
+                )
+                (investigation_dir / "_summary.md").write_text(
+                    f"# Investigation Summary\n\n{inv_reason}\n", encoding="utf-8"
+                )
+                await log_cb(ctx.project_id, f"[custom] Phase 1 skipped ({analysis_policy=})", "info")
+            else:
+                # investigation_policy == "run"
+                if use_direct_path:
+                    (investigation_dir / "_summary.md").write_text(
+                        "# Investigation Summary\n\nDirect path: Phase 1 skipped for small project.\n",
+                        encoding="utf-8",
+                    )
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] direct path: {facts.unit_count} units ≤ {config.small_project_threshold} threshold; "
+                        "skipping Phase 1 investigation",
+                        "info",
+                    )
+                else:
+                    failed_groups = await self._phase1_investigation(ctx, state, log_cb)
+                    if failed_groups:
+                        ctx.preprocess_groups = [g for g in ctx.preprocess_groups if g not in failed_groups]
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] WARNING: {len(failed_groups)} group(s) skipped due to investigation failure: "
+                            f"{', '.join(sorted(failed_groups))}",
+                            "warning",
+                        )
+                        if not ctx.preprocess_groups:
+                            raise RuntimeError("Investigation failed for all groups — cannot generate any docs")
+                    investigation_coverage = validate_investigation_coverage(state.investigation_reports, facts)
+                    (investigation_dir / "_coverage_report.json").write_text(
+                        investigation_coverage.model_dump_json(indent=2), encoding="utf-8"
+                    )
+                    if not investigation_coverage.ok or investigation_coverage.coverage_count != facts.unit_count:
+                        await log_cb(
+                            ctx.project_id,
+                            "[custom] WARNING: investigation coverage incomplete — proceeding to Phase 2: "
+                            + ("; ".join(investigation_coverage.errors) or "partial coverage"),
+                            "warning",
+                        )
+                    else:
+                        await log_cb(ctx.project_id, "[custom] Investigation coverage gate passed", "info")
+
+            _pipeline_log.add("phase1", state, _phase_calls_start, "pass" if investigation_policy != "skip" else "skip")
+            if execution_plan is not None:
+                self._record_dag_node_result(
+                    ctx,
+                    "investigation",
+                    "skipped" if investigation_policy == "skip" else "passed",
+                    artifacts=["_investigation/_summary.md"],
+                    validation="investigation_coverage",
+                )
+            _phase_calls_start = len(state.calls)
+            _pipeline_log.flush(ctx.staging_dir)
+
+            # ── Phase 2: analysis ────────────────────────────────────────────
+            if analysis_policy == "skip":
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] pack contract path: using declared evidence bundles and structured Phase 2 coverage",
+                    "info",
+                )
+                self._phase2_pack_contract_records(ctx, state)
+            elif analysis_policy == "bounded" or (analysis_policy == "run" and use_direct_path):
+                label = "bounded (pack policy)" if analysis_policy == "bounded" else f"direct path: {facts.unit_count} units ≤ {config.small_project_threshold} threshold"
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 {label}; no tool loops",
+                    "info",
+                )
+                await self._phase2_analysis_direct(ctx, state, log_cb)
+            elif analysis_policy == "dag_tiered" and execution_plan is not None:
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] DAG Phase 2 tiered analysis: skeleton plus selected deep dives",
+                    "info",
+                )
+                await self._phase2_analysis_dag_tiered(ctx, state, execution_plan, log_cb)
+            else:
+                # analysis_policy == "run", large project
+                await self._phase2_analysis(ctx, state, log_cb)
+            if self._plugin_mode:
+                await log_cb(ctx.project_id, "[custom] Phase 2 coverage source: structured sidecar", "info")
+            coverage = validate_analysis_coverage(
+                ctx.staging_dir / "_analysis",
+                facts,
+                use_structured=self._plugin_mode,
+            )
             (ctx.staging_dir / "_analysis" / "_coverage_report.json").write_text(
                 coverage.model_dump_json(indent=2), encoding="utf-8"
             )
             if not coverage.ok or coverage.coverage_count != facts.unit_count:
                 await self._phase2_targeted_repair(ctx, state, coverage, log_cb)
-                coverage = validate_analysis_coverage(ctx.staging_dir / "_analysis", facts)
+                coverage = validate_analysis_coverage(
+                    ctx.staging_dir / "_analysis",
+                    facts,
+                    use_structured=self._plugin_mode,
+                )
                 (ctx.staging_dir / "_analysis" / "_coverage_report.json").write_text(
                     coverage.model_dump_json(indent=2), encoding="utf-8"
                 )
@@ -506,26 +1173,44 @@ class CustomHarnessProvider(DocGenerationProvider):
                 raise RuntimeError("; ".join(coverage.errors) or "Phase 2 coverage mismatch")
             await log_cb(ctx.project_id, "[custom] Phase 2 coverage gate passed", "info")
 
-            depth = validate_analysis_depth(ctx.staging_dir / "_analysis", ctx.staging_dir / "_preprocess", facts)
+            depth = validate_analysis_depth(
+                ctx.staging_dir / "_analysis",
+                ctx.staging_dir / "_preprocess",
+                facts,
+                use_structured=self._plugin_mode,
+            )
             (ctx.staging_dir / "_analysis" / "_depth_report.json").write_text(
                 depth.model_dump_json(indent=2), encoding="utf-8"
             )
             if not depth.ok or depth.coverage_count != facts.unit_count:
                 await self._phase2_targeted_repair(ctx, state, depth, log_cb)
-                depth = validate_analysis_depth(ctx.staging_dir / "_analysis", ctx.staging_dir / "_preprocess", facts)
+                depth = validate_analysis_depth(
+                    ctx.staging_dir / "_analysis",
+                    ctx.staging_dir / "_preprocess",
+                    facts,
+                    use_structured=self._plugin_mode,
+                )
                 (ctx.staging_dir / "_analysis" / "_depth_report.json").write_text(
                     depth.model_dump_json(indent=2), encoding="utf-8"
                 )
             if not depth.ok or depth.coverage_count != facts.unit_count:
                 raise RuntimeError("; ".join(depth.errors) or "Phase 2 depth mismatch")
             await log_cb(ctx.project_id, "[custom] Phase 2 depth gate passed", "info")
-            guide_sections = validate_analysis_guide_sections(ctx.staging_dir / "_analysis", facts)
+            guide_sections = validate_analysis_guide_sections(
+                ctx.staging_dir / "_analysis",
+                facts,
+                require_group_summary=not self._plugin_mode,
+            )
             (ctx.staging_dir / "_analysis" / "_guide_sections_report.json").write_text(
                 guide_sections.model_dump_json(indent=2), encoding="utf-8"
             )
             if not guide_sections.ok:
                 await self._phase2_targeted_repair(ctx, state, guide_sections, log_cb)
-                guide_sections = validate_analysis_guide_sections(ctx.staging_dir / "_analysis", facts)
+                guide_sections = validate_analysis_guide_sections(
+                    ctx.staging_dir / "_analysis",
+                    facts,
+                    require_group_summary=not self._plugin_mode,
+                )
                 (ctx.staging_dir / "_analysis" / "_guide_sections_report.json").write_text(
                     guide_sections.model_dump_json(indent=2), encoding="utf-8"
                 )
@@ -533,32 +1218,127 @@ class CustomHarnessProvider(DocGenerationProvider):
                 raise RuntimeError("; ".join(guide_sections.errors) or "Phase 2 guide-section mismatch")
             await log_cb(ctx.project_id, "[custom] Phase 2 guide-section gate passed", "info")
 
-            await self._phase26_scorecard(ctx, state, log_cb)
-            self._phase28_bundles(ctx, facts)
+            _pipeline_log.add("phase2", state, _phase_calls_start, "pass", f"policy={analysis_policy}")
+            if execution_plan is not None:
+                self._record_dag_node_result(
+                    ctx,
+                    "phase2_merge" if analysis_policy == "dag_tiered" else "phase2",
+                    "passed",
+                    artifacts=["_analysis/*.md", "_analysis/_coverage_report.json", "_analysis/_depth_report.json"],
+                    validation="analysis_coverage,analysis_depth,analysis_guide_sections",
+                )
+            _phase_calls_start = len(state.calls)
+            _pipeline_log.flush(ctx.staging_dir)
+
+            scorecard_policy = self._phase_policy("scorecard")
+            if execution_plan is not None:
+                scorecard_policy = "run" if execution_plan.scorecard else "skip"
+            if scorecard_policy == "skip":
+                await log_cb(ctx.project_id, "[custom] Phase 2.6 scorecard skipped (policy=skip)", "info")
+            else:
+                await self._phase26_scorecard(ctx, state, log_cb)
+            _pipeline_log.add("phase2.6", state, _phase_calls_start, "pass" if scorecard_policy != "skip" else "skip")
+            if execution_plan is not None:
+                self._record_dag_node_result(
+                    ctx,
+                    "scorecard",
+                    "skipped" if scorecard_policy == "skip" else "passed",
+                    artifacts=["_assessment/scorecard.md"],
+                    validation="scorecard_contract",
+                )
+            _phase_calls_start = len(state.calls)
+            _pipeline_log.flush(ctx.staging_dir)
+
+            doc_bundles_policy = self._phase_policy("doc_bundles")
+            if execution_plan is not None:
+                doc_bundles_policy = "run" if execution_plan.doc_bundles else "skip"
+            if doc_bundles_policy == "skip":
+                await log_cb(ctx.project_id, "[custom] Phase 2.8 doc-pack bundles skipped (policy=skip)", "info")
+            else:
+                self._phase28_bundles(ctx, facts)
+            if execution_plan is not None:
+                self._record_dag_node_result(
+                    ctx,
+                    "doc_bundle",
+                    "skipped" if doc_bundles_policy == "skip" else "passed",
+                    artifacts=["_analysis/_doc_pack_*.md"],
+                )
             self._write_documentation_obligations(ctx, facts)
             await self._phase3_docs(ctx, state, log_cb)
+            reconciled = self._reconcile_sql_usage_classification(ctx)
+            if reconciled:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] SQL usage reconciliation updated {reconciled} DDL-only table classification(s)",
+                    "info",
+                )
+            if execution_plan is not None:
+                for doc in self._required_docs:
+                    self._record_dag_node_result(
+                        ctx,
+                        f"doc_write:{self._safe_name(doc)}",
+                        "passed" if (ctx.staging_dir / f"{doc}.md").exists() else "failed",
+                        artifacts=[f"{doc}.md"],
+                        validation="doc_markdown",
+                    )
+            if execution_plan is not None and execution_plan.consistency:
+                await self._phase36_consistency(ctx, state, log_cb)
 
-            doc_report = validate_docs(ctx.staging_dir, facts)
+            if self._plugin_mode:
+                await log_cb(ctx.project_id, "[custom] Phase 3 required docs source: plugin manifest", "info")
+            doc_report = validate_docs(
+                ctx.staging_dir,
+                facts,
+                required_docs=self._required_docs,
+                enforce_default_contract=not self._plugin_mode,
+            )
             (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
                 doc_report.model_dump_json(indent=2), encoding="utf-8"
             )
             if not doc_report.ok or doc_report.coverage_count != facts.unit_count:
                 await self._phase3_targeted_repair(ctx, state, doc_report, log_cb)
-                doc_report = validate_docs(ctx.staging_dir, facts)
+                doc_report = validate_docs(
+                    ctx.staging_dir,
+                    facts,
+                    required_docs=self._required_docs,
+                    enforce_default_contract=not self._plugin_mode,
+                )
                 (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
                     doc_report.model_dump_json(indent=2), encoding="utf-8"
                 )
             if not doc_report.ok or doc_report.coverage_count != facts.unit_count:
                 raise RuntimeError("; ".join(doc_report.errors) or "Phase 3 coverage mismatch")
+            self._reconcile_sql_usage_classification(ctx)
+            sql_gate_errors = self._validate_sql_usage_publication(ctx)
+            if sql_gate_errors:
+                raise RuntimeError("; ".join(sql_gate_errors))
             await log_cb(ctx.project_id, "[custom] Phase 3 factual gates passed", "info")
+            if execution_plan is not None:
+                self._record_dag_node_result(
+                    ctx,
+                    "validate_docs",
+                    "passed",
+                    artifacts=["_assessment/doc_validation_report.json"],
+                    validation="validate_docs",
+                )
 
-            doc_depth = validate_doc_depth(ctx.staging_dir, facts)
+            doc_depth = validate_doc_depth(
+                ctx.staging_dir,
+                facts,
+                required_docs=self._required_docs,
+                enforce_default_contract=not self._plugin_mode,
+            )
             (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
                 doc_depth.model_dump_json(indent=2), encoding="utf-8"
             )
             if not doc_depth.ok or doc_depth.coverage_count != facts.unit_count:
                 await self._phase3_targeted_repair(ctx, state, doc_depth, log_cb)
-                doc_depth = validate_doc_depth(ctx.staging_dir, facts)
+                doc_depth = validate_doc_depth(
+                    ctx.staging_dir,
+                    facts,
+                    required_docs=self._required_docs,
+                    enforce_default_contract=not self._plugin_mode,
+                )
                 (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
                     doc_depth.model_dump_json(indent=2), encoding="utf-8"
                 )
@@ -567,14 +1347,46 @@ class CustomHarnessProvider(DocGenerationProvider):
             else:
                 await log_cb(ctx.project_id, "[custom] Phase 3 depth gate passed", "info")
 
-            if ctx.enterprise_mode:
-                provenance = validate_source_provenance(ctx.staging_dir, facts)
+            _pipeline_log.add("phase3", state, _phase_calls_start, "pass", f"docs={len(self._required_docs)}")
+            _phase_calls_start = len(state.calls)
+            _pipeline_log.flush(ctx.staging_dir)
+
+            if ctx.enterprise_mode and self._pack_contract_mode:
+                provenance = CoverageReport(
+                    ok=True,
+                    coverage_count=facts.unit_count,
+                    expected_count=facts.unit_count,
+                    warnings=["Default source provenance gate skipped for plugin-pack contract run."],
+                )
                 (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
                     provenance.model_dump_json(indent=2), encoding="utf-8"
                 )
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] pack contract path: skipping default source provenance repair",
+                    "info",
+                )
+            elif ctx.enterprise_mode:
+                provenance = validate_source_provenance(
+                    ctx.staging_dir,
+                    facts,
+                    required_docs=self._required_docs,
+                    enforce_default_contract=not self._plugin_mode,
+                )
+                (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
+                    provenance.model_dump_json(indent=2), encoding="utf-8"
+                )
+                # Soft warnings (unrecognized path format) — log but do not trigger repair.
+                for w in provenance.warnings[:5]:
+                    await log_cb(ctx.project_id, f"[custom] Phase 3 provenance warning: {w}", "warning")
                 if not provenance.ok or provenance.coverage_count != facts.unit_count:
                     await self._phase3_targeted_repair(ctx, state, provenance, log_cb)
-                    provenance = validate_source_provenance(ctx.staging_dir, facts)
+                    provenance = validate_source_provenance(
+                        ctx.staging_dir,
+                        facts,
+                        required_docs=self._required_docs,
+                        enforce_default_contract=not self._plugin_mode,
+                    )
                     (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
                         provenance.model_dump_json(indent=2), encoding="utf-8"
                     )
@@ -595,15 +1407,47 @@ class CustomHarnessProvider(DocGenerationProvider):
                     if not entry.get("ok")
                 ]
                 if failed:
+                    if execution_plan is not None:
+                        self._record_dag_node_result(
+                            ctx,
+                            "enterprise_gates",
+                            "failed",
+                            artifacts=["_assessment/enterprise_gates.json"],
+                            validation="enterprise_gates",
+                            error=" | ".join(failed[:5]),
+                        )
                     raise RuntimeError("Enterprise publish gates failed: " + " | ".join(failed))
+                if execution_plan is not None:
+                    self._record_dag_node_result(
+                        ctx,
+                        "enterprise_gates",
+                        "passed",
+                        artifacts=["_assessment/enterprise_gates.json"],
+                        validation="enterprise_gates",
+                    )
                 await log_cb(ctx.project_id, "[custom] Enterprise publish gates passed", "info")
             else:
                 state.warnings.append("Draft mode: enterprise publish gates are advisory only")
+                if execution_plan is not None:
+                    self._record_dag_node_result(
+                        ctx,
+                        "enterprise_gates",
+                        "skipped",
+                        artifacts=["_assessment/enterprise_gates.json"],
+                        validation="draft_mode",
+                    )
 
             await self._phase4_cleanup(ctx, state)
+            _pipeline_log.add("phase4", state, _phase_calls_start, "pass")
+            _pipeline_log.flush(ctx.staging_dir)
         except Exception as exc:
             state.errors.append(str(exc))
             await log_cb(ctx.project_id, f"[custom] generation failed: {exc}", "error")
+            try:
+                _pipeline_log.add("error", state, _phase_calls_start, "fail", str(exc)[:80])
+                _pipeline_log.flush(ctx.staging_dir)
+            except Exception:
+                pass
             return AgentResult(
                 success=False,
                 error=str(exc),
@@ -614,6 +1458,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                 duration_ms=int(time.time() * 1000) - start_ms,
             )
 
+        self._write_phase_costs(ctx.staging_dir, state, log_cb)
         return AgentResult(
             success=True,
             model_name=self.model_provider.model_name,
@@ -629,7 +1474,37 @@ class CustomHarnessProvider(DocGenerationProvider):
                 for c in state.calls
             ),
             duration_ms=int(time.time() * 1000) - start_ms,
+            required_docs=list(self._required_docs),
         )
+
+    def _write_phase_costs(
+        self,
+        staging_dir: Path,
+        state: HarnessRunState,
+        log_cb: LogCallback,
+    ) -> None:
+        """Aggregate token costs by phase and write _assessment/phase_costs.json."""
+        phase_costs: dict[str, dict] = {}
+        for call in state.calls:
+            entry = phase_costs.setdefault(call.phase, {
+                "input_tokens": 0, "output_tokens": 0, "calls": 0, "latency_ms": 0,
+            })
+            entry["input_tokens"] += call.result.input_tokens or 0
+            entry["output_tokens"] += call.result.output_tokens or 0
+            entry["calls"] += 1
+            entry["latency_ms"] += call.result.latency_ms or 0
+        assessment_dir = staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        (assessment_dir / "phase_costs.json").write_text(
+            json.dumps(phase_costs, indent=2), encoding="utf-8"
+        )
+        # Warn operator if any phase exceeds configured threshold.
+        for phase, costs in phase_costs.items():
+            if costs["input_tokens"] > config.phase_cost_warning_input_tokens:
+                logger.warning(
+                    "[custom] phase %s input tokens (%d) exceeded warning threshold (%d)",
+                    phase, costs["input_tokens"], config.phase_cost_warning_input_tokens,
+                )
 
     async def _phase1_investigation(
         self,
@@ -642,77 +1517,237 @@ class CustomHarnessProvider(DocGenerationProvider):
         investigation_dir = ctx.staging_dir / "_investigation"
         investigation_dir.mkdir(parents=True, exist_ok=True)
         shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
+        inv_preamble: str | None = None
+        if self.plugin_pack_dir:
+            inv_override = self.plugin_pack_dir / "prompts" / "investigation.md"
+            if inv_override.exists():
+                inv_preamble = inv_override.read_text(encoding="utf-8").rstrip()
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] investigation: using pack prompt override from prompts/investigation.md",
+                    "info",
+                )
         loop = SingleShotInvestigator(
             self.investigation_provider,
             ctx.staging_dir,
             state.facts_manifest,
+            preamble=inv_preamble,
         )
         failed_groups: set[str] = set()
+        sem = asyncio.Semaphore(config.agent_phase1_concurrency)
 
-        for group in ctx.preprocess_groups:
+        async def _investigate_group(group: str) -> tuple[bool, list[InvestigationReport]]:
+            """Process all chunks for one group. Returns (missing_chunk_error, chunk_reports)."""
             group_units = self._group_units(state, group)
             chunks = self._phase2_group_chunks(preprocess_dir / f"{group}.md", group_units, investigation_dir)
             record_manifest_chunks(ctx.staging_dir, phase="investigation", group=group, chunks=chunks)
-            chunk_reports = []
-            for idx, chunk_file in enumerate(chunks, start=1):
-                if not chunk_file.exists():
-                    failed_groups.add(group)
+            chunk_reports: list[InvestigationReport] = []
+            missing_chunk = False
+
+            # Pre-compute which units are reachable (appear in at least one chunk).
+            # Units absent from all chunks can never be covered — don't wait for them.
+            all_assigned: set[str] = set()
+            chunk_unit_map: dict[str, list[str]] = {}
+            for cf in chunks:
+                if cf.exists():
+                    cu = self._units_for_chunk(cf, group_units)
+                    chunk_unit_map[cf.stem] = sorted(cu)
+                    all_assigned.update(cu)
+            covered_units: set[str] = set()
+
+            # Agentic branch: model selects chunks from a manifest instead of processing all.
+            if config.agent_phase1_agentic:
+                # Resume: if a group-level artifact already exists from a prior run, load it.
+                cached_agentic = self._load_investigation_artifact(investigation_dir, group)
+                if cached_agentic is not None and ctx.resume_state is not None:
                     await log_cb(
                         ctx.project_id,
-                        f"[custom] Investigation chunk missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
-                        "error",
-                    )
-                    break
-                chunk_name = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
-                cached = self._load_investigation_artifact(investigation_dir, chunk_name)
-                if cached is not None and ctx.resume_state is not None:
-                    chunk_reports.append(cached)
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] RESUME: skipping investigation for {chunk_name} "
-                        f"({len(cached.evidence)} evidence items from prior run)",
+                        f"[custom] RESUME: skipping agentic investigation for {group} "
+                        f"({len(cached_agentic.evidence)} evidence items from prior run)",
                         "info",
                     )
-                    continue
-                try:
-                    report, calls = await loop.run(
-                        chunk_name,
-                        group_file=chunk_file,
-                        context_files=[*shared_context, chunk_file],
-                        allowed_units=self._units_for_chunk(chunk_file, group_units),
-                        provider_options=self._provider_options(self.investigation_provider),
+                    return missing_chunk, [cached_agentic]
+
+                async with sem:
+                    manifest_entries: list[dict] = []
+                    for cf in chunks:
+                        if not cf.exists():
+                            continue
+                        try:
+                            chunk_text = cf.read_text(encoding="utf-8", errors="replace")
+                        except OSError:
+                            chunk_text = ""
+                        categories = [
+                            cat for cat, pat in CATEGORY_PATTERNS.items()
+                            if cat != "source_summary" and pat.search(chunk_text)
+                        ]
+                        identifiers = _extract_chunk_identifiers(chunk_text)
+                        manifest_entries.append({
+                            "id": cf.stem,
+                            "size_bytes": cf.stat().st_size,
+                            "unit_names": chunk_unit_map.get(cf.stem, []),
+                            "categories": categories,
+                            "identifiers": identifiers,
+                        })
+
+                    manifest_investigator = ChunkManifestInvestigator(
+                        self.investigation_provider,
+                        ctx.staging_dir,
+                        state.facts_manifest,
+                        preamble=inv_preamble,
                     )
-                except InvestigationError as exc:
-                    failure_kind = self._classify_failure(
-                        ModelResult(
-                            success=False,
-                            model_name=getattr(self.investigation_provider, "model_name", ""),
-                            raw_error=str(exc),
+                    try:
+                        report, calls = await manifest_investigator.run(
+                            group,
+                            chunks=chunks,
+                            group_units=group_units,
+                            manifest=manifest_entries,
+                            group_file=preprocess_dir / f"{group}.md",
+                            provider_options=self._provider_options(self.investigation_provider),
                         )
-                    )
-                    if failure_kind == FailureKind.AUTH_ERROR:
-                        raise RuntimeError(
-                            f"Phase 1 investigation auth failed for {chunk_name}: {exc}"
-                        ) from exc
+                    except InvestigationError as exc:
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] Agentic investigation failed for {group}: {exc}",
+                            "warning",
+                        )
+                        return missing_chunk, chunk_reports
+                    state.calls.extend(calls)
+                    for call in calls:
+                        await self._log_call_metrics(ctx, call.target, call.result, log_cb)
+                    chunk_reports.append(report)
+                    write_investigation_artifacts(report.model_copy(update={"group": group}), investigation_dir)
                     await log_cb(
                         ctx.project_id,
-                        f"[custom] Investigation failed for {chunk_name} (partial, continuing): {exc}",
-                        "warning",
+                        f"[custom] Agentic investigation complete: {group}"
+                        f" ({len(report.evidence)} evidence items, {len(calls)} call(s))",
+                        "info",
                     )
-                    continue
-                state.calls.extend(calls)
-                for call in calls:
-                    await self._log_call_metrics(ctx, call.target, call.result, log_cb)
-                chunk_reports.append(report)
-                # Write per-chunk artifact immediately so RESUME can skip this chunk next run
-                chunk_artifact = report.model_copy(update={"group": chunk_name})
-                write_investigation_artifacts(chunk_artifact, investigation_dir)
-                await log_cb(
-                    ctx.project_id,
-                    f"[custom] Investigation complete: {chunk_name} "
-                    f"({len(report.evidence)} evidence items)",
-                    "info",
-                )
+                return missing_chunk, chunk_reports
+
+            async with sem:
+                for idx, chunk_file in enumerate(chunks, start=1):
+                    # Early stop: every reachable unit already has evidence or is skipped.
+                    if all_assigned and covered_units >= all_assigned:
+                        skipped_count = len(chunks) - idx + 1
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] Investigation early stop for {group}: all {len(all_assigned)} units"
+                            f" covered, skipping {skipped_count} remaining chunk(s)",
+                            "info",
+                        )
+                        break
+
+                    if not chunk_file.exists():
+                        missing_chunk = True
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] Investigation chunk missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
+                            "error",
+                        )
+                        break
+                    chunk_name = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
+                    cached = self._load_investigation_artifact(investigation_dir, chunk_name)
+                    if cached is not None and ctx.resume_state is not None:
+                        chunk_reports.append(cached)
+                        covered_units.update(ev.unit_name for ev in cached.evidence)
+                        covered_units.update(cached.skipped_units.keys())
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] RESUME: skipping investigation for {chunk_name} "
+                            f"({len(cached.evidence)} evidence items from prior run)",
+                            "info",
+                        )
+                        continue
+                    # Pre-screen: skip the LLM call entirely if the chunk contains no
+                    # content matching the pack's evidence categories. DTO-only chunks,
+                    # CSS/UI files, and namespace stubs produce 0 evidence items but still
+                    # cost ~15k input tokens per call. Detecting them here costs nothing.
+                    chunk_units = self._units_for_chunk(chunk_file, group_units)
+                    try:
+                        chunk_text = chunk_file.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        chunk_text = ""
+                    if not self._chunk_has_pack_relevant_content(chunk_text):
+                        synthetic = InvestigationReport(
+                            group=chunk_name,
+                            source_groups=[chunk_name],
+                            evidence=[],
+                            skipped_units={
+                                u: "no pack-relevant content in chunk (pre-screen)"
+                                for u in chunk_units
+                            },
+                            tool_rounds=0,
+                            invalid_retries=0,
+                            input_tokens=0,
+                            output_tokens=0,
+                        )
+                        chunk_reports.append(synthetic)
+                        covered_units.update(synthetic.skipped_units.keys())
+                        write_investigation_artifacts(
+                            synthetic.model_copy(update={"group": chunk_name}),
+                            investigation_dir,
+                        )
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] Investigation pre-screened (no pack-relevant content): {chunk_name} "
+                            f"({len(chunk_units)} units auto-skipped)",
+                            "info",
+                        )
+                        continue
+                    try:
+                        report, calls = await loop.run(
+                            chunk_name,
+                            group_file=chunk_file,
+                            context_files=[*shared_context, chunk_file],
+                            allowed_units=chunk_units,
+                            provider_options=self._provider_options(self.investigation_provider),
+                        )
+                    except InvestigationError as exc:
+                        failure_kind = self._classify_failure(
+                            ModelResult(
+                                success=False,
+                                model_name=getattr(self.investigation_provider, "model_name", ""),
+                                raw_error=str(exc),
+                            )
+                        )
+                        if failure_kind == FailureKind.AUTH_ERROR:
+                            raise RuntimeError(
+                                f"Phase 1 investigation auth failed for {chunk_name}: {exc}"
+                            ) from exc
+                        await log_cb(
+                            ctx.project_id,
+                            f"[custom] Investigation failed for {chunk_name} (partial, continuing): {exc}",
+                            "warning",
+                        )
+                        continue
+                    state.calls.extend(calls)
+                    for call in calls:
+                        await self._log_call_metrics(ctx, call.target, call.result, log_cb)
+                    chunk_reports.append(report)
+                    covered_units.update(ev.unit_name for ev in report.evidence)
+                    covered_units.update(report.skipped_units.keys())
+                    # Write per-chunk artifact immediately so RESUME can skip this chunk next run
+                    write_investigation_artifacts(
+                        report.model_copy(update={"group": chunk_name}),
+                        investigation_dir,
+                    )
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Investigation complete: {chunk_name} "
+                        f"({len(report.evidence)} evidence items)",
+                        "info",
+                    )
+
+            return missing_chunk, chunk_reports
+
+        group_results = await asyncio.gather(
+            *[_investigate_group(g) for g in ctx.preprocess_groups]
+        )
+
+        for group, (missing_chunk, chunk_reports) in zip(ctx.preprocess_groups, group_results):
+            if missing_chunk:
+                failed_groups.add(group)
 
             if not chunk_reports:
                 failed_groups.add(group)
@@ -770,6 +1805,36 @@ class CustomHarnessProvider(DocGenerationProvider):
                 await log_cb(ctx.project_id, f"[custom] Phase 2 group failed: {exc}", "error")
             raise group_errors[0]
 
+    def _phase2_pack_contract_records(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+    ) -> None:
+        analysis_dir = ctx.staging_dir / "_analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        profile_names = ", ".join(sorted(getattr(self._plugin_manifest, "evidence_profiles", {}) or {}))
+        for group in state.facts_manifest.groups:
+            group_units = self._group_units(state, group)
+            coverage = "\n".join(f"- COVERED: {unit}" for unit in group_units)
+            unit_lines = "\n".join(
+                f"- {unit}: evidence is supplied through plugin evidence profile bundles."
+                for unit in group_units
+            )
+            analysis_path = analysis_dir / f"{group}.md"
+            analysis_path.write_text(
+                f"# Phase 2 Analysis: {group}\n\n"
+                "## Coverage\n\n"
+                f"{coverage}\n\n"
+                "## Model Analysis\n\n"
+                "### GROUP_SUMMARY\n\n"
+                "Pack-contract run. Broad enterprise Phase 2 model analysis is intentionally skipped; "
+                f"declared evidence profiles drive generation instead: {profile_names or 'none'}.\n\n"
+                "Units:\n"
+                f"{unit_lines}\n",
+                encoding="utf-8",
+            )
+            self._write_phase2_coverage_record(ctx, group, group_units, analysis_path)
+
     async def _phase2_group_agent(
         self,
         ctx: DocGenContext,
@@ -780,11 +1845,17 @@ class CustomHarnessProvider(DocGenerationProvider):
         analysis_dir: Path,
         preprocess_dir: Path,
         log_cb: LogCallback,
+        phase_name: str = "phase2",
     ) -> None:
             analysis_path = analysis_dir / f"{group}.md"
             if ctx.resume_state is not None and analysis_path.exists() and analysis_path.stat().st_size > 500:
-                if group_analysis_is_complete(analysis_path, state.facts_manifest.platform):
+                if group_analysis_is_complete(
+                    analysis_path,
+                    state.facts_manifest.platform,
+                    require_sections=not self._plugin_mode,
+                ):
                     await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 2 for {group} (analysis exists)", "info")
+                    self._write_phase2_coverage_record(ctx, group, self._group_units(state, group), analysis_path)
                     return
                 await log_cb(ctx.project_id, f"[custom] RESUME: cached Phase 2 for {group} is incomplete, regenerating", "info")
 
@@ -838,7 +1909,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                         ctx,
                         state,
                         provider=self.model_provider,
-                        phase="phase2",
+                        phase=phase_name,
                         target=task.target_id,
                         prompt=prompt,
                         context_files=context_files,
@@ -914,6 +1985,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                 f"{model_analysis}\n"
             )
             (analysis_dir / f"{group}.md").write_text(content, encoding="utf-8")
+            self._write_phase2_coverage_record(ctx, group, group_units, analysis_dir / f"{group}.md")
             await log_cb(ctx.project_id, f"[custom] Phase 2 complete: {group}", "info")
 
     @classmethod
@@ -1147,6 +2219,247 @@ class CustomHarnessProvider(DocGenerationProvider):
         await log_cb(ctx.project_id, f"[custom] Phase 2 guide-section repair complete: {group}", "info")
         return combined
 
+    async def _phase2_analysis_direct(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        log_cb: LogCallback,
+    ) -> None:
+        """Lightweight Phase 2 for small projects.
+
+        Runs one direct model call per group with the preprocess file fully inline.
+        No AgentTaskRuntime, no tool loops. Uses the same prompt and validation
+        infrastructure as the full path so the repair ladder and Phase 3 are
+        unaffected.
+        """
+        preprocess_dir = ctx.staging_dir / "_preprocess"
+        analysis_dir = ctx.staging_dir / "_analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
+        semaphore = asyncio.Semaphore(max(1, config.agent_phase2_concurrency))
+
+        async def _process_group(group: str) -> None:
+            async with semaphore:
+                await self._phase2_group_direct(
+                    ctx, state, group, shared_context, analysis_dir, preprocess_dir, log_cb
+                )
+
+        gather_results = await asyncio.gather(
+            *[_process_group(group) for group in ctx.preprocess_groups],
+            return_exceptions=True,
+        )
+        group_errors = [r for r in gather_results if isinstance(r, BaseException)]
+        if group_errors:
+            for exc in group_errors:
+                await log_cb(ctx.project_id, f"[custom] Phase 2 direct group failed: {exc}", "error")
+            raise group_errors[0]
+
+    async def _phase2_analysis_dag_tiered(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        plan: ExecutionPlan,
+        log_cb: LogCallback,
+    ) -> None:
+        """Planner-driven Phase 2: deterministic skeletons plus selected deep dives."""
+        preprocess_dir = ctx.staging_dir / "_preprocess"
+        analysis_dir = ctx.staging_dir / "_analysis"
+        skeleton_dir = analysis_dir / "_skeleton"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        skeleton_dir.mkdir(parents=True, exist_ok=True)
+        shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
+        runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
+        semaphore = asyncio.Semaphore(max(1, config.agent_phase2_concurrency))
+
+        async def _process_group(group: str) -> None:
+            async with semaphore:
+                group_plan = plan.groups.get(group)
+                if group_plan is not None and group_plan.depth == "skip":
+                    units = self._group_units(state, group)
+                    target = analysis_dir / f"{group}.md"
+                    target.write_text(_empty_group_stub(group, units), encoding="utf-8")
+                    self._write_phase2_coverage_record(ctx, group, units, target, status="planner_skipped")
+                    await log_cb(ctx.project_id, f"[custom] DAG Phase 2 skipped group {group}", "info")
+                    return
+                skeleton_path = skeleton_dir / f"{self._safe_name(group)}.json"
+                skeleton_path.write_text(
+                    json.dumps(self._phase2_skeleton_payload(ctx, state, group, group_plan), indent=2),
+                    encoding="utf-8",
+                )
+                if group_plan is not None and group_plan.depth == "deep":
+                    await self._phase2_group_agent(
+                        ctx,
+                        state,
+                        runtime,
+                        group,
+                        shared_context,
+                        analysis_dir,
+                        preprocess_dir,
+                        log_cb,
+                        phase_name="phase2.deep_dive",
+                    )
+                else:
+                    await self._phase2_group_direct(
+                        ctx,
+                        state,
+                        group,
+                        shared_context,
+                        analysis_dir,
+                        preprocess_dir,
+                        log_cb,
+                    )
+
+        results = await asyncio.gather(
+            *[_process_group(group) for group in ctx.preprocess_groups],
+            return_exceptions=True,
+        )
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if errors:
+            for exc in errors:
+                await log_cb(ctx.project_id, f"[custom] DAG Phase 2 group failed: {exc}", "error")
+            raise errors[0]
+
+    def _phase2_skeleton_payload(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        group: str,
+        group_plan,
+    ) -> dict:
+        group_file = ctx.staging_dir / "_preprocess" / f"{group}.md"
+        text = group_file.read_text(encoding="utf-8", errors="replace") if group_file.exists() else ""
+        categories = [
+            cat for cat, pattern in CATEGORY_PATTERNS.items()
+            if cat != "source_summary" and pattern.search(text)
+        ]
+        identifiers = _extract_chunk_identifiers(text)
+        units = self._group_units(state, group)
+        complexity = "high" if len(categories) >= 4 or len(units) > 10 or len(text) > 70_000 else "low"
+        planned_depth = getattr(group_plan, "depth", "shallow") if group_plan is not None else "shallow"
+        confidence = 0.8 if categories or len(text) >= config.min_investigation_content_bytes else 0.35
+        return {
+            "group": group,
+            "units": units,
+            "source_bytes": len(text.encode("utf-8")),
+            "categories": categories,
+            "identifiers": identifiers,
+            "complexity": complexity,
+            "planned_depth": planned_depth,
+            "tool_budget": getattr(group_plan, "tool_budget", "none") if group_plan is not None else "none",
+            "confidence": confidence,
+            "reasons": getattr(group_plan, "reasons", []) if group_plan is not None else [],
+            "deep_dive_recommended": complexity == "high" or confidence < 0.75,
+        }
+
+    async def _phase2_group_direct(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        group: str,
+        shared_context: list[Path],
+        analysis_dir: Path,
+        preprocess_dir: Path,
+        log_cb: LogCallback,
+    ) -> None:
+        """Single direct model call for one group (no tool loops)."""
+        analysis_path = analysis_dir / f"{group}.md"
+        if ctx.resume_state is not None and analysis_path.exists() and analysis_path.stat().st_size > 500:
+            if group_analysis_is_complete(
+                analysis_path,
+                state.facts_manifest.platform,
+                require_sections=not self._plugin_mode,
+            ):
+                await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 2 for {group} (analysis exists)", "info")
+                self._write_phase2_coverage_record(ctx, group, self._group_units(state, group), analysis_path)
+                return
+            await log_cb(ctx.project_id, f"[custom] RESUME: cached Phase 2 for {group} is incomplete, regenerating", "info")
+
+        group_units = self._group_units(state, group)
+        group_file = preprocess_dir / f"{group}.md"
+        if not group_file.exists():
+            raise RuntimeError(
+                f"Phase 2 source group file missing: {group_file.relative_to(ctx.staging_dir).as_posix()}"
+            )
+
+        file_bytes = group_file.stat().st_size
+        if file_bytes < config.min_investigation_content_bytes:
+            analysis_path.write_text(_empty_group_stub(group, group_units), encoding="utf-8")
+            self._write_phase2_coverage_record(ctx, group, group_units, analysis_path, status="scanner_limited")
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 direct: wrote scanner-limited stub for {group}",
+                "warning",
+            )
+            return
+
+        opts = ModelOptions(
+            max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, file_bytes // 4)),
+            temperature=0.1,
+            retries=1,
+            timeout_s=300.0,
+            provider_options=self._provider_options(self.model_provider),
+        )
+
+        # bounded mode with a pack phase2.md: use it as the COMPLETE prompt.
+        # Pack authors write exactly what they want analysed — no mandatory enterprise
+        # section structure appended. Unit names and facts summary are always appended
+        # so the model knows what it is covering.
+        pack_phase2_override = (
+            self.plugin_pack_dir / "prompts" / "phase2.md"
+            if self.plugin_pack_dir and self._phase_policy("analysis") == "bounded"
+            else None
+        )
+        if pack_phase2_override and pack_phase2_override.exists():
+            unit_list = "\n".join(f"- {u}" for u in group_units)
+            prompt = (
+                f"{pack_phase2_override.read_text(encoding='utf-8').rstrip()}\n\n"
+                f"Group: {group}\n"
+                f"Canonical units to cover:\n{unit_list}\n\n"
+                f"Run facts:\n{facts_summary(state.facts_manifest)}\n"
+            )
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 bounded: using pack prompt override for {group}",
+                "info",
+            )
+        else:
+            prompt = group_analysis_prompt(
+                state.facts_manifest, group,
+                pack=self.pack,
+                plugin_pack_dir=self.plugin_pack_dir,
+                required_docs=self._required_docs,
+            )
+
+        investigation_summary = ctx.staging_dir / "_investigation" / "_summary.md"
+        context_files = [
+            *shared_context,
+            *([investigation_summary] if investigation_summary.exists() else []),
+            group_file,
+        ]
+
+        result = await self._complete_core_generation(
+            ctx,
+            state,
+            provider=self.model_provider,
+            phase="phase2",
+            target=group,
+            prompt=prompt,
+            context_files=context_files,
+            opts=opts,
+            log_cb=log_cb,
+        )
+        if not result.success:
+            raise RuntimeError(f"Phase 2 failed for {group}: {result.raw_error}")
+
+        text = await self._complete_phase2_sections(
+            ctx, state, group,
+            result.text.strip(),
+            shared_context, [], group_file, opts, log_cb,
+        )
+        analysis_path.write_text(text, encoding="utf-8")
+        self._write_phase2_coverage_record(ctx, group, group_units, analysis_path)
+        await log_cb(ctx.project_id, f"[custom] Phase 2 direct complete: {group}", "info")
+
     async def _phase2_targeted_repair(
         self,
         ctx: DocGenContext,
@@ -1158,6 +2471,11 @@ class CustomHarnessProvider(DocGenerationProvider):
         missing_units = report.missing_units[:50]
         if not errors and not missing_units:
             return
+        repair_causes = self._repair_root_causes(errors, missing_units) if config.agent_smart_repair_enabled else []
+        if repair_causes:
+            repair_dir = ctx.staging_dir / "_assessment" / "repair"
+            repair_dir.mkdir(parents=True, exist_ok=True)
+            (repair_dir / "phase2_root_causes.json").write_text(json.dumps(repair_causes, indent=2), encoding="utf-8")
         await log_cb(
             ctx.project_id,
             "[custom] Phase 2 targeted repair starting: "
@@ -1171,7 +2489,11 @@ class CustomHarnessProvider(DocGenerationProvider):
                 if unit.name in missing_units:
                     units_by_group.setdefault(unit.group, []).append(unit.name)
         else:
-            for group in state.facts_manifest.groups:
+            # No specific missing units (e.g. guide-sections failure): extract the
+            # affected group names from the error strings instead of repairing every group.
+            error_groups = _groups_from_errors(errors, set(state.facts_manifest.groups))
+            targets = error_groups if error_groups else set(state.facts_manifest.groups)
+            for group in targets:
                 units_by_group[group] = self._group_units(state, group)
 
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
@@ -1180,6 +2502,21 @@ class CustomHarnessProvider(DocGenerationProvider):
         async def _repair_group(group: str, units: list[str]) -> None:
             async with semaphore:
                 target = ctx.staging_dir / "_analysis" / f"{group}.md"
+
+                # If the group has no meaningful source content, write a scanner-limited
+                # stub rather than dispatching a repair that would hallucinate.
+                preprocess_file = ctx.staging_dir / "_preprocess" / f"{group}.md"
+                preprocess_size = preprocess_file.stat().st_size if preprocess_file.exists() else 0
+                if preprocess_size < config.min_investigation_content_bytes:
+                    target.write_text(_empty_group_stub(group, units), encoding="utf-8")
+                    self._write_phase2_coverage_record(ctx, group, units, target, status="scanner_limited")
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Phase 2 repair: wrote scanner-limited stub for {group}",
+                        "warning",
+                    )
+                    return
+
                 context_files = [
                     p for p in [
                         ctx.staging_dir / "facts_manifest.json",
@@ -1193,6 +2530,13 @@ class CustomHarnessProvider(DocGenerationProvider):
                     ]
                     if p.exists()
                 ]
+                # Only surface errors that relate to this specific group; don't inject
+                # another group's failures into this repair context.
+                group_errors = [e for e in errors if group in e] or errors[:3]
+                group_causes = [
+                    cause for cause in repair_causes
+                    if not cause.get("scope") or cause.get("scope") in {group, "global"}
+                ]
                 prompt = (
                     f"Repair only the listed Phase 2 analysis gaps for group `{group}`.\n\n"
                     "Rules:\n"
@@ -1201,7 +2545,9 @@ class CustomHarnessProvider(DocGenerationProvider):
                     "- Use only supplied scanner, investigation, and EngineeringFacts evidence.\n"
                     "- If evidence is unavailable, explicitly state scanner-limited evidence for the unit.\n\n"
                     "Validator errors:\n"
-                    + ("\n".join(f"- {error}" for error in errors) or "- None")
+                    + ("\n".join(f"- {error}" for error in group_errors) or "- None")
+                    + "\n\nRoot-cause classification:\n"
+                    + ("\n".join(f"- {cause['category']}: {cause['reason']}" for cause in group_causes) or "- None")
                     + "\n\nUnits to cover:\n"
                     + "\n".join(f"- {unit}" for unit in units)
                 )
@@ -1223,6 +2569,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                     input_budget=default_input_budget(),
                     expected_artifact="repair markdown",
                     max_attempts=config.agent_max_repair_attempts,
+                    validation_gaps=group_errors,
                 )
 
                 async def _dispatch(task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
@@ -1250,10 +2597,17 @@ class CustomHarnessProvider(DocGenerationProvider):
                     return
                 existing = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
                 coverage = "\n".join(f"- COVERED: {unit}" for unit in units)
+                # Normalise headings before writing so variant forms (e.g. '### GROUP_SUMMARY: demo-data')
+                # are converted to canonical form and don't trigger the guide-sections gate again.
+                repair_text = normalize_analysis_guide_headings(
+                    task_result.result.text.strip(),
+                    state.facts_manifest.platform,
+                )
                 target.write_text(
-                    f"{existing.rstrip()}\n\n## Targeted Validator Repair\n\n{coverage}\n\n{task_result.result.text.strip()}\n",
+                    f"{existing.rstrip()}\n\n## Targeted Validator Repair\n\n{coverage}\n\n{repair_text}\n",
                     encoding="utf-8",
                 )
+                self._write_phase2_coverage_record(ctx, group, units, target)
                 await log_cb(ctx.project_id, f"[custom] Phase 2 targeted repair appended to {target.name}", "info")
 
         await asyncio.gather(*[_repair_group(group, units) for group, units in units_by_group.items()])
@@ -1343,6 +2697,22 @@ class CustomHarnessProvider(DocGenerationProvider):
                 raise RuntimeError(f"Scorecard reducer failed: {result.raw_error}")
             if scorecard_task_output_path:
                 Path(scorecard_task_output_path).write_text(result.text.strip(), encoding="utf-8")
+
+        # Validate scorecard contract (weights, dimensions, ownership tags).
+        # Only enforce for enterprise runs; packs use a shorter scorecard format.
+        if not self._plugin_mode:
+            sc_check = validate_scorecard_contract(result.text)
+            if not sc_check["ok"]:
+                await log_cb(
+                    ctx.project_id,
+                    "[custom] Phase 2.6 scorecard contract gaps: " + "; ".join(sc_check["errors"][:5]),
+                    "warning",
+                )
+                (assessment_dir / "_scorecard_contract_errors.json").write_text(
+                    json.dumps(sc_check, indent=2), encoding="utf-8"
+                )
+                state.warnings.extend(sc_check["errors"])
+
         content = (
             "# Assessment Scorecard\n\n"
             f"Canonical inventory: {state.facts_manifest.unit_count} "
@@ -1456,9 +2826,8 @@ class CustomHarnessProvider(DocGenerationProvider):
             manifest["doc_packs"][doc_name] = {"path": pack_path.name, **pack_manifest}
         (analysis_dir / "_doc_pack_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    @staticmethod
-    def _write_documentation_obligations(ctx: DocGenContext, facts) -> None:
-        obligation_map = build_documentation_obligation_map(facts)
+    def _write_documentation_obligations(self, ctx: DocGenContext, facts) -> None:
+        obligation_map = build_documentation_obligation_map(facts, required_docs=self._required_docs)
         path = ctx.staging_dir / "documentation_obligations.json"
         path.write_text(json.dumps(obligation_map, indent=2), encoding="utf-8")
 
@@ -1531,9 +2900,8 @@ class CustomHarnessProvider(DocGenerationProvider):
         ]
         return pack, manifest
 
-    @staticmethod
-    def _doc_obligation_context(facts, doc_name: str) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
-        obligation_map = build_documentation_obligation_map(facts)
+    def _doc_obligation_context(self, facts, doc_name: str) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+        obligation_map = build_documentation_obligation_map(facts, required_docs=self._required_docs)
         doc_targets = obligation_map.get("doc_targets", {}) if isinstance(obligation_map, dict) else {}
         included: list[dict[str, object]] = []
         unmatched: list[dict[str, object]] = []
@@ -1640,7 +3008,7 @@ class CustomHarnessProvider(DocGenerationProvider):
         async def _write_one(doc_name: str) -> None:
             doc_prompt_text = doc_prompt(state.facts_manifest, doc_name, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, extra_section_requirements=self._doc_section_requirements_extra)
             context_files = self._phase3_context_files(ctx, doc_name)
-            if scorecard.exists():
+            if scorecard.exists() and not self._pack_contract_mode:
                 context_files.append(scorecard)
             contract = AgentTaskContract(
                 phase="phase3_doc",
@@ -1683,15 +3051,31 @@ class CustomHarnessProvider(DocGenerationProvider):
                 result = task_result.result
             if not result.success:
                 raise RuntimeError(f"Doc generation failed for {doc_name}: {result.raw_error}")
+            # Fast-fail near-empty output before expensive validators run on it.
+            quick = self._validate_agent_markdown(result.text, [], min_bytes=150)
+            if not quick["ok"]:
+                doc_key = f"phase3/{doc_name}"
+                state.empty_output_counts[doc_key] = state.empty_output_counts.get(doc_key, 0) + 1
+                state.total_empty_outputs += 1
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 3 near-empty output for {doc_name}: {'; '.join(quick['errors'])}",
+                    "warning",
+                )
             content = self._final_doc_content(state, doc_name, result.text)
             (ctx.staging_dir / f"{doc_name}.md").write_text(content, encoding="utf-8")
             await log_cb(ctx.project_id, f"[custom] Phase 3 doc complete: {doc_name}", "info")
 
+        # Executive summary must be dispatched last — its context is the other completed docs.
+        executive_summary_doc = "09_EXECUTIVE_SUMMARY"
+        docs_without_summary = [d for d in self._required_docs if d != executive_summary_doc]
+        has_executive_summary = executive_summary_doc in self._required_docs
+
         _i = 0
-        while _i < len(self._required_docs):
+        while _i < len(docs_without_summary):
             batch_size = 1 if state.adaptive_serial_generation else max(1, config.agent_phase3_concurrency)
             batch_results = await asyncio.gather(
-                *[_write_one(d) for d in self._required_docs[_i : _i + batch_size]],
+                *[_write_one(d) for d in docs_without_summary[_i : _i + batch_size]],
                 return_exceptions=True,
             )
             batch_errors = [r for r in batch_results if isinstance(r, BaseException)]
@@ -1700,6 +3084,12 @@ class CustomHarnessProvider(DocGenerationProvider):
                     await log_cb(ctx.project_id, f"[custom] Phase 3 doc write failed: {exc}", "error")
                 raise batch_errors[0]
             _i += batch_size
+
+        # Write executive summary last, after all other docs are complete.
+        if has_executive_summary and not self._plugin_mode:
+            exec_result = await asyncio.gather(_write_one(executive_summary_doc), return_exceptions=True)
+            if exec_result and isinstance(exec_result[0], BaseException):
+                await log_cb(ctx.project_id, f"[custom] Phase 3 executive summary failed (non-fatal): {exec_result[0]}", "warning")
 
     def _final_doc_content(self, state: HarnessRunState, doc_name: str, body: str) -> str:
         content = body.strip()
@@ -1762,6 +3152,73 @@ class CustomHarnessProvider(DocGenerationProvider):
             applied = self._apply_validated_expansions(ctx, state, result.text, set(doc_names))
             await log_cb(ctx.project_id, f"[custom] Critic expansions applied for {family}: {applied}", "info")
 
+    async def _phase36_consistency(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        log_cb: LogCallback,
+    ) -> None:
+        """Write a cross-document consistency report before final validation gates."""
+        assessment_dir = ctx.staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        docs = [
+            ctx.staging_dir / f"{doc}.md"
+            for doc in self._required_docs
+            if (ctx.staging_dir / f"{doc}.md").exists()
+        ]
+        findings: list[dict] = []
+        expected = state.facts_manifest.unit_count
+        inventory_claim_re = re.compile(
+            rf"\b(?:total|canonical inventory)[:\s]+(\d+)\s+{re.escape(state.facts_manifest.canonical_unit_label)}\b",
+            re.IGNORECASE,
+        )
+        unit_names = state.facts_manifest.unit_names()
+        for path in docs:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for match in inventory_claim_re.finditer(text):
+                claimed = int(match.group(1))
+                if claimed != expected:
+                    findings.append({
+                        "type": "inventory_conflict",
+                        "doc": path.name,
+                        "message": f"Inventory claim {claimed} conflicts with facts manifest count {expected}.",
+                        "critical": True,
+                    })
+            unknown_units = sorted({
+                token for token in re.findall(r"\b[A-Za-z][A-Za-z0-9_.-]{2,}\b", text)
+                if token.endswith((".item", ".recipe", ".xml")) and token not in unit_names
+            })
+            if unknown_units:
+                findings.append({
+                    "type": "unit_drift",
+                    "doc": path.name,
+                    "message": "Document mentions source-like units outside facts manifest: " + ", ".join(unknown_units[:10]),
+                    "critical": False,
+                })
+        report = {
+            "ok": not any(f.get("critical") for f in findings),
+            "findings": findings,
+            "docs_checked": [p.name for p in docs],
+            "unit_count": expected,
+        }
+        (assessment_dir / "consistency_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        self._record_dag_node_result(
+            ctx,
+            "consistency",
+            "passed" if report["ok"] else "failed",
+            artifacts=["_assessment/consistency_report.json"],
+            validation="consistency",
+        )
+        if report["ok"]:
+            await log_cb(ctx.project_id, "[custom] Phase 3.6 consistency gate passed", "info")
+        else:
+            await log_cb(
+                ctx.project_id,
+                "[custom] Phase 3.6 consistency findings: "
+                + "; ".join(str(f["message"]) for f in findings[:3]),
+                "warning",
+            )
+
     async def _phase3_targeted_repair(
         self,
         ctx: DocGenContext,
@@ -1775,6 +3232,24 @@ class CustomHarnessProvider(DocGenerationProvider):
         missing_units = report.missing_units[:50]
         if not errors and not missing_units:
             return
+        repair_causes = self._repair_root_causes(errors, missing_units) if config.agent_smart_repair_enabled else []
+        if repair_causes:
+            repair_dir = ctx.staging_dir / "_assessment" / "repair"
+            repair_dir.mkdir(parents=True, exist_ok=True)
+            (repair_dir / "phase3_root_causes.json").write_text(json.dumps(repair_causes, indent=2), encoding="utf-8")
+
+        if self._plugin_mode:
+            undeclared = sorted({
+                name.removesuffix(".md")
+                for error in errors
+                for name in re.findall(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
+                if name.removesuffix(".md") not in self._required_docs
+            })
+            if undeclared:
+                raise RuntimeError(
+                    "Pack validation mismatch: validator requested undeclared docs: "
+                    + ", ".join(undeclared)
+                )
 
         await log_cb(
             ctx.project_id,
@@ -1784,6 +3259,16 @@ class CustomHarnessProvider(DocGenerationProvider):
         )
         for target_doc, target_errors in self._phase3_repair_targets(ctx, errors):
             prompt = self._phase3_repair_prompt(state, target_doc.name, target_errors, missing_units)
+            doc_causes = [
+                cause for cause in repair_causes
+                if not cause.get("scope") or cause.get("scope") in {target_doc.name, target_doc.stem, "global"}
+            ]
+            if doc_causes:
+                prompt += (
+                    "\n\nRoot-cause classification:\n"
+                    + "\n".join(f"- {cause['category']}: {cause['reason']}" for cause in doc_causes)
+                    + "\n"
+                )
             context_files = self._phase3_repair_context_files(ctx, state, target_doc, missing_units)
             opts = ModelOptions(
                 max_tokens=min(config.phase3_max_tokens, 12_000),
@@ -1804,6 +3289,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                 input_budget=default_input_budget(),
                 expected_artifact="repair markdown",
                 max_attempts=config.agent_max_repair_attempts,
+                validation_gaps=target_errors,
             )
 
             async def _dispatch(task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
@@ -1843,10 +3329,13 @@ class CustomHarnessProvider(DocGenerationProvider):
     def _phase3_repair_targets(self, ctx: DocGenContext, errors: list[str]) -> list[tuple[Path, list[str]]]:
         grouped: dict[str, list[str]] = {}
         for error in errors:
-            if "Runtime/external systems doc missing" in error:
-                grouped.setdefault("05_RUNTIME_CONFIG_AND_EXTERNALS.md", []).append(error)
-                continue
-            matches = re.findall(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
+            matches = [
+                f"{doc}.md"
+                for doc in self._required_docs
+                if re.search(rf"\b{re.escape(doc)}\.md\b", error)
+            ]
+            if not matches:
+                matches = re.findall(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
             matched_required = [
                 name for name in matches
                 if name.removesuffix(".md") in self._required_docs
@@ -1855,10 +3344,12 @@ class CustomHarnessProvider(DocGenerationProvider):
                 for name in matched_required:
                     grouped.setdefault(name, []).append(error)
             else:
-                grouped.setdefault("02_COMPONENT_INVENTORY.md", []).append(error)
+                fallback_doc = f"{self._required_docs[0]}.md" if self._plugin_mode else "02_COMPONENT_INVENTORY.md"
+                grouped.setdefault(fallback_doc, []).append(error)
 
         if not grouped:
-            grouped["02_COMPONENT_INVENTORY.md"] = []
+            fallback_doc = f"{self._required_docs[0]}.md" if self._plugin_mode else "02_COMPONENT_INVENTORY.md"
+            grouped[fallback_doc] = []
 
         targets: list[tuple[Path, list[str]]] = []
         for name, doc_errors in grouped.items():
@@ -1869,9 +3360,41 @@ class CustomHarnessProvider(DocGenerationProvider):
                     for doc in self._required_docs
                     if (ctx.staging_dir / f"{doc}.md").exists()
                 ]
-                target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / "02_COMPONENT_INVENTORY.md"
+                fallback_doc = f"{self._required_docs[0]}.md" if self._plugin_mode else "02_COMPONENT_INVENTORY.md"
+                target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / fallback_doc
             targets.append((target_doc, doc_errors))
         return targets
+
+    @staticmethod
+    def _repair_root_causes(errors: list[str], missing_units: list[str]) -> list[dict]:
+        causes: list[dict] = []
+        if missing_units:
+            causes.append({
+                "category": "coverage",
+                "scope": "global",
+                "reason": "Validator reported missing canonical units: " + ", ".join(missing_units[:20]),
+            })
+        patterns = [
+            ("provenance", ("evidence register", "source provenance", "source artifact", "confidence")),
+            ("depth", ("too shallow", "depth", "actionable", "debug", "test", "change guidance")),
+            ("contradiction", ("conflicting", "contradiction", "contradicts", "inventory claim")),
+            ("format", ("markdown", "heading", "section", "table", "columns")),
+            ("scanner_limited", ("scanner-limited", "scanner limited", "redacted", "unavailable")),
+        ]
+        for error in errors:
+            lower = error.lower()
+            category = "coverage"
+            for candidate, needles in patterns:
+                if any(needle in lower for needle in needles):
+                    category = candidate
+                    break
+            doc_match = re.search(r"\b([0-9][0-9A-Za-z_]*\.md)\b", error)
+            causes.append({
+                "category": category,
+                "scope": doc_match.group(1) if doc_match else "global",
+                "reason": error,
+            })
+        return causes
 
     @staticmethod
     def _phase3_targeted_repair_content(existing: str, repair: str) -> str:
@@ -1883,11 +3406,24 @@ class CustomHarnessProvider(DocGenerationProvider):
         if not register_sections:
             return f"{existing.rstrip()}\n\n{repaired_register.rstrip()}\n"
 
+        # Row-level merge: preserve existing rows whose topics are not covered by the
+        # repair output, then append all repair rows. This stops oscillating repairs
+        # where each pass fixes some rows and inadvertently drops others.
+        existing_rows = _parse_register_rows(existing)
+        repair_rows = _parse_register_rows(repair)
+        if existing_rows and repair_rows:
+            repair_topics = {row[0].strip().lower() for row in repair_rows}
+            surviving = [row for row in existing_rows if row[0].strip().lower() not in repair_topics]
+            merged_rows = surviving + repair_rows
+            merged_register = _build_register_section(merged_rows)
+        else:
+            merged_register = repaired_register
+
         first_register = register_sections[0]
         before = existing[: first_register.start()].rstrip()
-        after = existing[first_register.end() :]
+        after = existing[first_register.end():]
         after = EVIDENCE_REGISTER_SECTION_RE.sub("", after).strip()
-        parts = [part for part in (before, repaired_register.rstrip(), after) if part]
+        parts = [part for part in (before, merged_register.rstrip(), after) if part]
         return "\n\n".join(parts).rstrip() + "\n"
 
     def _phase3_repair_context_files(
@@ -1898,6 +3434,34 @@ class CustomHarnessProvider(DocGenerationProvider):
         missing_units: list[str],
     ) -> list[Path]:
         doc_name = target_doc.stem
+        if self._pack_contract_mode:
+            files: list[Path] = []
+            facts = ctx.staging_dir / "facts_manifest.json"
+            if facts.exists():
+                files.append(facts)
+            if target_doc.exists():
+                files.append(target_doc)
+            doc_def = self._pack_doc_definition(doc_name)
+            profile_name = getattr(doc_def, "evidence_profile", None) if doc_def is not None else None
+            if profile_name:
+                profile_paths = self._pack_evidence_paths.get(profile_name, {})
+                evidence_md = ctx.staging_dir / profile_paths.get("md", "")
+                evidence_json = ctx.staging_dir / profile_paths.get("json", "")
+                if evidence_md.exists():
+                    files.append(evidence_md)
+                if evidence_json.exists():
+                    files.append(evidence_json)
+            plan = ctx.staging_dir / "_plans" / f"{doc_name}.json"
+            if plan.exists():
+                files.append(plan)
+            pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
+            prompt_pack = pack_dir / f"_phase3_prompt_pack_{self._doc_bundle_map.get(doc_name, 'custom')}.md"
+            if prompt_pack.exists():
+                files.append(prompt_pack)
+            doc_prompt_file = pack_dir / f"_doc_prompt_{doc_name}.md"
+            if doc_prompt_file.exists():
+                files.append(doc_prompt_file)
+            return files
         analysis_dir = ctx.staging_dir / "_analysis"
         affected_groups = {
             unit.group
@@ -1952,6 +3516,31 @@ class CustomHarnessProvider(DocGenerationProvider):
         errors: list[str],
         missing_units: list[str],
     ) -> str:
+        if doc_name in _SYNTHESIS_DOCS:
+            evidence_register_guidance = (
+                "- If the validator error mentions Evidence Register or source provenance, return only a "
+                "`## Evidence Register` table with columns `Topic`, `Units / Scope`, `Evidence Source`, "
+                "`Source Artifact / Path`, and `Confidence`.\n"
+                "  This is a synthesis document — its evidence sources are the other generated documents, "
+                "not raw scanner files. Use sibling document filenames as source artifact paths "
+                "(e.g. `01_ARCHITECTURE_MAP.md`, `02_COMPONENT_INVENTORY.md`, "
+                "`03_DATA_FLOWS_AND_LINEAGE.md`, `04_BUSINESS_RULES_AND_TRANSFORMATIONS.md`, etc.).\n"
+                "  Each confidence cell must start with plain unformatted `HIGH`, `MEDIUM`, or `LOW`; "
+                "do not bold, italicize, or wrap that token. Notes such as `(synthesised from Phase 3 docs)` "
+                "may follow the confidence token."
+            )
+        else:
+            evidence_register_guidance = (
+                "- If the validator error mentions Evidence Register or source provenance, return only a "
+                "`## Evidence Register` table with columns `Topic`, `Units / Scope`, `Evidence Source`, "
+                "`Source Artifact / Path`, and `Confidence`.\n"
+                "  Use exact supplied evidence names (scanner artifacts, Phase 2 analysis files, "
+                "preprocess artifacts). Each confidence cell must start with plain unformatted `HIGH`, "
+                "`MEDIUM`, or `LOW`; do not bold, italicize, quote, or wrap that leading token in backticks.\n"
+                "  Scanner-limited, inferred, or redaction notes may follow that token or appear in "
+                "evidence/topic cells."
+            )
+
         return f"""\
 Repair only the listed documentation gaps in {doc_name}.
 
@@ -1962,11 +3551,7 @@ Rules:
 - Write markdown sections that can be appended directly to the document.
 - Cover each missing obligation directly or explain scanner-limited evidence if the supplied context is insufficient.
 - Do not add broad filler. If a validator asks for inspect/test/change guidance, include concrete inspect/test/change entries.
-- If the validator error mentions Evidence Register or source provenance, return only a `## Evidence Register`
-  table with columns `Topic`, `Units / Scope`, `Evidence Source`, `Source Artifact / Path`, and `Confidence`.
-  Use exact supplied evidence names. Each confidence cell must start with plain unformatted `HIGH`,
-  `MEDIUM`, or `LOW` text; do not bold, italicize, quote, or wrap that leading token in backticks.
-  Scanner-limited, inferred, or redaction notes may follow that token or appear in evidence/topic cells.
+{evidence_register_guidance}
 
 Canonical inventory: {state.facts_manifest.unit_count} {state.facts_manifest.canonical_unit_label}
 
@@ -1996,7 +3581,9 @@ Missing units:
         """Run a Phase 2/3 model call with explicit bounded files and slice caching."""
 
         context_files = self._bounded_context_files(context_files)
-        if use_tools_for_core_generation(provider):
+        tool_policy = self._tool_policy(provider, phase)
+        use_tools = tool_policy.enabled
+        if use_tools:
             prompt = _with_agent_contract(prompt, task_contract)
             context_files = []
         estimated = estimate_input_tokens(prompt, context_files)
@@ -2224,11 +3811,17 @@ Missing units:
             total_bytes=total_bytes,
             call_index=current_calls + 1,
         )
-        if use_tools_for_core_generation(provider):
+        tool_policy = self._tool_policy(provider, phase)
+        if tool_policy.enabled:
+            tool_opts = opts.model_copy(update={
+                "tool_input_token_cap": tool_policy.max_input_tokens,
+                "tool_phase": phase,
+                "tool_target": target,
+            })
             result = await provider.complete_with_tools(
                 _with_tool_instructions(prompt, ctx.staging_dir),
                 ctx.staging_dir,
-                opts,
+                tool_opts,
                 scoped_tools=scoped_tools,
             )
         else:
@@ -2316,11 +3909,17 @@ Missing units:
                     f"{self._describe_provider(self.fallback_provider)}",
                     "warning",
                 )
-                if use_tools_for_core_generation(self.fallback_provider):
+                fallback_policy = self._tool_policy(self.fallback_provider, phase)
+                if fallback_policy.enabled:
+                    fallback_opts = opts.model_copy(update={
+                        "tool_input_token_cap": fallback_policy.max_input_tokens,
+                        "tool_phase": phase,
+                        "tool_target": target,
+                    })
                     fallback_result = await self.fallback_provider.complete_with_tools(
                         _with_tool_instructions(prompt, ctx.staging_dir),
                         ctx.staging_dir,
-                        opts,
+                        fallback_opts,
                         scoped_tools=scoped_tools,
                     )
                 else:
@@ -2427,7 +4026,7 @@ Missing units:
             "model": provider.model_name,
             "phase": phase,
             "target": target,
-            "uses_tools": use_tools_for_core_generation(provider),
+            "uses_tools": _provider_supports_tools(provider),
             "message_count": 1,
             "context_file_count": len(context_files),
             "max_tokens": opts.max_tokens,
@@ -2610,21 +4209,45 @@ Missing units:
 
         redaction = validate_final_redaction(ctx.staging_dir)
         if provenance is None:
-            provenance = validate_source_provenance(ctx.staging_dir, facts)
-        usefulness = validate_usefulness_rubric(ctx.staging_dir, facts)
+            provenance = validate_source_provenance(
+                ctx.staging_dir,
+                facts,
+                required_docs=self._required_docs,
+                enforce_default_contract=not self._plugin_mode,
+            )
+        usefulness = validate_usefulness_rubric(
+            ctx.staging_dir,
+            facts,
+            required_docs=self._required_docs,
+            enforce_default_contract=not self._plugin_mode,
+        )
         reviewers = self._run_internal_reviewers(ctx, state)
         reviewer_ok = all(not finding.get("critical") for report in reviewers for finding in report["findings"])
+        pack_quality_report = None
+        if self._plugin_mode and self._plugin_manifest is not None:
+            pack_quality_report = validate_pack_quality(ctx.staging_dir, self._plugin_manifest)
+            (assessment_dir / "pack_quality_report.json").write_text(
+                json.dumps(pack_quality_report, indent=2, default=str),
+                encoding="utf-8",
+            )
 
         quality_report = None
         quality_score = None
-        try:
-            from mcp_server.services.doc_quality_scorer import score_project
+        if self._plugin_mode:
+            quality_report = {
+                "skipped": True,
+                "reason": "Plugin-pack run validates against plugin manifest instead of default full-document quality rubric.",
+            }
+            quality_score = config.doc_generation_quality_threshold
+        else:
+            try:
+                from mcp_server.services.doc_quality_scorer import score_project
 
-            quality_report = score_project(ctx.project_id, docs_dir=ctx.staging_dir).to_dict()
-            quality_score = quality_report["overall"]
-        except Exception as exc:
-            logger.warning("score_project failed for %s", ctx.project_id, exc_info=True)
-            quality_report = {"error": str(exc)}
+                quality_report = score_project(ctx.project_id, docs_dir=ctx.staging_dir).to_dict()
+                quality_score = quality_report["overall"]
+            except Exception as exc:
+                logger.warning("score_project failed for %s", ctx.project_id, exc_info=True)
+                quality_report = {"error": str(exc)}
 
         gates = {
             "valid_fresh_scan": {
@@ -2665,6 +4288,18 @@ Missing units:
                 "errors": [] if quality_score is not None else [str(quality_report.get("error", "quality scorer failed"))],
                 "remediation": None if quality_score is not None and quality_score >= config.doc_generation_quality_threshold else "Increase document specificity, expected sections, evidence, and actionable workflows.",
             },
+            "pack_quality": {
+                "ok": True if pack_quality_report is None else bool(pack_quality_report.get("effective_ok")),
+                "mode": None if pack_quality_report is None else pack_quality_report.get("mode"),
+                "configured": False if pack_quality_report is None else pack_quality_report.get("configured", False),
+                "errors": [] if pack_quality_report is None else pack_quality_report.get("errors", []),
+                "warnings": [] if pack_quality_report is None else pack_quality_report.get("warnings", []),
+                "remediation": (
+                    None
+                    if pack_quality_report is None or pack_quality_report.get("effective_ok")
+                    else "Repair generated pack docs to satisfy plugin.yaml quality_gates."
+                ),
+            },
             "usefulness_rubric": {
                 "ok": usefulness.ok,
                 "errors": usefulness.errors,
@@ -2699,6 +4334,22 @@ Missing units:
         return text_lower.count(term) > 1
 
     def _run_internal_reviewers(self, ctx: DocGenContext, state: HarnessRunState) -> list[dict]:
+        if self._plugin_mode:
+            reports = [
+                {
+                    "reviewer": "Plugin Pack Reviewer",
+                    "findings": [],
+                    "note": "Plugin-pack run uses manifest-scoped publish gates; default full-document reviewer rubric is not blocking.",
+                }
+            ]
+            review_dir = ctx.staging_dir / "_assessment" / "reviewers"
+            review_dir.mkdir(parents=True, exist_ok=True)
+            for report in reports:
+                (review_dir / f"{self._safe_name(report['reviewer'])}.json").write_text(
+                    json.dumps(report, indent=2), encoding="utf-8"
+                )
+            return reports
+
         all_text = "\n".join(
             path.read_text(encoding="utf-8", errors="replace")
             for path in sorted(ctx.staging_dir.glob("*.md"))
@@ -2970,7 +4621,19 @@ Allowed docs:
             text = chunk_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return group_units
-        visible = [name for name in group_units if name in text]
+        # Word-boundary match reduces false positives from simple substring matching.
+        # e.g. unit "Order" would wrongly match "OrderService", "OrderHeader", or any
+        # import statement containing the word; \b prevents those false assignments.
+        # Units whose names contain non-word chars (e.g. "Global.asax") fall back to
+        # substring match because \b doesn't apply cleanly across punctuation.
+        visible = []
+        for name in group_units:
+            if re.search(r"\w", name):
+                if re.search(r"\b" + re.escape(name) + r"\b", text):
+                    visible.append(name)
+            else:
+                if name in text:
+                    visible.append(name)
         return visible or group_units
 
     @staticmethod
@@ -3021,6 +4684,265 @@ Allowed docs:
     def _existing(directory: Path, names: list[str]) -> list[Path]:
         return [directory / name for name in names if (directory / name).exists()]
 
+    # Maps evidence bundle category names → investigation category name substrings.
+    # The investigator prompt uses these as section/category labels in evidence items.
+    _INV_CATEGORY_MAP: dict[str, set[str]] = {
+        "sql_queries":       {"sql_query", "join_relationship", "fk_relationship", "cross_database_usage"},
+        "ddl_schema":        {"ddl_artifact"},
+        "orm_entities":      {"orm_call"},
+        "db_connections":    {"db_connection"},
+        "config_references": {"db_connection", "config"},
+        "routes":            {"route", "endpoint"},
+        "handlers":          {"handler", "listener"},
+        "auth":              {"auth"},
+        "source_summary":    set(),  # never useful for Phase 3 in pack mode
+    }
+    _INV_BUNDLE_CAP_CHARS = 40_000
+
+    def _build_pack_investigation_bundle(
+        self, ctx: DocGenContext, doc_name: str
+    ) -> "Path | None":
+        """Return a filtered, size-capped investigation evidence file for one pack doc.
+
+        Reads all group investigation markdown files, keeps only evidence items whose
+        category matches the doc's evidence profile, and writes a single bundle file
+        capped at _INV_BUNDLE_CAP_CHARS. Returns None when no relevant evidence exists.
+        """
+        if self._plugin_manifest is None:
+            return None
+        doc_def = self._pack_doc_definition(doc_name)
+        profile_name = getattr(doc_def, "evidence_profile", None) if doc_def is not None else None
+        profiles = getattr(self._plugin_manifest, "evidence_profiles", {}) or {}
+        profile = profiles.get(profile_name) if profile_name else None
+        included_bundle_cats = set(getattr(profile, "include", [])) if profile else set()
+
+        # Build the set of investigation category tokens to keep
+        inv_cats: set[str] = set()
+        for bc in included_bundle_cats:
+            inv_cats.update(self._INV_CATEGORY_MAP.get(bc, set()))
+        if not inv_cats:
+            # No mapping — pass everything (unknown pack categories)
+            inv_cats = None  # type: ignore[assignment]
+
+        inv_dir = ctx.staging_dir / "_investigation"
+        bundle_dir = inv_dir / "_bundles"
+        bundle_dir.mkdir(exist_ok=True)
+        bundle_path = bundle_dir / f"{doc_name}.md"
+
+        lines: list[str] = [
+            f"# Investigation Evidence: {doc_name}",
+            "",
+            f"Filtered categories: {', '.join(sorted(included_bundle_cats)) or 'all'}",
+            f"Cap: {self._INV_BUNDLE_CAP_CHARS // 1000}k chars",
+            "",
+        ]
+        total_items = 0
+        total_chars = sum(len(ln) for ln in lines)
+
+        for inv_file in sorted(inv_dir.glob("*.md")):
+            if inv_file.name.startswith("_"):
+                continue
+            text = inv_file.read_text(encoding="utf-8", errors="replace")
+            # Parse the investigation markdown: sections headed
+            # "### UnitName - CATEGORY" contain one evidence item.
+            current_heading: str | None = None
+            current_block: list[str] = []
+
+            def _flush(heading: str, block: list[str]) -> None:
+                nonlocal total_items, total_chars
+                if total_chars >= self._INV_BUNDLE_CAP_CHARS:
+                    return
+                # Extract category from heading: "UnitName - CATEGORY_NAME"
+                cat_part = heading.split(" - ", 1)[-1].strip().lower().replace(" ", "_")
+                if inv_cats is not None and not any(
+                    cat_part.startswith(ic) or ic.startswith(cat_part)
+                    for ic in inv_cats
+                ):
+                    return
+                block_text = "\n".join(block)
+                remaining = self._INV_BUNDLE_CAP_CHARS - total_chars
+                lines.append(f"### {heading}")
+                lines.append(block_text[:remaining])
+                lines.append("")
+                total_items += 1
+                total_chars += len(heading) + len(block_text[:remaining]) + 4
+
+            for line in text.splitlines():
+                if line.startswith("### "):
+                    if current_heading is not None:
+                        _flush(current_heading, current_block)
+                    current_heading = line[4:]
+                    current_block = []
+                elif current_heading is not None:
+                    current_block.append(line)
+            if current_heading is not None:
+                _flush(current_heading, current_block)
+
+            if total_chars >= self._INV_BUNDLE_CAP_CHARS:
+                lines.append(f"*[Investigation bundle capped at {self._INV_BUNDLE_CAP_CHARS // 1000}k chars]*")
+                break
+
+        if total_items == 0:
+            return None
+
+        bundle_path.write_text("\n".join(lines), encoding="utf-8")
+        return bundle_path
+
+    def _reconcile_sql_usage_classification(self, ctx: DocGenContext) -> int:
+        """Make SQL-used table classifications deterministic in generated docs.
+
+        The model can write one section from DDL evidence and another from SQL
+        usage evidence, leaving stitched docs with contradictions like
+        `dbo.CUSTINVOICETRANS = PRESENT_IN_DDL_ONLY` despite sql_usage proving
+        InvoiceFlatService reads it. This pass fixes only table-specific rows
+        that already name a SQL-used table and already mark it DDL-only.
+        """
+
+        sql_tables = _sql_usage_tables(ctx.staging_dir / "sql_usage.json")
+        if not sql_tables:
+            return 0
+
+        assessment_dir = ctx.staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        changes: list[dict[str, Any]] = []
+        for path in sorted(ctx.staging_dir.glob("*.md")):
+            if path.name in {"sql_usage.md", "schema_dictionary.md", "engineering_facts.md"}:
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            changed = False
+            for idx, line in enumerate(lines):
+                for table in sql_tables:
+                    short = table.split(".")[-1]
+                    if not _line_marks_table_ddl_only(line, table, short):
+                        continue
+                    new_line = _mark_line_sql_used(line)
+                    if new_line != line:
+                        lines[idx] = new_line
+                        changed = True
+                        changes.append({
+                            "doc": path.name,
+                            "line": idx + 1,
+                            "table": table,
+                            "before": line[:500],
+                            "after": new_line[:500],
+                        })
+                    break
+            if changed:
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        report = {
+            "changes": changes,
+            "changed_count": len(changes),
+            "sql_table_count": len(sql_tables),
+        }
+        (assessment_dir / "sql_usage_reconciliation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return len(changes)
+
+    def _validate_sql_usage_publication(self, ctx: DocGenContext) -> list[str]:
+        """Block publishable docs when deterministic SQL evidence is lost."""
+
+        assessment_dir = ctx.staging_dir / "_assessment"
+        assessment_dir.mkdir(parents=True, exist_ok=True)
+        sql_usage_path = ctx.staging_dir / "sql_usage.json"
+        facts_path = ctx.staging_dir / "engineering_facts.json"
+        errors: list[str] = []
+        report: dict[str, Any] = {
+            "ok": True,
+            "checks": [],
+            "errors": errors,
+        }
+
+        queried_facts = 0
+        if facts_path.exists():
+            try:
+                facts_payload = json.loads(facts_path.read_text(encoding="utf-8"))
+                queried_facts = sum(
+                    1
+                    for item in facts_payload.get("usage", []) or []
+                    if isinstance(item, dict)
+                    and (
+                        item.get("usage_type") == "queried"
+                        or ":sql_" in str(item.get("id") or "")
+                        or re.search(r"\b(select|insert|update|delete|merge)\b", str(item.get("name") or ""), re.I)
+                    )
+                )
+            except (OSError, json.JSONDecodeError):
+                queried_facts = 0
+
+        records: list[dict[str, Any]] = []
+        if sql_usage_path.exists():
+            try:
+                payload = json.loads(sql_usage_path.read_text(encoding="utf-8"))
+                records = [item for item in payload.get("records", []) or [] if isinstance(item, dict)]
+            except (OSError, json.JSONDecodeError):
+                errors.append("SQL usage gate: sql_usage.json is present but invalid JSON")
+
+        if queried_facts and not records:
+            errors.append("SQL usage gate: engineering SQL/query facts exist but no structured SQL usage records were produced")
+
+        sql_tables = sorted({
+            str(table.get("table") or "")
+            for record in records
+            for table in record.get("tables", []) or []
+            if isinstance(table, dict) and table.get("table")
+        })
+        report["checks"].append({
+            "queried_facts": queried_facts,
+            "sql_usage_records": len(records),
+            "sql_tables": sql_tables,
+        })
+
+        if sql_tables:
+            doc_lines: list[str] = []
+            for path in sorted(ctx.staging_dir.glob("*.md")):
+                if path.name in {"sql_usage.md", "schema_dictionary.md", "engineering_facts.md"}:
+                    continue
+                doc_lines.extend(path.read_text(encoding="utf-8", errors="replace").splitlines())
+            for table in sql_tables:
+                short = table.split(".")[-1]
+                if any(_line_marks_table_ddl_only(line, table, short) for line in doc_lines):
+                    errors.append(f"SQL usage gate: {table} has SQL usage evidence but final docs mark it as DDL-only")
+
+        report["ok"] = not errors
+        (assessment_dir / "sql_usage_gate.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return errors
+
+    def _prepare_pack_artifacts(self, ctx: DocGenContext) -> None:
+        if self._plugin_manifest is None:
+            return
+        self._pack_evidence_paths = EvidenceBundleBuilder(ctx.staging_dir, self._plugin_manifest).build_all()
+        plans_dir = ctx.staging_dir / "_plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        docs = getattr(self._plugin_manifest, "docs", None) or []
+        for doc in docs:
+            profile_name = getattr(doc, "evidence_profile", None)
+            payload = {
+                "doc": doc.name,
+                "pack": {
+                    "name": getattr(self._plugin_manifest, "name", ""),
+                    "version": getattr(self._plugin_manifest, "version", ""),
+                },
+                "evidence_profile": profile_name,
+                "evidence_bundle_paths": self._pack_evidence_paths.get(profile_name, {}) if profile_name else {},
+                "required_sections": list(getattr(doc, "required_sections", []) or getattr(doc, "sections", []) or []),
+                "required_evidence": list(getattr(doc, "required_evidence", []) or []),
+                "required_outputs": list(getattr(doc, "required_outputs", []) or []),
+                "unknown_policy": getattr(getattr(self._plugin_manifest, "validation", None), "unknown_policy", "explicit"),
+                "validation_mode": getattr(getattr(self._plugin_manifest, "validation", None), "mode", "blocking"),
+            }
+            (plans_dir / f"{doc.name}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _pack_doc_definition(self, doc_name: str):
+        if self._plugin_manifest is None:
+            return None
+        for doc in getattr(self._plugin_manifest, "docs", None) or []:
+            if doc.name == doc_name:
+                return doc
+        return None
+
     def _phase2_shared_context(self, ctx: DocGenContext, facts_path: Path) -> list[Path]:
         preprocess_dir = ctx.staging_dir / "_preprocess"
         pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
@@ -3028,6 +4950,26 @@ Allowed docs:
         source_coverage = preprocess_dir / "_source_coverage.json"
         if facts_path.exists():
             files.append(facts_path)
+        if self._plugin_mode and self._plugin_manifest is not None:
+            # Always include evidence bundles when profiles are declared.
+            if getattr(self._plugin_manifest, "evidence_profiles", None):
+                for profile_paths in self._pack_evidence_paths.values():
+                    md = ctx.staging_dir / profile_paths.get("md", "")
+                    if md.exists():
+                        files.append(md)
+            analysis_pack = pack_dir / "_analysis_prompt_pack.md"
+            if analysis_pack.exists():
+                files.append(analysis_pack)
+            elif self._phase_policy("analysis") == "bounded":
+                # bounded mode: include the analysis guide so the model knows the
+                # platform-specific extraction rules even without tool access.
+                if ctx.analysis_guide_file and ctx.analysis_guide_file != "_analysis_prompts*.md":
+                    guide = preprocess_dir / ctx.analysis_guide_file
+                    if guide.exists():
+                        files.append(guide)
+                else:
+                    files.extend(sorted(preprocess_dir.glob("_analysis_prompts*.md")))
+            return files
         if not source_coverage.exists():
             files.extend(self._engineering_fact_context(ctx))
         quick_scan = ctx.staging_dir / "_assessment" / "quick_scan.md"
@@ -3092,11 +5034,58 @@ Allowed docs:
         return chunks
 
     def _phase3_context_files(self, ctx: DocGenContext, doc_name: str) -> list[Path]:
+        # Executive summary reads from scorecard + completed docs, not from analysis.
+        if doc_name == "09_EXECUTIVE_SUMMARY":
+            scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
+            files: list[Path] = [scorecard] if scorecard.exists() else []
+            # Add all other completed docs as context (but not the summary itself)
+            for other in sorted(self._required_docs):
+                if other == "09_EXECUTIVE_SUMMARY":
+                    continue
+                doc_path = ctx.staging_dir / f"{other}.md"
+                if doc_path.exists():
+                    files.append(doc_path)
+            return files
+
         preprocess_dir = ctx.staging_dir / "_preprocess"
         analysis_dir = ctx.staging_dir / "_analysis"
         pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
         bundle = self._doc_bundle_map.get(doc_name, "core")
-        files: list[Path] = []
+        files = []
+        # Pack path: analysis was skipped — Phase 3 writes from evidence bundle +
+        # investigation output (when investigation: run).
+        # bounded/run analysis falls through to the enterprise context path below.
+        if self._plugin_mode and self._phase_policy("analysis") == "skip":
+            facts = ctx.staging_dir / "facts_manifest.json"
+            if facts.exists():
+                files.append(facts)
+            # Include investigation evidence when investigation ran.
+            # Pass a filtered bundle (categories relevant to this doc, capped at
+            # 40k chars) rather than raw group files to keep Phase 3 context bounded.
+            if self._phase_policy("investigation") == "run":
+                inv_bundle = self._build_pack_investigation_bundle(ctx, doc_name)
+                if inv_bundle is not None:
+                    files.append(inv_bundle)
+            # Evidence bundle
+            doc_def = self._pack_doc_definition(doc_name)
+            profile_name = getattr(doc_def, "evidence_profile", None) if doc_def is not None else None
+            if profile_name:
+                profile_paths = self._pack_evidence_paths.get(profile_name, {})
+                evidence_md = ctx.staging_dir / profile_paths.get("md", "")
+                if evidence_md.exists():
+                    files.append(evidence_md)
+            plan = ctx.staging_dir / "_plans" / f"{doc_name}.json"
+            if plan.exists():
+                files.append(plan)
+            prompt_pack = pack_dir / f"_phase3_prompt_pack_{bundle}.md"
+            if prompt_pack.exists():
+                files.append(prompt_pack)
+            doc_prompt_file = pack_dir / f"_doc_prompt_{doc_name}.md"
+            if doc_prompt_file.exists():
+                files.append(doc_prompt_file)
+            return files
+        # bounded / run analysis: fall through to enterprise context path below,
+        # which picks up _doc_pack_*.md or _bundle_*.md from Phase 2 output.
         obligations = ctx.staging_dir / "documentation_obligations.json"
         if obligations.exists():
             files.append(obligations)
@@ -3140,9 +5129,9 @@ Allowed docs:
     def _engineering_fact_context(ctx: DocGenContext, doc_name: str | None = None) -> list[Path]:
         if doc_name is None:
             # Phase 2 analysis: lightweight markdown only — large JSON indexes blow the context window
-            names = ["engineering_facts.md", "dependency_map.md", "known_risks.md", "config_runtime_map.md"]
+            names = ["engineering_facts.md", "sql_usage.md", "dependency_map.md", "known_risks.md", "config_runtime_map.md"]
         else:
-            names = ["engineering_facts.md", "entity_index.csv", "usage_index.csv"]
+            names = ["engineering_facts.md", "sql_usage.md", "entity_index.csv", "usage_index.csv"]
             if doc_name in {"01_ARCHITECTURE_MAP", "02_COMPONENT_INVENTORY"}:
                 names.extend(["architecture_map.md", "dependency_map.md"])
             elif doc_name == "03_DATA_FLOWS_AND_LINEAGE":

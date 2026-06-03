@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from pydantic import BaseModel
 
 from mcp_server.config import config
+from mcp_server.db.models import GenerateRun
 from mcp_server.db.session import async_session_factory
 from mcp_server.services.project_registry import ProjectRegistry
 
@@ -163,3 +166,166 @@ async def build_run_comparison(
 async def compare_runs(project_id: str, a: int, b: int):
     """Compare two generation runs: profiles, templates, and output metrics."""
     return await build_run_comparison(project_id, a, b)
+
+
+class RerunRequest(BaseModel):
+    phase: Literal["scorecard", "doc"]
+    target: str | None = None  # required when phase == "doc"
+
+
+@router.post("/generate-runs/{project_id}/{run_id}/rerun")
+async def rerun_phase(
+    project_id: str,
+    run_id: int,
+    req: RerunRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Rerun a single harness phase (scorecard or one doc) without rerunning the full pipeline.
+
+    Prerequisites:
+    - Parent run must be completed or failed (not running).
+    - Phase 2 analysis artifacts must exist in the staging dir.
+    - For doc reruns, target must be the doc stem (e.g. '02_COMPONENT_INVENTORY').
+    """
+    if req.phase == "doc" and not req.target:
+        raise HTTPException(status_code=422, detail="target is required when phase is 'doc'")
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+
+        # Verify parent run exists and belongs to this project
+        parent_run = await registry.get_generate_run(run_id)
+        if parent_run is None or parent_run.project_id != project_id:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found for project {project_id}")
+        if parent_run.status == "running":
+            raise HTTPException(status_code=409, detail="Parent run is still running; wait for it to complete")
+
+        # Verify staging prerequisites
+        staging_dir = config.project_root / "output" / project_id / "docs_staging"
+        analysis_dir = staging_dir / "_analysis"
+        if not staging_dir.exists() or not any(analysis_dir.glob("*.md")):
+            raise HTTPException(
+                status_code=409,
+                detail="No Phase 2 analysis artifacts found in staging; run full generation first",
+            )
+        if req.phase == "doc":
+            target_stem = req.target.removesuffix(".md")
+            if not (staging_dir / f"{target_stem}.md").exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Doc {target_stem}.md does not exist in staging; run full generation first",
+                )
+
+        # Create child run record
+        project = await registry.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+        new_run = await registry.create_generate_run(
+            project_id=project_id,
+            triggered_by="api",
+            model_name=parent_run.model_name,
+        )
+        new_run_id = new_run.id
+        # Record parent link
+        from sqlalchemy import update
+        await db.execute(
+            update(GenerateRun).where(GenerateRun.id == new_run_id).values(parent_run_id=run_id)
+        )
+        await db.commit()
+
+    log_mgr = request.app.state.log_manager
+
+    background_tasks.add_task(
+        _run_phase_rerun_background,
+        project_id=project_id,
+        run_id=new_run_id,
+        parent_run_id=run_id,
+        phase=req.phase,
+        target=req.target,
+        log_mgr=log_mgr,
+    )
+
+    return {
+        "run_id": new_run_id,
+        "parent_run_id": run_id,
+        "phase": req.phase,
+        "target": req.target,
+        "status": "running",
+    }
+
+
+async def _run_phase_rerun_background(
+    *,
+    project_id: str,
+    run_id: int,
+    parent_run_id: int,
+    phase: str,
+    target: str | None,
+    log_mgr,
+) -> None:
+    """Background task: invalidate the target artifact and resume the full pipeline.
+
+    Resume mode skips all phases that have accepted artifacts in staging, so only
+    the invalidated artifact will be regenerated.  This is correct and safe because:
+    - Phase 1/2 artifacts are never deleted — they are preserved.
+    - Only the specific scorecard.md or doc.md is deleted before resuming.
+    - The resumed run inherits the same staging dir as the parent run.
+    """
+    import datetime
+    import time
+
+    from sqlalchemy import update as sa_update
+    from mcp_server.db.models import GenerateRun
+    from mcp_server.db.session import async_session_factory
+    from mcp_server.api.routes.projects import _run_generate_background
+
+    start_ms = int(time.time() * 1000)
+    staging_dir = config.project_root / "output" / project_id / "docs_staging"
+
+    async def _log(msg: str, level: str = "info") -> None:
+        await log_mgr.emit(project_id, msg, level=level)
+
+    try:
+        await _log(f"[rerun] Starting phase rerun: phase={phase} target={target}")
+
+        # Invalidate the target artifact so the resumed run regenerates it.
+        if phase == "scorecard":
+            scorecard = staging_dir / "_assessment" / "scorecard.md"
+            scorecard.unlink(missing_ok=True)
+            # Also remove the agent task checkpoint so resume doesn't skip it.
+            scorecard_task = staging_dir / "_agent_tasks" / "scorecard" / "scorecard" / "status.json"
+            scorecard_task.unlink(missing_ok=True)
+        elif phase == "doc" and target:
+            target_stem = target.removesuffix(".md")
+            (staging_dir / f"{target_stem}.md").unlink(missing_ok=True)
+            # Remove the agent task checkpoint for this doc.
+            doc_task_status = staging_dir / "_agent_tasks" / "phase3_doc" / target_stem / "status.json"
+            doc_task_status.unlink(missing_ok=True)
+
+        await _log(f"[rerun] Artifact invalidated; resuming pipeline with resume=True")
+
+        # Run the full pipeline with resume=True — it will skip completed phases and
+        # only regenerate the invalidated artifact.
+        await _run_generate_background(
+            project_id,
+            run_id,
+            log_mgr,
+            resume=True,
+        )
+
+    except Exception as exc:
+        logger.exception("Phase rerun failed for %s/%s phase=%s", project_id, run_id, phase)
+        await _log(f"[rerun] Phase rerun failed: {exc}", level="error")
+        async with async_session_factory() as db:
+            await db.execute(
+                sa_update(GenerateRun)
+                .where(GenerateRun.id == run_id)
+                .values(
+                    status="failed",
+                    completed_at=datetime.datetime.now(datetime.timezone.utc),
+                    error_message=str(exc)[:500],
+                )
+            )
+            await db.commit()

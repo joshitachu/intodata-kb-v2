@@ -1,0 +1,25 @@
+SPECIFIC REQUIREMENTS:
+- This document exists to help rebuild the current database objects in a new environment.
+- Open with `## Script Generation Status` and classify the output as one of:
+  - `RUNNABLE`: complete DDL evidence exists for all included objects;
+  - `PARTIAL`: some objects have complete DDL and others are blocked;
+  - `DRAFT ONLY`: no authoritative DDL is present and scripts are usage-based templates.
+- `RUNNABLE` requires authoritative DDL for the target environment. If only ACC/AXTEST DDL exists and PRD equivalence is not confirmed, classify as `PARTIAL` or `DRAFT ONLY` for PRD deployment.
+- In `## Current Version Schema Baseline`, summarize the current-version tables/entities, fields, DDL availability, and source evidence IDs from `TABLE_INVENTORY`.
+- Every table/entity from `TABLE_INVENTORY` must appear here. If a table has no complete definition, include it under blocked/draft objects rather than omitting it.
+- In `## Target Environment Assumptions`, state SQL dialect/provider, schema names, database/catalog assumptions, and any unknown environment decisions. Do not invent credentials or connection strings.
+- In `## Execution Order`, list the order for schemas, tables, keys, indexes, and dependencies. If foreign keys are unknown, say so.
+- In `## Generated DDL Scripts`, generate SQL Server DDL only when evidence is sufficient:
+  - Use fenced `sql` blocks.
+  - Put an evidence comment above each object, for example `-- Evidence: SQL-001, ORM-002; DDL source: Kruitbosch DDL`.
+  - Preserve exact data types, nullability, identity, defaults, primary keys, foreign keys, indexes, and constraints when confirmed.
+  - Preserve exact max length, precision, scale, collation, default constraint values/names when available, identity seed/increment, and computed expressions when confirmed.
+  - Every generated column must cite usage evidence and DDL evidence. Columns not used by current code may appear only when required by confirmed keys, indexes, foreign keys, computed/default dependencies, or runtime insert requirements, and must be marked `REQUIRED_BY_CONSTRAINT`.
+  - If not confirmed, write a commented draft block headed `-- DRAFT ONLY - requires DDL validation` and use `TODO_CONFIRM_TYPE`, `TODO_CONFIRM_NULLABILITY`, or similar placeholders instead of pretending.
+- In `## Indexes Keys and Constraints`, list confirmed and missing primary keys, foreign keys, unique constraints, indexes, defaults, computed columns, and identity settings.
+- In `## Seed or Reference Data Requirements`, identify lookup/reference data needed for the new environment only if evidenced by code/DDL/docs.
+- In `## Validation Queries`, provide post-deployment checks such as table existence, column existence, key/index checks, and smoke-test SELECTs based on current code usage.
+- In `## Unresolved Blockers`, list exact missing DDLs, missing referenced source projects, missing table definitions, and unresolved naming conflicts.
+- Add `## Evidence Review and 4-Eyes Sign-off` and mark `PENDING 4-EYES REVIEW` unless a named reviewer/sign-off artifact is supplied.
+- End with `## Evidence Register`.
+- Never include full connection strings, passwords, account keys, license keys, crypto keys, or other secret values.

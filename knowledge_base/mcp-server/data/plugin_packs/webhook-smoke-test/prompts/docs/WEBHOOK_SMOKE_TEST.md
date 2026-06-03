@@ -1,0 +1,12 @@
+SPECIFIC REQUIREMENTS:
+- This is a webhook smoke-test document, not real project documentation.
+- Keep it short: under 500 words.
+- Include exactly these sections:
+  - `## Repository Snapshot`
+  - `## Detected Change Summary`
+  - `## Smoke Test Result`
+- In `## Repository Snapshot`, mention the key files/folders that prove the repo was scanned.
+- In `## Detected Change Summary`, mention webhook/change evidence if supplied; otherwise state that no change details were supplied.
+- In `## Smoke Test Result`, use one status token: `PASS`, `WARN`, or `FAIL`.
+- For deterministic pack validation, include the exact words `scanned`, `webhook`, and `PASS` somewhere in the final document when the smoke test passes.
+- Do not add extra sections unless the platform requires `## Evidence Register`.

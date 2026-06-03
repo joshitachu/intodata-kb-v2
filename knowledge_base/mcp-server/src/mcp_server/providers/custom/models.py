@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -65,6 +65,9 @@ class ModelOptions(BaseModel):
     provider_options: dict[str, Any] = Field(default_factory=dict)
     prefill: str | None = None
     json_mode: bool = False  # request native JSON enforcement from providers that support it
+    tool_input_token_cap: int | None = None
+    tool_phase: str | None = None
+    tool_target: str | None = None
 
 
 class ModelResult(BaseModel):
@@ -129,3 +132,75 @@ class HarnessRunState(BaseModel):
     @property
     def output_tokens(self) -> int:
         return sum(c.result.output_tokens for c in self.calls)
+
+
+DAGNodeType = Literal[
+    "planner",
+    "facts",
+    "investigation",
+    "phase2_skeleton",
+    "phase2_deep_dive",
+    "phase2_merge",
+    "scorecard",
+    "doc_bundle",
+    "doc_write",
+    "critic",
+    "consistency",
+    "repair",
+    "validation_gate",
+]
+
+
+class GroupExecutionPlan(BaseModel):
+    group: str
+    depth: Literal["skip", "shallow", "deep"] = "shallow"
+    tool_budget: Literal["none", "standard", "expanded"] = "none"
+    reasons: list[str] = Field(default_factory=list)
+    risk_tags: list[str] = Field(default_factory=list)
+    confidence_target: float = 0.75
+
+
+class ExecutionNode(BaseModel):
+    id: str
+    type: DAGNodeType
+    depends_on: list[str] = Field(default_factory=list)
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
+    validators: list[str] = Field(default_factory=list)
+    tool_policy: Literal["none", "standard", "expanded"] = "none"
+    cache_key: str = ""
+    target: str | None = None
+
+
+class NodeResult(BaseModel):
+    node_id: str
+    status: Literal["pending", "running", "passed", "failed", "skipped", "cached"] = "pending"
+    artifacts: list[str] = Field(default_factory=list)
+    validation: str = ""
+    cache_hit: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: str | None = None
+
+
+class ExecutionGraph(BaseModel):
+    graph_version: str = "dag-v1"
+    nodes: list[ExecutionNode] = Field(default_factory=list)
+    global_constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionPlan(BaseModel):
+    mode: Literal["deterministic", "llm"] = "deterministic"
+    planner_enabled: bool = False
+    dag_enabled: bool = False
+    investigation_mode: Literal["skip", "manifest_agentic", "full"] = "full"
+    analysis_mode: Literal["skip", "direct", "skeleton_plus_deep_dive", "full"] = "full"
+    required_docs: list[str] = Field(default_factory=list)
+    scorecard: bool = True
+    doc_bundles: bool = True
+    critic: bool = False
+    consistency: bool = True
+    groups: dict[str, GroupExecutionPlan] = Field(default_factory=dict)
+    graph: ExecutionGraph = Field(default_factory=ExecutionGraph)
+    reasons: list[str] = Field(default_factory=list)
+    fallback_reason: str | None = None

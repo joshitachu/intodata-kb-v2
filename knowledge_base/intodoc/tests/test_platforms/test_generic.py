@@ -188,6 +188,43 @@ class TestGenericParser:
 
         assert any(conn.name == "MainDb" and conn.connection_type == "SQL Server" for conn in result.metadata_connections)
 
+    def test_parse_detects_all_config_xml_connections_and_appsettings(self, cred_filter, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hello')\n")
+        (tmp_path / "Web.config").write_text(
+            """<configuration>
+  <appSettings>
+    <add key="ClientSecret" value="plaintext-secret" />
+    <add key="FeatureFlag" value="enabled" />
+  </appSettings>
+  <connectionStrings>
+    <add name="MainDb" connectionString="Server=sql01,1433;Database=Main;User ID=app;Password=secret" providerName="System.Data.SqlClient" />
+    <add name="AuditDb" connectionString="Data Source=sql02;Initial Catalog=Audit;Pwd=secret" providerName="System.Data.SqlClient" />
+  </connectionStrings>
+</configuration>
+""",
+            encoding="utf-8",
+        )
+
+        plugin = GenericPlugin()
+        result = plugin.parse_project(tmp_path, cred_filter)
+
+        assert {conn.name for conn in result.metadata_connections} >= {"MainDb", "AuditDb"}
+        main = next(conn for conn in result.metadata_connections if conn.name == "MainDb")
+        assert main.host == "sql01"
+        assert main.port == "1433"
+        assert main.database == "Main"
+        assert main.additional_params["password"] == "[REDACTED]"
+        ctx = next(group for group in result.context_groups if group.name == "Web.config_appSettings")
+        values = {var.name: var.values["default"] for var in ctx.variables}
+        assert values["ClientSecret"] == "[REDACTED]"
+        assert values["FeatureFlag"] == "enabled"
+        web_comp = next(
+            comp for job in result.jobs for comp in job.components
+            if comp.compact_params().get("file_path") == "Web.config"
+        )
+        assert web_comp.metadata_connection_ref == "MainDb,AuditDb"
+
     def test_parse_extracts_routines(self, cred_filter):
         """Code files should be extracted as routines."""
         if not FIXTURES_DIR.exists():
@@ -197,6 +234,91 @@ class TestGenericParser:
         result = plugin.parse_project(FIXTURES_DIR, cred_filter)
 
         assert len(result.routines) > 0
+
+    def test_parse_extracts_sql_server_ddl_schema_definitions(self, cred_filter, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hello')\n")
+        (tmp_path / "ddl").mkdir()
+        (tmp_path / "ddl" / "tables.sql").write_text(
+            """
+CREATE TABLE [dbo].[SALESTABLE](
+    [SALESID] [nvarchar](20) NOT NULL,
+    [CUSTACCOUNT] [nvarchar](20) NOT NULL,
+    [AMOUNT] [numeric](32, 16) NULL,
+    [RECID] [bigint] IDENTITY(1,1) NOT NULL,
+    CONSTRAINT [PK_SALESTABLE] PRIMARY KEY CLUSTERED ([RECID] ASC)
+)
+GO
+ALTER TABLE [dbo].[SALESTABLE] ADD DEFAULT ('') FOR [CUSTACCOUNT]
+GO
+CREATE NONCLUSTERED INDEX [I_SALESTABLE_CUST] ON [dbo].[SALESTABLE] ([CUSTACCOUNT] ASC)
+""",
+            encoding="utf-8",
+        )
+
+        plugin = GenericPlugin()
+        result = plugin.parse_project(tmp_path, cred_filter)
+
+        assert result.stats["schema_definitions"] == 1
+        table = result.schema_definitions[0]
+        assert table["name"] == "dbo.SALESTABLE"
+        columns = {col["name"]: col for col in table["columns"]}
+        assert columns["CUSTACCOUNT"]["data_type"] == "nvarchar(20)"
+        assert columns["CUSTACCOUNT"]["max_length"] == "20"
+        assert columns["CUSTACCOUNT"]["nullable"] is False
+        assert columns["CUSTACCOUNT"]["default"] == "('')"
+        assert columns["AMOUNT"]["precision"] == "32"
+        assert columns["AMOUNT"]["scale"] == "16"
+        assert columns["RECID"]["identity"] == {"seed": "1", "increment": "1"}
+        assert any(c["kind"] == "primary_key" and c["columns"] == ["RECID"] for c in table["constraints"])
+        assert any(i["name"] == "I_SALESTABLE_CUST" for i in table["indexes"])
+
+    def test_parse_deduplicates_duplicate_ddl_sources(self, cred_filter, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hello')\n")
+        ddl = "CREATE TABLE [dbo].[Products]([Id] [int] NOT NULL)\n"
+        (tmp_path / "a.sql").write_text(ddl, encoding="utf-8")
+        (tmp_path / "b.sql").write_text(ddl, encoding="utf-8")
+
+        plugin = GenericPlugin()
+        result = plugin.parse_project(tmp_path, cred_filter)
+
+        assert len(result.schema_definitions) == 1
+        assert result.schema_definitions[0]["name"] == "dbo.Products"
+        assert result.schema_definitions[0]["duplicate_sources"] == ["b.sql"]
+
+    def test_parse_extracts_utf16_sql_server_ddl_schema_definitions(self, cred_filter, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("print('hello')\n")
+        (tmp_path / "axorderservice-prd.sql").write_text(
+            """
+CREATE TABLE [dbo].[OrderHeaders](
+    [Id] [int] IDENTITY(1,1) NOT NULL,
+    [CustomerNumber] [nvarchar](20) NOT NULL,
+    CONSTRAINT [PK_OrderHeaders] PRIMARY KEY CLUSTERED ([Id] ASC)
+)
+GO
+CREATE TABLE [dbo].[OrderLines](
+    [Id] [int] IDENTITY(1,1) NOT NULL,
+    [OrderId] [int] NOT NULL,
+    [ProductNumber] [nvarchar](30) NOT NULL,
+    CONSTRAINT [PK_OrderLines] PRIMARY KEY CLUSTERED ([Id] ASC),
+    CONSTRAINT [FK_OrderLines_OrderHeaders_OrderId] FOREIGN KEY([OrderId])
+        REFERENCES [dbo].[OrderHeaders] ([Id])
+)
+""",
+            encoding="utf-16",
+        )
+
+        plugin = GenericPlugin()
+        result = plugin.parse_project(tmp_path, cred_filter)
+
+        names = {schema["name"] for schema in result.schema_definitions}
+        assert names == {"dbo.OrderHeaders", "dbo.OrderLines"}
+        order_lines = next(schema for schema in result.schema_definitions if schema["name"] == "dbo.OrderLines")
+        columns = {col["name"]: col for col in order_lines["columns"]}
+        assert columns["ProductNumber"]["data_type"] == "nvarchar(30)"
+        assert any(c["kind"] == "foreign_key" for c in order_lines["constraints"])
 
     def test_manifest_has_job_groups(self, cred_filter):
         """Manifest should contain job groups."""
