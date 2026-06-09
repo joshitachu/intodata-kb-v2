@@ -1045,9 +1045,14 @@ async def _run_generate_background(
                 head_sha = await _current_git_head(project.local_path)
                 if head_sha:
                     await registry.update_last_ingested_commit(project_id, head_sha)
+            final_status = (
+                "completed_warnings"
+                if result.get("has_warnings")
+                else "completed"
+            )
             await registry.complete_generate_run(
                 run_id,
-                status="completed",
+                status=final_status,
                 cost_usd=result.get("cost_usd"),
                 duration_ms=result.get("duration_ms"),
                 duration_api_ms=result.get("duration_api_ms"),

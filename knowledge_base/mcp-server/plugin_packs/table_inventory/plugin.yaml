@@ -64,6 +64,41 @@ evidence_profiles:
       - static_assets
       - generated_files
 
+evidence_agents:
+  - id: table_sql_finder
+    uses: builtin/sql_usage_agent
+    evidence_profile: table_inventory
+    categories:
+      - sql_queries
+      - orm_entities
+    inputs:
+      - facts_manifest
+      - preprocess_chunks
+      - source_context
+    output: evidence_registry
+  - id: ddl_alignment_agent
+    uses: builtin/ddl_alignment_agent
+    evidence_profile: table_inventory
+    categories:
+      - ddl_schema
+      - db_connections
+    inputs:
+      - facts_manifest
+      - preprocess_chunks
+      - evidence_registry
+    output: evidence_registry
+  - id: db_config_agent
+    uses: builtin/db_config_agent
+    evidence_profile: table_inventory
+    categories:
+      - db_connections
+      - config_references
+    inputs:
+      - facts_manifest
+      - preprocess_chunks
+      - engineering_facts
+    output: evidence_registry
+
 validation:
   unknown_policy: explicit
   mode: blocking

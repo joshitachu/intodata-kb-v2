@@ -11,8 +11,12 @@ from mcp_server.config import config
 from mcp_server.platforms import get_platform_strategy
 from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import CoverageReport, FactsManifest, InvestigationReport, UnitFact
+from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_catalog
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
-from mcp_server.providers.custom.prompts import DOC_SECTION_REQUIREMENTS, REQUIRED_DOCS
+
+_catalog = _load_catalog()
+REQUIRED_DOCS = _catalog.required_docs
+DOC_SECTION_REQUIREMENTS = _catalog.section_requirements
 
 EVIDENCE_REGISTER_SECTION_RE = re.compile(
     r"^##\s+Evidence Register\s*$([\s\S]*?)(?=^##\s+|\Z)",
@@ -79,9 +83,16 @@ def _systems_for(job: dict[str, Any]) -> list[str]:
         if isinstance(value, str):
             systems.add(value)
     for comp in job.get("components", []) or []:
-        ref = comp.get("metadata_connection_ref")
-        if ref:
-            systems.add(str(ref))
+        # Skip metadata_connection_ref on ConfigFile components — the ref is the
+        # config filename stem (e.g. "Web" from Web.config), not a system name.
+        # Repeated once per connection string found, producing "Web,Web,Web,..." noise.
+        if comp.get("component_type") != "ConfigFile":
+            ref = comp.get("metadata_connection_ref")
+            if ref:
+                for part in str(ref).split(","):
+                    part = part.strip()
+                    if part:
+                        systems.add(part)
         for param in comp.get("params", []) or []:
             name = str(param.get("name", "")).lower()
             value = str(param.get("value", ""))

@@ -621,6 +621,8 @@ class OpenAIOfficialProvider:
                     "input": full_prompt,
                     "max_output_tokens": opts.max_tokens,
                 }
+                if opts.system_prompt:
+                    payload["instructions"] = opts.system_prompt
                 if opts.json_mode:
                     payload["text"] = {"format": {"type": "json_object"}}
                 payload.update(opts.provider_options)
@@ -902,7 +904,10 @@ class OpenAICompatibleProvider:
 
         for attempt in range(opts.retries + 1):
             try:
-                messages: list[dict[str, str]] = [{"role": "user", "content": full_prompt}]
+                messages: list[dict[str, str]] = []
+                if opts.system_prompt:
+                    messages.append({"role": "system", "content": opts.system_prompt})
+                messages.append({"role": "user", "content": full_prompt})
                 if opts.prefill:
                     messages.append({"role": "assistant", "content": opts.prefill})
                 payload: dict[str, Any] = {
@@ -1264,6 +1269,8 @@ class GoogleGeminiProvider:
                     "temperature": opts.temperature,
                     **opts.provider_options,
                 }
+                if opts.system_prompt:
+                    gemini_config["system_instruction"] = opts.system_prompt
                 if opts.json_mode:
                     gemini_config["response_mime_type"] = "application/json"
                 payload = _validated_payload(
@@ -1411,6 +1418,8 @@ class ClaudeCliModelProvider:
         opts = options or ModelOptions()
         context = _read_context(context_files)
         full_prompt = prompt + context
+        if opts.system_prompt:
+            full_prompt = f"{opts.system_prompt}\n\n---\n\n{full_prompt}"
         estimated_tokens = _estimate_tokens(full_prompt)
         metadata = {
             "provider": self.provider_name,
@@ -1575,21 +1584,30 @@ class AnthropicProvider:
                 messages: list[dict[str, str]] = [{"role": "user", "content": full_prompt}]
                 if opts.prefill:
                     messages.append({"role": "assistant", "content": opts.prefill})
-                payload = _validated_payload(
-                    AnthropicMessagePayload,
-                    {
-                        "model": self.model_name,
-                        "max_tokens": opts.max_tokens,
-                        "messages": messages,
-                        **opts.provider_options,
-                    },
-                )
-                response = await self._client(opts.timeout_s).messages.create(**payload)
+                anthropic_payload: dict[str, Any] = {
+                    "model": self.model_name,
+                    "max_tokens": opts.max_tokens,
+                    "messages": messages,
+                    **opts.provider_options,
+                }
+                extra_headers: dict[str, str] = {}
+                if opts.system_prompt:
+                    anthropic_payload["system"] = [
+                        {"type": "text", "text": opts.system_prompt, "cache_control": {"type": "ephemeral"}}
+                    ]
+                    extra_headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+                payload = _validated_payload(AnthropicMessagePayload, anthropic_payload)
+                create_kwargs: dict[str, Any] = dict(payload)
+                if extra_headers:
+                    create_kwargs["extra_headers"] = extra_headers
+                response = await self._client(opts.timeout_s).messages.create(**create_kwargs)
                 data = response.model_dump()
                 blocks = data.get("content") or []
                 raw_text = next((b.get("text", "") for b in blocks if b.get("type") == "text"), "")
                 stop_reason = data.get("stop_reason")
                 usage = data.get("usage", {}) or {}
+                cache_read = int(usage.get("cache_read_input_tokens") or 0)
+                cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
                 if stop_reason == "max_tokens":
                     return ModelResult(
                         success=False,
@@ -1597,6 +1615,8 @@ class AnthropicProvider:
                         model_name=self.model_name,
                         input_tokens=int(usage.get("input_tokens") or _estimate_tokens(full_prompt)),
                         output_tokens=int(usage.get("output_tokens") or _estimate_tokens(raw_text)),
+                        cache_read_tokens=cache_read,
+                        cache_creation_tokens=cache_creation,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         retries=attempt,
                         raw_error="incomplete: stop_reason=max_tokens",
@@ -1609,6 +1629,8 @@ class AnthropicProvider:
                     model_name=self.model_name,
                     input_tokens=int(usage.get("input_tokens") or _estimate_tokens(full_prompt)),
                     output_tokens=int(usage.get("output_tokens") or _estimate_tokens(text)),
+                    cache_read_tokens=cache_read,
+                    cache_creation_tokens=cache_creation,
                     latency_ms=int((time.monotonic() - start) * 1000),
                     retries=attempt,
                     metadata=metadata,

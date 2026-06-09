@@ -29,6 +29,7 @@ COPY mcp-server/pyproject.toml .
 COPY mcp-server/src/ src/
 COPY mcp-server/alembic/ alembic/
 COPY mcp-server/alembic.ini .
+COPY mcp-server/data/ data/
 RUN pip install --no-cache-dir .
 
 # Run as non-root user

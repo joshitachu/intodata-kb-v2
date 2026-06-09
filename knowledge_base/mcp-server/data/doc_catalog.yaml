@@ -1,0 +1,225 @@
+# Single source of truth for the documentation generation catalog.
+# Plugin packs that declare `docs:` in plugin.yaml override this entirely for their run.
+docs:
+  - name: "00_AGENT_BRIEF"
+    bundle: "core"
+    required_sections:
+      - "Project Orientation"
+      - "Documentation Map"
+      - "Onboarding"
+      - "Common Tasks"
+      - "Known Traps"
+      - "Glossary"
+    phase2_sections:
+      - "EXTERNAL_SYSTEMS"
+      - "ENVIRONMENT_CONFIG"
+      - "NAMING_PATTERNS"
+      - "RISK_FLAGS"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Open with the canonical inventory count ({unit_count} {canonical_unit_label}) and platform.
+      - Include an onboarding path for a new assistant/engineer: first docs to read, first artifacts to inspect, and safest first tasks.
+      - Include a documentation map linking the other Phase 3 docs to concrete task types.
+      - Include common tasks: trace data, change config, change a transformation/rule, debug a failed run, assess risk.
+      - Include known traps and do-not-miss items with evidence references.
+      - Include a glossary of project/platform terms found in evidence, not a generic platform glossary.
+
+  - name: "01_ARCHITECTURE_MAP"
+    bundle: "core"
+    required_sections:
+      - "Topology"
+      - "Entry Points"
+      - "Dependencies"
+      - "Boundaries"
+    phase2_sections:
+      - "EXECUTION_FLOW"
+      - "EXTERNAL_SYSTEMS"
+      - "SCHEMA_DICTIONARY"
+      - "CROSS_GROUP_REFS"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Describe the system topology and execution/orchestration shape.
+      - Identify group boundaries, entry points, parent-child/caller-callee relationships, dependency graph, shared infrastructure, and cross-system interactions.
+      - Include per-group or per-domain architecture summary with exact unit examples.
+      - Explain scanner-limited architecture gaps explicitly.
+
+      TALEND CONNECTION SEMANTIC TABLE:
+      Include a `## Connection Semantic Table` section with this exact table structure:
+      | Connection Name | Type | Purpose | Consuming Jobs | Risk Notes |
+      |----------------|------|---------|---------------|------------|
+      List every unique connection (tMSSqlInput source, tFileInput path, tJMS destination, etc.) found in the scanner evidence.
+      If connection names are unavailable, write UNKNOWN for that field.
+
+  - name: "02_COMPONENT_INVENTORY"
+    bundle: "core"
+    required_sections:
+      - "Canonical Unit Inventory"
+      - "Source Artifacts"
+      - "Components"
+      - "Dependencies"
+      - "Scanner-Limited Evidence"
+    phase2_sections:
+      - "COMPONENTS"
+      - "EXECUTION_FLOW"
+      - "EXTERNAL_SYSTEMS"
+      - "SCHEMA_DICTIONARY"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Provide a canonical unit inventory table covering every unit: name | group | source artifact/path | type | purpose | key dependencies | evidence confidence.
+      - Include component/step/action/module census using platform-specific vocabulary from the supplied platform obligations.
+      - Include missing references, orphaned/inactive assets, scanner-limited units, and shared dependencies.
+      - This is the exhaustive "what exists" reference; do not collapse units into vague summaries.
+
+  - name: "03_DATA_FLOWS_AND_LINEAGE"
+    bundle: "core"
+    required_sections:
+      - "Data Flow"
+      - "Lineage"
+      - "Transformation"
+      - "Validation"
+    phase2_sections:
+      - "DATA_FLOWS"
+      - "TRANSFORMATION_DETAIL"
+      - "SOURCE_SQL"
+      - "SCHEMA_DICTIONARY"
+      - "EXTERNAL_SYSTEMS"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Include one subsection per major flow with source, target, transformations, schema/entity detail, validation/reject handling, and scanner limits.
+      - Document source-to-target data journeys by group/domain and by critical path.
+      - Include transformation/mapping expressions verbatim where present.
+      - Include schemas/entities/fields, readers/writers, validation checkpoints, reject/error paths, and lineage confidence.
+      - Use platform-specific mapping terminology only from the platform evidence, not hardcoded assumptions.
+
+  - name: "04_BUSINESS_RULES_AND_TRANSFORMATIONS"
+    bundle: "business_ops"
+    required_sections:
+      - "Business Rules"
+      - "Transformation"
+      - "Hardcoded Values"
+      - "Impact"
+    phase2_sections:
+      - "BUSINESS_RULES"
+      - "TRANSFORMATION_DETAIL"
+      - "SOURCE_SQL"
+      - "CUSTOM_CODE"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Complete BR-{GROUP}-NNN catalog: rule | expression/condition/formula | implementing unit/artifact | domain | impact.
+      - Include transformation chains, lookup behavior, hardcoded values, magic constants, conflicts, and duplicated logic.
+      - Separate direct evidence from inferred business intent.
+
+  - name: "05_RUNTIME_CONFIG_AND_EXTERNALS"
+    bundle: "business_ops"
+    required_sections:
+      - "Runtime Config"
+      - "External Systems"
+      - "Credentials"
+      - "Environment"
+    phase2_sections:
+      - "EXTERNAL_SYSTEMS"
+      - "ENVIRONMENT_CONFIG"
+      - "SCHEDULING"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Catalog every external system/config source in rows with connection/config source, unit/artifact, purpose, redacted status, scanner-limited status, and portability risk.
+      - Include config values only in sanitized form; identify redacted secrets as redacted, not missing.
+      - Identify environment-specific behavior and deployment assumptions.
+
+  - name: "06_OPERATIONS_TESTING_AND_DEBUGGING"
+    bundle: "business_ops"
+    required_sections:
+      - "Run"
+      - "Debug"
+      - "Verify"
+      - "Recovery"
+      - "Testing"
+    phase2_sections:
+      - "SCHEDULING"
+      - "ERROR_HANDLING"
+      - "ENVIRONMENT_CONFIG"
+      - "EXTERNAL_SYSTEMS"
+      - "RISK_FLAGS"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Explain how execution works, how to debug failures, what logs/monitors/checks exist, and how to verify success.
+      - Include failure scenario and verification tables per group/system: symptom | likely cause | affected units | diagnosis | recovery | prevention | verification.
+      - Include test coverage gaps and concrete verification checks from supplied evidence.
+
+  - name: "07_QUALITY_SECURITY_RISK_SCORECARD"
+    bundle: "patterns_user"
+    required_sections:
+      - "Score"
+      - "Confidence"
+      - "Evidence"
+      - "Red Flags"
+      - "Quick Wins"
+      - "Unknowns"
+    phase2_sections:
+      - "ERROR_HANDLING"
+      - "EXTERNAL_SYSTEMS"
+      - "ENVIRONMENT_CONFIG"
+      - "SOURCE_SQL"
+      - "CUSTOM_CODE"
+      - "RISK_FLAGS"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Turn `_assessment/scorecard.md` into a readable deep review without losing numeric scores.
+      - Include dimensions: architecture, data lineage, operations, reliability, security, maintainability, testability, and platform/tooling fit when evidence exists.
+      - Every score requires confidence, evidence, unknowns, red flags, quick wins, and affected units.
+      - Include score table, risk register, evidence, confidence, unknowns, and quick wins.
+
+  - name: "08_CHANGE_PLAYBOOK"
+    bundle: "patterns_user"
+    required_sections:
+      - "Change Impact"
+      - "Inspect"
+      - "Test"
+      - "Rollback"
+    phase2_sections:
+      - "BUSINESS_RULES"
+      - "TRANSFORMATION_DETAIL"
+      - "SCHEDULING"
+      - "ENVIRONMENT_CONFIG"
+      - "CROSS_GROUP_REFS"
+      - "RISK_FLAGS"
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      - Include a matrix: change target | inspect first | affected units | required tests/checks | rollback risk | confidence.
+      - Cover changes to mappings/transformations, schemas/entities, config/env, connections/external systems, shared dependencies, business rules, and operational schedules/triggers.
+      - Include safe-edit guidance and scanner-limited warnings when impact cannot be proven.
+
+  - name: "09_EXECUTIVE_SUMMARY"
+    bundle: "executive"
+    required_sections:
+      - "Executive Risk Summary"
+      - "Modernisation Priorities"
+      - "Integration Health Scorecard"
+      - "Confidence and Limitations"
+      - "Recommended Next Actions"
+    phase2_sections: []
+    doc_specific_instructions: |
+      SPECIFIC REQUIREMENTS:
+      This document translates the technical assessment into business language for non-technical stakeholders.
+      DO NOT use technical jargon without immediately explaining it. DO NOT reproduce raw code or SQL.
+      Write from the scorecard and generated documentation only -- not from raw scanner output.
+
+      Required sections:
+        ## Executive Risk Summary
+        - List top 3 risks in business terms: what could go wrong, what business process is affected, estimated severity.
+        - Map each risk to the scorecard severity rating.
+
+        ## Modernisation Priorities
+        - Ranked table: priority | initiative | business rationale | estimated effort | confidence.
+
+        ## Integration Health Scorecard (Business View)
+        - Summary table: dimension | score | plain-English meaning | key concern.
+        - Translate each scorecard dimension into one sentence a CFO or CTO can understand.
+
+        ## Confidence and Limitations
+        - State what the documentation is based on (scanned code, no runtime observation).
+        - List specific gaps where confidence is LOW or where runtime validation is required.
+
+        ## Recommended Next Actions
+        - Numbered list: 3-5 concrete steps a decision-maker can authorise.
+        - Each step: what to do, who owns it (SOLO/PAIR/TEAM), estimated time-to-value.

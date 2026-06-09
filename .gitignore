@@ -62,6 +62,15 @@ tmpclaude-*
 .agents/
 .claude/skills/
 
+# Personal workflow tools (not project code)
+.claude/commands/
+.claude/hooks/
+.opencode/
+.codex/
+.plans/
+opencode.json
+AGENTS.md
+
 # Large binary files (not project code)
 OpenBrain_Behavioral_Architecture.pdf
 profiles.zip

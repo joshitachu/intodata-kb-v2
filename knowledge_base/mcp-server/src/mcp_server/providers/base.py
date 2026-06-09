@@ -28,6 +28,7 @@ class AgentResult:
     model_name: str = "claude"
     write_model_name: str | None = None
     required_docs: list[str] = field(default_factory=list)
+    has_warnings: bool = False
 
     def to_dict(self) -> dict:
         """Return a plain dict compatible with the legacy result format."""
@@ -44,6 +45,7 @@ class AgentResult:
             "model_name": self.model_name,
             "write_model_name": self.write_model_name,
             "required_docs": self.required_docs,
+            "has_warnings": self.has_warnings,
         }
 
 
