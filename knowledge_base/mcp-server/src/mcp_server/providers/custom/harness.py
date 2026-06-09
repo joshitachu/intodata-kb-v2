@@ -30,6 +30,11 @@ from mcp_server.providers.custom.investigator import (
     write_investigation_artifacts,
 )
 from mcp_server.providers.custom.engineering_facts import EngineeringFactsService
+from mcp_server.providers.custom.evidence_agents import (
+    EvidenceAgentRunner,
+    EvidenceRegistryBuilder,
+    resolve_evidence_agents,
+)
 from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, EvidenceBundleBuilder
 from mcp_server.providers.custom.talend_intelligence import write_talend_intelligence
 from mcp_server.providers.custom.agent_runtime import (
@@ -53,11 +58,9 @@ from mcp_server.providers.custom.models import (
     ModelResult,
     ProviderCallLog,
 )
+from mcp_server.providers.custom.doc_catalog import load_doc_catalog
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, materialize_prompt_packs
 from mcp_server.providers.custom.prompts import (
-    DOC_ASSIGNMENTS,
-    DOC_BUNDLE_MAP,
-    REQUIRED_DOCS,
     doc_prompt,
     facts_summary,
     group_analysis_prompt,
@@ -116,20 +119,25 @@ BASELINE_BUNDLE_SECTIONS = {
     "RISK_FLAGS",
     ADDITIONAL_FINDINGS_SECTION,
 }
-DOC_SECTION_BUNDLE_MAP = {
-    "00_AGENT_BRIEF": {"EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "NAMING_PATTERNS", "RISK_FLAGS"},
-    "01_ARCHITECTURE_MAP": {"EXECUTION_FLOW", "EXTERNAL_SYSTEMS", "SCHEMA_DICTIONARY", "CROSS_GROUP_REFS"},
-    "02_COMPONENT_INVENTORY": {"COMPONENTS", "EXECUTION_FLOW", "EXTERNAL_SYSTEMS", "SCHEMA_DICTIONARY"},
-    "03_DATA_FLOWS_AND_LINEAGE": {"DATA_FLOWS", "TRANSFORMATION_DETAIL", "SOURCE_SQL", "SCHEMA_DICTIONARY", "EXTERNAL_SYSTEMS"},
-    "04_BUSINESS_RULES_AND_TRANSFORMATIONS": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SOURCE_SQL", "CUSTOM_CODE"},
-    "05_RUNTIME_CONFIG_AND_EXTERNALS": {"EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SCHEDULING"},
-    "06_OPERATIONS_TESTING_AND_DEBUGGING": {"SCHEDULING", "ERROR_HANDLING", "ENVIRONMENT_CONFIG", "EXTERNAL_SYSTEMS", "RISK_FLAGS"},
-    "07_QUALITY_SECURITY_RISK_SCORECARD": {"ERROR_HANDLING", "EXTERNAL_SYSTEMS", "ENVIRONMENT_CONFIG", "SOURCE_SQL", "CUSTOM_CODE", "RISK_FLAGS"},
-    "08_CHANGE_PLAYBOOK": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL", "SCHEDULING", "ENVIRONMENT_CONFIG", "CROSS_GROUP_REFS", "RISK_FLAGS"},
-    # 09_EXECUTIVE_SUMMARY reads from scorecard + completed docs, not from analysis bundle.
-    # Its context is injected specially in _phase3_context_files().
-    "09_EXECUTIVE_SUMMARY": set(),
+
+# Maps evidence profile category strings -> Phase 2 section names.
+# Used to enforce evidence_profiles from plugin.yaml in Phase 2.8 doc bundles.
+_BUNDLE_CATEGORY_TO_PHASE2_SECTIONS: dict[str, set[str]] = {
+    "environment_config": {"ENVIRONMENT_CONFIG"},
+    "external_systems": {"EXTERNAL_SYSTEMS"},
+    "business_rules": {"BUSINESS_RULES", "TRANSFORMATION_DETAIL"},
+    "data_flows": {"DATA_FLOWS", "SCHEMA_DICTIONARY"},
+    "components": {"COMPONENTS", "EXECUTION_FLOW"},
+    "risk_flags": {"RISK_FLAGS"},
+    "custom_code": {"CUSTOM_CODE"},
+    "source_sql": {"SOURCE_SQL"},
+    "scheduling": {"SCHEDULING"},
+    "error_handling": {"ERROR_HANDLING"},
+    "naming_patterns": {"NAMING_PATTERNS"},
+    "cross_group_refs": {"CROSS_GROUP_REFS"},
 }
+
+
 def _evidence_register_section(text: str) -> str | None:
     match = EVIDENCE_REGISTER_SECTION_RE.search(text)
     if not match:
@@ -302,6 +310,22 @@ def _line_marks_table_ddl_only(line: str, table: str, short: str) -> bool:
     for cell in cells[:3]:
         normalized = cell.strip("[]` ").lower()
         if normalized in table_names:
+            return True
+    return False
+
+
+_SQL_DML_RE = re.compile(
+    r"\bselect\b.{0,500}?\bfrom\b|insert\s+into\b|update\b.{0,200}?\bset\b|delete\s+from\b|merge\s+into\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _fact_has_sql_content(item: dict[str, Any]) -> bool:
+    """Return True only when a usage fact carries actual SQL DML, not just a 'query'-keyed config param."""
+    if _SQL_DML_RE.search(str(item.get("name") or "")):
+        return True
+    for ev in item.get("evidence", []) or []:
+        if isinstance(ev, dict) and _SQL_DML_RE.search(str(ev.get("excerpt") or "")):
             return True
     return False
 
@@ -511,22 +535,36 @@ class CustomHarnessProvider(DocGenerationProvider):
         self.pack = pack
         self.plugin_pack_dir = plugin_pack_dir
 
-        self._required_docs: list[str] = list(REQUIRED_DOCS)
-        self._doc_assignments: dict[str, list[str]] = dict(DOC_ASSIGNMENTS)
-        self._doc_bundle_map: dict[str, str] = dict(DOC_BUNDLE_MAP)
+        _catalog = load_doc_catalog()
+        self._required_docs: list[str] = list(_catalog.required_docs)
+        self._doc_assignments: dict[str, list[str]] = dict(_catalog.doc_assignments)
+        self._doc_bundle_map: dict[str, str] = dict(_catalog.doc_bundle_map)
+        self._doc_section_bundle_map: dict[str, set[str]] = dict(_catalog.doc_section_bundle_map)
         self._doc_section_requirements_extra: dict[str, list[str]] = {}
         self._plugin_manifest = None
         self._pack_evidence_paths: dict[str, dict[str, str]] = {}
+        self._evidence_registry_paths: dict[str, str] = {}
+        self._phase_model_overrides: dict[str, str] = {}
+        self._phase_concurrency_overrides: dict[str, int] = {}
 
         if plugin_pack_dir:
             from mcp_server.services.plugin_schema import load_plugin_manifest
             try:
                 _manifest = load_plugin_manifest(plugin_pack_dir)
                 self._plugin_manifest = _manifest
+                if _manifest.phases is not None:
+                    for _phase_name in ("investigation", "analysis", "scorecard", "doc_bundles"):
+                        _m = _manifest.phases.model_for(_phase_name)
+                        _c = _manifest.phases.concurrency_for(_phase_name)
+                        if _m:
+                            self._phase_model_overrides[_phase_name] = _m
+                        if _c is not None:
+                            self._phase_concurrency_overrides[_phase_name] = _c
                 if _manifest.docs:
                     self._required_docs = [d.name for d in _manifest.docs]
                     self._doc_assignments = {"custom": list(self._required_docs)}
                     self._doc_bundle_map = {d: "custom" for d in self._required_docs}
+                    self._doc_section_bundle_map = {}  # pack runs: no Phase 2 section routing
                     self._doc_section_requirements_extra = {
                         d.name: d.required_sections for d in _manifest.docs if d.required_sections
                     }
@@ -553,7 +591,7 @@ class CustomHarnessProvider(DocGenerationProvider):
             return "run"
         declared = getattr(self._plugin_manifest, "phases", None)
         if declared is not None:
-            return getattr(declared, phase, "skip")
+            return declared.policy_for(phase)
         # backward compat: evidence_profiles present implies pack-contract (skip all)
         if getattr(self._plugin_manifest, "evidence_profiles", None):
             return "skip"
@@ -601,6 +639,42 @@ class CustomHarnessProvider(DocGenerationProvider):
             and self._phase_policy("investigation") == "skip"
             and self._phase_policy("analysis") == "skip"
         )
+
+    def _provider_for_phase(self, phase: str) -> "ModelProvider":
+        """Return the ModelProvider for a given phase, applying pack model overrides."""
+        override_model = self._phase_model_overrides.get(phase)
+        if not override_model:
+            if phase == "investigation":
+                return self.investigation_provider
+            if phase in ("doc_write", "phase3"):
+                return self.write_provider
+            return self.model_provider
+        if not hasattr(self, "_override_providers"):
+            self._override_providers: dict[str, "ModelProvider"] = {}
+        if override_model not in self._override_providers:
+            from mcp_server.model_strategies import normalize_model_id
+            normalized = normalize_model_id(override_model)
+            provider_prefix = normalized.partition("/")[0]
+            api_key: str | None = None
+            base_url: str | None = None
+            ollama_base_url: str | None = config.ollama_base_url
+            if provider_prefix == "deepseek":
+                api_key = config.doc_generation_deepseek_api_key or config.doc_generation_api_key
+                base_url = config.doc_generation_deepseek_base_url or config.doc_generation_base_url
+            elif provider_prefix not in {"openai", "anthropic", "google"}:
+                api_key = config.doc_generation_api_key
+                base_url = config.doc_generation_base_url
+            self._override_providers[override_model] = build_model_provider(
+                normalized,
+                api_key=api_key,
+                base_url=base_url,
+                ollama_base_url=ollama_base_url,
+            )
+        return self._override_providers[override_model]
+
+    def _concurrency_for_phase(self, phase: str, default: int) -> int:
+        """Return concurrency for a phase, applying pack overrides."""
+        return self._phase_concurrency_overrides.get(phase, default)
 
     def _tool_policy(self, provider: ModelProvider, phase: str) -> ToolPolicy:
         """Return the tool-use policy for a given provider/phase combination.
@@ -985,6 +1059,16 @@ Fallback plan example:
         return result
 
     async def run(self, ctx: DocGenContext, log_cb: LogCallback) -> AgentResult:
+        from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+        from mcp_server.providers.custom.pipeline.runner import PipelineRunner
+        from mcp_server.providers.custom.pipeline.phases.phase1_investigation import Phase1Investigation
+        from mcp_server.providers.custom.pipeline.phases.phase2_analysis import Phase2Analysis
+        from mcp_server.providers.custom.pipeline.phases.phase26_scorecard import Phase26Scorecard
+        from mcp_server.providers.custom.pipeline.phases.phase28_bundles import Phase28Bundles
+        from mcp_server.providers.custom.pipeline.phases.phase3_docs import Phase3Docs
+        from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+        from mcp_server.providers.custom.pipeline.evidence_quality_gate import EvidenceQualityGate
+
         start_ms = int(time.time() * 1000)
         _pipeline_log = _PipelineLog()
         _phase_calls_start = 0
@@ -994,7 +1078,14 @@ Fallback plan example:
             self._required_docs = [d for d in self._required_docs if d != "09_EXECUTIVE_SUMMARY"]
 
         scan_output_dir = config.intodoc_output_dir / ctx.project_id
-        facts = build_facts_manifest(ctx.project_id, scan_output_dir)
+        try:
+            facts = build_facts_manifest(ctx.project_id, scan_output_dir)
+        except Exception as exc:
+            logger.exception("[custom] build_facts_manifest failed for %s", ctx.project_id)
+            raise RuntimeError(
+                f"Scan output is missing or corrupt for project {ctx.project_id!r}. "
+                "Re-run the scan and try again."
+            ) from exc
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         facts_path = ctx.staging_dir / "facts_manifest.json"
         facts.write(facts_path)
@@ -1021,6 +1112,7 @@ Fallback plan example:
         materialize_prompt_packs(ctx.staging_dir, ctx.analysis_guide_file)
         if self._plugin_mode:
             self._prepare_pack_artifacts(ctx)
+        await self._prepare_evidence_registry(ctx, state, log_cb)
 
         await log_cb(
             ctx.project_id,
@@ -1046,400 +1138,161 @@ Fallback plan example:
             execution_plan = await self._prepare_execution_plan(ctx, state, facts_path, log_cb)
             self._required_docs = list(execution_plan.required_docs)
 
-        try:
-            investigation_policy = self._phase_policy("investigation")
-            analysis_policy = self._phase_policy("analysis")
-            if execution_plan is not None:
-                investigation_policy = "skip" if execution_plan.investigation_mode == "skip" else "run"
-                analysis_policy = {
-                    "skip": "skip",
-                    "direct": "bounded",
-                    "skeleton_plus_deep_dive": "dag_tiered",
-                    "full": "run",
-                }[execution_plan.analysis_mode]
+        # ── Resolve investigation and analysis policies ───────────────────────
+        investigation_policy = self._phase_policy("investigation")
+        analysis_policy = self._phase_policy("analysis")
+        if execution_plan is not None:
+            investigation_policy = "skip" if execution_plan.investigation_mode == "skip" else "run"
+            analysis_policy = {
+                "skip": "skip",
+                "direct": "bounded",
+                "skeleton_plus_deep_dive": "dag_tiered",
+                "full": "run",
+            }[execution_plan.analysis_mode]
+
+        # Pre-create investigation dir so Phase 1 skip path can write _summary.md
+        investigation_dir = ctx.staging_dir / "_investigation"
+        investigation_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build helpers and phase objects
+        helpers = HarnessHelpersImpl(self)
+
+        # Phase 1 skip path writes the _summary.md before the runner is called.
+        # The runner will skip Phase1Investigation when investigation_mode == "skip".
+        if investigation_policy == "skip":
+            inv_reason = (
+                "Pack-contract run: Phase 1 investigation is replaced by declared evidence profiles."
+                if self._pack_contract_mode
+                else f"Phase 1 skipped: investigation policy=skip (analysis={analysis_policy})."
+            )
+            (investigation_dir / "_summary.md").write_text(
+                f"# Investigation Summary\n\n{inv_reason}\n", encoding="utf-8"
+            )
+            await log_cb(ctx.project_id, f"[custom] Phase 1 skipped ({analysis_policy=})", "info")
+        else:
             use_direct_path = facts.unit_count <= config.small_project_threshold
-            investigation_dir = ctx.staging_dir / "_investigation"
-            investigation_dir.mkdir(parents=True, exist_ok=True)
-
-            # ── Phase 1: investigation ────────────────────────────────────────
-            if investigation_policy == "skip":
-                inv_reason = (
-                    "Pack-contract run: Phase 1 investigation is replaced by declared evidence profiles."
-                    if self._pack_contract_mode
-                    else f"Phase 1 skipped: investigation policy=skip (analysis={analysis_policy})."
-                )
+            if use_direct_path:
                 (investigation_dir / "_summary.md").write_text(
-                    f"# Investigation Summary\n\n{inv_reason}\n", encoding="utf-8"
+                    "# Investigation Summary\n\nDirect path: Phase 1 skipped for small project.\n",
+                    encoding="utf-8",
                 )
-                await log_cb(ctx.project_id, f"[custom] Phase 1 skipped ({analysis_policy=})", "info")
-            else:
-                # investigation_policy == "run"
-                if use_direct_path:
-                    (investigation_dir / "_summary.md").write_text(
-                        "# Investigation Summary\n\nDirect path: Phase 1 skipped for small project.\n",
-                        encoding="utf-8",
-                    )
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] direct path: {facts.unit_count} units ≤ {config.small_project_threshold} threshold; "
-                        "skipping Phase 1 investigation",
-                        "info",
-                    )
-                else:
-                    failed_groups = await self._phase1_investigation(ctx, state, log_cb)
-                    if failed_groups:
-                        ctx.preprocess_groups = [g for g in ctx.preprocess_groups if g not in failed_groups]
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] WARNING: {len(failed_groups)} group(s) skipped due to investigation failure: "
-                            f"{', '.join(sorted(failed_groups))}",
-                            "warning",
-                        )
-                        if not ctx.preprocess_groups:
-                            raise RuntimeError("Investigation failed for all groups — cannot generate any docs")
-                    investigation_coverage = validate_investigation_coverage(state.investigation_reports, facts)
-                    (investigation_dir / "_coverage_report.json").write_text(
-                        investigation_coverage.model_dump_json(indent=2), encoding="utf-8"
-                    )
-                    if not investigation_coverage.ok or investigation_coverage.coverage_count != facts.unit_count:
-                        await log_cb(
-                            ctx.project_id,
-                            "[custom] WARNING: investigation coverage incomplete — proceeding to Phase 2: "
-                            + ("; ".join(investigation_coverage.errors) or "partial coverage"),
-                            "warning",
-                        )
-                    else:
-                        await log_cb(ctx.project_id, "[custom] Investigation coverage gate passed", "info")
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] direct path: {facts.unit_count} units ≤ {config.small_project_threshold} threshold; "
+                    "skipping Phase 1 investigation",
+                    "info",
+                )
 
-            _pipeline_log.add("phase1", state, _phase_calls_start, "pass" if investigation_policy != "skip" else "skip")
-            if execution_plan is not None:
+        # dag_execution_plan is None when DAG is disabled — used for Phase body logic that
+        # records DAG node results.  runner_plan is always non-None — used by PipelineRunner
+        # to drive Phase.should_skip() decisions.
+        dag_execution_plan: ExecutionPlan | None = execution_plan  # real plan (may be None)
+
+        if execution_plan is None:
+            # Synthesise a minimal plan stub just for Phase.should_skip() decisions.
+            # This plan never reaches Phase body DAG recording code.
+            from mcp_server.providers.custom.models import ExecutionPlan as _EP
+            use_direct_path = facts.unit_count <= config.small_project_threshold
+            _skip_inv = investigation_policy == "skip" or use_direct_path
+            _skip_scorecard = self._phase_policy("scorecard") == "skip"
+            _skip_bundles = self._phase_policy("doc_bundles") == "skip"
+            runner_plan = _EP(
+                investigation_mode="skip" if _skip_inv else "full",
+                analysis_mode="skip" if analysis_policy == "skip" else "full",
+                scorecard=not _skip_scorecard,
+                doc_bundles=not _skip_bundles,
+                required_docs=list(self._required_docs),
+            )
+        else:
+            runner_plan = execution_plan
+
+        phases = [
+            Phase1Investigation(helpers),
+            Phase2Analysis(helpers, execution_plan=dag_execution_plan, analysis_policy=analysis_policy),
+            Phase26Scorecard(helpers),
+            Phase28Bundles(helpers),
+            EvidenceQualityGate(),
+            Phase3Docs(helpers, execution_plan=dag_execution_plan),
+            Phase4Cleanup(helpers),
+        ]
+
+        try:
+            phase_results = await PipelineRunner(phases).run(ctx, state, runner_plan, log_cb)
+
+            # Post-run: collect failed groups from Phase 1 result for group pruning
+            phase1_result = next((r for r in phase_results if r.phase_name == "phase1_investigation"), None)
+            if phase1_result and dag_execution_plan is not None:
                 self._record_dag_node_result(
                     ctx,
                     "investigation",
-                    "skipped" if investigation_policy == "skip" else "passed",
+                    "skipped" if phase1_result.skipped else "passed",
                     artifacts=["_investigation/_summary.md"],
                     validation="investigation_coverage",
                 )
-            _phase_calls_start = len(state.calls)
-            _pipeline_log.flush(ctx.staging_dir)
+            if phase1_result and not phase1_result.skipped:
+                failed_groups: set[str] = set(phase1_result.metadata.get("failed_groups") or [])
+                if failed_groups:
+                    ctx.preprocess_groups = [g for g in ctx.preprocess_groups if g not in failed_groups]
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] WARNING: {len(failed_groups)} group(s) skipped due to investigation failure: "
+                        f"{', '.join(sorted(failed_groups))}",
+                        "warning",
+                    )
+                # validate investigation coverage after phase 1
+                investigation_coverage = validate_investigation_coverage(state.investigation_reports, facts)
+                (investigation_dir / "_coverage_report.json").write_text(
+                    investigation_coverage.model_dump_json(indent=2), encoding="utf-8"
+                )
+                if not investigation_coverage.ok or investigation_coverage.coverage_count != facts.unit_count:
+                    await log_cb(
+                        ctx.project_id,
+                        "[custom] WARNING: investigation coverage incomplete — proceeding to Phase 2: "
+                        + ("; ".join(investigation_coverage.errors) or "partial coverage"),
+                        "warning",
+                    )
+                else:
+                    await log_cb(ctx.project_id, "[custom] Investigation coverage gate passed", "info")
 
-            # ── Phase 2: analysis ────────────────────────────────────────────
-            if analysis_policy == "skip":
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] pack contract path: using declared evidence bundles and structured Phase 2 coverage",
-                    "info",
-                )
-                self._phase2_pack_contract_records(ctx, state)
-            elif analysis_policy == "bounded" or (analysis_policy == "run" and use_direct_path):
-                label = "bounded (pack policy)" if analysis_policy == "bounded" else f"direct path: {facts.unit_count} units ≤ {config.small_project_threshold} threshold"
-                await log_cb(
-                    ctx.project_id,
-                    f"[custom] Phase 2 {label}; no tool loops",
-                    "info",
-                )
-                await self._phase2_analysis_direct(ctx, state, log_cb)
-            elif analysis_policy == "dag_tiered" and execution_plan is not None:
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] DAG Phase 2 tiered analysis: skeleton plus selected deep dives",
-                    "info",
-                )
-                await self._phase2_analysis_dag_tiered(ctx, state, execution_plan, log_cb)
-            else:
-                # analysis_policy == "run", large project
-                await self._phase2_analysis(ctx, state, log_cb)
-            if self._plugin_mode:
-                await log_cb(ctx.project_id, "[custom] Phase 2 coverage source: structured sidecar", "info")
-            coverage = validate_analysis_coverage(
-                ctx.staging_dir / "_analysis",
-                facts,
-                use_structured=self._plugin_mode,
-            )
-            (ctx.staging_dir / "_analysis" / "_coverage_report.json").write_text(
-                coverage.model_dump_json(indent=2), encoding="utf-8"
-            )
-            if not coverage.ok or coverage.coverage_count != facts.unit_count:
-                await self._phase2_targeted_repair(ctx, state, coverage, log_cb)
-                coverage = validate_analysis_coverage(
-                    ctx.staging_dir / "_analysis",
-                    facts,
-                    use_structured=self._plugin_mode,
-                )
-                (ctx.staging_dir / "_analysis" / "_coverage_report.json").write_text(
-                    coverage.model_dump_json(indent=2), encoding="utf-8"
-                )
-            if not coverage.ok or coverage.coverage_count != facts.unit_count:
-                raise RuntimeError("; ".join(coverage.errors) or "Phase 2 coverage mismatch")
-            await log_cb(ctx.project_id, "[custom] Phase 2 coverage gate passed", "info")
-
-            depth = validate_analysis_depth(
-                ctx.staging_dir / "_analysis",
-                ctx.staging_dir / "_preprocess",
-                facts,
-                use_structured=self._plugin_mode,
-            )
-            (ctx.staging_dir / "_analysis" / "_depth_report.json").write_text(
-                depth.model_dump_json(indent=2), encoding="utf-8"
-            )
-            if not depth.ok or depth.coverage_count != facts.unit_count:
-                await self._phase2_targeted_repair(ctx, state, depth, log_cb)
-                depth = validate_analysis_depth(
-                    ctx.staging_dir / "_analysis",
-                    ctx.staging_dir / "_preprocess",
-                    facts,
-                    use_structured=self._plugin_mode,
-                )
-                (ctx.staging_dir / "_analysis" / "_depth_report.json").write_text(
-                    depth.model_dump_json(indent=2), encoding="utf-8"
-                )
-            if not depth.ok or depth.coverage_count != facts.unit_count:
-                raise RuntimeError("; ".join(depth.errors) or "Phase 2 depth mismatch")
-            await log_cb(ctx.project_id, "[custom] Phase 2 depth gate passed", "info")
-            guide_sections = validate_analysis_guide_sections(
-                ctx.staging_dir / "_analysis",
-                facts,
-                require_group_summary=not self._plugin_mode,
-            )
-            (ctx.staging_dir / "_analysis" / "_guide_sections_report.json").write_text(
-                guide_sections.model_dump_json(indent=2), encoding="utf-8"
-            )
-            if not guide_sections.ok:
-                await self._phase2_targeted_repair(ctx, state, guide_sections, log_cb)
-                guide_sections = validate_analysis_guide_sections(
-                    ctx.staging_dir / "_analysis",
-                    facts,
-                    require_group_summary=not self._plugin_mode,
-                )
-                (ctx.staging_dir / "_analysis" / "_guide_sections_report.json").write_text(
-                    guide_sections.model_dump_json(indent=2), encoding="utf-8"
-                )
-            if not guide_sections.ok:
-                raise RuntimeError("; ".join(guide_sections.errors) or "Phase 2 guide-section mismatch")
-            await log_cb(ctx.project_id, "[custom] Phase 2 guide-section gate passed", "info")
-
-            _pipeline_log.add("phase2", state, _phase_calls_start, "pass", f"policy={analysis_policy}")
-            if execution_plan is not None:
+            # Record DAG node results for phase 2 and 2.6 (Phase 3 and 4 record them in-phase)
+            # Only when a real DAG plan exists (dag_execution_plan is not None).
+            phase2_result = next((r for r in phase_results if r.phase_name == "phase2_analysis"), None)
+            if phase2_result and not phase2_result.skipped and dag_execution_plan is not None:
+                _ap = phase2_result.metadata.get("analysis_policy", analysis_policy)
                 self._record_dag_node_result(
                     ctx,
-                    "phase2_merge" if analysis_policy == "dag_tiered" else "phase2",
+                    "phase2_merge" if _ap == "dag_tiered" else "phase2",
                     "passed",
                     artifacts=["_analysis/*.md", "_analysis/_coverage_report.json", "_analysis/_depth_report.json"],
                     validation="analysis_coverage,analysis_depth,analysis_guide_sections",
                 )
-            _phase_calls_start = len(state.calls)
-            _pipeline_log.flush(ctx.staging_dir)
-
-            scorecard_policy = self._phase_policy("scorecard")
-            if execution_plan is not None:
-                scorecard_policy = "run" if execution_plan.scorecard else "skip"
-            if scorecard_policy == "skip":
-                await log_cb(ctx.project_id, "[custom] Phase 2.6 scorecard skipped (policy=skip)", "info")
-            else:
-                await self._phase26_scorecard(ctx, state, log_cb)
-            _pipeline_log.add("phase2.6", state, _phase_calls_start, "pass" if scorecard_policy != "skip" else "skip")
-            if execution_plan is not None:
+            phase26_result = next((r for r in phase_results if r.phase_name == "phase26_scorecard"), None)
+            if phase26_result and dag_execution_plan is not None:
                 self._record_dag_node_result(
                     ctx,
                     "scorecard",
-                    "skipped" if scorecard_policy == "skip" else "passed",
+                    "skipped" if phase26_result.skipped else "passed",
                     artifacts=["_assessment/scorecard.md"],
                     validation="scorecard_contract",
                 )
-            _phase_calls_start = len(state.calls)
-            _pipeline_log.flush(ctx.staging_dir)
-
-            doc_bundles_policy = self._phase_policy("doc_bundles")
-            if execution_plan is not None:
-                doc_bundles_policy = "run" if execution_plan.doc_bundles else "skip"
-            if doc_bundles_policy == "skip":
-                await log_cb(ctx.project_id, "[custom] Phase 2.8 doc-pack bundles skipped (policy=skip)", "info")
-            else:
-                self._phase28_bundles(ctx, facts)
-            if execution_plan is not None:
+            phase28_result = next((r for r in phase_results if r.phase_name == "phase28_bundles"), None)
+            if phase28_result and dag_execution_plan is not None:
                 self._record_dag_node_result(
                     ctx,
                     "doc_bundle",
-                    "skipped" if doc_bundles_policy == "skip" else "passed",
+                    "skipped" if phase28_result.skipped else "passed",
                     artifacts=["_analysis/_doc_pack_*.md"],
                 )
-            self._write_documentation_obligations(ctx, facts)
-            await self._phase3_docs(ctx, state, log_cb)
-            reconciled = self._reconcile_sql_usage_classification(ctx)
-            if reconciled:
-                await log_cb(
-                    ctx.project_id,
-                    f"[custom] SQL usage reconciliation updated {reconciled} DDL-only table classification(s)",
-                    "info",
-                )
-            if execution_plan is not None:
-                for doc in self._required_docs:
-                    self._record_dag_node_result(
-                        ctx,
-                        f"doc_write:{self._safe_name(doc)}",
-                        "passed" if (ctx.staging_dir / f"{doc}.md").exists() else "failed",
-                        artifacts=[f"{doc}.md"],
-                        validation="doc_markdown",
-                    )
-            if execution_plan is not None and execution_plan.consistency:
-                await self._phase36_consistency(ctx, state, log_cb)
 
-            if self._plugin_mode:
-                await log_cb(ctx.project_id, "[custom] Phase 3 required docs source: plugin manifest", "info")
-            doc_report = validate_docs(
-                ctx.staging_dir,
-                facts,
-                required_docs=self._required_docs,
-                enforce_default_contract=not self._plugin_mode,
+            # Build pipeline log entries from results
+            inv_result = next((r for r in phase_results if r.phase_name == "phase1_investigation"), None)
+            _pipeline_log.add(
+                "phase1", state, 0,
+                "skip" if (inv_result and inv_result.skipped) else "pass",
             )
-            (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
-                doc_report.model_dump_json(indent=2), encoding="utf-8"
-            )
-            if not doc_report.ok or doc_report.coverage_count != facts.unit_count:
-                await self._phase3_targeted_repair(ctx, state, doc_report, log_cb)
-                doc_report = validate_docs(
-                    ctx.staging_dir,
-                    facts,
-                    required_docs=self._required_docs,
-                    enforce_default_contract=not self._plugin_mode,
-                )
-                (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
-                    doc_report.model_dump_json(indent=2), encoding="utf-8"
-                )
-            if not doc_report.ok or doc_report.coverage_count != facts.unit_count:
-                raise RuntimeError("; ".join(doc_report.errors) or "Phase 3 coverage mismatch")
-            self._reconcile_sql_usage_classification(ctx)
-            sql_gate_errors = self._validate_sql_usage_publication(ctx)
-            if sql_gate_errors:
-                raise RuntimeError("; ".join(sql_gate_errors))
-            await log_cb(ctx.project_id, "[custom] Phase 3 factual gates passed", "info")
-            if execution_plan is not None:
-                self._record_dag_node_result(
-                    ctx,
-                    "validate_docs",
-                    "passed",
-                    artifacts=["_assessment/doc_validation_report.json"],
-                    validation="validate_docs",
-                )
-
-            doc_depth = validate_doc_depth(
-                ctx.staging_dir,
-                facts,
-                required_docs=self._required_docs,
-                enforce_default_contract=not self._plugin_mode,
-            )
-            (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
-                doc_depth.model_dump_json(indent=2), encoding="utf-8"
-            )
-            if not doc_depth.ok or doc_depth.coverage_count != facts.unit_count:
-                await self._phase3_targeted_repair(ctx, state, doc_depth, log_cb)
-                doc_depth = validate_doc_depth(
-                    ctx.staging_dir,
-                    facts,
-                    required_docs=self._required_docs,
-                    enforce_default_contract=not self._plugin_mode,
-                )
-                (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
-                    doc_depth.model_dump_json(indent=2), encoding="utf-8"
-                )
-            if not doc_depth.ok or doc_depth.coverage_count != facts.unit_count:
-                raise RuntimeError("; ".join(doc_depth.errors) or "Phase 3 depth mismatch")
-            else:
-                await log_cb(ctx.project_id, "[custom] Phase 3 depth gate passed", "info")
-
-            _pipeline_log.add("phase3", state, _phase_calls_start, "pass", f"docs={len(self._required_docs)}")
             _phase_calls_start = len(state.calls)
             _pipeline_log.flush(ctx.staging_dir)
 
-            if ctx.enterprise_mode and self._pack_contract_mode:
-                provenance = CoverageReport(
-                    ok=True,
-                    coverage_count=facts.unit_count,
-                    expected_count=facts.unit_count,
-                    warnings=["Default source provenance gate skipped for plugin-pack contract run."],
-                )
-                (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
-                    provenance.model_dump_json(indent=2), encoding="utf-8"
-                )
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] pack contract path: skipping default source provenance repair",
-                    "info",
-                )
-            elif ctx.enterprise_mode:
-                provenance = validate_source_provenance(
-                    ctx.staging_dir,
-                    facts,
-                    required_docs=self._required_docs,
-                    enforce_default_contract=not self._plugin_mode,
-                )
-                (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
-                    provenance.model_dump_json(indent=2), encoding="utf-8"
-                )
-                # Soft warnings (unrecognized path format) — log but do not trigger repair.
-                for w in provenance.warnings[:5]:
-                    await log_cb(ctx.project_id, f"[custom] Phase 3 provenance warning: {w}", "warning")
-                if not provenance.ok or provenance.coverage_count != facts.unit_count:
-                    await self._phase3_targeted_repair(ctx, state, provenance, log_cb)
-                    provenance = validate_source_provenance(
-                        ctx.staging_dir,
-                        facts,
-                        required_docs=self._required_docs,
-                        enforce_default_contract=not self._plugin_mode,
-                    )
-                    (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
-                        provenance.model_dump_json(indent=2), encoding="utf-8"
-                    )
-                if not provenance.ok or provenance.coverage_count != facts.unit_count:
-                    await log_cb(ctx.project_id, "[custom] Phase 3 provenance repair did not clear all gaps", "warning")
-                else:
-                    await log_cb(ctx.project_id, "[custom] Phase 3 provenance gate passed", "info")
-
-            gate_report = self._enterprise_gate_report(
-                ctx, state,
-                provenance=(provenance if ctx.enterprise_mode else None),
-            )
-            if ctx.enterprise_mode:
-                await self._write_audit_bundle(ctx, state, gate_report)
-                failed = [
-                    f"{name}: {entry.get('remediation') or '; '.join(entry.get('errors') or [])}"
-                    for name, entry in gate_report["gates"].items()
-                    if not entry.get("ok")
-                ]
-                if failed:
-                    if execution_plan is not None:
-                        self._record_dag_node_result(
-                            ctx,
-                            "enterprise_gates",
-                            "failed",
-                            artifacts=["_assessment/enterprise_gates.json"],
-                            validation="enterprise_gates",
-                            error=" | ".join(failed[:5]),
-                        )
-                    raise RuntimeError("Enterprise publish gates failed: " + " | ".join(failed))
-                if execution_plan is not None:
-                    self._record_dag_node_result(
-                        ctx,
-                        "enterprise_gates",
-                        "passed",
-                        artifacts=["_assessment/enterprise_gates.json"],
-                        validation="enterprise_gates",
-                    )
-                await log_cb(ctx.project_id, "[custom] Enterprise publish gates passed", "info")
-            else:
-                state.warnings.append("Draft mode: enterprise publish gates are advisory only")
-                if execution_plan is not None:
-                    self._record_dag_node_result(
-                        ctx,
-                        "enterprise_gates",
-                        "skipped",
-                        artifacts=["_assessment/enterprise_gates.json"],
-                        validation="draft_mode",
-                    )
-
-            await self._phase4_cleanup(ctx, state)
-            _pipeline_log.add("phase4", state, _phase_calls_start, "pass")
-            _pipeline_log.flush(ctx.staging_dir)
         except Exception as exc:
             state.errors.append(str(exc))
             await log_cb(ctx.project_id, f"[custom] generation failed: {exc}", "error")
@@ -1461,6 +1314,7 @@ Fallback plan example:
         self._write_phase_costs(ctx.staging_dir, state, log_cb)
         return AgentResult(
             success=True,
+            has_warnings=state.warning_collector.has_warnings(),
             model_name=self.model_provider.model_name,
             write_model_name=(
                 self.write_provider.model_name
@@ -1512,262 +1366,17 @@ Fallback plan example:
         state: HarnessRunState,
         log_cb: LogCallback,
     ) -> set[str]:
-        """Run investigation for all groups. Returns set of group names that failed."""
-        preprocess_dir = ctx.staging_dir / "_preprocess"
-        investigation_dir = ctx.staging_dir / "_investigation"
-        investigation_dir.mkdir(parents=True, exist_ok=True)
-        shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
-        inv_preamble: str | None = None
-        if self.plugin_pack_dir:
-            inv_override = self.plugin_pack_dir / "prompts" / "investigation.md"
-            if inv_override.exists():
-                inv_preamble = inv_override.read_text(encoding="utf-8").rstrip()
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] investigation: using pack prompt override from prompts/investigation.md",
-                    "info",
-                )
-        loop = SingleShotInvestigator(
-            self.investigation_provider,
-            ctx.staging_dir,
-            state.facts_manifest,
-            preamble=inv_preamble,
-        )
-        failed_groups: set[str] = set()
-        sem = asyncio.Semaphore(config.agent_phase1_concurrency)
+        """Thin delegator — body migrated to Phase1Investigation.run().
 
-        async def _investigate_group(group: str) -> tuple[bool, list[InvestigationReport]]:
-            """Process all chunks for one group. Returns (missing_chunk_error, chunk_reports)."""
-            group_units = self._group_units(state, group)
-            chunks = self._phase2_group_chunks(preprocess_dir / f"{group}.md", group_units, investigation_dir)
-            record_manifest_chunks(ctx.staging_dir, phase="investigation", group=group, chunks=chunks)
-            chunk_reports: list[InvestigationReport] = []
-            missing_chunk = False
-
-            # Pre-compute which units are reachable (appear in at least one chunk).
-            # Units absent from all chunks can never be covered — don't wait for them.
-            all_assigned: set[str] = set()
-            chunk_unit_map: dict[str, list[str]] = {}
-            for cf in chunks:
-                if cf.exists():
-                    cu = self._units_for_chunk(cf, group_units)
-                    chunk_unit_map[cf.stem] = sorted(cu)
-                    all_assigned.update(cu)
-            covered_units: set[str] = set()
-
-            # Agentic branch: model selects chunks from a manifest instead of processing all.
-            if config.agent_phase1_agentic:
-                # Resume: if a group-level artifact already exists from a prior run, load it.
-                cached_agentic = self._load_investigation_artifact(investigation_dir, group)
-                if cached_agentic is not None and ctx.resume_state is not None:
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] RESUME: skipping agentic investigation for {group} "
-                        f"({len(cached_agentic.evidence)} evidence items from prior run)",
-                        "info",
-                    )
-                    return missing_chunk, [cached_agentic]
-
-                async with sem:
-                    manifest_entries: list[dict] = []
-                    for cf in chunks:
-                        if not cf.exists():
-                            continue
-                        try:
-                            chunk_text = cf.read_text(encoding="utf-8", errors="replace")
-                        except OSError:
-                            chunk_text = ""
-                        categories = [
-                            cat for cat, pat in CATEGORY_PATTERNS.items()
-                            if cat != "source_summary" and pat.search(chunk_text)
-                        ]
-                        identifiers = _extract_chunk_identifiers(chunk_text)
-                        manifest_entries.append({
-                            "id": cf.stem,
-                            "size_bytes": cf.stat().st_size,
-                            "unit_names": chunk_unit_map.get(cf.stem, []),
-                            "categories": categories,
-                            "identifiers": identifiers,
-                        })
-
-                    manifest_investigator = ChunkManifestInvestigator(
-                        self.investigation_provider,
-                        ctx.staging_dir,
-                        state.facts_manifest,
-                        preamble=inv_preamble,
-                    )
-                    try:
-                        report, calls = await manifest_investigator.run(
-                            group,
-                            chunks=chunks,
-                            group_units=group_units,
-                            manifest=manifest_entries,
-                            group_file=preprocess_dir / f"{group}.md",
-                            provider_options=self._provider_options(self.investigation_provider),
-                        )
-                    except InvestigationError as exc:
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] Agentic investigation failed for {group}: {exc}",
-                            "warning",
-                        )
-                        return missing_chunk, chunk_reports
-                    state.calls.extend(calls)
-                    for call in calls:
-                        await self._log_call_metrics(ctx, call.target, call.result, log_cb)
-                    chunk_reports.append(report)
-                    write_investigation_artifacts(report.model_copy(update={"group": group}), investigation_dir)
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] Agentic investigation complete: {group}"
-                        f" ({len(report.evidence)} evidence items, {len(calls)} call(s))",
-                        "info",
-                    )
-                return missing_chunk, chunk_reports
-
-            async with sem:
-                for idx, chunk_file in enumerate(chunks, start=1):
-                    # Early stop: every reachable unit already has evidence or is skipped.
-                    if all_assigned and covered_units >= all_assigned:
-                        skipped_count = len(chunks) - idx + 1
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] Investigation early stop for {group}: all {len(all_assigned)} units"
-                            f" covered, skipping {skipped_count} remaining chunk(s)",
-                            "info",
-                        )
-                        break
-
-                    if not chunk_file.exists():
-                        missing_chunk = True
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] Investigation chunk missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
-                            "error",
-                        )
-                        break
-                    chunk_name = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
-                    cached = self._load_investigation_artifact(investigation_dir, chunk_name)
-                    if cached is not None and ctx.resume_state is not None:
-                        chunk_reports.append(cached)
-                        covered_units.update(ev.unit_name for ev in cached.evidence)
-                        covered_units.update(cached.skipped_units.keys())
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] RESUME: skipping investigation for {chunk_name} "
-                            f"({len(cached.evidence)} evidence items from prior run)",
-                            "info",
-                        )
-                        continue
-                    # Pre-screen: skip the LLM call entirely if the chunk contains no
-                    # content matching the pack's evidence categories. DTO-only chunks,
-                    # CSS/UI files, and namespace stubs produce 0 evidence items but still
-                    # cost ~15k input tokens per call. Detecting them here costs nothing.
-                    chunk_units = self._units_for_chunk(chunk_file, group_units)
-                    try:
-                        chunk_text = chunk_file.read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        chunk_text = ""
-                    if not self._chunk_has_pack_relevant_content(chunk_text):
-                        synthetic = InvestigationReport(
-                            group=chunk_name,
-                            source_groups=[chunk_name],
-                            evidence=[],
-                            skipped_units={
-                                u: "no pack-relevant content in chunk (pre-screen)"
-                                for u in chunk_units
-                            },
-                            tool_rounds=0,
-                            invalid_retries=0,
-                            input_tokens=0,
-                            output_tokens=0,
-                        )
-                        chunk_reports.append(synthetic)
-                        covered_units.update(synthetic.skipped_units.keys())
-                        write_investigation_artifacts(
-                            synthetic.model_copy(update={"group": chunk_name}),
-                            investigation_dir,
-                        )
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] Investigation pre-screened (no pack-relevant content): {chunk_name} "
-                            f"({len(chunk_units)} units auto-skipped)",
-                            "info",
-                        )
-                        continue
-                    try:
-                        report, calls = await loop.run(
-                            chunk_name,
-                            group_file=chunk_file,
-                            context_files=[*shared_context, chunk_file],
-                            allowed_units=chunk_units,
-                            provider_options=self._provider_options(self.investigation_provider),
-                        )
-                    except InvestigationError as exc:
-                        failure_kind = self._classify_failure(
-                            ModelResult(
-                                success=False,
-                                model_name=getattr(self.investigation_provider, "model_name", ""),
-                                raw_error=str(exc),
-                            )
-                        )
-                        if failure_kind == FailureKind.AUTH_ERROR:
-                            raise RuntimeError(
-                                f"Phase 1 investigation auth failed for {chunk_name}: {exc}"
-                            ) from exc
-                        await log_cb(
-                            ctx.project_id,
-                            f"[custom] Investigation failed for {chunk_name} (partial, continuing): {exc}",
-                            "warning",
-                        )
-                        continue
-                    state.calls.extend(calls)
-                    for call in calls:
-                        await self._log_call_metrics(ctx, call.target, call.result, log_cb)
-                    chunk_reports.append(report)
-                    covered_units.update(ev.unit_name for ev in report.evidence)
-                    covered_units.update(report.skipped_units.keys())
-                    # Write per-chunk artifact immediately so RESUME can skip this chunk next run
-                    write_investigation_artifacts(
-                        report.model_copy(update={"group": chunk_name}),
-                        investigation_dir,
-                    )
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] Investigation complete: {chunk_name} "
-                        f"({len(report.evidence)} evidence items)",
-                        "info",
-                    )
-
-            return missing_chunk, chunk_reports
-
-        group_results = await asyncio.gather(
-            *[_investigate_group(g) for g in ctx.preprocess_groups]
-        )
-
-        for group, (missing_chunk, chunk_reports) in zip(ctx.preprocess_groups, group_results):
-            if missing_chunk:
-                failed_groups.add(group)
-
-            if not chunk_reports:
-                failed_groups.add(group)
-                await log_cb(
-                    ctx.project_id,
-                    f"[custom] Investigation failed for all chunks of {group}, skipping group",
-                    "error",
-                )
-                continue
-
-            merged = self._merge_investigation_reports(group, chunk_reports)
-            write_investigation_artifacts(merged, investigation_dir)
-            state.investigation_reports.append(merged)
-
-        (investigation_dir / "_summary.md").write_text(
-            "# Investigation Summary\n\n"
-            f"{investigation_summary(state.investigation_reports)}",
-            encoding="utf-8",
-        )
-        return failed_groups
+        Kept for backwards-compat with any external callers; the normal run()
+        path uses Phase1Investigation directly via PipelineRunner.
+        """
+        from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+        from mcp_server.providers.custom.pipeline.phases.phase1_investigation import Phase1Investigation
+        helpers = HarnessHelpersImpl(self)
+        phase = Phase1Investigation(helpers)
+        result = await phase.run(ctx, state, log_cb)
+        return set(result.metadata.get("failed_groups") or [])
 
     async def _phase2_analysis(
         self,
@@ -1780,7 +1389,7 @@ Fallback plan example:
         analysis_dir.mkdir(parents=True, exist_ok=True)
         shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
-        semaphore = asyncio.Semaphore(max(1, config.agent_phase2_concurrency))
+        semaphore = asyncio.Semaphore(max(1, self._concurrency_for_phase("analysis", config.agent_phase2_concurrency)))
 
         async def _process_group(group: str) -> None:
             async with semaphore:
@@ -1885,11 +1494,24 @@ Fallback plan example:
                         "Analyze only the supplied chunk, but preserve exact unit names and platform-specific evidence."
                     )
                 target = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
-                context_files = [*shared_context, *investigation_context, chunk_file]
+                allowed_units = self._units_for_chunk(chunk_file, group_units)
+                evidence_slice = EvidenceRegistryBuilder(ctx.staging_dir).build_phase2_slice(
+                    chunk_file.stem, allowed_units
+                )
+                evidence_brief = ctx.staging_dir / "_evidence_registry" / "evidence_brief.md"
+                # Replace the broad evidence_brief in shared_context with the per-chunk slice so
+                # the model gets targeted evidence (~20-50 KB) instead of the full brief (~50 KB).
+                base_context = [f for f in shared_context if f != evidence_brief]
+                chunk_evidence = (
+                    [evidence_slice]
+                    if evidence_slice is not None
+                    else ([evidence_brief] if evidence_brief.exists() else [])
+                )
+                context_files = [*base_context, *chunk_evidence, *investigation_context, chunk_file]
                 contract = AgentTaskContract(
                     phase="phase2_group",
                     target_id=target,
-                    allowed_units=self._units_for_chunk(chunk_file, group_units),
+                    allowed_units=allowed_units,
                     allowed_groups=[group],
                     allowed_categories=self._default_evidence_categories(),
                     starter_context_files=[p.relative_to(ctx.staging_dir).as_posix() for p in context_files if p.exists()],
@@ -2236,7 +1858,7 @@ Fallback plan example:
         analysis_dir = ctx.staging_dir / "_analysis"
         analysis_dir.mkdir(parents=True, exist_ok=True)
         shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
-        semaphore = asyncio.Semaphore(max(1, config.agent_phase2_concurrency))
+        semaphore = asyncio.Semaphore(max(1, self._concurrency_for_phase("analysis", config.agent_phase2_concurrency)))
 
         async def _process_group(group: str) -> None:
             async with semaphore:
@@ -2269,7 +1891,7 @@ Fallback plan example:
         skeleton_dir.mkdir(parents=True, exist_ok=True)
         shared_context = self._phase2_shared_context(ctx, ctx.staging_dir / "facts_manifest.json")
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
-        semaphore = asyncio.Semaphore(max(1, config.agent_phase2_concurrency))
+        semaphore = asyncio.Semaphore(max(1, self._concurrency_for_phase("analysis", config.agent_phase2_concurrency)))
 
         async def _process_group(group: str) -> None:
             async with semaphore:
@@ -2497,7 +2119,7 @@ Fallback plan example:
                 units_by_group[group] = self._group_units(state, group)
 
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
-        semaphore = asyncio.Semaphore(max(1, config.agent_repair_concurrency))
+        semaphore = asyncio.Semaphore(max(1, self._concurrency_for_phase("repair", config.agent_repair_concurrency)))
 
         async def _repair_group(group: str, units: list[str]) -> None:
             async with semaphore:
@@ -2831,11 +2453,22 @@ Fallback plan example:
         path = ctx.staging_dir / "documentation_obligations.json"
         path.write_text(json.dumps(obligation_map, indent=2), encoding="utf-8")
 
-    @staticmethod
-    def _bundle_sections_for_docs(doc_names: list[str]) -> set[str]:
+    def _bundle_sections_for_docs(self, doc_names: list[str]) -> set[str]:
         sections = set(BASELINE_BUNDLE_SECTIONS)
         for doc_name in doc_names:
-            sections.update(DOC_SECTION_BUNDLE_MAP.get(doc_name, set()))
+            doc_def = self._pack_doc_definition(doc_name)
+            profile_name = getattr(doc_def, "evidence_profile", None) if doc_def else None
+            if profile_name and self._plugin_manifest:
+                profiles = getattr(self._plugin_manifest, "evidence_profiles", {}) or {}
+                profile = profiles.get(profile_name)
+                if profile:
+                    for cat in getattr(profile, "include", []):
+                        sections.update(_BUNDLE_CATEGORY_TO_PHASE2_SECTIONS.get(cat, set()))
+                    for cat in getattr(profile, "exclude", []):
+                        sections.difference_update(_BUNDLE_CATEGORY_TO_PHASE2_SECTIONS.get(cat, set()))
+                    continue
+            # Fallback: catalog-defined routing
+            sections.update(self._doc_section_bundle_map.get(doc_name, set()))
         return sections
 
     def _doc_evidence_pack_text(
@@ -2907,7 +2540,7 @@ Fallback plan example:
         unmatched: list[dict[str, object]] = []
 
         for category, terms in obligation_map.get("shared", {}).items():
-            targets = doc_targets.get(category, REQUIRED_DOCS)
+            targets = doc_targets.get(category, self._required_docs)
             item = {
                 "scope": "shared",
                 "category": category,
@@ -2920,7 +2553,7 @@ Fallback plan example:
                 unmatched.append(item)
 
         for category, terms in obligation_map.get("platform_specific", {}).items():
-            targets = doc_targets.get(f"platform_specific.{category}", REQUIRED_DOCS)
+            targets = doc_targets.get(f"platform_specific.{category}", self._required_docs)
             item = {
                 "scope": "platform_specific",
                 "category": category,
@@ -2994,12 +2627,13 @@ Fallback plan example:
         log_cb: LogCallback,
     ) -> None:
         scorecard = ctx.staging_dir / "_assessment" / "scorecard.md"
+        _doc_write_provider = self._provider_for_phase("doc_write")
         opts = ModelOptions(
             max_tokens=config.phase3_max_tokens,
             temperature=0.1,
             retries=1,
             timeout_s=300.0,
-            provider_options=self._provider_options(self.write_provider),
+            provider_options=self._provider_options(_doc_write_provider),
         )
 
         _calls_lock = asyncio.Lock()
@@ -3024,14 +2658,14 @@ Fallback plan example:
             )
             cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
             if cached is not None:
-                result = ModelResult(success=True, text=cached, model_name=self.write_provider.model_name)
+                result = ModelResult(success=True, text=cached, model_name=_doc_write_provider.model_name)
                 await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 3 doc task {doc_name} (accepted)", "info")
             else:
                 async def _dispatch(task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
                     return await self._complete_core_generation(
                         ctx,
                         state,
-                        provider=self.write_provider,
+                        provider=_doc_write_provider,
                         phase="phase3",
                         target=task.target_id,
                         prompt=doc_prompt_text,
@@ -3073,7 +2707,7 @@ Fallback plan example:
 
         _i = 0
         while _i < len(docs_without_summary):
-            batch_size = 1 if state.adaptive_serial_generation else max(1, config.agent_phase3_concurrency)
+            batch_size = 1 if state.adaptive_serial_generation else max(1, self._concurrency_for_phase("doc_write", config.agent_phase3_concurrency))
             batch_results = await asyncio.gather(
                 *[_write_one(d) for d in docs_without_summary[_i : _i + batch_size]],
                 return_exceptions=True,
@@ -3469,7 +3103,7 @@ Fallback plan example:
             if not missing_units or unit.name in missing_units
         }
         section_names = set(BASELINE_BUNDLE_SECTIONS)
-        section_names.update(DOC_SECTION_BUNDLE_MAP.get(doc_name, set()))
+        section_names.update(self._doc_section_bundle_map.get(doc_name, set()))
         analysis_files: list[Path] = []
         for group in sorted(affected_groups):
             direct = analysis_dir / f"{group}.md"
@@ -3580,6 +3214,10 @@ Missing units:
     ):
         """Run a Phase 2/3 model call with explicit bounded files and slice caching."""
 
+        if not opts.system_prompt:
+            pack_content, context_files = self._extract_prompt_pack(context_files)
+            if pack_content:
+                opts = opts.model_copy(update={"system_prompt": pack_content})
         context_files = self._bounded_context_files(context_files)
         tool_policy = self._tool_policy(provider, phase)
         use_tools = tool_policy.enabled
@@ -3618,6 +3256,11 @@ Missing units:
                 return result
 
         slices = self._split_context_pack(ctx, phase, target, prompt, context_files, hard, soft)
+        if phase in {"phase2", "phase2_group"} and len(slices) > config.agent_phase2_max_slices:
+            raise RuntimeError(
+                f"Context slicing exceeded agent_phase2_max_slices={config.agent_phase2_max_slices} "
+                f"({len(slices)} slices for {phase}/{target}). Reduce context size before proceeding."
+            )
         await log_cb(
             ctx.project_id,
             f"[custom] split decision: phase={phase} target={target} "
@@ -4864,7 +4507,7 @@ Allowed docs:
                     for item in facts_payload.get("usage", []) or []
                     if isinstance(item, dict)
                     and (
-                        item.get("usage_type") == "queried"
+                        (item.get("usage_type") == "queried" and _fact_has_sql_content(item))
                         or ":sql_" in str(item.get("id") or "")
                         or re.search(r"\b(select|insert|update|delete|merge)\b", str(item.get("name") or ""), re.I)
                     )
@@ -4935,6 +4578,42 @@ Allowed docs:
             }
             (plans_dir / f"{doc.name}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    async def _prepare_evidence_registry(
+        self,
+        ctx: DocGenContext,
+        state: HarnessRunState,
+        log_cb: LogCallback,
+    ) -> None:
+        resolution = resolve_evidence_agents(self._plugin_manifest, self.plugin_pack_dir)
+        if resolution.errors:
+            raise ValueError("Invalid evidence agent configuration: " + "; ".join(resolution.errors))
+        if not resolution.agents:
+            return
+        runner = EvidenceAgentRunner(ctx.staging_dir)
+        provider = self._provider_for_phase("investigation")
+        agent_results = []
+        for agent in resolution.agents:
+            run_result = await runner.run_agent(agent, provider)
+            agent_results.append(run_result)
+            state.calls.append(ProviderCallLog(phase="evidence_agents", target=agent.id, result=run_result.result))
+            if run_result.errors:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] evidence agent {agent.id}: {len(run_result.claims)} claim(s), "
+                    f"{len(run_result.errors)} validation issue(s)",
+                    "warning",
+                )
+            else:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] evidence agent {agent.id}: {len(run_result.claims)} claim(s)",
+                    "info",
+                )
+        self._evidence_registry_paths = EvidenceRegistryBuilder(ctx.staging_dir).build(
+            resolution.agents,
+            agent_results=agent_results,
+        )
+
     def _pack_doc_definition(self, doc_name: str):
         if self._plugin_manifest is None:
             return None
@@ -4957,6 +4636,11 @@ Allowed docs:
                     md = ctx.staging_dir / profile_paths.get("md", "")
                     if md.exists():
                         files.append(md)
+            brief_rel = self._evidence_registry_paths.get("brief") or self._evidence_registry_paths.get("md")
+            if brief_rel:
+                brief = ctx.staging_dir / brief_rel
+                if brief.exists():
+                    files.append(brief)
             analysis_pack = pack_dir / "_analysis_prompt_pack.md"
             if analysis_pack.exists():
                 files.append(analysis_pack)
@@ -4975,8 +4659,13 @@ Allowed docs:
         quick_scan = ctx.staging_dir / "_assessment" / "quick_scan.md"
         if quick_scan.exists():
             files.append(quick_scan)
-        if source_coverage.exists():
-            files.append(source_coverage)
+        # _source_coverage.json (139 KB) is project-wide metadata with no per-chunk value;
+        # removed from static context to prevent 9x repetition across slices.
+        brief_rel = self._evidence_registry_paths.get("brief") or self._evidence_registry_paths.get("md")
+        if brief_rel:
+            brief = ctx.staging_dir / brief_rel
+            if brief.exists():
+                files.append(brief)
         analysis_pack = pack_dir / "_analysis_prompt_pack.md"
         if analysis_pack.exists():
             files.append(analysis_pack)
@@ -5074,6 +4763,9 @@ Allowed docs:
                 evidence_md = ctx.staging_dir / profile_paths.get("md", "")
                 if evidence_md.exists():
                     files.append(evidence_md)
+            evidence_file = self._phase3_evidence_file(ctx, doc_name)
+            if evidence_file is not None:
+                files.append(evidence_file)
             plan = ctx.staging_dir / "_plans" / f"{doc_name}.json"
             if plan.exists():
                 files.append(plan)
@@ -5106,6 +4798,9 @@ Allowed docs:
         bundle_path = analysis_dir / f"_bundle_{bundle}.md"
         if bundle_path.exists() and not doc_pack.exists():
             files.append(bundle_path)
+        evidence_file = self._phase3_evidence_file(ctx, doc_name)
+        if evidence_file is not None:
+            files.append(evidence_file)
         manifest = analysis_dir / "_doc_pack_manifest.json"
         if manifest.exists():
             files.append(manifest)
@@ -5124,6 +4819,36 @@ Allowed docs:
             files.extend(sorted(preprocess_dir.glob("_ref_patterns*.md")))
             files.extend(sorted(preprocess_dir.glob("_ref_user*.md")))
         return files
+
+    @staticmethod
+    def _extract_prompt_pack(context_files: list[Path]) -> tuple[str | None, list[Path]]:
+        """Remove prompt-pack files from context_files and return their combined text.
+
+        Prompt-pack files are static per call. Moving them to the provider's system_prompt
+        channel keeps them out of slice-size accounting and enables Anthropic prompt caching.
+        Returns (content_or_None, remaining_files).
+        """
+        pack_files = [f for f in context_files if "_prompt_pack" in f.name and f.suffix == ".md"]
+        if not pack_files:
+            return None, context_files
+        remaining = [f for f in context_files if f not in pack_files]
+        content = "\n\n".join(f.read_text(encoding="utf-8", errors="replace") for f in pack_files)
+        return content.strip() or None, remaining
+
+    @staticmethod
+    def _phase3_evidence_file(ctx: DocGenContext, doc_name: str) -> Path | None:
+        """Return the most-targeted evidence file available for this Phase 3 doc.
+
+        Priority: per-doc slice → evidence_brief → None.
+        The full evidence_registry.md (724 KB) is never returned here.
+        """
+        doc_slice = ctx.staging_dir / "_evidence_registry" / "doc_slices" / f"{doc_name}.md"
+        if doc_slice.exists():
+            return doc_slice
+        evidence_brief = ctx.staging_dir / "_evidence_registry" / "evidence_brief.md"
+        if evidence_brief.exists():
+            return evidence_brief
+        return None
 
     @staticmethod
     def _engineering_fact_context(ctx: DocGenContext, doc_name: str | None = None) -> list[Path]:

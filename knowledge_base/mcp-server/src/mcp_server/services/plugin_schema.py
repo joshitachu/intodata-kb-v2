@@ -16,7 +16,7 @@ harness  : delegates to CustomHarnessProvider (full multi-phase doc generation)
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Union
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -40,6 +40,31 @@ class DocDefinition(BaseModel):
 class EvidenceProfile(BaseModel):
     include: list[str] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
+
+
+class EvidenceAgentDefinition(BaseModel):
+    """Declarative evidence agent loaded from plugin.yaml.
+
+    An agent can either import a harness built-in via `uses` or provide a pack
+    prompt via `prompt_file`. The harness normalizes both into evidence registry
+    claims so downstream phases do not need pack-specific branching.
+    """
+
+    id: str
+    uses: str | None = None
+    prompt_file: str | None = None
+    evidence_profile: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    inputs: list[str] = Field(default_factory=list)
+    output: Literal["evidence_registry"] = "evidence_registry"
+    model: str | None = None
+    concurrency: int | None = None
+
+    @model_validator(mode="after")
+    def _source_required(self) -> "EvidenceAgentDefinition":
+        if bool(self.uses) == bool(self.prompt_file):
+            raise ValueError("evidence agent must define exactly one of uses or prompt_file")
+        return self
 
 
 class ValidationPolicy(BaseModel):
@@ -70,32 +95,52 @@ class PluginStep(BaseModel):
         return self
 
 
+class PhaseConfig(BaseModel):
+    """Per-phase execution and resource overrides for a plugin pack."""
+
+    policy: Literal["skip", "run", "bounded"] = "run"
+    model: str | None = None        # model ID, e.g. "google/gemini-2.5-flash"
+    concurrency: int | None = None  # overrides config.agent_phaseN_concurrency
+
+
 class PhasePolicy(BaseModel):
     """Per-phase execution policy for a plugin pack run.
 
-    investigation: "skip" | "run"
+    investigation: "skip" | "run" | PhaseConfig
         skip — write stub records, proceed straight to Phase 3.
         run  — run the full single-shot investigator per group.
 
-    analysis: "skip" | "run" | "bounded"
+    analysis: "skip" | "run" | "bounded" | PhaseConfig
         skip    — write stub coverage records (original pack-contract behaviour).
         run     — full group-analysis agent with tool access.
         bounded — _phase2_analysis_direct: one inline call per group, no tools.
                   pack's prompts/phase2.md is used as the complete prompt when present.
 
-    scorecard: "skip" | "run"
+    scorecard: "skip" | "run" | PhaseConfig
         skip — omit Phase 2.6 scorecard.
         run  — generate scorecard from analysis outputs.
 
-    doc_bundles: "skip" | "run"
+    doc_bundles: "skip" | "run" | PhaseConfig
         skip — omit Phase 2.8 doc-specific analysis bundles.
         run  — generate _doc_pack_*.md bundles feeding Phase 3.
     """
 
-    investigation: Literal["skip", "run"] = "skip"
-    analysis: Literal["skip", "run", "bounded"] = "skip"
-    scorecard: Literal["skip", "run"] = "skip"
-    doc_bundles: Literal["skip", "run"] = "skip"
+    investigation: Union[Literal["skip", "run"], PhaseConfig] = "skip"
+    analysis: Union[Literal["skip", "run", "bounded"], PhaseConfig] = "skip"
+    scorecard: Union[Literal["skip", "run"], PhaseConfig] = "skip"
+    doc_bundles: Union[Literal["skip", "run"], PhaseConfig] = "skip"
+
+    def policy_for(self, phase: str) -> str:
+        val = getattr(self, phase, "skip")
+        return val.policy if isinstance(val, PhaseConfig) else val
+
+    def model_for(self, phase: str) -> str | None:
+        val = getattr(self, phase, None)
+        return val.model if isinstance(val, PhaseConfig) else None
+
+    def concurrency_for(self, phase: str) -> int | None:
+        val = getattr(self, phase, None)
+        return val.concurrency if isinstance(val, PhaseConfig) else None
 
 
 class PluginPackManifest(BaseModel):
@@ -104,6 +149,7 @@ class PluginPackManifest(BaseModel):
     description: str = ""
     docs: list[DocDefinition] | None = None
     evidence_profiles: dict[str, EvidenceProfile] = Field(default_factory=dict)
+    evidence_agents: list[EvidenceAgentDefinition] = Field(default_factory=list)
     validation: ValidationPolicy = Field(default_factory=ValidationPolicy)
     quality_gates: QualityGates | None = None
     steps: list[PluginStep]

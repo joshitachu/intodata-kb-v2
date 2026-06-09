@@ -238,7 +238,7 @@ app.add_middleware(
 )
 
 # Import and register routes
-from mcp_server.api.routes import discovery, generate_runs, health, logs, ops_control, plugins, projects, webhook  # noqa: E402
+from mcp_server.api.routes import discovery, estimate as estimate_routes, generate_runs, health, logs, ops_control, plugins, projects, webhook  # noqa: E402
 
 app.include_router(health.router)  # /health stays open
 app.include_router(ops_control.router)  # Mission Control triggers — own Bearer auth
@@ -265,6 +265,11 @@ app.include_router(
 app.include_router(webhook.router)  # GitHub HMAC auth — no JWT cookie
 app.include_router(
     logs.router,
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    estimate_routes.router,
+    prefix="/mcp",
     dependencies=[Depends(require_auth)],
 )
 

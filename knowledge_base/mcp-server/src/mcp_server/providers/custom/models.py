@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from mcp_server.providers.custom.pipeline.warning_collector import WarningCollector
 
 
 class UnitFact(BaseModel):
@@ -68,6 +70,7 @@ class ModelOptions(BaseModel):
     tool_input_token_cap: int | None = None
     tool_phase: str | None = None
     tool_target: str | None = None
+    system_prompt: str | None = None  # static shared context; each provider delivers this natively
 
 
 class ModelResult(BaseModel):
@@ -76,6 +79,8 @@ class ModelResult(BaseModel):
     model_name: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     latency_ms: int = 0
     retries: int = 0
     raw_error: str | None = None
@@ -114,6 +119,8 @@ class InvestigationReport(BaseModel):
 
 
 class HarnessRunState(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     project_id: str
     facts_manifest: FactsManifest
     calls: list[ProviderCallLog] = Field(default_factory=list)
@@ -124,6 +131,8 @@ class HarnessRunState(BaseModel):
     adaptive_serial_generation: bool = False
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    warning_collector: WarningCollector = Field(default_factory=WarningCollector)
+    thin_bundle_groups: list[str] = Field(default_factory=list)
 
     @property
     def input_tokens(self) -> int:

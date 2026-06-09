@@ -31,7 +31,10 @@ from mcp_server.providers.custom.models import (
     ExecutionNode,
 )
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, materialize_prompt_packs
-from mcp_server.providers.custom.prompts import REQUIRED_DOCS, doc_prompt
+from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_test_catalog
+from mcp_server.providers.custom.prompts import doc_prompt
+
+REQUIRED_DOCS = _load_test_catalog().required_docs
 from mcp_server.providers.custom.providers import OpenAICompatibleProvider, _execute_staging_tool
 from mcp_server.providers.custom.validators import (
     build_facts_manifest,
@@ -2226,6 +2229,7 @@ class _FakeProvider:
             self.calls.append({
                 "prompt": prompt,
                 "context_names": [p.name for p in context_files or []],
+                "system_prompt": options.system_prompt if options else None,
                 "options": options,
             })
 
@@ -2657,6 +2661,7 @@ async def test_core_generation_splits_context_and_excludes_large_json(tmp_path, 
 
     monkeypatch.setattr(config, "core_context_soft_target_tokens", 400)
     monkeypatch.setattr(config, "core_context_hard_ceiling_tokens", 800)
+    monkeypatch.setattr(config, "agent_phase2_max_slices", 50)  # test exercises splitter, not the guard
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     large_md = staging / "group.md"
@@ -4172,10 +4177,21 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     report = validate_docs(staging, build_facts_manifest(project_id, scan_dir), required_docs=expected_docs)
     assert report.ok
     assert any("resolved providers" in message for _, message, _ in logs)
-    assert any("_analysis_prompt_pack.md" in call["context_names"] for call in provider.calls)
+    # Prompt pack files are now extracted to system_prompt, not context_names.
+    # _write_pack writes "## Source: {source_file}" headers, so check for the source filename.
+    assert any(
+        call["system_prompt"] and "_analysis_guide" in call["system_prompt"]
+        for call in provider.calls
+    )
     assert any("quick_scan.md" in call["context_names"] for call in provider.calls)
-    assert any("_scorecard_prompt_pack.md" in call["context_names"] for call in provider.calls)
-    assert any("_phase3_prompt_pack_core.md" in call["context_names"] for call in provider.calls)
+    assert any(
+        call["system_prompt"] and "_scoring_rubric" in call["system_prompt"]
+        for call in provider.calls
+    )
+    assert any(
+        call["system_prompt"] and "_phase3_guide" in call["system_prompt"]
+        for call in provider.calls
+    )
     assert any("_summary.md" in call["context_names"] for call in provider.calls)
     assert not any("You are a documentation critic" in call["prompt"] for call in provider.calls)
     # Direct path: no Phase 1 investigation calls (no evidence JSON prompt).
@@ -4980,3 +4996,238 @@ async def test_chunk_manifest_investigator_auto_skips_on_empty_manifest(tmp_path
     assert call_count == 0
     assert "UnitA" in report.skipped_units
     assert report.evidence == []
+
+
+# --- Session 2: Phase 2 context assembly fixes ---
+
+
+def test_phase2_shared_context_uses_evidence_brief_not_registry(tmp_path):
+    """_phase2_shared_context must include evidence_brief.md, not evidence_registry.md."""
+    from mcp_server.providers.custom.evidence_agents import EvidenceRegistryBuilder, resolve_evidence_agents
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    (preprocess / "Webservices.md").write_text(
+        "```sql\nselect id from Customer\n```\n", encoding="utf-8"
+    )
+    facts_path = staging / "facts_manifest.json"
+    facts_path.write_text('{"project": "test"}', encoding="utf-8")
+
+    resolution = resolve_evidence_agents(None, None)
+    paths = EvidenceRegistryBuilder(staging).build(resolution.agents)
+
+    harness = CustomHarnessProvider(MagicMock())
+    harness._evidence_registry_paths = paths
+    ctx = DocGenContext(
+        project_id="test",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=[],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake",
+        write_model="fake",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    files = harness._phase2_shared_context(ctx, facts_path)
+    file_names = [f.name for f in files]
+    assert "evidence_brief.md" in file_names
+    assert "evidence_registry.md" not in file_names
+    assert "_source_coverage.json" not in file_names
+
+
+def test_phase2_shared_context_excludes_source_coverage(tmp_path):
+    """_phase2_shared_context must not include _source_coverage.json in static context."""
+    staging = tmp_path / "staging"
+    preprocess = staging / "_preprocess"
+    preprocess.mkdir(parents=True)
+    (preprocess / "_source_coverage.json").write_text(
+        '{"scanned": 100}', encoding="utf-8"
+    )
+    facts_path = staging / "facts_manifest.json"
+    facts_path.write_text('{"project": "test"}', encoding="utf-8")
+
+    harness = CustomHarnessProvider(MagicMock())
+    harness._evidence_registry_paths = {}
+    ctx = DocGenContext(
+        project_id="test",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=[],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake",
+        write_model="fake",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    files = harness._phase2_shared_context(ctx, facts_path)
+    assert not any(f.name == "_source_coverage.json" for f in files)
+
+
+@pytest.mark.asyncio
+async def test_max_slices_guard_raises_for_phase2(tmp_path, monkeypatch):
+    """Phase 2 must raise RuntimeError when _split_context_pack produces too many slices."""
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "core_context_soft_target_tokens", 100)
+    monkeypatch.setattr(config, "core_context_hard_ceiling_tokens", 200)
+    monkeypatch.setattr(config, "agent_phase2_max_slices", 2)
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    large_md = staging / "group.md"
+    large_md.write_text("Unit A content line\n" * 500, encoding="utf-8")
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _Provider:
+        model_name = "fake"
+        provider_name = "openai"
+        supports_tools = False
+
+        async def complete(self, *args, **kwargs):
+            return ModelResult(success=True, text="ok", model_name=self.model_name)
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake",
+        write_model="fake",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    provider = _Provider()
+    harness = CustomHarnessProvider(provider)
+
+    with pytest.raises(RuntimeError, match="agent_phase2_max_slices"):
+        await harness._complete_core_generation(
+            ctx,
+            HarnessRunState(project_id="proj", facts_manifest=facts),
+            provider=provider,
+            phase="phase2",
+            target="A",
+            prompt="Analyze Unit A",
+            context_files=[large_md],
+            opts=ModelOptions(),
+            log_cb=lambda *a, **k: None,
+        )
+
+
+# --- Session 3: per-doc evidence slices for Phase 3 ---
+
+
+def test_phase3_context_uses_doc_slice_not_registry(tmp_path):
+    """_phase3_context_files must include a per-doc slice, not the full evidence_registry.md."""
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "_preprocess").mkdir()
+    (staging / "_analysis" / "_doc_pack_manifest.json").write_text('{"doc_packs": {}}', encoding="utf-8")
+    doc_pack = staging / "_analysis" / "_doc_pack_03_DATA_FLOWS_AND_LINEAGE.md"
+    doc_pack.write_text("doc pack content", encoding="utf-8")
+
+    # Write per-doc slice and full registry — harness must prefer the slice.
+    slices_dir = staging / "_evidence_registry" / "doc_slices"
+    slices_dir.mkdir(parents=True)
+    doc_slice = slices_dir / "03_DATA_FLOWS_AND_LINEAGE.md"
+    doc_slice.write_text("# Evidence Brief\nClaims: 3\n", encoding="utf-8")
+    registry_dir = staging / "_evidence_registry"
+    (registry_dir / "evidence_registry.md").write_text("FULL REGISTRY", encoding="utf-8")
+    (registry_dir / "evidence_brief.md").write_text("# Evidence Brief\nClaims: 10\n", encoding="utf-8")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+
+    files = harness._phase3_context_files(ctx, "03_DATA_FLOWS_AND_LINEAGE")
+
+    assert doc_slice in files
+    assert not any("evidence_registry.md" in str(f) for f in files)
+
+
+def test_phase3_context_falls_back_to_evidence_brief_when_no_doc_slice(tmp_path):
+    """When no per-doc slice exists, _phase3_context_files must use evidence_brief.md."""
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "_preprocess").mkdir()
+    (staging / "_analysis" / "_doc_pack_manifest.json").write_text('{"doc_packs": {}}', encoding="utf-8")
+    doc_pack = staging / "_analysis" / "_doc_pack_03_DATA_FLOWS_AND_LINEAGE.md"
+    doc_pack.write_text("doc pack content", encoding="utf-8")
+
+    # Write only evidence_brief, no doc slice.
+    registry_dir = staging / "_evidence_registry"
+    registry_dir.mkdir(parents=True)
+    evidence_brief = registry_dir / "evidence_brief.md"
+    evidence_brief.write_text("# Evidence Brief\nClaims: 10\n", encoding="utf-8")
+    (registry_dir / "evidence_registry.md").write_text("FULL REGISTRY", encoding="utf-8")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+
+    files = harness._phase3_context_files(ctx, "03_DATA_FLOWS_AND_LINEAGE")
+
+    assert evidence_brief in files
+    assert not any("evidence_registry.md" in str(f) for f in files)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: warning code contract tests
+# ---------------------------------------------------------------------------
+
+
+def test_phase1_warning_code_importable() -> None:
+    from mcp_server.providers.custom.pipeline.warning_collector import WarningCode
+
+    assert WarningCode.PHASE1_GROUP_FAILURE == "PHASE1_GROUP_FAILURE"
+    assert WarningCode.PHASE2_COVERAGE_PARTIAL == "PHASE2_COVERAGE_PARTIAL"
+    assert WarningCode.PHASE2_DEPTH_PARTIAL == "PHASE2_DEPTH_PARTIAL"
+    assert WarningCode.THIN_BUNDLE == "THIN_BUNDLE"
+
+
+def test_phase2_coverage_partial_context_fields() -> None:
+    from mcp_server.providers.custom.pipeline.warning_collector import PipelineWarning, WarningCode
+
+    w = PipelineWarning(
+        phase="phase2",
+        code=WarningCode.PHASE2_COVERAGE_PARTIAL,
+        message="partial",
+        context={"covered": 2, "total": 5},
+    )
+    assert "covered" in w.context
+    assert "total" in w.context
+    assert w.context["covered"] == 2
+    assert w.context["total"] == 5

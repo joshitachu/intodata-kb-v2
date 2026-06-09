@@ -176,6 +176,7 @@ class MCPServerConfig(BaseSettings):
     agent_phase1_agentic: bool = False       # MCP_AGENT_PHASE1_AGENTIC — use chunk-manifest investigator
     agent_phase1_batch_size: int = 20        # MCP_AGENT_PHASE1_BATCH_SIZE — units per extraction call
     agent_phase2_concurrency: int = 6        # MCP_AGENT_PHASE2_CONCURRENCY
+    agent_phase2_max_slices: int = 3         # MCP_AGENT_PHASE2_MAX_SLICES — hard cap on _split_context_pack fan-out
     agent_phase3_concurrency: int = 4        # MCP_AGENT_PHASE3_CONCURRENCY
     agent_repair_concurrency: int = 3        # MCP_AGENT_REPAIR_CONCURRENCY
     agent_max_tool_calls: int = 12           # MCP_AGENT_MAX_TOOL_CALLS

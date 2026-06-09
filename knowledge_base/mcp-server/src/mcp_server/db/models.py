@@ -112,7 +112,7 @@ class GenerateRun(Base):
     triggered_by: Mapped[str] = mapped_column(String(20), nullable=False)  # api | mcp
     status: Mapped[str] = mapped_column(
         String(20), default="running", index=True
-    )  # running | completed | failed
+    )  # running | completed | completed_warnings | failed
     started_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

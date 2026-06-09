@@ -12,7 +12,11 @@ import yaml
 
 from mcp_server.providers.base import AgentResult, DocGenContext, DocGenerationProvider, LogCallback
 from mcp_server.providers.custom.models import ModelOptions, ModelResult
-from mcp_server.providers.custom.prompts import REQUIRED_DOCS, DOC_ASSIGNMENTS
+from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_test_catalog
+
+_test_catalog = _load_test_catalog()
+REQUIRED_DOCS = _test_catalog.required_docs
+DOC_ASSIGNMENTS = _test_catalog.doc_assignments
 from mcp_server.services.plugin_schema import (
     DocDefinition,
     PluginPackManifest,
@@ -181,6 +185,52 @@ class TestLoadPluginManifest:
         assert manifest.docs[0].required_evidence == ["sql_queries"]
         assert manifest.evidence_profiles["table_inventory"].include == ["sql_queries", "ddl_schema"]
         assert manifest.validation.mode == "advisory"
+
+    def test_loads_manifest_with_evidence_agents(self, tmp_path: Path):
+        data = {
+            "name": "pack",
+            "version": "1.0",
+            "evidence_profiles": {
+                "table_inventory": {
+                    "include": ["sql_queries", "ddl_schema"],
+                },
+            },
+            "evidence_agents": [
+                {
+                    "id": "table_sql_finder",
+                    "uses": "builtin/sql_usage_agent",
+                    "evidence_profile": "table_inventory",
+                    "categories": ["sql_queries"],
+                    "inputs": ["facts_manifest", "preprocess_chunks"],
+                },
+                {
+                    "id": "ddl_alignment_agent",
+                    "prompt_file": "prompts/agents/ddl_alignment.md",
+                    "evidence_profile": "table_inventory",
+                    "categories": ["ddl_schema"],
+                    "inputs": ["facts_manifest", "evidence_registry"],
+                },
+            ],
+            "steps": [{"id": "s", "type": "harness"}],
+        }
+        (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
+
+        manifest = load_plugin_manifest(tmp_path)
+
+        assert manifest.evidence_agents[0].uses == "builtin/sql_usage_agent"
+        assert manifest.evidence_agents[1].prompt_file == "prompts/agents/ddl_alignment.md"
+
+    def test_invalid_evidence_agent_without_source_fails(self, tmp_path: Path):
+        data = {
+            "name": "pack",
+            "version": "1.0",
+            "evidence_agents": [{"id": "broken", "categories": ["sql_queries"]}],
+            "steps": [{"id": "s", "type": "harness"}],
+        }
+        (tmp_path / "plugin.yaml").write_text(yaml.dump(data), encoding="utf-8")
+
+        with pytest.raises(Exception, match="exactly one"):
+            load_plugin_manifest(tmp_path)
 
     def test_invalid_quality_gate_mode_fails(self, tmp_path: Path):
         data = {

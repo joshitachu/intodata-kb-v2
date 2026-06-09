@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from mcp_server.config import config
-from mcp_server.providers.custom.prompts import REQUIRED_DOCS
+from mcp_server.providers.custom.doc_catalog import load_doc_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ _BASE_MIN_LINES_AT_50: dict[str, int] = {
     "07_QUALITY_SECURITY_RISK_SCORECARD": 900,
     "08_CHANGE_PLAYBOOK": 800,
 }
-_PUBLISHABLE_DOC_KEYS = frozenset(REQUIRED_DOCS)
+_PUBLISHABLE_DOC_KEYS = frozenset(load_doc_catalog().required_docs)
 _SCALE_REFERENCE_UNITS = 50
 
 
