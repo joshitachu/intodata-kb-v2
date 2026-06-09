@@ -1,0 +1,114 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  python-syntax:
+    name: Python Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check Python syntax
+        run: |
+          find . -name "*.py" -type f ! -path "*/.*" ! -path "*/__pycache__/*" ! -path "*/node_modules/*" | xargs -n 1 python3 -m py_compile
+
+  rag-backend-tests:
+    name: RAG Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: RAG_pipeline/backend/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: RAG_pipeline/backend
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        working-directory: RAG_pipeline/backend
+        run: pytest
+
+  rag-frontend-check:
+    name: RAG Frontend Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: RAG_pipeline/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: RAG_pipeline/frontend
+        run: npm ci
+
+      - name: Type check
+        working-directory: RAG_pipeline/frontend
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: RAG_pipeline/frontend
+        run: npm test
+
+  dashboard-check:
+    name: Dashboard Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: knowledge_base/dashboard/package-lock.json
+
+      - name: Install dependencies
+        working-directory: knowledge_base/dashboard
+        run: npm ci
+
+      - name: Type check
+        working-directory: knowledge_base/dashboard
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: knowledge_base/dashboard
+        run: npm test
+
+  mcp-server-tests:
+    name: MCP Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: knowledge_base/mcp-server/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: knowledge_base/mcp-server
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        working-directory: knowledge_base/mcp-server
+        run: pytest
