@@ -35,6 +35,11 @@ from mcp_server.providers.custom.evidence_agents import (
     EvidenceRegistryBuilder,
     resolve_evidence_agents,
 )
+from mcp_server.providers.custom.debug_artifacts import (
+    debug_dir,
+    debug_write,
+    pipeline_debug_enabled,
+)
 from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, EvidenceBundleBuilder
 from mcp_server.providers.custom.talend_intelligence import write_talend_intelligence
 from mcp_server.providers.custom.agent_runtime import (
@@ -64,10 +69,13 @@ from mcp_server.providers.custom.prompts import (
     doc_prompt,
     facts_summary,
     group_analysis_prompt,
-    phase2_section_repair_prompt,
-    scorecard_prompt,
 )
 from mcp_server.providers.custom.providers import ModelProvider, build_model_provider
+from mcp_server.providers.custom.repair_planner import (
+    REPAIR_TOKEN_CAP,
+    deterministic_phase2_section_patch,
+    estimate_repair_tokens,
+)
 from mcp_server.providers.custom.validators import (
     build_facts_manifest,
     group_analysis_is_complete,
@@ -81,7 +89,6 @@ from mcp_server.providers.custom.validators import (
     validate_docs,
     validate_final_redaction,
     validate_pack_quality,
-    validate_scorecard_contract,
     validate_source_provenance,
     validate_usefulness_rubric,
     build_documentation_obligation_map,
@@ -1360,24 +1367,6 @@ Fallback plan example:
                     phase, costs["input_tokens"], config.phase_cost_warning_input_tokens,
                 )
 
-    async def _phase1_investigation(
-        self,
-        ctx: DocGenContext,
-        state: HarnessRunState,
-        log_cb: LogCallback,
-    ) -> set[str]:
-        """Thin delegator — body migrated to Phase1Investigation.run().
-
-        Kept for backwards-compat with any external callers; the normal run()
-        path uses Phase1Investigation directly via PipelineRunner.
-        """
-        from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
-        from mcp_server.providers.custom.pipeline.phases.phase1_investigation import Phase1Investigation
-        helpers = HarnessHelpersImpl(self)
-        phase = Phase1Investigation(helpers)
-        result = await phase.run(ctx, state, log_cb)
-        return set(result.metadata.get("failed_groups") or [])
-
     async def _phase2_analysis(
         self,
         ctx: DocGenContext,
@@ -1793,53 +1782,30 @@ Fallback plan example:
         opts: ModelOptions,
         log_cb: LogCallback,
     ) -> str:
-        """Normalize Talend guide headings and make one targeted repair call if needed."""
+        """Normalize required guide headings without spending a repair LLM call."""
 
         platform = state.facts_manifest.platform
-        normalized = normalize_analysis_guide_headings(model_analysis, platform)
-        missing = missing_required_analysis_sections(normalized, platform)
+        patched, missing = deterministic_phase2_section_patch(
+            model_analysis,
+            platform=platform,
+            group=group,
+        )
         if not missing:
-            return normalized
+            return patched
 
         await log_cb(
             ctx.project_id,
             f"[custom] Phase 2 for {group} missing guide sections after first pass: "
-            f"{', '.join(missing)}; requesting targeted repair",
+            f"{', '.join(missing)}; applied deterministic structural patch",
             "warning",
         )
-        repair_prompt = phase2_section_repair_prompt(state.facts_manifest, group, missing)
-        repair_opts = ModelOptions(
-            max_tokens=min(config.phase3_max_tokens, max(config.phase2_max_tokens, len(missing) * 8_000)),
-            temperature=0.1,
-            retries=1,
-            timeout_s=opts.timeout_s,
-            provider_options=opts.provider_options,
-        )
-        context_files = [*shared_context, *investigation_context, group_file]
-        result = await self._complete_core_generation(
-            ctx,
-            state,
-            provider=self.model_provider,
-            phase="phase2.repair",
-            target=f"{group}_section_repair",
-            prompt=repair_prompt,
-            context_files=context_files,
-            opts=repair_opts,
-            log_cb=log_cb,
-        )
-        if not result.success:
-            raise RuntimeError(f"Phase 2 section repair failed for {group}: {result.raw_error}")
-
-        repaired = normalize_analysis_guide_headings(result.text.strip(), platform)
-        combined = f"{normalized.rstrip()}\n\n---\n\n{repaired}\n"
-        still_missing = missing_required_analysis_sections(combined, platform)
+        still_missing = missing_required_analysis_sections(patched, platform)
         if still_missing:
             raise RuntimeError(
-                f"Phase 2 analysis for group {group} missing required sections after repair: "
+                f"Phase 2 analysis for group {group} missing required sections after deterministic patch: "
                 f"{', '.join(still_missing)}"
             )
-        await log_cb(ctx.project_id, f"[custom] Phase 2 guide-section repair complete: {group}", "info")
-        return combined
+        return patched
 
     async def _phase2_analysis_direct(
         self,
@@ -2173,6 +2139,22 @@ Fallback plan example:
                     + "\n\nUnits to cover:\n"
                     + "\n".join(f"- {unit}" for unit in units)
                 )
+                context_files, repair_estimate = self._narrow_repair_context(prompt, context_files)
+                if not context_files:
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Phase 2 targeted repair skipped for {group}: no grounded context files",
+                        "warning",
+                    )
+                    return
+                if repair_estimate > REPAIR_TOKEN_CAP:
+                    await log_cb(
+                        ctx.project_id,
+                        f"[custom] Phase 2 targeted repair skipped for {group}: "
+                        f"estimated tokens {repair_estimate} exceed cap {REPAIR_TOKEN_CAP}",
+                        "warning",
+                    )
+                    return
                 opts = ModelOptions(
                     max_tokens=min(config.phase3_max_tokens, 12_000),
                     temperature=0.1,
@@ -2233,116 +2215,6 @@ Fallback plan example:
                 await log_cb(ctx.project_id, f"[custom] Phase 2 targeted repair appended to {target.name}", "info")
 
         await asyncio.gather(*[_repair_group(group, units) for group, units in units_by_group.items()])
-
-    async def _phase26_scorecard(
-        self,
-        ctx: DocGenContext,
-        state: HarnessRunState,
-        log_cb: LogCallback,
-    ) -> None:
-        assessment_dir = ctx.staging_dir / "_assessment"
-        assessment_dir.mkdir(parents=True, exist_ok=True)
-        analysis_files = [
-            p for p in sorted((ctx.staging_dir / "_analysis").glob("*.md"))
-            if not p.name.startswith("_") and "_chunk_" not in p.name
-        ]
-        investigation_files = sorted((ctx.staging_dir / "_investigation").glob("*.md"))
-        pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
-        scorecard_pack = pack_dir / "_scorecard_prompt_pack.md"
-        scorecard_opts = ModelOptions(
-            max_tokens=config.phase2_max_tokens,
-            temperature=0.1,
-            retries=1,
-            timeout_s=300.0,
-            provider_options=self._provider_options(self.model_provider),
-        )
-        scorecard_prompt_text = scorecard_prompt(state.facts_manifest, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir)
-        context_files = []
-        if scorecard_pack.exists():
-            context_files.append(scorecard_pack)
-        else:
-            context_files.extend(self._existing(ctx.staging_dir / "_preprocess", [
-                "_scoring_rubric.md",
-                "_anti_patterns.md",
-                "_red_flags.md",
-                "_security_checklist.md",
-                "_pattern_library.md",
-            ]))
-        context_files.extend(investigation_files)
-        context_files.extend(analysis_files)
-        runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
-        contract = AgentTaskContract(
-            phase="scorecard",
-            target_id="scorecard",
-            allowed_units=[unit.name for unit in state.facts_manifest.units],
-            allowed_groups=list(state.facts_manifest.groups),
-            allowed_categories=self._default_evidence_categories(),
-            starter_context_files=[p.relative_to(ctx.staging_dir).as_posix() for p in context_files if p.exists()],
-            tool_budget=default_tool_budget(),
-            input_budget=default_input_budget(),
-            expected_artifact="scorecard markdown",
-            max_attempts=config.agent_max_task_attempts,
-        )
-        cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
-        scorecard_task_output_path: str | None = None
-        if cached is not None:
-            result = ModelResult(success=True, text=cached, model_name=self.model_provider.model_name)
-            await log_cb(ctx.project_id, "[custom] RESUME: skipping Phase 2.6 scorecard (accepted)", "info")
-        else:
-            async def _dispatch(task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
-                return await self._complete_core_generation(
-                    ctx,
-                    state,
-                    provider=self.model_provider,
-                    phase="phase2.6",
-                    target=task.target_id,
-                    prompt=scorecard_prompt_text,
-                    context_files=context_files,
-                    opts=scorecard_opts,
-                    log_cb=log_cb,
-                    task_contract=task,
-                    scoped_tools=tools,
-                )
-
-            task_result = await runtime.run(
-                contract,
-                _dispatch,
-                lambda text: self._validate_agent_markdown(text, [], min_bytes=200),
-            )
-            result = task_result.result
-            scorecard_task_output_path = task_result.output_path
-        if not result.success:
-            raise RuntimeError(f"Scorecard generation failed: {result.raw_error}")
-        if int(result.metadata.get("slices") or 0) > 1:
-            result = await self._reduce_split_scorecard(ctx, state, result.text, scorecard_pack, log_cb)
-            if not result.success:
-                raise RuntimeError(f"Scorecard reducer failed: {result.raw_error}")
-            if scorecard_task_output_path:
-                Path(scorecard_task_output_path).write_text(result.text.strip(), encoding="utf-8")
-
-        # Validate scorecard contract (weights, dimensions, ownership tags).
-        # Only enforce for enterprise runs; packs use a shorter scorecard format.
-        if not self._plugin_mode:
-            sc_check = validate_scorecard_contract(result.text)
-            if not sc_check["ok"]:
-                await log_cb(
-                    ctx.project_id,
-                    "[custom] Phase 2.6 scorecard contract gaps: " + "; ".join(sc_check["errors"][:5]),
-                    "warning",
-                )
-                (assessment_dir / "_scorecard_contract_errors.json").write_text(
-                    json.dumps(sc_check, indent=2), encoding="utf-8"
-                )
-                state.warnings.extend(sc_check["errors"])
-
-        content = (
-            "# Assessment Scorecard\n\n"
-            f"Canonical inventory: {state.facts_manifest.unit_count} "
-            f"{state.facts_manifest.canonical_unit_label}.\n\n"
-            f"{result.text.strip()}\n"
-        )
-        (assessment_dir / "scorecard.md").write_text(content, encoding="utf-8")
-        await log_cb(ctx.project_id, "[custom] Phase 2.6 scorecard complete", "info")
 
     async def _reduce_split_scorecard(
         self,
@@ -2904,6 +2776,29 @@ Fallback plan example:
                     + "\n"
                 )
             context_files = self._phase3_repair_context_files(ctx, state, target_doc, missing_units)
+            context_files, repair_estimate = self._narrow_repair_context(prompt, context_files)
+            if not context_files:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 3 targeted repair skipped for {target_doc.name}: no grounded context files",
+                    "warning",
+                )
+                continue
+            if repair_estimate > REPAIR_TOKEN_CAP:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 3 targeted repair skipped for {target_doc.name}: "
+                    f"estimated tokens {repair_estimate} exceed cap {REPAIR_TOKEN_CAP}",
+                    "warning",
+                )
+                continue
+            self._write_repair_context_summary(
+                ctx,
+                phase="phase3",
+                target=target_doc.stem,
+                context_files=context_files,
+                estimated_tokens=repair_estimate,
+            )
             opts = ModelOptions(
                 max_tokens=min(config.phase3_max_tokens, 12_000),
                 temperature=0.1,
@@ -2998,6 +2893,56 @@ Fallback plan example:
                 target_doc = existing_docs[0] if existing_docs else ctx.staging_dir / fallback_doc
             targets.append((target_doc, doc_errors))
         return targets
+
+    def _narrow_repair_context(
+        self,
+        prompt: str,
+        context_files: list[Path],
+        *,
+        token_cap: int = REPAIR_TOKEN_CAP,
+    ) -> tuple[list[Path], int]:
+        """Keep repair context under the repair cap before any model call."""
+
+        existing = [path for path in context_files if path.exists()]
+        selected: list[Path] = []
+        for path in existing:
+            candidate = [*selected, path]
+            if estimate_repair_tokens(prompt, candidate) <= token_cap:
+                selected.append(path)
+        estimate = estimate_repair_tokens(prompt, selected)
+        if estimate > token_cap:
+            return [], estimate
+        return selected, estimate
+
+    def _write_repair_context_summary(
+        self,
+        ctx: DocGenContext,
+        *,
+        phase: str,
+        target: str,
+        context_files: list[Path],
+        estimated_tokens: int,
+    ) -> None:
+        repair_dir = ctx.staging_dir / "_assessment" / "repair"
+        repair_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "phase": phase,
+            "target": target,
+            "estimated_tokens": estimated_tokens,
+            "context_files": [
+                path.relative_to(ctx.staging_dir).as_posix()
+                if path.is_relative_to(ctx.staging_dir)
+                else path.as_posix()
+                for path in context_files
+            ],
+            "context_bytes": context_bytes(context_files),
+            "token_cap": REPAIR_TOKEN_CAP,
+        }
+        safe_target = self._safe_name(target)
+        (repair_dir / f"{phase}_{safe_target}_context.json").write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
 
     @staticmethod
     def _repair_root_causes(errors: list[str], missing_units: list[str]) -> list[dict]:
@@ -3221,6 +3166,8 @@ Missing units:
         context_files = self._bounded_context_files(context_files)
         tool_policy = self._tool_policy(provider, phase)
         use_tools = tool_policy.enabled
+        if "repair" in phase and context_files:
+            use_tools = False
         if use_tools:
             prompt = _with_agent_contract(prompt, task_contract)
             context_files = []
@@ -3606,25 +3553,26 @@ Missing units:
         total_bytes: int,
         call_index: int,
     ) -> Path:
-        """Persist the exact model-call inputs for offline review and no-AI tests."""
+        """Persist the per-call input manifest; full snapshots only in debug mode.
 
+        The manifest (file list, sizes, options) is always written — it is the
+        per-call ledger used to trace what reached each model call. The exact
+        prompt/context/request/response payloads are forensics and land under
+        _debug/model_inputs/ only when MCP_PIPELINE_DEBUG is set.
+        """
+
+        call_dir = f"{call_index:03d}_{self._safe_name(target)}"
         snapshot_dir = (
             ctx.staging_dir
             / "_model_inputs"
             / self._safe_name(phase)
-            / f"{call_index:03d}_{self._safe_name(target)}"
+            / call_dir
         )
         snapshot_dir.mkdir(parents=True, exist_ok=True)
+        debug_snapshot_dir = debug_dir(
+            ctx.staging_dir, "model_inputs", self._safe_name(phase), call_dir
+        )
         context_entries: list[dict[str, object]] = []
-        bundle_parts = [
-            f"# Model Input Bundle: {phase} / {target}",
-            "",
-            "## Prompt",
-            "",
-            prompt.rstrip(),
-            "",
-            "## Context Files",
-        ]
         for idx, path in enumerate(context_files, start=1):
             exists = path.exists()
             try:
@@ -3638,14 +3586,25 @@ Missing units:
                 "bytes": size,
                 "exists": exists,
             })
-            bundle_parts.extend(["", f"### {idx}. {rel_path}", ""])
-            if exists:
-                bundle_parts.append(path.read_text(encoding="utf-8", errors="replace").rstrip())
-            else:
-                bundle_parts.append("[missing context file]")
 
-        (snapshot_dir / "prompt.md").write_text(prompt.rstrip() + "\n", encoding="utf-8")
-        (snapshot_dir / "context_bundle.md").write_text("\n".join(bundle_parts).rstrip() + "\n", encoding="utf-8")
+        if pipeline_debug_enabled():
+            bundle_parts = [
+                f"# Model Input Bundle: {phase} / {target}",
+                "",
+                "## Prompt",
+                "",
+                prompt.rstrip(),
+                "",
+                "## Context Files",
+            ]
+            for entry, path in zip(context_entries, context_files):
+                bundle_parts.extend(["", f"### {entry['index']}. {entry['path']}", ""])
+                if entry["exists"]:
+                    bundle_parts.append(path.read_text(encoding="utf-8", errors="replace").rstrip())
+                else:
+                    bundle_parts.append("[missing context file]")
+            debug_write(debug_snapshot_dir / "prompt.md", prompt.rstrip() + "\n")
+            debug_write(debug_snapshot_dir / "context_bundle.md", "\n".join(bundle_parts).rstrip() + "\n")
         manifest = {
             "phase": phase,
             "target": target,
@@ -3676,8 +3635,8 @@ Missing units:
             "temperature": opts.temperature,
             "provider_options": opts.provider_options,
         }
-        (snapshot_dir / "request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
-        return snapshot_dir
+        debug_write(debug_snapshot_dir / "request.json", json.dumps(request, indent=2))
+        return debug_snapshot_dir
 
     @staticmethod
     def _write_model_response_snapshot(snapshot_dir: Path, result: ModelResult) -> None:
@@ -3692,7 +3651,7 @@ Missing units:
             "metadata": result.metadata,
             "text_preview": result.text[:1000],
         }
-        (snapshot_dir / "response.json").write_text(json.dumps(response, indent=2, default=str), encoding="utf-8")
+        debug_write(snapshot_dir / "response.json", json.dumps(response, indent=2, default=str))
 
     @staticmethod
     def _bounded_context_files(context_files: list[Path]) -> list[Path]:
@@ -4055,60 +4014,6 @@ Missing units:
             pass
         (audit_dir / "enterprise_gates.json").write_text(json.dumps(gate_report, indent=2, default=str), encoding="utf-8")
         (audit_dir / "final_doc_hashes.json").write_text(json.dumps(hashes, indent=2), encoding="utf-8")
-
-    async def _phase4_cleanup(self, ctx: DocGenContext, state: HarnessRunState) -> None:
-        # _enterprise_gate_report is always called before _phase4_cleanup on the normal path;
-        # this guard is a safety net for direct calls outside generate().
-        if not (ctx.staging_dir / "_assessment" / "enterprise_gates.json").exists():
-            gate_report = self._enterprise_gate_report(ctx, state)
-            await self._write_audit_bundle(ctx, state, gate_report)
-        archived_engineering_facts = self._archive_engineering_artifacts(ctx, state)
-        index = {
-            "project_id": ctx.project_id,
-            "platform": state.facts_manifest.platform,
-            "groups": state.facts_manifest.groups,
-            "unit_count": state.facts_manifest.unit_count,
-            "canonical_unit_label": state.facts_manifest.canonical_unit_label,
-            "docs": self._required_docs,
-            "engineering_facts": archived_engineering_facts,
-            "provider": "custom",
-            "model": self.model_provider.model_name,
-            "write_model": self.write_provider.model_name,
-            "generated_at": time.time(),
-        }
-        if state.warnings:
-            index["warnings"] = state.warnings
-            index["warnings_count"] = len(state.warnings)
-        (ctx.staging_dir / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
-        (ctx.staging_dir / "provider_calls.json").write_text(
-            json.dumps([c.model_dump() for c in state.calls], indent=2),
-            encoding="utf-8",
-        )
-        audit_calls = ctx.staging_dir / "_audit" / "provider_calls.json"
-        if audit_calls.parent.exists():
-            audit_calls.write_text(
-                json.dumps([c.model_dump() for c in state.calls], indent=2),
-                encoding="utf-8",
-            )
-
-        for directory in ("_preprocess", "_analysis"):
-            target = ctx.staging_dir / directory
-            if target.exists():
-                shutil.rmtree(target, ignore_errors=True)
-
-        logs_dir = Path(ctx.logs_abs)
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        (logs_dir / f"run_{ctx.project_id}_{ts}.log").write_text(
-            f"project_id: {ctx.project_id}\n"
-            f"provider: custom\n"
-            f"model: {self.model_provider.model_name}\n"
-            f"write_model: {self.write_provider.model_name}\n"
-            f"unit_count: {state.facts_manifest.unit_count}\n"
-            f"input_tokens: {state.input_tokens}\n"
-            f"output_tokens: {state.output_tokens}\n",
-            encoding="utf-8",
-        )
 
     @staticmethod
     def _archive_engineering_artifacts(ctx: DocGenContext, state: HarnessRunState) -> list[str]:

@@ -654,6 +654,15 @@ def _skip_reason(path: str, content: str) -> str | None:
     return None
 
 
+def classify_source_path(path: str, content_hint: str | None = None) -> str | None:
+    """Classify a source path using the same skip labels as source packaging.
+
+    Returns one of the ``skipped_*`` labels used in ``_source_coverage.json`` or
+    ``None`` when the file is in scope for source packaging.
+    """
+    return _skip_reason(path, content_hint or "")
+
+
 def _low_relevance_summary(path: str, content: str) -> str | None:
     """Summarize likely vendored/resource code without dropping normal source files."""
 

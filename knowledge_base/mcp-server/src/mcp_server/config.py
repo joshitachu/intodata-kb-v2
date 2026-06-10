@@ -98,7 +98,7 @@ class MCPServerConfig(BaseSettings):
     doc_generation_enterprise_mode_default: bool = True
     doc_generation_quality_threshold: float = 4.0
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
-    small_project_threshold: int = 40   # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
+    small_project_threshold: int = 10   # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
 
     # API-based providers. First-party providers read ANTHROPIC_API_KEY,
     # OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY directly. Keep the generic
@@ -176,12 +176,12 @@ class MCPServerConfig(BaseSettings):
     agent_phase1_agentic: bool = False       # MCP_AGENT_PHASE1_AGENTIC — use chunk-manifest investigator
     agent_phase1_batch_size: int = 20        # MCP_AGENT_PHASE1_BATCH_SIZE — units per extraction call
     agent_phase2_concurrency: int = 6        # MCP_AGENT_PHASE2_CONCURRENCY
-    agent_phase2_max_slices: int = 3         # MCP_AGENT_PHASE2_MAX_SLICES — hard cap on _split_context_pack fan-out
+    agent_phase2_max_slices: int = 7         # MCP_AGENT_PHASE2_MAX_SLICES — hard cap on _split_context_pack fan-out
     agent_phase3_concurrency: int = 4        # MCP_AGENT_PHASE3_CONCURRENCY
     agent_repair_concurrency: int = 3        # MCP_AGENT_REPAIR_CONCURRENCY
-    agent_max_tool_calls: int = 12           # MCP_AGENT_MAX_TOOL_CALLS
-    agent_max_tool_bytes: int = 80_000       # MCP_AGENT_MAX_TOOL_BYTES
-    agent_max_tool_result_bytes: int = 12_000  # MCP_AGENT_MAX_TOOL_RESULT_BYTES
+    agent_max_tool_calls: int = 25           # MCP_AGENT_MAX_TOOL_CALLS
+    agent_max_tool_bytes: int = 600_000      # MCP_AGENT_MAX_TOOL_BYTES
+    agent_max_tool_result_bytes: int = 50_000  # MCP_AGENT_MAX_TOOL_RESULT_BYTES
     agent_phase2_tool_input_token_cap: int = 180_000  # MCP_AGENT_PHASE2_TOOL_INPUT_TOKEN_CAP
     agent_phase3_tool_input_token_cap: int = 320_000  # MCP_AGENT_PHASE3_TOOL_INPUT_TOKEN_CAP
     agent_max_task_attempts: int = 2         # MCP_AGENT_MAX_TASK_ATTEMPTS
@@ -196,6 +196,11 @@ class MCPServerConfig(BaseSettings):
     agent_dag_max_nodes: int = 200           # MCP_AGENT_DAG_MAX_NODES
     agent_dag_max_depth: int = 20            # MCP_AGENT_DAG_MAX_DEPTH
     agent_smart_repair_enabled: bool = False # MCP_AGENT_SMART_REPAIR_ENABLED — classify failures before repair
+
+    # Pipeline forensics: when enabled, human-only debug artifacts (model-call
+    # prompt/context/request/response snapshots, agent-task traces) are written
+    # under docs_staging/_debug/. Default runs persist only consumed artifacts.
+    pipeline_debug: bool = False             # MCP_PIPELINE_DEBUG
 
     # Doc generation safety guards. These are model/provider agnostic and stop
     # runaway retry storms without reducing prompt/evidence depth.

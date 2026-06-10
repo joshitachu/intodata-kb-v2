@@ -39,6 +39,12 @@ class Phase2Analysis(Phase):
         execution_plan = self._execution_plan
         analysis_policy = self._analysis_policy
         from mcp_server.config import config
+        from mcp_server.providers.custom.repair_planner import (
+            deterministic_coverage_marker_patch,
+            deterministic_phase2_section_patch,
+            mentioned_units_by_group,
+            phase2_report_plan,
+        )
         from mcp_server.providers.custom.validators import (
             validate_analysis_coverage,
             validate_analysis_depth,
@@ -97,7 +103,21 @@ class Phase2Analysis(Phase):
             coverage.model_dump_json(indent=2), encoding="utf-8"
         )
         if not coverage.ok or coverage.coverage_count != facts.unit_count:
-            await self._helpers.phase2_targeted_repair(ctx, state, coverage, log_cb)
+            coverage_plan = phase2_report_plan(report=coverage, report_kind="coverage")
+            await self._write_repair_plan(ctx, coverage_plan, "phase2_coverage")
+            patched = self._patch_coverage_markers(
+                ctx,
+                facts,
+                coverage.missing_units,
+                mentioned_units_by_group,
+                deterministic_coverage_marker_patch,
+            )
+            if patched:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 coverage marker repair applied deterministically: {patched} group(s)",
+                    "warning",
+                )
             coverage = validate_analysis_coverage(
                 ctx.staging_dir / "_analysis",
                 facts,
@@ -130,12 +150,12 @@ class Phase2Analysis(Phase):
             depth.model_dump_json(indent=2), encoding="utf-8"
         )
         if not depth.ok or depth.coverage_count != facts.unit_count:
-            await self._helpers.phase2_targeted_repair(ctx, state, depth, log_cb)
-            depth = validate_analysis_depth(
-                ctx.staging_dir / "_analysis",
-                ctx.staging_dir / "_preprocess",
-                facts,
-                use_structured=self._helpers.plugin_mode,
+            depth_plan = phase2_report_plan(report=depth, report_kind="depth")
+            await self._write_repair_plan(ctx, depth_plan, "phase2_depth")
+            await log_cb(
+                ctx.project_id,
+                "[custom] Phase 2 depth issue recorded without LLM repair; byte count alone is advisory",
+                "warning",
             )
             (ctx.staging_dir / "_analysis" / "_depth_report.json").write_text(
                 depth.model_dump_json(indent=2), encoding="utf-8"
@@ -159,7 +179,14 @@ class Phase2Analysis(Phase):
             guide_sections.model_dump_json(indent=2), encoding="utf-8"
         )
         if not guide_sections.ok:
-            await self._helpers.phase2_targeted_repair(ctx, state, guide_sections, log_cb)
+            guide_plan = phase2_report_plan(report=guide_sections, report_kind="guide_sections")
+            await self._write_repair_plan(ctx, guide_plan, "phase2_guide_sections")
+            patched = self._patch_guide_sections(ctx, facts, deterministic_phase2_section_patch)
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 guide-section repair applied deterministically: {patched} group(s)",
+                "warning",
+            )
             guide_sections = validate_analysis_guide_sections(
                 ctx.staging_dir / "_analysis",
                 facts,
@@ -204,3 +231,61 @@ class Phase2Analysis(Phase):
             calls_max=n * 4,
             notes="1 call per group (min), up to 4 with retries and repairs (max)",
         )
+
+    async def _write_repair_plan(self, ctx: "DocGenContext", plan, name: str) -> None:
+        repair_dir = ctx.staging_dir / "_assessment" / "repair"
+        repair_dir.mkdir(parents=True, exist_ok=True)
+        (repair_dir / f"{name}_repair_plan.json").write_text(
+            plan.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
+    def _patch_coverage_markers(
+        self,
+        ctx: "DocGenContext",
+        facts,
+        missing_units: list[str],
+        finder,
+        patcher,
+    ) -> int:
+        analysis_dir = ctx.staging_dir / "_analysis"
+        mentioned = finder(facts, analysis_dir, missing_units)
+        patched = 0
+        for group, units in mentioned.items():
+            path = self._analysis_path(analysis_dir, group)
+            if path is None:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            updated = patcher(text, units)
+            if updated != text:
+                path.write_text(updated, encoding="utf-8")
+                self._helpers.write_phase2_coverage_record(ctx, group, units, path)
+                patched += 1
+        return patched
+
+    def _patch_guide_sections(self, ctx: "DocGenContext", facts, patcher) -> int:
+        analysis_dir = ctx.staging_dir / "_analysis"
+        patched = 0
+        for group in facts.groups:
+            path = self._analysis_path(analysis_dir, group)
+            if path is None:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            updated, missing = patcher(text, platform=facts.platform, group=group)
+            if missing and updated != text:
+                path.write_text(updated, encoding="utf-8")
+                patched += 1
+        return patched
+
+    def _analysis_path(self, analysis_dir, group: str):
+        direct = analysis_dir / f"{group}.md"
+        if direct.exists():
+            return direct
+        safe = analysis_dir / f"{self._safe_name(group)}.md"
+        return safe if safe.exists() else None
+
+    @staticmethod
+    def _safe_name(value: str) -> str:
+        import re
+
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "group"

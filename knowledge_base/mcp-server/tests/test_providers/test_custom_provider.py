@@ -2509,6 +2509,7 @@ def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
 async def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
     staging = tmp_path / "docs_staging"
     staging.mkdir()
+    (staging / "_assessment").mkdir()
     (staging / "engineering_facts.md").write_text("# Engineering Facts\n", encoding="utf-8")
     (staging / "dependency_map.md").write_text("# Dependency Map\n", encoding="utf-8")
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
@@ -2531,7 +2532,14 @@ async def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_pa
         analysis_guide_file="_analysis_guide.md",
     )
 
-    await CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase4_cleanup(ctx, state)
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        return None
+
+    from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+
+    provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    await Phase4Cleanup(HarnessHelpersImpl(provider)).run(ctx, state, log_cb)
 
     assert not (staging / "engineering_facts.md").exists()
     assert not (staging / "dependency_map.md").exists()
@@ -2564,7 +2572,14 @@ async def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
         analysis_guide_file="_analysis_guide.md",
     )
 
-    await CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))._phase4_cleanup(ctx, state)
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        return None
+
+    from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+
+    provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    await Phase4Cleanup(HarnessHelpersImpl(provider)).run(ctx, state, log_cb)
 
     index = json.loads((staging / "index.json").read_text(encoding="utf-8"))
     assert index["warnings_count"] == 1
@@ -2605,7 +2620,11 @@ def test_phase3_repair_targets_uses_doc_named_in_validation_error(tmp_path):
     )]
 
 
-def test_validation_errors_route_canonical_obligations_to_owner_docs(tmp_path):
+def test_validate_docs_tolerates_inventory_artifact_and_system_row_gaps(tmp_path):
+    # Contract change: per-unit source-artifact/group rows in the component
+    # inventory and per-system rows in the runtime doc are no longer hard
+    # validation errors — they produced form-only repair churn. Coverage is
+    # satisfied when every canonical unit is mentioned in the docs.
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
     facts.units[0].path = "src/unit_a.py"
     facts.units[0].key_systems = ["External API"]
@@ -2627,32 +2646,10 @@ def test_validation_errors_route_canonical_obligations_to_owner_docs(tmp_path):
     )
 
     report = validate_docs(staging, facts)
-    ctx = DocGenContext(
-        project_id="proj",
-        staging_dir=staging,
-        staging_abs=str(staging),
-        logs_abs=str(tmp_path / "logs"),
-        preprocess_groups=["A"],
-        total_jobs=1,
-        total_groups=1,
-        effective_model="fake/deepseek",
-        write_model="fake/deepseek",
-        platform="generic",
-        analysis_guide_file="_analysis_guide.md",
-    )
-    from unittest.mock import MagicMock
-    mock_mp = MagicMock()
-    mock_mp.model_name = "test/model"
-    provider = CustomHarnessProvider(mock_mp)
-    targets = provider._phase3_repair_targets(ctx, report.errors)
 
-    assert not report.ok
-    assert any("02_COMPONENT_INVENTORY.md missing source artifact" in error for error in report.errors)
-    assert any("05_RUNTIME_CONFIG_AND_EXTERNALS.md missing external system row" in error for error in report.errors)
-    assert {target.name for target, _ in targets} >= {
-        "02_COMPONENT_INVENTORY.md",
-        "05_RUNTIME_CONFIG_AND_EXTERNALS.md",
-    }
+    assert report.ok
+    assert not any("missing source artifact" in error for error in report.errors)
+    assert not any("missing external system row" in error for error in report.errors)
 
 
 @pytest.mark.asyncio
@@ -2785,16 +2782,88 @@ async def test_core_generation_writes_reviewable_model_input_snapshot(tmp_path):
     assert result.success
     snapshot_dir = staging / "_model_inputs" / "phase3" / "001_02_COMPONENT_INVENTORY"
     manifest = json.loads((snapshot_dir / "manifest.json").read_text(encoding="utf-8"))
-    bundle = (snapshot_dir / "context_bundle.md").read_text(encoding="utf-8")
-    prompt = (snapshot_dir / "prompt.md").read_text(encoding="utf-8")
 
     assert manifest["phase"] == "phase3"
     assert manifest["target"] == "02_COMPONENT_INVENTORY"
     assert manifest["options"]["max_tokens"] == 1234
     assert manifest["context_files"][0]["path"] == "_analysis/_doc_pack_02_COMPONENT_INVENTORY.md"
+    # Full payload snapshots are debug-only; default runs keep just the manifest.
+    assert not (snapshot_dir / "prompt.md").exists()
+    assert not (snapshot_dir / "context_bundle.md").exists()
+    assert not (snapshot_dir / "request.json").exists()
+    assert not (snapshot_dir / "response.json").exists()
+    assert not (staging / "_debug").exists()
+
+
+@pytest.mark.asyncio
+async def test_core_generation_debug_flag_writes_full_model_input_snapshot(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "pipeline_debug", True)
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    context_file = staging / "_analysis" / "_doc_pack_02_COMPONENT_INVENTORY.md"
+    context_file.parent.mkdir()
+    context_file.write_text("# Doc Pack\n\nUnit A source evidence.", encoding="utf-8")
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+
+    class _FakeProvider:
+        model_name = "fake/model"
+        supports_tools = False
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            return ModelResult(
+                success=True,
+                text="# Component Inventory\n\nUnit A documented from source evidence.",
+                model_name=self.model_name,
+                input_tokens=12,
+                output_tokens=8,
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    provider = _FakeProvider()
+    result = await CustomHarnessProvider(provider)._complete_core_generation(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        provider=provider,
+        phase="phase3",
+        target="02_COMPONENT_INVENTORY",
+        prompt="Write the inventory for Unit A.",
+        context_files=[context_file],
+        opts=ModelOptions(max_tokens=1234),
+        log_cb=log_cb,
+    )
+
+    assert result.success
+    manifest_dir = staging / "_model_inputs" / "phase3" / "001_02_COMPONENT_INVENTORY"
+    assert (manifest_dir / "manifest.json").exists()
+    debug_snapshot_dir = staging / "_debug" / "model_inputs" / "phase3" / "001_02_COMPONENT_INVENTORY"
+    bundle = (debug_snapshot_dir / "context_bundle.md").read_text(encoding="utf-8")
+    prompt = (debug_snapshot_dir / "prompt.md").read_text(encoding="utf-8")
+    request = json.loads((debug_snapshot_dir / "request.json").read_text(encoding="utf-8"))
+    response = json.loads((debug_snapshot_dir / "response.json").read_text(encoding="utf-8"))
+
     assert "Write the inventory for Unit A." in prompt
     assert "## Prompt" in bundle
     assert "Unit A source evidence." in bundle
+    assert request["max_tokens"] == 1234
+    assert response["success"] is True
 
 
 @pytest.mark.asyncio
@@ -3621,14 +3690,56 @@ async def test_agent_task_runtime_persists_exact_output_and_resume(tmp_path):
 
     assert result.accepted
     task_dir = staging / "_agent_tasks" / "phase3_doc" / "02_COMPONENT_INVENTORY"
-    assert (task_dir / "contract.json").exists()
-    assert (task_dir / "validation_report.json").exists()
-    assert (task_dir / "tool_call_ledger.json").exists()
-    assert (task_dir / "provider_metrics.json").exists()
+    # Resume/rerun consumers need exactly status.json + output.md; everything
+    # else is debug-gated forensics and must not appear in a default run.
     assert (task_dir / "status.json").exists()
-    assert (task_dir / "conversation_trace.json").exists()
     assert (task_dir / "output.md").read_text(encoding="utf-8") == exact
+    assert not (task_dir / "contract.json").exists()
+    assert not (task_dir / "validation_report.json").exists()
+    assert not (task_dir / "tool_call_ledger.json").exists()
+    assert not (task_dir / "provider_metrics.json").exists()
+    assert not (task_dir / "conversation_trace.json").exists()
+    assert not (task_dir / "attempts").exists()
+    assert not (staging / "_debug").exists()
+    assert result.validation_report_path is None
     assert runtime.accepted_output(contract) == exact
+
+
+@pytest.mark.asyncio
+async def test_agent_task_runtime_debug_flag_persists_forensics(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "pipeline_debug", True)
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    runtime = AgentTaskRuntime(staging, facts)
+    contract = AgentTaskContract(
+        phase="phase3_doc",
+        target_id="02_COMPONENT_INVENTORY",
+        allowed_units=["Unit A"],
+        allowed_groups=["A"],
+        expected_artifact="document markdown",
+    )
+    exact = "## Overview\n\nUnit A authored markdown."
+
+    async def dispatch(task, tools):
+        return ModelResult(success=True, text=exact, model_name="fake/model", input_tokens=3, output_tokens=4)
+
+    result = await runtime.run(contract, dispatch, lambda text: {"ok": "Unit A" in text, "errors": []})
+
+    assert result.accepted
+    task_dir = staging / "_agent_tasks" / "phase3_doc" / "02_COMPONENT_INVENTORY"
+    assert (task_dir / "status.json").exists()
+    assert (task_dir / "output.md").read_text(encoding="utf-8") == exact
+    debug_task_dir = staging / "_debug" / "agent_tasks" / "phase3_doc" / "02_COMPONENT_INVENTORY"
+    assert (debug_task_dir / "contract.json").exists()
+    assert (debug_task_dir / "validation_report.json").exists()
+    assert (debug_task_dir / "tool_call_ledger.json").exists()
+    assert (debug_task_dir / "provider_metrics.json").exists()
+    assert (debug_task_dir / "conversation_trace.json").exists()
+    assert (debug_task_dir / "attempts" / "01" / "output.md").read_text(encoding="utf-8") == exact
+    assert result.validation_report_path == str(debug_task_dir / "validation_report.json")
 
 
 @pytest.mark.asyncio
@@ -3666,7 +3777,10 @@ async def test_agent_task_runtime_rejects_length_and_marks_incomplete(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_agent_task_runtime_passes_validation_gaps_to_retry(tmp_path):
+async def test_agent_task_runtime_passes_validation_gaps_to_retry(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "pipeline_debug", True)
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
     staging = tmp_path / "docs_staging"
     staging.mkdir()
@@ -3696,7 +3810,8 @@ async def test_agent_task_runtime_passes_validation_gaps_to_retry(tmp_path):
 
     assert result.accepted
     assert seen_gaps == [[], ["missing Unit A section"]]
-    trace = json.loads((runtime.task_dir(contract) / "conversation_trace.json").read_text(encoding="utf-8"))
+    debug_task_dir = staging / "_debug" / "agent_tasks" / "phase3_doc" / "02_COMPONENT_INVENTORY"
+    trace = json.loads((debug_task_dir / "conversation_trace.json").read_text(encoding="utf-8"))
     assert trace[1]["validation_gaps"] == ["missing Unit A section"]
 
 
@@ -3801,14 +3916,7 @@ async def test_phase2_section_repair_appends_missing_talend_sections(tmp_path):
         supports_tools = False
 
         async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
-            missing = [name for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY") if f"### {name}" in prompt]
-            return ModelResult(
-                success=True,
-                text="\n".join(f"### {name}\nrepaired evidence for a\n" for name in missing),
-                model_name=self.model_name,
-                input_tokens=10,
-                output_tokens=100,
-            )
+            raise AssertionError("form-only Phase 2 section repair must not call the model")
 
     ctx = DocGenContext(
         project_id=project_id,
@@ -3829,27 +3937,24 @@ async def test_phase2_section_repair_appends_missing_talend_sections(tmp_path):
         logs.append((pid, message, level))
 
     partial = "## COMPONENTS\ncomponent evidence for a\n\n## EXECUTION_FLOW\nflow evidence for a"
-    completed = await CustomHarnessProvider(_RepairProvider())._complete_phase2_sections(
-        ctx,
-        HarnessRunState(project_id=project_id, facts_manifest=facts),
-        "A",
-        partial,
-        [],
-        [],
-        group_file,
-        ModelOptions(),
-        log_cb,
-    )
-
-    assert missing_required_analysis_sections(completed, "talend") == []
-    assert "### COMPONENTS" in completed
-    assert "### RISK_FLAGS" in completed
-    assert any("guide-section repair complete" in message for _, message, _ in logs)
+    with pytest.raises(RuntimeError, match="missing required sections after deterministic patch"):
+        await CustomHarnessProvider(_RepairProvider())._complete_phase2_sections(
+            ctx,
+            HarnessRunState(project_id=project_id, facts_manifest=facts),
+            "A",
+            partial,
+            [],
+            [],
+            group_file,
+            ModelOptions(),
+            log_cb,
+        )
+    assert any("applied deterministic structural patch" in message for _, message, _ in logs)
     monkeypatch.undo()
 
 
 @pytest.mark.asyncio
-async def test_phase2_section_repair_uses_configured_phase2_token_cap(tmp_path, monkeypatch):
+async def test_phase2_section_repair_uses_no_model_tokens(tmp_path, monkeypatch):
     from mcp_server.config import config
 
     monkeypatch.setattr(config, "phase2_max_tokens", 32_000)
@@ -3859,19 +3964,16 @@ async def test_phase2_section_repair_uses_configured_phase2_token_cap(tmp_path, 
     group_file = staging / "_preprocess" / "A.md"
     group_file.parent.mkdir(parents=True)
     group_file.write_text("source evidence", encoding="utf-8")
-    seen_max_tokens: list[int] = []
+    model_calls = 0
 
     class _RepairProvider:
         model_name = "fake/model"
         supports_tools = False
 
         async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
-            seen_max_tokens.append(options.max_tokens)
-            return ModelResult(
-                success=True,
-                text="\n".join(f"### {name}\nrepair evidence\n" for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY")),
-                model_name=self.model_name,
-            )
+            nonlocal model_calls
+            model_calls += 1
+            raise AssertionError("form-only Phase 2 section repair must not call the model")
 
     ctx = DocGenContext(
         project_id="proj",
@@ -3902,7 +4004,7 @@ async def test_phase2_section_repair_uses_configured_phase2_token_cap(tmp_path, 
         log_cb,
     )
 
-    assert seen_max_tokens == [32_000]
+    assert model_calls == 0
 
 
 @pytest.mark.asyncio

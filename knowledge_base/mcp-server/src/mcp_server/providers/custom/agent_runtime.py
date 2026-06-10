@@ -17,6 +17,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from mcp_server.config import config
+from mcp_server.providers.custom.debug_artifacts import (
+    debug_dir,
+    debug_write,
+    pipeline_debug_enabled,
+)
 from mcp_server.providers.custom.models import FactsManifest, ModelResult
 
 
@@ -329,6 +334,11 @@ class AgentTaskRuntime:
     ) -> AgentTaskResult:
         task_dir = self.task_dir(contract)
         task_dir.mkdir(parents=True, exist_ok=True)
+        # output.md + status.json stay in task_dir (resume/rerun/repair consumers);
+        # contracts, validation reports, ledgers, traces, and metrics are forensics.
+        debug_task_dir = debug_dir(
+            self.staging_dir, "agent_tasks", contract.phase, contract.safe_target_id()
+        )
         started = time.monotonic()
         result = ModelResult(success=False, raw_error="task did not run")
         output = ""
@@ -348,18 +358,17 @@ class AgentTaskRuntime:
             attempt_contract = contract.model_copy(update={"attempt": attempt, "tool_budget": attempt_budget})
             if attempt > 1:
                 attempt_contract.validation_gaps = list(validation.get("errors") or [])
-            attempt_dir = task_dir / "attempts" / f"{attempt:02d}"
-            attempt_dir.mkdir(parents=True, exist_ok=True)
-            (task_dir / "contract.json").write_text(attempt_contract.model_dump_json(indent=2), encoding="utf-8")
-            (attempt_dir / "contract.json").write_text(attempt_contract.model_dump_json(indent=2), encoding="utf-8")
+            attempt_dir = debug_task_dir / "attempts" / f"{attempt:02d}"
+            debug_write(debug_task_dir / "contract.json", attempt_contract.model_dump_json(indent=2))
+            debug_write(attempt_dir / "contract.json", attempt_contract.model_dump_json(indent=2))
             tools = ScopedEvidenceTools(self.staging_dir, self.facts, attempt_contract)
             result = await dispatch(attempt_contract, tools)
             cumulative_tool_calls += len(tools.calls)
             output = result.text.strip()
             (task_dir / "output.md").write_text(output, encoding="utf-8")
-            (attempt_dir / "output.md").write_text(output, encoding="utf-8")
+            debug_write(attempt_dir / "output.md", output)
             validation = validate(output)
-            (attempt_dir / "validation_report.json").write_text(json.dumps(validation, indent=2), encoding="utf-8")
+            debug_write(attempt_dir / "validation_report.json", json.dumps(validation, indent=2))
             attempt_tool_ledger = [call.model_dump() for call in tools.calls]
             provider_tool_ledger = result.metadata.get("tool_call_ledger") or []
             tool_ledgers.append({
@@ -392,11 +401,11 @@ class AgentTaskRuntime:
         # Atomic writes: temp-file + rename prevents partial state on crash.
         # status.json is written last — it is the acceptance gate for resume.
         _atomic_write(task_dir / "output.md", output)
-        _atomic_write(task_dir / "validation_report.json", json.dumps(validation, indent=2))
-        _atomic_write(task_dir / "tool_call_ledger.json", json.dumps(tool_ledgers, indent=2))
-        _atomic_write(task_dir / "conversation_trace.json", json.dumps(conversation_attempts, indent=2))
-        _atomic_write(
-            task_dir / "provider_metrics.json",
+        debug_write(debug_task_dir / "validation_report.json", json.dumps(validation, indent=2))
+        debug_write(debug_task_dir / "tool_call_ledger.json", json.dumps(tool_ledgers, indent=2))
+        debug_write(debug_task_dir / "conversation_trace.json", json.dumps(conversation_attempts, indent=2))
+        debug_write(
+            debug_task_dir / "provider_metrics.json",
             json.dumps(
                 {
                     "model_name": result.model_name,
@@ -427,7 +436,9 @@ class AgentTaskRuntime:
             status=status,
             incomplete_reason=incomplete_reason,
             output_path=str(task_dir / "output.md"),
-            validation_report_path=str(task_dir / "validation_report.json"),
+            validation_report_path=(
+                str(debug_task_dir / "validation_report.json") if pipeline_debug_enabled() else None
+            ),
             result=result,
         )
 

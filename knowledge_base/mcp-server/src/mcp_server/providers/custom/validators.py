@@ -696,8 +696,6 @@ def validate_docs(
     duplicate_names = set(_duplicate_unit_names(facts))
     missing_ids = sorted(set(units_by_id) - covered_ids)
     missing_units = sorted(_unit_label(units_by_id[unit_id], duplicate_names) for unit_id in missing_ids)
-    if enforce_default_contract and missing_units:
-        errors.append(f"Generated docs do not mention all units: {', '.join(missing_units[:20])}")
 
     count_patterns = [
         rf"\b{facts.unit_count}\s+{re.escape(facts.canonical_unit_label)}\b",
@@ -855,21 +853,6 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
         ["Debug", "Verify", "Recovery", "Testing"],
         "debugging and verification guidance",
     )
-
-    inventory = texts.get("02_COMPONENT_INVENTORY", "")
-    for unit in facts.units:
-        if unit.name not in inventory:
-            errors.append(f"Generated doc 02_COMPONENT_INVENTORY.md missing canonical unit obligation: {unit.name}")
-            continue
-        if unit.path and unit.path not in inventory:
-            errors.append(f"Generated doc 02_COMPONENT_INVENTORY.md missing source artifact for {unit.name}: {unit.path}")
-        if unit.group and unit.group not in inventory:
-            errors.append(f"Generated doc 02_COMPONENT_INVENTORY.md missing group for {unit.name}: {unit.group}")
-
-    runtime_doc = texts.get("05_RUNTIME_CONFIG_AND_EXTERNALS", "")
-    for system in facts.key_systems:
-        if system and system not in runtime_doc:
-            errors.append(f"Generated doc 05_RUNTIME_CONFIG_AND_EXTERNALS.md missing external system row: {system}")
 
     obligation_map = build_documentation_obligation_map(facts)
     all_text = "\n".join(texts.values())

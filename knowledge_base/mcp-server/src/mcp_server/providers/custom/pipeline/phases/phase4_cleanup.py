@@ -32,8 +32,8 @@ class Phase4Cleanup(Phase):
         state: "HarnessRunState",
         log_cb: "LogCallback",
     ) -> PhaseResult:
-        # _enterprise_gate_report is always called before _phase4_cleanup on the normal path;
-        # this guard is a safety net for direct calls outside generate().
+        # The enterprise gate report is always written before this phase on the normal
+        # generate() path; this guard is a safety net for direct phase invocations.
         if not (ctx.staging_dir / "_assessment" / "enterprise_gates.json").exists():
             gate_report = self._helpers.enterprise_gate_report(ctx, state)
             await self._helpers.write_audit_bundle(ctx, state, gate_report)

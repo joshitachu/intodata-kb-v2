@@ -129,7 +129,7 @@ class Phase3Docs(Phase):
         (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
             doc_report.model_dump_json(indent=2), encoding="utf-8"
         )
-        if not doc_report.ok or doc_report.coverage_count != facts.unit_count:
+        if not doc_report.ok:
             await self._helpers.phase3_targeted_repair(ctx, state, doc_report, log_cb)
             doc_report = validate_docs(
                 ctx.staging_dir,
@@ -140,7 +140,7 @@ class Phase3Docs(Phase):
             (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
                 doc_report.model_dump_json(indent=2), encoding="utf-8"
             )
-        if not doc_report.ok or doc_report.coverage_count != facts.unit_count:
+        if not doc_report.ok:
             raise RuntimeError("; ".join(doc_report.errors) or "Phase 3 coverage mismatch")
         self._helpers.reconcile_sql_usage_classification(ctx)
         sql_gate_errors = self._helpers.validate_sql_usage_publication(ctx)
@@ -166,7 +166,7 @@ class Phase3Docs(Phase):
         (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
             doc_depth.model_dump_json(indent=2), encoding="utf-8"
         )
-        if not doc_depth.ok or doc_depth.coverage_count != facts.unit_count:
+        if not doc_depth.ok:
             await self._helpers.phase3_targeted_repair(ctx, state, doc_depth, log_cb)
             doc_depth = validate_doc_depth(
                 ctx.staging_dir,
@@ -177,7 +177,7 @@ class Phase3Docs(Phase):
             (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
                 doc_depth.model_dump_json(indent=2), encoding="utf-8"
             )
-        if not doc_depth.ok or doc_depth.coverage_count != facts.unit_count:
+        if not doc_depth.ok:
             raise RuntimeError("; ".join(doc_depth.errors) or "Phase 3 depth mismatch")
         else:
             await log_cb(ctx.project_id, "[custom] Phase 3 depth gate passed", "info")

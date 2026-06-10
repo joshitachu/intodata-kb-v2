@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcp_server.providers.custom.source_context import materialize_direct_redacted_source
+from mcp_server.providers.custom.source_context import (
+    classify_source_path,
+    materialize_direct_redacted_source,
+)
 
 
 def _scan_job(path: str, content: str, group: str = "src") -> dict:
@@ -20,6 +23,14 @@ def _scan_job(path: str, content: str, group: str = "src") -> dict:
             ],
         }],
     }
+
+
+def test_classify_source_path_exposes_packaging_skip_semantics():
+    assert classify_source_path("node_modules/pkg/index.js") == "skipped_noise"
+    assert classify_source_path("image.png") == "skipped_binary"
+    assert classify_source_path("Resources/qrv40_1.dat") == "skipped_static_resource"
+    assert classify_source_path("Resources.Designer.cs") == "skipped_generated"
+    assert classify_source_path("src/app.py") is None
 
 
 def test_direct_source_packaging_preserves_redacted_content_and_coverage(tmp_path):
