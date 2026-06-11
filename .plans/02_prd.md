@@ -1,250 +1,201 @@
 ---
-feature: Track A — doc-generation artifact and dead-code reduction
+feature: Remove Phase 3 targeted repair mechanism
 pipeline_step: 2_prd
 ---
 
 ## Executive Summary
 
-Cut the doc-generation pipeline's artifact output from 666 files / 52 MB to ~290
-files / ~20 MB per run and delete ~4,400 lines of dead code, while keeping final
-docs byte-identical. All reductions are backed by a code-level consumer trace
-(`.plans/audit/06_artifact_reduction_findings.md`). Done means: a default run writes
-only files with a named consumer, full forensics are available behind one debug
-flag, and the codebase/docs no longer describe modules and artifacts that never run.
+Phase 3 targeted repair is unreliable, often wrong-triggered, and expensive.
+A 30-minute silent hang in the lobster run is the symptom. Remove the
+mechanism. Validators stay — they still produce obligation reports and
+warnings. Docs ship as-written; the obligation gap surfaces in the run
+summary. Done when the live lobster run reaches Phase 4 within ~5 min after
+doc writes complete, with the gap logged as `warning` not `error`.
 
 ## Problem
 
-A single doc-generation run writes 666 files / 52 MB to `docs_staging/` for a 10-doc
-(~390 KB) deliverable. ~60% of bytes are never read by any phase, validator, gate,
-resume path, REST API, or RAG push (verified on the LobsterProfileExportKoopmansTest
-run): `_model_inputs/` (9.9 MB), nine root JSON maps (10.4 MB, 100% duplicated inside
-`engineering_facts.json`), `_analysis/_bundle_*.md` (1.6 MB behind a fallback that
-never fires), 200 of 250 `_agent_tasks/` files, most `_assessment/` reports, and the
-`_audit/` wholesale tree copy (~8 MB on enterprise runs). Separately, ~3,800 lines of
-audit modules are only called from tests — their harness loaders are guaranteed
-no-ops — plus ~600 lines of orphaned duplicate phase bodies in `harness.py`. The
-noise makes debugging impractical and the agent docs (`knowledge_base/CLAUDE.md`,
-`.agent/system/mcp-workflow.md`) describe artifacts that never exist.
+Phase 3 currently has a "targeted repair" pass that:
+
+1. Runs after Phase 3 writes all 10 docs
+2. Calls `validate_docs`, `validate_doc_depth`, and
+   `validate_source_provenance` on the result
+3. If any return `ok=False`, retries with a model call that produces a
+   patched version of the failing doc (`_phase3_targeted_repair`)
+4. Re-validates; if still failing, retries up to 3 times
+5. If all retries fail with `failure_kind=unknown`, the run hangs silently
+
+Three problems with this:
+
+- **Unreliable**: 30-min silent hang today, with no progress to the
+  dashboard. The 3-attempt loop has no fast-fail on
+  `failure_kind=unknown`. Both providers can fail in sequence; the loop
+  just keeps trying.
+- **Wrong-triggered**: The repair prompt asks the model to fix a doc
+  based on a list of error messages. The model often returns text that
+  passes the re-validation check (e.g., the Evidence Register merge in
+  `_phase3_targeted_repair_content` does a topic-keyed merge that hides
+  the original failure) but may have introduced new hallucinations or
+  removed content the operator wanted.
+- **Expensive**: Each repair call is 47K-400K input tokens, 60-300s
+  latency. A 3-attempt retry on 1 doc is 3-15 minutes of model spend on
+  top of the original doc generation. For projects where multiple docs
+  fail (rare but possible), the cost compounds.
 
 ## Goals
 
-1. Default run of the reference project writes ≤ 300 files / ≤ 20 MB to
-   `docs_staging/` (baseline: 666 / 52 MB).
-2. Final docs byte-identical given identical model responses; bytes reaching every
-   LLM call unchanged (verifiable via per-call `manifest.json` diff before/after).
-3. Every file written in a default run has a named consumer (phase input,
-   validator/gate, resume/rerun, REST API, RAG push).
-4. `MCP_PIPELINE_DEBUG=1` restores full forensic output under `_debug/`.
-5. Dead modules, dead harness paths, and orphaned phase bodies deleted; test suite
-   green; resume, rerun invalidation, enterprise-gate endpoint, dashboard, RAG push
-   unaffected.
-6. `knowledge_base/CLAUDE.md` and `.agent/system/mcp-workflow.md` updated — no
-   references to artifacts/modules that no longer exist.
+1. Live run on Lobsterprofiles_v3 (or any project with failing obligations)
+   reaches Phase 4 within ~5 min after doc writes complete.
+2. Run summary shows the obligation gap as a warning, not a 30-min retry
+   loop.
+3. Final docs are byte-identical to what the model wrote (no merge, no
+   patch, no LLM-revised text).
+4. The validators (`validate_docs`, `validate_doc_depth`,
+   `validate_source_provenance`) still run and still produce their reports
+   under `_assessment/`.
+5. The unit-test suite stays green (590 → 588 baseline; the 2
+   repair-specific tests are removed).
 
 ## Non-Goals
 
-- Changing any LLM input, prompt construction, or pack content (Track B, separate
-  feature; findings doc section 7).
-- Fixing the four audit bugs: coverage-validator parentheses false-negative,
-  incremental-regen `analysis_cache` break, LLM preamble leak into docs 00/07,
-  scorecard contract weight-format mismatch (findings doc section 6; separate work).
-- Slimming `engineering_facts.json` to usage-only records (optional stretch; only if
-  slicing shows it is low-risk — otherwise a follow-up).
-- Wiring up the dead audit modules (decision: delete; recoverable via git).
-- Renaming/restructuring artifacts that are kept (no consumer churn beyond what
-  removals force).
+- Phase 2 repair (`_phase2_targeted_repair`, `_narrow_repair_context`)
+  stays. It has the same theoretical issue but lower call volume and
+  is out of scope for this slice.
+- The 4 PRD out-of-scope bugs (validator parentheses,
+  incremental-regen cache, preamble stripping, scorecard weight-format
+  mismatch) stay for a separate slice.
+- The traceability validator stays (different concern, also advisory).
+- The smart-repair config flag (`MCP_AGENT_SMART_REPAIR_ENABLED`)
+  becomes Phase-2-only. Default `False` is unchanged.
+- Track B (Phase 3 input quality) is unblocked and continues separately.
+  Track B reduces the obligation gap by improving Phase 3 context
+  assembly — orthogonal to this slice.
 
 ## User Stories
 
-1. As the platform owner debugging a bad doc, I want `docs_staging/` to contain only
-   files that something actually consumes, so I can trace "why did the LLM write X
-   in doc Y" without wading through 650 irrelevant files.
-2. As the platform owner investigating a failed run, I want one env var
-   (`MCP_PIPELINE_DEBUG=1`) that turns on complete per-call forensics in a single
-   `_debug/` directory, so deep diagnosis is available on demand without polluting
-   every run.
-3. As a developer maintaining the harness, I want dead modules and duplicate phase
-   bodies removed, so the code I read reflects what actually executes.
-4. As an operator on a client VPS, I want runs to write ~60% less disk per project,
-   so repeated regenerations don't fill the disk with exhaust.
-5. As a future agent session reading `.agent/` docs, I want the documented artifact
-   list to match reality, so I don't build on top of features that never run.
+1. As the platform owner, I want failed obligation checks to surface as
+   warnings in the run summary (visible immediately) rather than trigger
+   a 30-minute silent repair loop, so I can decide whether to manually
+   fix the doc or accept it as-is.
+2. As the platform owner, I want final docs to be byte-identical to what
+   the model wrote, so I don't have to audit a regex-patched merge that
+   may have introduced a hallucination.
+3. As a developer debugging a Phase 3 obligation gap, I want the gap to
+   appear in the run log as a `warning` line, so I can grep for it
+   without waiting 30 minutes.
 
 ## Functional Requirements
 
-FR-1 (R1 — debug flag): Add `MCP_PIPELINE_DEBUG` (bool, default false) to
-`mcp_server/config.py`. Introduce a single debug-write helper used by all
-human-only artifact writes. When false, the following are NOT written; when true,
-they are written under `docs_staging/_debug/`:
-  a. `_model_inputs/` `prompt.md`, `context_bundle.md`, `request.json`,
-     `response.json` (per-call `manifest.json` remains ALWAYS written in its
-     current location — it is the primary debugging breadcrumb).
-  b. `_agent_tasks/…/` `contract.json`, `validation_report.json`,
-     `tool_call_ledger.json`, `conversation_trace.json`, `provider_metrics.json`,
-     `attempts/**` (`status.json` and `output.md` remain always-on — resume/rerun
-     consumers).
-  c. Write-only `_assessment/` reports: `traceability_*.json`,
-     `consistency_report.json`, `sql_usage_reconciliation.json`,
-     `sql_usage_publication.json`, `_scorecard_contract_errors.json`, `repair/*`,
-     `reviewers/*.json`, `warnings.json`, `phase_costs.json`.
-  d. `_investigation/_coverage_report.json`; root `_pipeline_log.md`,
-     `provider_calls.json`, `index.json`; `_evidence_registry/evidence_registry.md`
-     and `survival_report.json`.
+**FR-R1 (remove Phase 3 repair orchestration)**: Delete the three
+`if not <report>.ok:` repair-then-revalidate blocks in
+`phase3_docs.py:129-139, 166-176, 210-223`. Each block currently calls
+`self._helpers.phase3_targeted_repair(ctx, state, <report>, log_cb)` and
+re-validates. After removal, the revalidation call stays (so the
+`_assessment/doc_validation_report.json` etc. files are still written)
+but the repair call is gone. The exception-raising `raise RuntimeError` at
+line 141 is also removed — failed obligations are warnings, not errors.
 
-FR-2 (R2 — dead JSON maps): Stop writing `entity_index.json`, `usage_index.json`,
-`dependency_map.json`, `architecture_map.json`, `data_flow_map.json`,
-`api_surface.json`, `known_risks.json`, `test_coverage_map.json`,
-`change_impact_matrix.json`. Keep the `.md` and `.csv` variants (scoped-tool
-corpus) and keep `engineering_facts.json`, `sql_usage.json`,
-`config_runtime_map.json` (live consumers). Update `validators.py:1560-1563`
-fallback candidate lists and `evidence_bundles._base_files` in the same change.
-Shrink `LARGE_CONTEXT_ARTIFACTS` accordingly.
+**FR-R2 (remove Phase 3 repair implementation)**: Delete the
+`_phase3_targeted_repair` method, the `_phase3_repair_targets` helper,
+the `_phase3_repair_prompt` helper, the `_phase3_repair_context_files`
+helper, and the `_phase3_targeted_repair_content` method. All from
+`harness.py`. The `_write_repair_context_summary` and `_repair_root_causes`
+helpers stay (Phase 2 still calls them).
 
-FR-3 (R3 — dead bundles): Stop writing `_analysis/_bundle_{bundle}.md` and delete
-the never-hit doc-pack fallback (`harness.py:5077-5079`). Remove or keep the
-defensive delete in `git_reingestion.py:232` — decide in plan.
+**FR-R3 (remove repair facade)**: Delete the
+`HarnessHelpersImpl.phase3_targeted_repair` method at
+`helpers.py:235-236`. After removal, no other code path can call the
+removed method.
 
-FR-4 (R4 — dead code): Delete `providers/custom/source_fact_ledger.py`,
-`evidence_retention.py`, `answerability_audit.py`,
-`services/doc_evidence_auditor.py`, the retention half of `repair_planner.py`
-(`retention_repair_plan`, `repair_packet_markdown`), their harness
-loaders/gates/no-op repair path (`harness.py:3002-3179`), the Phase 4
-answerability summary (`phase4_cleanup.py`), the always-"skipped" answerability
-gate entry, and the five corresponding test files. Relocate the
-`SourceScanCompleteness` type (currently imported from `source_fact_ledger.py`)
-to a live module if any production import remains.
+**FR-R4 (replace repair tests with warning tests)**: Delete the two
+`test_phase3_targeted_repair_*` tests. Add a new test
+`test_phase3_obligation_gap_logs_warning` that creates a scenario where
+`validate_docs` returns `ok=False` and asserts the obligation gap appears
+in the log as a warning line (no model call is made).
 
-FR-5 (R4b — orphaned phase bodies): Delete `_phase1_investigation`
-(`harness.py:1378`), `_phase26_scorecard` (`:2245`), `_phase4_cleanup` (`:4333`)
-— zero callers; the `pipeline/phases/*.py` classes are the live implementations.
-
-FR-6 (R5 — transient merge): Consolidate `_context_slices/`,
-`_analysis/_merge_inputs/`, `_analysis/_synthesis_inputs/`,
-`_analysis/_repair_context/`, `_assessment/_scorecard_reduce/` into one transient
-directory deleted at phase end. `_model_slices/` stays (resume cache).
-
-FR-7 (R6 — audit tree): Replace the `_audit/**` wholesale copies of
-`_assessment`/`_analysis`/`_investigation`/`provider_calls.json`
-(`harness.py:4308-4331`) with `_audit/enterprise_gates.json` +
-`_audit/final_doc_hashes.json` only. The REST API fallback
-(`api/routes/projects.py:786`) must keep working.
-
-FR-8 (R7 — prompt corpus dedup): After `materialize_prompt_packs` builds
-`_assessment/prompt_packs/*.md`, remove the duplicated `_preprocess/` source
-copies (`_ref_*`, `_scoring_rubric.md`, etc.) or skip materialization and
-reference originals — one copy total. Remove the three-way fallback logic
-(`harness.py:4948-4959, 5063-5073, 5089-5099`).
-
-FR-9 (R8 — coverage dup): Write `_source_coverage.json` once
-(`_preprocess/_source_coverage.json`); delete the duplicate write at
-`source_context.py:334-335`; update both readers' candidate lists
-(`validators.py:1591-1592`, `harness.py:2500`).
-
-FR-10 (docs): Update `knowledge_base/CLAUDE.md` (Current Custom Harness Notes —
-remove source_fact_ledger/evidence_retention/repair/answerability artifact claims;
-document `MCP_PIPELINE_DEBUG`) and `.agent/system/mcp-workflow.md` (delete the
-"Evidence And Answerability Artifacts" section; remove the `AnswerabilityAuditor`
-paragraph; fix the Phase 2.8 output description — it writes
-`_analysis/_doc_pack_*`, not `_preprocess/`; document the debug flag and `_debug/`
-layout).
-
-FR-11 (tests): Update `test_custom_provider.py:2885` (asserts `_model_inputs`
-existence) for flag-off default; add tests for flag-on `_debug/` output, resume
-after reduction (accepted-task skip via `status.json`+`output.md` only), and the
-enterprise-gate endpoint with the new `_audit/` shape.
+**FR-R5 (update CLAUDE.md and mcp-workflow.md)**: Remove the
+"Phase 3 targeted repair" mention if present. Add a one-liner: "Failed
+obligation checks surface as warnings; the docs ship as-written."
 
 ## Non-Functional Requirements
 
-- Default-run artifact budget: ≤ 300 files and ≤ 20 MB on the
-  LobsterProfileExportKoopmansTest reference project.
-- LLM-input invariance: byte-identical context per call before/after (compare
-  per-call `manifest.json` file lists + sizes across paired runs).
-- No new runtime dependencies; no API schema changes; no DB/schema changes.
-- Resume/rerun behavior unchanged: a run interrupted mid-Phase-2/3 resumes and
-  skips accepted tasks exactly as before.
-- Disk I/O strictly decreases; no measurable pipeline-runtime regression.
-- Debug flag read once via `config.py` — no scattered `os.environ` reads.
+- **No runtime behavior change for successful runs.** A run where all
+  obligations pass must produce byte-identical output to today (modulo
+  the absence of the repair-call `_model_inputs/phase3.repair/*` files
+  and `_agent_tasks/phase3_doc/<doc>/_debug/repair_*` artifacts).
+- **Run completes in < 1 min after doc writes** when obligations fail
+  (today: 30+ min).
+- **No new config flags.** `MCP_AGENT_SMART_REPAIR_ENABLED` becomes
+  Phase-2-only; default `False` is unchanged.
+- **No DB or API schema changes.**
+- **The atomic swap behavior is unchanged.** `_audit/enterprise_gates.json`
+  is still written (FR-7 from Track A Slice 5).
 
 ## Architecture Impact
 
-- **Harness pipeline (critical area — `/inspect` mandatory)**:
-  `providers/custom/harness.py` (artifact writes, debug helper, audit bundle,
-  prompt-corpus fallbacks, dead bodies), `pipeline/phases/phase4_cleanup.py`
-  (index/answerability/provider_calls), `phase2_analysis.py`/`phase26_scorecard.py`
-  (transient dirs, repair-record writes), `agent_runtime.py` (task-dir writes),
-  `source_context.py`, `validators.py`, `evidence_bundles.py`, `evidence_agents.py`,
-  `engineering_facts/` writers, `config.py`.
-- **Module deletions**: `source_fact_ledger.py`, `evidence_retention.py`,
-  `answerability_audit.py`, `services/doc_evidence_auditor.py`, retention half of
-  `repair_planner.py`.
-- **MCP API**: no route changes; consumers preserved — `projects.py:785-786`
-  (enterprise gates incl. `_audit/` fallback), `generate_runs.py:295-305` (rerun
-  invalidation via `scorecard.md` + `status.json`).
-- **No impact**: RAG retrieval chain, auth/RBAC, dashboard frontend (REST only),
-  scanner CLI, doc catalog, prompt templates.
-- Per `.agent/system/mcp-workflow.md`: phase table stays valid; the "Evidence And
-  Answerability Artifacts" section becomes obsolete (FR-10).
+- **Harness pipeline (critical area — `/inspect` mandatory)**: `harness.py`
+  (5 method deletions), `phase3_docs.py` (3 block simplifications),
+  `helpers.py` (1 method deletion).
+- **Tests**: `test_custom_provider.py` (2 test deletions, 1 test addition).
+- **Docs**: `knowledge_base/CLAUDE.md` (one-line update),
+  `knowledge_base/.agent/system/mcp-workflow.md` (one-line update).
+- **No impact on**: Phase 1 investigation, Phase 2 analysis / 2.6
+  scorecard / 2.8 bundles, evidence quality gate, Phase 4 cleanup,
+  MCP API routes, RAG retrieval chain, auth/RBAC, dashboard, scanner,
+  doc catalog, prompt templates.
 
-## Implementation Phases
+## Implementation
 
-**Phase A — dead code removal (FR-4, FR-5).** No artifact-behavior change beyond
-artifacts that were never written anyway. Deliverables: module + test deletions,
-harness loader/gate removal, orphaned bodies removed. Validation: full pytest,
-grep for dangling imports, one end-to-end generation run completes.
+Single slice. The plan steps are:
 
-**Phase B — debug flag + write gating (FR-1, FR-3, FR-6, FR-8, FR-9).**
-Deliverables: `MCP_PIPELINE_DEBUG` in config, debug-write helper, gated writes,
-transient-dir consolidation, prompt-corpus dedup, single coverage write.
-Validation: paired runs (flag off/on) on reference project — flag-off meets the
-file/MB budget, flag-on reproduces full forensics under `_debug/`; per-call
-`manifest.json` diff empty; resume test green.
-
-**Phase C — consumer-coupled removals + docs (FR-2, FR-7, FR-10, FR-11).**
-Deliverables: JSON-map removal with validator/evidence-bundle updates in the same
-commit, `_audit/` manifest replacement, CLAUDE.md/mcp-workflow.md updates, test
-updates. Validation: enterprise-mode run — gate endpoint serves from new `_audit/`
-shape; scoped-tool evidence search still resolves the `.md`/`.csv` corpus; full
-suite green; final-doc byte-diff vs baseline empty.
+1. Delete the 3 repair-then-revalidate blocks in `phase3_docs.py`. Each
+   block becomes a single validation report write (keep the report) +
+   a `log_cb` warning if `not <report>.ok` (new — emit the gap as a
+   warning). Remove the `raise RuntimeError`.
+2. Delete `_phase3_targeted_repair` and the 4 helpers in `harness.py`.
+3. Delete `HarnessHelpersImpl.phase3_targeted_repair` facade.
+4. Delete the 2 `test_phase3_targeted_repair_*` tests. Add
+   `test_phase3_obligation_gap_logs_warning`.
+5. Update `CLAUDE.md` and `mcp-workflow.md` (one line each).
+6. Run pytest (expect 588 passing).
+7. Re-run Lobsterprofiles_v3 (resume from preserved staging). Time
+   from doc-write-complete to Phase 4. Verify `_run_manifest.json`
+   shows `phase4_cleanup` as the last phase.
 
 ## Risks and Open Questions
 
-- **Untraced consumer** of a removed file breaks resume, rerun invalidation, the
-  dashboard gate view, or a client-side reader of `docs/_facts/`. Mitigation:
-  consumer trace is file:line-verified; resume/rerun tests per phase; phased
-  delivery isolates blast radius.
-- **Compliance (open)**: does any enterprise client contract require full `_audit/`
-  tree copies rather than hashes? Code cannot answer this — confirm before/at
-  release; FR-7 is trivially revertible to flag-gated full copies if so.
-- **Debug-flag trade-off**: failed production runs need a re-run with
-  `MCP_PIPELINE_DEBUG=1` for deep forensics. Accepted; per-call `manifest.json`
-  stays always-on as the breadcrumb.
-- **Resume-slice assumption**: context slices regenerate deterministically before
-  the cache check (`harness.py:3528` vs `:3549`) — required by FR-6; verify with a
-  mid-phase-interrupt test.
-- **Hidden test coupling**: tests beyond `test_custom_provider.py:2885` may assert
-  removed artifacts; surfaced mechanically by the suite in Phases A/B.
+- **Risk**: Operator will need to manually fix docs that previously got
+  auto-repaired. This becomes operational toil if many projects
+  produce failing obligations. **Mitigation**: Track B reduces the
+  obligation gap by improving Phase 3 context assembly. If Track B
+  lands before the next run, this concern is moot.
+- **Risk**: Phase 4 cleanup or downstream consumers (RAG push, dashboard)
+  may have hidden assumptions about the obligation check being a
+  hard gate. **Mitigation**: Audit confirms Phase 4 only reads
+  `_audit/enterprise_gates.json` and the 10 final `.md` docs. The
+  swap is not gated on obligation-level warnings. (Verified in
+  Track A Slice 5 inspection.)
+- **Open question**: Should the warning include the list of
+  failing obligations, or just a count? Default: include a count +
+  first 3 obligation messages. Operator can re-run validate_docs to
+  see the full list.
 
 ## Acceptance Criteria
 
-- [ ] Reference-project default run writes ≤ 300 files and ≤ 20 MB to `docs_staging/`.
-- [ ] Paired before/after runs: per-call `_model_inputs/**/manifest.json` context
-      file lists and sizes are identical (LLM-input invariance).
-- [ ] Final docs byte-identical to baseline given identical recorded model responses.
-- [ ] `MCP_PIPELINE_DEBUG=1` produces `_debug/` with per-call prompt/context/request/
-      response, agent-task traces/contracts/ledgers, and the gated assessment reports.
-- [ ] Default run writes none of: `_model_inputs/*/{prompt.md,context_bundle.md,request.json,response.json}`,
-      `_agent_tasks` debug files, the nine dead JSON maps, `_bundle_*.md`,
-      `evidence_registry.md`, `survival_report.json`, `_pipeline_log.md`,
-      `provider_calls.json`, `index.json`, or the write-only `_assessment` reports.
-- [ ] `source_fact_ledger.py`, `evidence_retention.py`, `answerability_audit.py`,
-      `doc_evidence_auditor.py`, retention half of `repair_planner.py`, and orphaned
-      harness phase bodies are deleted; no dangling imports.
-- [ ] Interrupted run resumes correctly: accepted tasks skipped via
-      `status.json`+`output.md`; rerun invalidation endpoint still works.
-- [ ] Enterprise-mode run: gate endpoint returns gates from the new `_audit/` shape
-      (`enterprise_gates.json` + `final_doc_hashes.json` only).
-- [ ] Scoped-tool evidence search (`search_evidence`/`read_artifact`) still resolves
-      the `.md`/`.csv` engineering-facts corpus.
-- [ ] Full pytest suite green; `/inspect` verdict PASS or WARN on harness changes.
-- [ ] `knowledge_base/CLAUDE.md` and `.agent/system/mcp-workflow.md` contain no
-      references to removed artifacts/modules and document `MCP_PIPELINE_DEBUG`.
+- [ ] `_phase3_targeted_repair` and the 4 helpers are deleted from
+      `harness.py`.
+- [ ] The 3 repair-then-revalidate blocks in `phase3_docs.py` are
+      replaced with single validation writes + warning emissions.
+- [ ] The `raise RuntimeError` for failing obligations is removed.
+- [ ] `HarnessHelpersImpl.phase3_targeted_repair` is deleted.
+- [ ] The 2 `test_phase3_targeted_repair_*` tests are deleted.
+- [ ] `test_phase3_obligation_gap_logs_warning` is added and passes.
+- [ ] `CLAUDE.md` and `mcp-workflow.md` are updated (1 line each).
+- [ ] Full pytest suite green (588 tests).
+- [ ] `py_compile` clean on all touched files.
+- [ ] No new config flags. `MCP_AGENT_SMART_REPAIR_ENABLED` defaults
+      to `False` and becomes Phase-2-only.
+- [ ] Live re-run of Lobsterprofiles_v3 reaches Phase 4 within
+      ~5 min after doc writes complete.
+- [ ] `_run_manifest.json` shows `phase4_cleanup` as the last phase
+      for the re-run.
+- [ ] `/inspect` verdict PASS or WARN; no BLOCK before committing.

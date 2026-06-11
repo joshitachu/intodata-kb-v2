@@ -5,6 +5,48 @@ what was done, what changed, and lessons learned.
 
 ## Session: 2026-06-10
 
+### [Refactor]: Track A complete — Slices 3-5 built, inspected, committed, deployed (FR-1c, FR-1d, FR-2, FR-3, FR-6, FR-7, FR-8, FR-9, FR-10, FR-11)
+
+- **Files changed** (commit `1a62a82`, 34 files, +1988 / -958):
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/transient_artifacts.py` (new — un-gated helper module mirroring `debug_artifacts.py`: `TRANSIENT_DIR_NAME`, `transient_dir()`, `transient_write()`)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/harness.py` (5 transient write sites repointed to `_transient/`; new `_phase2_analysis_guide_files` static method as single source of truth; 2 phase2 file-list duplications replaced; `LARGE_CONTEXT_ARTIFACTS` shrunk 11→2; `_write_audit_bundle` body 24→12 lines; Slice 3 advisory-report gating; new `transient_artifacts` import)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/prompt_packs.py` (`_phase2_sources` collapsed 3→2 branches)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase4_cleanup.py` (rmtree loop extended with `_transient`)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/engineering_facts/writers/json_writer.py` (`JSON_ARTIFACTS` pruned 10→1 entry; `config_runtime_map` retained)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/validators.py` (Slice 3 coverage candidate list update — FR-9)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/source_context.py` (Slice 3 single coverage write — FR-9)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/evidence_agents.py` (Slice 3 registry/survival debug-gating)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/phases/{phase2_analysis,phase26_scorecard,phase3_docs}.py` (Slice 3 advisory-report gating)
+  - `knowledge_base/mcp-server/src/mcp_server/config.py` (Slice 2 `MCP_PIPELINE_DEBUG` flag)
+  - `knowledge_base/mcp-server/tests/test_providers/test_custom_provider.py` (11 new tests: Slice 4 transient helper + Phase 4 rmtree + mid-phase-interrupt resume regenerate + source-lookup single-source-of-truth (4 input shapes); Slice 5 audit-bundle-only-writes-gates-and-hashes + REST fallback + REST order-of-preference; plus Slice 3 default-off/flag-on tests already in working dir)
+  - `knowledge_base/mcp-server/tests/test_providers/test_engineering_facts/{test_builder_writers,test_service}.py` (Slice 5: drop dead-file existence assertions, add negative assertions for 9 dead maps)
+  - `knowledge_base/mcp-server/tests/test_providers/test_{evidence_agents,source_context}.py` (Slice 3 test updates)
+  - `knowledge_base/mcp-server/tests/test_pipeline/test_warning_collector.py` (Slice 3 test updates)
+  - `knowledge_base/CLAUDE.md` (drop 4 removed-artifact bullets; rewrite task-dir contents bullet to reflect always-on vs debug-gated; new `MCP_PIPELINE_DEBUG` section)
+  - `knowledge_base/.agent/system/mcp-workflow.md` (delete "Evidence And Answerability Artifacts" section; fix Phase 2.8 description `_analysis/_doc_pack_*.md` not `_preprocess/`; fix input-flow paragraph; remove `AnswerabilityAuditor` paragraph; new `MCP_PIPELINE_DEBUG` section)
+  - `knowledge_base/.claude/PROGRESS_LOG.md` (this entry), `knowledge_base/.claude/PROJECT_MEMORY.md` (architecture decisions), `knowledge_base/.claude/context.md` (current state + next steps)
+  - `.plans/01_grill.md`, `.plans/02_prd.md`, `.plans/03_slices.md`, `.plans/04_active_plan.md` (Slice 4 then Slice 5), `.plans/05_inspection_report.md` (Slice 4 WARN + Slice 5 WARN)
+- **Problem**: Doc-generation pipeline wrote 666 files / 52 MB per run on the reference project (LobsterProfileExportKoopmansTest) but only ~10 final `.md` docs (~390 KB) were the actual deliverable. ~60% of the bytes were write-only artifacts nobody read. No content changes were intended — just removing dead surface area.
+- **Root cause**: No single helper owned the transient dir naming convention; no canonical resolver for the Phase 2 source-lookup; the 9 dead JSON maps were artifacts of an early schema that never got cleaned up; `_audit/` was a wholesale copy tree from a period when the model output was the only audit trail — that's no longer the case.
+- **Change** (Slices 3-5, this session; Slices 1+2 were already committed in `5e16911`):
+  - **Slice 3 (FR-1c, FR-1d, FR-3, FR-9)**: Routed all remaining `_assessment/` advisory reports + `_pipeline_log.md` + `_investigation/_coverage_report.json` + `provider_calls.json` + `index.json` + `evidence_registry.md` + `survival_report.json` through `debug_write` to `_debug/`. Stopped writing 3 × 524 KB `_analysis/_bundle_*.md` files for a never-fired fallback. Single `_source_coverage.json` write (FR-9).
+  - **Slice 4 (FR-6, FR-8)**: New `transient_artifacts.py` (un-gated mirror of `debug_artifacts.py`) consolidates 5 scattered transient dirs (`_context_slices/`, `_analysis/_merge_inputs/`, `_analysis/_synthesis_inputs/`, `_analysis/_repair_context/`, `_assessment/_scorecard_reduce/`) into a single `_transient/` deleted at Phase 4 alongside `_preprocess/` and `_analysis/`. Three duplicates of the Phase 2 analysis-guide source-lookup logic reduced to one canonical resolver (`CustomHarnessProvider._phase2_analysis_guide_files` static method).
+  - **Slice 5 (FR-2, FR-7, FR-10, FR-11)**: `JSON_ARTIFACTS` pruned from 10 → 1 entry (`config_runtime_map`); `LARGE_CONTEXT_ARTIFACTS` shrunk 11 → 2 (`engineering_facts.json` + `config_runtime_map.json`). `_write_audit_bundle` body reduced 24 → 12 lines — keeps `enterprise_gates.json` + `final_doc_hashes.json` (SHA-256 of `staging/*.md`) and drops 3 file copies + 3 dir copies. `_assessment/enterprise_gates.json` write at `_enterprise_gate_report:3910` unchanged (primary location); `_audit/enterprise_gates.json` is the REST API fallback at `projects.py:786`. `CLAUDE.md` and `mcp-workflow.md` updated: removed 4 stale artifact bullets, deleted the "Evidence And Answerability Artifacts" section, fixed the Phase 2.8 description (`_analysis/_doc_pack_*.md` not `_preprocess/`), added a `MCP_PIPELINE_DEBUG` section to both files.
+- **Why this approach**:
+  - LLM-input invariance is the hard constraint. The 9 dead JSON maps and the `_audit/` copies were never sent to the model (they were in the `LARGE_CONTEXT_ARTIFACTS` drop list, and `_audit/` is not in Phase 3's context). Removing the writes is automatic LLM-input invariance — per-call `_model_inputs/**/manifest.json` should be byte-identical pre/post.
+  - Mirror the Slice-2 `_debug/` precedent for the transient helper (same layout, minus the flag check). The new `transient_artifacts.py` exists to centralize a directory name + a write idiom; both prerequisites for any future "5 more transient dirs appear" event.
+  - Single-source-of-truth for Phase 2 source-lookup eliminates drift risk between the prompt_packs and harness copies.
+  - Phase 4 rmtree loop is the right place for throwaway-dir cleanup (no per-file unlink gymnastics).
+  - `_audit/` reduced (not removed) because `projects.py:786` REST fallback reads `_audit/enterprise_gates.json` for the post-swap path. The `_audit/` is not in the rmtree list and survives the atomic swap, so the fallback remains reliable.
+- **Verification**: 590 tests pass (572 baseline → 590, +18 across Slices 3-5). py_compile clean on all touched files. Ruff: no new F/E errors (pre-existing 4 errors in HEAD are unchanged). Grep gate: zero matches for the 9 dead JSON map names in `json_writer.py` and `harness.py`; zero matches for `source_fact_ledger`/`evidence_retention`/`answerability_audit`/`doc_evidence_auditor`/`AnswerabilityAuditor` in `CLAUDE.md` and `mcp-workflow.md`. Inspector verdicts: Slice 4 WARN (two non-blocking deviations: helper preserves `logger.warning` for missing-guide case; helper drops unused `ctx`/`pack_dir` from plan's signature); Slice 5 WARN (silent `try/except OSError` in `_write_audit_bundle` hash compute is now more visible — flagged as out-of-scope follow-up; pre-existing `JSONDecodeError` ordering in REST fallback; bonus order-of-preference test). Docker rebuilt and restarted: `mcp-server` is **healthy** on port 8002; `backend` recreated transitively; all other services unchanged and healthy.
+- **Follow-ups (logged, not blocking)**:
+  1. Surface hash-compute failures in `_write_audit_bundle` via warning log (currently silently emits `{}` on `OSError`; with `_audit/` shrunk to 2 files, this is the only thing in `_audit/` other than gates).
+  2. Harden `_load_enterprise_gate_results` `_assessment/`→`_audit/` fallback so a corrupt `_assessment/enterprise_gates.json` doesn't short-circuit the fallback.
+  3. Run paired-run acceptance on the reference project to confirm ≤300 files, ≤20 MB, and per-call manifest invariance against a recorded model-response baseline (manual, ~10-30 min on a scanned project with a working model).
+  4. Track B (Phase 3 input quality: per-doc pack filtering, evidence registry slice promotion, budgeted retrieval) — unblocked now that FR-8 is committed; per its PRD, must run `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → commit cycle.
+
+## Session: 2026-06-10
+
 ### [Refactor]: Track A Slice 4 — transient-dir consolidation + prompt corpus dedup (FR-6, FR-8)
 
 - **Files changed**:

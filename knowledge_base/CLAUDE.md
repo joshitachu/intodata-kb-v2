@@ -73,6 +73,15 @@ This is the primary method for generating project documentation. Follow it exact
 - Phase 3 dispatches one document task per required markdown document, with configurable concurrency (`MCP_AGENT_PHASE3_CONCURRENCY`, default 4).
 - `EvidenceTraceabilityValidator` (`providers/custom/evidence_traceability.py`) runs
   after Phase 3 and writes `_assessment/evidence_traceability.json`.
+- **Phase 3 obligation failures are advisory warnings, not errors.** Validators
+  (`validate_docs`, `validate_doc_depth`, `validate_source_provenance`) still
+  run and write their reports under `_assessment/`. If a report returns
+  `ok=False`, the failure is emitted as a `log_cb` warning (count + first 3
+  obligation messages) and the docs ship as-written. No model-call repair
+  loop; no retry; no `RuntimeError`. The operator decides whether to
+  manually fix the missing section. Phase 4 cleanup and the atomic swap
+  proceed normally. (Added 2026-06-11 — removed the
+  `_phase3_targeted_repair` mechanism.)
 - Runtime task directories store `status.json` and exact LLM `output.md` as
   always-on breadcrumb artifacts; `contract.json`, `validation_report.json`,
   `tool_call_ledger.json`, and `provider_metrics.json` are written under

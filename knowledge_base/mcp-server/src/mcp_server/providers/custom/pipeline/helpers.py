@@ -232,9 +232,6 @@ class HarnessHelpersImpl:  # noqa: PLR0904 — intentionally wide delegation sur
     def phase3_docs(self, ctx: "DocGenContext", state: "HarnessRunState", log_cb: "LogCallback"):
         return self._p._phase3_docs(ctx, state, log_cb)  # type: ignore[attr-defined]
 
-    def phase3_targeted_repair(self, ctx: "DocGenContext", state: "HarnessRunState", report: "CoverageReport", log_cb: "LogCallback"):
-        return self._p._phase3_targeted_repair(ctx, state, report, log_cb)  # type: ignore[attr-defined]
-
     def phase36_consistency(self, ctx: "DocGenContext", state: "HarnessRunState", log_cb: "LogCallback"):
         return self._p._phase36_consistency(ctx, state, log_cb)  # type: ignore[attr-defined]
 

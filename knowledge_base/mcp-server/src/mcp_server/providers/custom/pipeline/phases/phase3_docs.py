@@ -127,18 +127,8 @@ class Phase3Docs(Phase):
             doc_report.model_dump_json(indent=2), encoding="utf-8"
         )
         if not doc_report.ok:
-            await self._helpers.phase3_targeted_repair(ctx, state, doc_report, log_cb)
-            doc_report = validate_docs(
-                ctx.staging_dir,
-                facts,
-                required_docs=self._helpers.required_docs_list,
-                enforce_default_contract=not self._helpers.plugin_mode,
-            )
-            (ctx.staging_dir / "_assessment" / "doc_validation_report.json").write_text(
-                doc_report.model_dump_json(indent=2), encoding="utf-8"
-            )
-        if not doc_report.ok:
-            raise RuntimeError("; ".join(doc_report.errors) or "Phase 3 coverage mismatch")
+            summary = f"{len(doc_report.errors)} obligation gap(s): " + "; ".join(doc_report.errors[:3])
+            await log_cb(ctx.project_id, f"[custom] Phase 3 doc validation: {summary}", "warning")
         self._helpers.reconcile_sql_usage_classification(ctx)
         sql_gate_errors = self._helpers.validate_sql_usage_publication(ctx)
         if sql_gate_errors:
@@ -164,18 +154,8 @@ class Phase3Docs(Phase):
             doc_depth.model_dump_json(indent=2), encoding="utf-8"
         )
         if not doc_depth.ok:
-            await self._helpers.phase3_targeted_repair(ctx, state, doc_depth, log_cb)
-            doc_depth = validate_doc_depth(
-                ctx.staging_dir,
-                facts,
-                required_docs=self._helpers.required_docs_list,
-                enforce_default_contract=not self._helpers.plugin_mode,
-            )
-            (ctx.staging_dir / "_assessment" / "doc_depth_report.json").write_text(
-                doc_depth.model_dump_json(indent=2), encoding="utf-8"
-            )
-        if not doc_depth.ok:
-            raise RuntimeError("; ".join(doc_depth.errors) or "Phase 3 depth mismatch")
+            summary = f"{len(doc_depth.errors)} depth gap(s): " + "; ".join(doc_depth.errors[:3])
+            await log_cb(ctx.project_id, f"[custom] Phase 3 doc depth: {summary}", "warning")
         else:
             await log_cb(ctx.project_id, "[custom] Phase 3 depth gate passed", "info")
 
@@ -208,18 +188,8 @@ class Phase3Docs(Phase):
             for w in provenance.warnings[:5]:
                 await log_cb(ctx.project_id, f"[custom] Phase 3 provenance warning: {w}", "warning")
             if not provenance.ok or provenance.coverage_count != facts.unit_count:
-                await self._helpers.phase3_targeted_repair(ctx, state, provenance, log_cb)
-                provenance = validate_source_provenance(
-                    ctx.staging_dir,
-                    facts,
-                    required_docs=self._helpers.required_docs_list,
-                    enforce_default_contract=not self._helpers.plugin_mode,
-                )
-                (ctx.staging_dir / "_assessment" / "source_provenance_report.json").write_text(
-                    provenance.model_dump_json(indent=2), encoding="utf-8"
-                )
-            if not provenance.ok or provenance.coverage_count != facts.unit_count:
-                await log_cb(ctx.project_id, "[custom] Phase 3 provenance repair did not clear all gaps", "warning")
+                summary = f"{len(provenance.errors)} provenance gap(s): " + "; ".join(provenance.errors[:3])
+                await log_cb(ctx.project_id, f"[custom] Phase 3 provenance: {summary}", "warning")
             else:
                 await log_cb(ctx.project_id, "[custom] Phase 3 provenance gate passed", "info")
 

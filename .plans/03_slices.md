@@ -1,86 +1,71 @@
 ---
-feature: Track A — doc-generation artifact and dead-code reduction
+feature: Track B -- Phase 3 input quality (parser fix, BASELINE reduction, targeted context dispatch)
 pipeline_step: 3_slices
-total_slices: 5
-current_slice: 5  # Slices 1-3 approved (5e16911); Slice 4 built+inspected (WARN); planning Slice 5
+total_slices: 3
+current_slice: 1
+# Pre-condition: Track A (Slices 1-5) must be committed before any Track B slice
+# starts. Track B Slice 1 touches harness.py which has uncommitted Track A FR-8
+# changes. Hard sequencing dependency -- do not start Track B until Track A lands.
 ---
 
-## Slice 1: Dead code deletion (FR-4, FR-5)
-**Delivers**: The provider package contains only code that executes in production —
-deletes `source_fact_ledger.py`, `evidence_retention.py`, `answerability_audit.py`,
-`services/doc_evidence_auditor.py`, the retention half of `repair_planner.py`, their
-no-op harness loaders/gates/repair path (`harness.py:3002-3179`), the Phase 4
-answerability summary, and the three orphaned duplicate phase bodies in `harness.py`
-(~4,400 lines + 5 test files). Pipeline behavior unchanged (all deleted paths were
-no-ops).
+## Slice 1: Phase 2 section parser fix (FR-B1)
+**Delivers**: `_parse_phase2_sections` correctly classifies all Phase 2 output --
+merge headers, plugin guide sections, and all-caps sub-headings stop leaking 104 KB
+into UNCLASSIFIED per run; UNCLASSIFIED bytes per group file drop to <= 5 KB.
 **Expected files**:
-- DELETE `mcp-server/src/mcp_server/providers/custom/{source_fact_ledger,evidence_retention,answerability_audit}.py`
-- DELETE `mcp-server/src/mcp_server/services/doc_evidence_auditor.py`
-- DELETE `mcp-server/tests/test_providers/{test_source_fact_ledger,test_evidence_retention,test_answerability_audit,test_repair_planner(retention parts)}.py`, `tests/test_services/test_doc_evidence_auditor.py`
-- EDIT `providers/custom/repair_planner.py` (remove retention half; keep phase2 plan + patchers + token estimate)
-- EDIT `providers/custom/harness.py` (loaders/gates :3002-3179; orphaned bodies :1378, :2245, :4333)
-- EDIT `providers/custom/pipeline/phases/phase4_cleanup.py` (answerability summary)
-- EDIT any module importing `SourceScanCompleteness` (relocate type if a live import remains)
-**Critical area**: yes — harness pipeline phases (`/inspect` required)
-**Depends on**: none
+- EDIT `providers/custom/harness.py` (`_parse_phase2_sections` :1615-1636;
+  `PHASE2_SECTION_NAMES` or a new `MERGE_SECTION_NAMES` tuple to register
+  `CROSS_CHUNK_FINDINGS` and other merge-phase headers; sub-heading boundary fix)
+- EDIT `providers/custom/prompt_packs.py` or `harness.py` to accept optional extra
+  section names derived from the active plugin pack's ANALYSIS_GUIDE (do not
+  hardcode lobster-specific names)
+- EDIT `mcp-server/tests/test_providers/test_custom_provider.py` (new tests:
+  CROSS_CHUNK_FINDINGS parsed as named section not UNCLASSIFIED; `####` sub-heading
+  inside a known section does not break the owning section; unknown plugin guide
+  section name registered via extra_sections arg parses correctly)
+**Critical area**: yes -- harness pipeline phases (`/inspect` required)
+**Depends on**: none (Track A must be committed first -- see pre-condition)
 
-## Slice 2: Debug flag + per-call/task forensics gating (FR-1a, FR-1b)
-**Delivers**: `MCP_PIPELINE_DEBUG` config flag and a single debug-write helper;
-default runs stop writing `_model_inputs/` prompt/context/request/response snapshots
-and `_agent_tasks/` contracts/ledgers/traces/metrics/attempts (the two biggest
-exhaust sources, ~11 MB / ~365 files); flag-on writes them under `_debug/`. Per-call
-`manifest.json` and `_agent_tasks/*/{status.json,output.md}` stay always-on
-(debugging breadcrumb + resume/rerun consumers).
+## Slice 2: Pack differentiation -- BASELINE reduction, catalog 01/02 fix, drop pack 09 (FR-B2, FR-B3, FR-B7)
+**Delivers**: Per-doc evidence packs are genuinely differentiated -- BASELINE reduced
+to GROUP_SUMMARY only; packs 01 and 02 differ by >= 30% by byte count; Phase 2.8 no
+longer builds the 349 KB pack 09 that no code path reads.
 **Expected files**:
-- EDIT `mcp-server/src/mcp_server/config.py` (`MCP_PIPELINE_DEBUG`)
-- NEW debug-write helper (location per plan; e.g. `providers/custom/debug_artifacts.py`)
-- EDIT `providers/custom/harness.py` (`_record_model_inputs` writes :3865-3965)
-- EDIT `providers/custom/agent_runtime.py` (task-dir writes :353-412)
-- EDIT `mcp-server/tests/test_providers/test_custom_provider.py` (:2885 default-off; new flag-on `_debug/` test; resume test via status+output only)
-**Critical area**: yes — harness pipeline phases (`/inspect` required)
-**Depends on**: none (parallel-safe with Slice 1, but ship after it to avoid harness.py churn)
+- EDIT `providers/custom/harness.py` (`BASELINE_BUNDLE_SECTIONS` :113-120 ->
+  `{GROUP_SUMMARY_SECTION}` only; `_phase28_bundles` :2277-2301 to skip building
+  `_doc_pack_09_EXECUTIVE_SUMMARY.md`)
+- EDIT `mcp-server/data/doc_catalog.yaml` (`phase2_sections` for
+  `01_ARCHITECTURE_MAP` and `02_COMPONENT_INVENTORY` -- add distinct sections so
+  they no longer resolve to the same set)
+- EDIT `mcp-server/tests/test_providers/test_custom_provider.py` (new tests:
+  pack-size differentiation assertion for docs 01 vs 02; assert pack 09 absent;
+  BASELINE constant has only GROUP_SUMMARY)
+**Critical area**: yes -- harness pipeline phases (`/inspect` required)
+**Depends on**: Slice 1 (BASELINE removal silently discards 76 KB of CROSS_CHUNK_FINDINGS
+content unless the parser correctly classifies merge headers first)
 
-## Slice 3: Gate remaining write-only artifacts + small write fixes (FR-1c, FR-1d, FR-3, FR-9)
-**Delivers**: Default runs stop writing the write-only `_assessment/` reports,
-`_investigation/_coverage_report.json`, `_pipeline_log.md`, `provider_calls.json`,
-`index.json`, `evidence_registry.md`, `survival_report.json`, and the dead
-`_analysis/_bundle_*.md` files; `_source_coverage.json` written once. All routed
-through the Slice 2 helper into `_debug/` when the flag is on.
+## Slice 3: Targeted dispatch + waste removal + docs (FR-B4, FR-B5, FR-B6, FR-B8)
+**Delivers**: Phase 3 tool-capable path pushes a targeted starter pack (capped at
+100 KB) instead of hint-only dispatch; manifest and CSV indexes removed from context;
+docs updated; before/after acceptance run shows >= 40% reduction in Phase 3 input
+tokens with no quality regression on human spot-check.
 **Expected files**:
-- EDIT `providers/custom/harness.py` (assessment report writes, `_PipelineLog` :410-450, bundle writes :2429-2442, dead fallback :5077-5079, reviewers/reconciliation writes)
-- EDIT `providers/custom/pipeline/phases/{phase2_analysis,phase26_scorecard,phase3_docs,phase4_cleanup}.py` (repair records, contract errors, traceability writes, warnings/index/provider_calls)
-- EDIT `providers/custom/evidence_agents.py` (registry.md :520, survival_report :522)
-- EDIT `providers/custom/source_context.py` (:334-335 single coverage write)
-- EDIT `providers/custom/validators.py` (:1591-1592 coverage reader candidates), `harness.py:2500`
-- EDIT `services/git_reingestion.py` (:232 defensive bundle delete — decide in plan)
-- EDIT tests asserting gated artifacts
-**Critical area**: yes — harness pipeline phases (`/inspect` required)
-**Depends on**: Slice 2 (uses the debug-write helper)
-
-## Slice 4: Transient-dir consolidation + prompt corpus dedup (FR-6, FR-8)
-**Delivers**: One transient directory (deleted at phase end) replaces
-`_context_slices/`, `_analysis/{_merge_inputs,_synthesis_inputs,_repair_context}/`,
-`_assessment/_scorecard_reduce/`; prompt corpus exists once (pack materialization
-sources deduplicated, three-way fallback logic removed). `_model_slices/` untouched
-(resume cache).
-**Expected files**:
-- EDIT `providers/custom/harness.py` (slice/merge/synthesis/reduce write paths :4060-4076, :1682, :1753, :3388, :2363; fallback removal :4948-4959, :5063-5073, :5089-5099)
-- EDIT `providers/custom/prompt_packs.py` (source-copy cleanup after materialization)
-- EDIT affected tests; new mid-phase-interrupt resume test (slice regeneration assumption)
-**Critical area**: yes — harness pipeline phases (`/inspect` required)
-**Depends on**: Slice 3
-
-## Slice 5: Dead JSON maps + audit-tree manifest + docs + acceptance run (FR-2, FR-7, FR-10, FR-11 remainder)
-**Delivers**: The nine never-read root JSON maps are no longer written (validator
-fallbacks and evidence-bundle base files updated in the same commit); `_audit/`
-reduced to `enterprise_gates.json` + `final_doc_hashes.json` with the REST fallback
-intact; CLAUDE.md and mcp-workflow.md match reality; paired-run acceptance executed
-(≤300 files / ≤20 MB, LLM-input invariance, byte-identical docs, flag-on forensics).
-**Expected files**:
-- EDIT `providers/custom/engineering_facts/json_writer.py` (drop the nine aggregates)
-- EDIT `providers/custom/validators.py` (:1560-1563 fallbacks), `providers/custom/evidence_bundles.py` (`_base_files`), `harness.py` (`LARGE_CONTEXT_ARTIFACTS` :113-125)
-- EDIT `providers/custom/harness.py` (audit bundle :4308-4331 → gates + hashes)
-- EDIT `mcp-server/tests/` (enterprise-gate endpoint with new `_audit/` shape; scoped-tool corpus resolution)
-- EDIT `knowledge_base/CLAUDE.md`, `knowledge_base/.agent/system/mcp-workflow.md`
-**Critical area**: yes — harness pipeline phases + MCP API consumers (`/inspect` required)
-**Depends on**: Slices 1-4 (acceptance run measures the cumulative result)
+- EDIT `providers/custom/harness.py`:
+  - `_complete_core_generation` (:3144-3150) -- replace hint-only branch with
+    targeted pack push (capped at 100 KB; take GROUP_SUMMARY + doc's phase2_sections
+    only if pack exceeds cap)
+  - `_phase3_context_files` (:4685-4687) -- remove `_doc_pack_manifest.json` from
+    returned file list
+  - `_engineering_fact_context` (:4734-4754) -- add nothing when
+    `_source_coverage.json` is absent (model can use tools to read CSV files)
+- EDIT `knowledge_base/CLAUDE.md` (Current Custom Harness Notes -- document targeted
+  dispatch, GROUP_SUMMARY-only BASELINE, parser scope)
+- EDIT `knowledge_base/.agent/system/mcp-workflow.md` (remove hint-only dispatch
+  claim; document starter pack + tool drill-down behaviour)
+- EDIT `mcp-server/tests/test_providers/test_custom_provider.py` (new tests:
+  tool-capable path has context_file_count >= 1; manifest absent from starter files;
+  CSV indexes absent when source_coverage absent; pack size regression guard <= 100 KB
+  for the pushed starter pack)
+**Critical area**: yes -- harness pipeline phases (`/inspect` required)
+**Depends on**: Slices 1 and 2 (targeted pack must be differentiated and correctly
+parsed before this change is meaningful; acceptance run measures the cumulative result)

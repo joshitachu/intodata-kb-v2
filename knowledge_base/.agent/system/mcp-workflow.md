@@ -95,6 +95,13 @@ runs after Phase 3 doc writes. It cross-checks that claims in each generated
 document trace back to scanner evidence in the facts manifest, and writes a
 traceability report to `_assessment/evidence_traceability.json`.
 
+`validate_docs` / `validate_doc_depth` / `validate_source_provenance` produce
+`_assessment/doc_validation_report.json` / `doc_depth_report.json` /
+`source_provenance_report.json` after Phase 3. Failures are advisory warnings
+emitted via `log_cb` (count + first 3 messages) — the docs ship as-written.
+No model-call repair loop; no retry; no `RuntimeError`. The operator decides
+whether to manually fix the missing section. Added 2026-06-11.
+
 ## Debug Forensics (`MCP_PIPELINE_DEBUG`)
 
 `MCP_PIPELINE_DEBUG` (default `0`) gates the full forensic record under
