@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
 
 if TYPE_CHECKING:
@@ -39,8 +40,6 @@ class Phase3Docs(Phase):
             validate_docs,
             validate_doc_depth,
             validate_source_provenance,
-            scanned_config_files,
-            covered_source_files,
         )
         from mcp_server.providers.custom.models import CoverageReport
 
@@ -63,8 +62,6 @@ class Phase3Docs(Phase):
                 facts=state.facts_manifest,
                 investigation_dir=ctx.staging_dir / "_investigation",
             )
-            _assessment_dir = ctx.staging_dir / "_assessment"
-            _assessment_dir.mkdir(parents=True, exist_ok=True)
             for doc_name in self._helpers.required_docs_list:
                 doc_path = ctx.staging_dir / f"{doc_name}.md"
                 if doc_path.exists():
@@ -77,7 +74,8 @@ class Phase3Docs(Phase):
                             + ", ".join(c.unit_name for c in trace_report.phantom_absences[:5]),
                             "warning",
                         )
-                        (_assessment_dir / f"traceability_{doc_name}.json").write_text(
+                        debug_write(
+                            debug_dir(ctx.staging_dir, "_assessment", f"traceability_{doc_name}.json"),
                             json.dumps(
                                 {
                                     "doc_name": doc_name,
@@ -92,7 +90,6 @@ class Phase3Docs(Phase):
                                 },
                                 indent=2,
                             ),
-                            encoding="utf-8",
                         )
 
         reconciled = self._helpers.reconcile_sql_usage_classification(ctx)

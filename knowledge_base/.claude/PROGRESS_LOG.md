@@ -3,6 +3,98 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-06-10
+
+### [Refactor]: Track A Slice 4 — transient-dir consolidation + prompt corpus dedup (FR-6, FR-8)
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/transient_artifacts.py` (new — un-gated helper module: `TRANSIENT_DIR_NAME`, `transient_dir()`, `transient_write()`)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/harness.py` (modified — 5 transient write sites repointed to `_transient/`; new `_phase2_analysis_guide_files` static method as single source of truth; 2 phase2 file-list duplications replaced with helper calls)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/prompt_packs.py` (modified — `_phase2_sources` collapsed 3 → 2 branches)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase4_cleanup.py` (modified — `"_transient"` added to rmtree loop alongside `_preprocess` and `_analysis`)
+  - `knowledge_base/mcp-server/tests/test_providers/test_custom_provider.py` (modified — 4 new tests: helper unit, Phase 4 cleanup rmtree, mid-phase-interrupt resume regenerate, source-lookup single-source-of-truth across 4 input shapes)
+  - `.plans/03_slices.md`, `.plans/04_active_plan.md`, `.plans/05_inspection_report.md`
+- **Problem**: 5 transient directories (`_context_slices/`, `_analysis/_merge_inputs/`, `_analysis/_synthesis_inputs/`, `_analysis/_repair_context/`, `_assessment/_scorecard_reduce/`) were scattered across the staging tree; all consumed in-process and never read by a later phase, validator, gate, resume path, or RAG push. `_assessment/_scorecard_reduce/` was leaking into the published staging tree because `_assessment/` is preserved across the swap. Separately, the Phase 2 analysis-guide source-lookup logic existed in 3 near-duplicate copies (one in `prompt_packs._phase2_sources`, two in `harness._phase2_shared_context` branches) with subtly different per-branch behavior.
+- **Root cause**: No single helper owned the transient dir naming convention, so each call site re-derived paths inline (`mkdir` + `write_text`); no canonical resolver for the analysis guide, so each call site re-implemented the same three-way branch.
+- **Change**: New `transient_artifacts.py` mirrors `debug_artifacts.py` (constants + helper functions) but is un-gated (no `if not config.pipeline_debug: return` branch) — these files are required for the pipeline, not debug-only. The 5 write sites now route through `transient_write(transient_dir(ctx.staging_dir, ...), content)`. `_transient/` is deleted at Phase 4 alongside `_preprocess/` and `_analysis/`. The phase2 file-list branches in `harness._phase2_shared_context` now call `_phase2_analysis_guide_files(preprocess_dir, analysis_guide_file)`, a new static method that mirrors the 2-branch `prompt_packs._phase2_sources` logic (prefer named guide if it exists, else glob `_analysis_prompts*.md`).
+- **Why this approach**: Mirrors the Slice-2 `_debug/` precedent — a single helper module owns the dir name and the write idiom; the diff is easy to audit because the call-site changes are mechanical. The un-gated mirror is a new pattern: same layout as `debug_artifacts.py` minus the flag check. The single-source-of-truth helper for phase2 source-lookup eliminates drift risk between the prompt_packs and harness copies. No new config flags, no `tmp.replace` (these files are throwaway; the model call that reads them is wrapped by retries).
+- **Verification**: 587 tests pass (582 baseline + 4 new + 1 from the uncommitted Slice 3 work). py_compile clean on all 5 touched files. Ruff clean on `transient_artifacts.py`, `prompt_packs.py`, `phase4_cleanup.py` (the 39 pre-existing F/E-class errors in `harness.py` are unchanged from HEAD). Grep gate: zero matches for `_context_slices` / `_merge_inputs` / `_synthesis_inputs` / `_scorecard_reduce` / old path patterns in `src/` and `tests/`. Inspector verdict: WARN (two minor deviations: helper preserves `logger.warning` for missing-guide case that `_phase2_sources` doesn't log; helper drops unused `ctx`/`pack_dir` from plan's suggested signature) — both acceptable, non-blocking.
+
+## Session: 2026-06-09
+
+### [Feature]: Pipeline Resilience — Slice 2 (phase failure surfacing + Phase 2 gate demotion) + Slice 3 (EvidenceQualityGate + thin-bundle notice)
+
+- **Files changed**:
+  - `providers/custom/pipeline/phases/phase1_investigation.py` (new — emit PHASE1_GROUP_FAILURE per failed group; return success=False on all-groups-fail)
+  - `providers/custom/pipeline/phases/phase2_analysis.py` (new — demote coverage/depth gates from RuntimeError to warnings; zero-coverage carve-out kept)
+  - `providers/custom/pipeline/phases/phase3_docs.py` (new — prepend thin-bundle notice when state.thin_bundle_groups is non-empty)
+  - `providers/custom/pipeline/evidence_quality_gate.py` (new — pure Python Phase, checks _preprocess/{group}.md sizes, emits THIN_BUNDLE warnings)
+  - `providers/custom/pipeline/warning_collector.py` (new — WarningCode enum extended with THIN_BUNDLE)
+  - `providers/custom/harness.py` (modified — wrap build_facts_manifest; remove dead all-groups-fail RuntimeError; insert EvidenceQualityGate in phase list)
+  - `providers/custom/models.py` (modified — add thin_bundle_groups: list[str] to HarnessRunState)
+  - `tests/test_pipeline/test_phase_failures.py` (new — 5 tests: phase1 all-fail, phase1 partial-fail, phase2 zero-coverage hard-fail, phase2 partial coverage warn, phase2 partial depth warn)
+  - `tests/test_pipeline/test_evidence_quality_gate.py` (new — 7 tests: thin bundle, ok bundle, missing bundle, resume from cache, always-success, phase3 notice prepend, phase3 no-notice on clean run)
+  - `tests/test_providers/test_custom_provider.py` (modified — 2 tests added: WarningCode importable, PHASE2_COVERAGE_PARTIAL context fields)
+  - `knowledge_base/CLAUDE.md` (modified — 6-phase → 7-phase pipeline; EvidenceQualityGate documented)
+  - `.plans/04_active_plan.md`, `.plans/04_slice3_plan.md`, `.plans/05_inspection_report.md`
+- **Problem**: Phase 1 group failures were silently swallowed (always returned success=True); Phase 2 coverage and depth gates hard-crashed the run even when partial output existed; `build_facts_manifest` failures produced opaque uncaught exceptions; no pre-Phase 3 signal when evidence was thin.
+- **Root cause**: Phase 1 had no warning emission and no all-fail exit path (harness swallowed it as a log_cb warning); Phase 2 gates were unconditional RuntimeError even post-repair; build_facts_manifest was a bare call with no error handling; no phase existed to assess evidence quality before doc generation.
+- **Change**: Phase 1 now emits one PHASE1_GROUP_FAILURE warning per failed group and returns PhaseResult(success=False) on all-fail, triggering PipelineRunner's existing clean-abort path. Phase 2 coverage and depth gates now emit PHASE2_COVERAGE_PARTIAL/PHASE2_DEPTH_PARTIAL warnings instead of raising (zero-coverage still raises). build_facts_manifest is wrapped in a structured try/except that logs with exc_info=True and re-raises a user-readable RuntimeError. The dead all-groups-fail RuntimeError in harness.py was removed. EvidenceQualityGate (new 7th Phase, no LLM calls) runs between Phase28Bundles and Phase3Docs, checks _preprocess/{group}.md sizes, emits THIN_BUNDLE warnings, populates state.thin_bundle_groups. Phase3Docs prepends an ASCII-only blockquote notice to all generated docs when thin groups were detected.
+- **Why this approach**: WarningCollector infrastructure was delivered in Slice 1; Slices 2+3 wire it into actual failure sites. The zero-coverage carve-out preserves hard-fail where partial output is useless. EvidenceQualityGate uses the Phase ABC to stay in the established pattern; pure Python avoids LLM cost. Notice is ASCII-only (cp1252 compatibility rule).
+- **Verification**: 12 new tests pass (test_phase_failures.py × 5, test_evidence_quality_gate.py × 7); full suite passes (572 tests, 0 regressions). Inspector verdict: WARN — import placement fixed inline; CLAUDE.md phase list updated.
+
+## Session: 2026-06-03
+
+### [Refactor]: Harness A-grade refactor — Phase interface, data-driven catalog, prompt templates, pack extension, semantic validation, dry-run estimation
+
+- **Files changed**:
+  - `mcp-server/src/mcp_server/providers/custom/harness.py` (888 ins / large deletion)
+  - `mcp-server/src/mcp_server/providers/custom/prompts.py` (742 ins / large deletion)
+  - `mcp-server/src/mcp_server/providers/custom/validators.py`
+  - `mcp-server/src/mcp_server/services/plugin_schema.py`
+  - `mcp-server/src/mcp_server/services/doc_quality_scorer.py`
+  - `mcp-server/src/mcp_server/api/app.py`
+  - `mcp-server/tests/test_providers/test_custom_provider.py`
+  - `mcp-server/tests/test_services/test_plugin_runner.py`
+  - `knowledge_base/.agent/system/mcp-workflow.md` (fully rewritten)
+  - `knowledge_base/CLAUDE.md`
+  - **New**: `mcp-server/data/doc_catalog.yaml`
+  - **New**: `mcp-server/data/prompt_templates/phase2_analysis.md`
+  - **New**: `mcp-server/data/prompt_templates/scorecard.md`
+  - **New**: `mcp-server/data/prompt_templates/phase3_doc.md`
+  - **New**: `mcp-server/data/prompt_templates/phase2_platform_sections/{talend,workato,lobster,generic}.md`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/doc_catalog.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/prompt_renderer.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/evidence_traceability.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/__init__.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phase.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/helpers.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/runner.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase1_investigation.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase2_analysis.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase26_scorecard.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase28_bundles.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase3_docs.py`
+  - **New**: `mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase4_cleanup.py`
+  - **New**: `mcp-server/src/mcp_server/api/routes/estimate.py`
+  - **New**: `mcp-server/tests/test_providers/test_evidence_traceability.py`
+
+- **Problem**: The harness was a 5,229-line monolith (`harness.py`) where all six phase methods lived on one class, prompts were embedded Python f-strings, the doc catalog was split across five Python constants in four files, plugin packs could only inject prompts (not control model/concurrency/evidence filtering), structural validators had no semantic cross-check against investigation evidence, and there was no way to estimate run cost before triggering generation.
+
+- **Root cause**: The harness grew feature-by-feature from a simpler system without a composable phase abstraction. Each new capability was bolted onto the single provider class rather than added as a discrete unit.
+
+- **Change**:
+  1. **Move 1 — Phase interface**: Created `providers/custom/pipeline/` with a `Phase` ABC (`name`, `should_skip`, `run`, `resume`, `estimate`), `PipelineRunner`, `HarnessHelpers` Protocol, and `HarnessHelpersImpl` facade. Six `Phase` classes (`Phase1Investigation` through `Phase4Cleanup`) encapsulate each phase. `CustomHarnessProvider.run()` now builds the phase list and delegates to `PipelineRunner`. Phase bodies remain callable from `harness.py` through the helpers protocol.
+  2. **Move 2A — Doc catalog YAML**: Created `data/doc_catalog.yaml` as single source of truth for doc names, bundle assignments, required sections, Phase 2 section routing, and per-doc prompt instructions. `doc_catalog.py` provides a `DocCatalog` Pydantic model loaded once as a singleton. Removed `REQUIRED_DOCS`, `DOC_ASSIGNMENTS`, `DOC_BUNDLE_MAP`, `DOC_SECTION_REQUIREMENTS`, `DOC_SECTION_BUNDLE_MAP` from Python code.
+  3. **Move 2B — Prompt templates**: Extracted f-string bodies of `group_analysis_prompt`, `scorecard_prompt`, `doc_prompt`, and `_platform_section_depth` into 7 `.md` files under `data/prompt_templates/`. Rendering uses `string.Template.safe_substitute` via `PromptRenderer`. Pack overrides (`plugin_pack_dir/prompts/*.md`) still take priority unchanged.
+  4. **Move 3 — Pack extension protocol**: Added `PhaseConfig` model to `plugin_schema.py` (`policy`, `model`, `concurrency`). `PhasePolicy` fields now accept `str | PhaseConfig`. Added `_provider_for_phase()` (lazy-builds override provider from pack model ID), `_concurrency_for_phase()`, and evidence-profile enforcement in `_bundle_sections_for_docs()` via `_BUNDLE_CATEGORY_TO_PHASE2_SECTIONS` mapping. All 4 semaphore constructions use the new helpers.
+  5. **Move 4A — Dry-run estimation**: Implemented `estimate()` on all six Phase classes with deterministic call-count formulas. `PipelineRunner.estimate()` returns `RunEstimate` with per-phase and total min/max calls plus projected USD cost. New `GET /mcp/projects/{id}/generate/estimate` endpoint.
+  6. **Move 4B — Evidence traceability**: Created `EvidenceTraceabilityValidator` that cross-references generated doc text against Phase 1 `InvestigationReport` objects. Detects phantom absence claims (doc says unit "not available" when investigation has evidence for it). Runs post-Phase-3, writes `_assessment/traceability_{doc_name}.json` on findings, and provides structured repair hints. Fixes the Steven project class of bug.
+
+- **Why this approach**: Each move is independently deployable and backward-compatible. The `HarnessHelpersImpl` facade lets phase objects call provider helpers without circular imports. `string.Template` chosen over Jinja2 because prompt bodies contain many literal `{` `}` characters. The evidence traceability check is non-blocking (warning + JSON artifact only) to avoid false-positive failures during the initial rollout.
+
+- **Verification**: 527 tests pass (520 pre-existing + 7 new traceability tests). All imports clean. Template files confirmed non-empty with correct slot substitution. Estimate endpoint registered at `/mcp/projects/{id}/generate/estimate`.
+
 ## Session: 2026-06-02
 
 ### [Feature]: Flagged dynamic DAG harness foundation + planner fallback + Docker rebuild
@@ -2092,3 +2184,24 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Change**: Built minimal FastAPI receiver at `mission_control/`. Three endpoints: `POST /ops/clients/{slug}/telemetry` (stores snapshot as JSON file), `GET /ops/clients/{slug}/snapshot` (retrieve), `GET /ops/clients` (list). Bearer token auth via `MC_API_KEY` env var. Snapshots written to `mission_control/snapshots/{slug}.json`, one file per client, overwritten each push. Runs via `python -m mission_control`.
 - **Why this approach**: JSON file storage avoids any DB dependency for the localhost/tunnel test slice. Proves the architecture before adding Postgres, UI, or a permanent deploy.
 - **Verification**: (1) Local test -- local Docker mcp-server pointed at `host.docker.internal:9100`, pushed successfully every 60s. (2) Remote test -- cloudflared tunnel exposed localhost:9100; koopmans VPS at `koopmans.nexus.intodata.nl` set `MCP_OPS_TELEMETRY_URL` and restarted; first push received within 60s from IPv6 `2a01:239:4cd:ff00::1:0`. Real koopmans data confirmed: 20 projects, 218 docs, 865 jobs, 145.9M input tokens, 4.9M output tokens, $274.44 cost, avg quality 4.15.
+## Session: 2026-06-09
+
+### [Feature]: Documentation evidence audit and deterministic source-fact ledger slices
+
+- **Files changed**: `.plans/01_grill.md`, `.plans/02_prd.md`, `.plans/03_slices.md`, `.plans/04_active_plan.md`, `.plans/05_inspection_report.md`, `knowledge_base/mcp-server/src/mcp_server/services/doc_evidence_auditor.py` (new), `knowledge_base/mcp-server/tests/test_services/test_doc_evidence_auditor.py` (new), `knowledge_base/mcp-server/src/mcp_server/providers/custom/source_context.py`, `knowledge_base/mcp-server/tests/test_providers/test_source_context.py`, `knowledge_base/mcp-server/src/mcp_server/providers/custom/source_fact_ledger.py` (new), `knowledge_base/mcp-server/tests/test_providers/test_source_fact_ledger.py` (new).
+- **Problem**: Generated docs could claim source evidence was unavailable even when scanned source contained the relevant files/facts. The user needed stronger confidence that source ZIPs/repos were scanned completely and that Phase 3 writers would eventually receive factual, source-backed evidence for chatbot answerability.
+- **Root cause**: Evidence was spread across scan output, source coverage, engineering facts, SQL usage artifacts, and generated docs with no deterministic audit trail showing where source was lost or which answer-critical facts were available before writing.
+- **Change**: Planned the Documentation Evidence Depth + Repair Quality work through grill/PRD/slices, then built Slices 1-3. Slice 1 added `DocEvidenceAuditor` for scan-to-output evidence-loss and missing-claim reporting. Slice 2 extended the auditor with repo/ZIP source-to-scan completeness and exposed `classify_source_path()` from source packaging semantics. Slice 3 added a deterministic `source_fact_ledger` that consolidates SQL table/field, config key, connection name, DB registration, route/handler/service, auth path, source-file status, swallowed-error, and risk facts from scanner/engineering/SQL/source-coverage evidence.
+- **Why this approach**: Kept the first slices deterministic and token-free so we can measure source completeness and fact availability before changing Phase 1/2/3 prompts or repairs. Reused `EngineeringFacts`, `extract_sql_usage()`, source packaging classifications, and source coverage artifacts instead of creating a parallel evidence system.
+- **Verification**: Focused smoke/checks only; formal `/validate` is intentionally deferred until all slices are complete. Checks run: `python3 -m py_compile` on changed Slice 3 Python files; `uv run pytest tests/test_providers/test_source_fact_ledger.py -q` (9 passed); `uv run pytest tests/test_providers/test_sql_usage.py tests/test_providers/test_engineering_facts -q` (17 passed); `uv run pytest tests/test_services/test_doc_evidence_auditor.py tests/test_providers/test_source_context.py -q` (26 passed). Manual smoke built ledgers for `test`, `cdc_v2`, `steven_harness`, `cli_steven`, `profiles_gabe`, and `vaxxinov`; repeated builds were stable and warnings were zero. Inspection report verdict: PASS after fixing deterministic timestamp, auth-path emission, and direct `_source_coverage.json` ingestion.
+
+## Session: 2026-06-10
+
+### [Feature]: Evidence retention plus evidence-gated narrow repair slices
+
+- **Files changed**: `.plans/01_grill.md`, `.plans/02_prd.md`, `.plans/03_slices.md`, `.plans/04_active_plan.md`, `.plans/05_inspection_report.md`, `knowledge_base/mcp-server/src/mcp_server/providers/custom/evidence_retention.py` (new), `knowledge_base/mcp-server/src/mcp_server/providers/custom/repair_planner.py` (new), `knowledge_base/mcp-server/src/mcp_server/providers/custom/harness.py`, `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase2_analysis.py`, `knowledge_base/mcp-server/tests/test_providers/test_evidence_retention.py` (new), `knowledge_base/mcp-server/tests/test_providers/test_repair_planner.py` (new), `knowledge_base/mcp-server/tests/test_providers/test_custom_provider.py`.
+- **Problem**: Repair agents were still triggered by form-only checks such as exact `- COVERED:` markers, byte-count depth thresholds, and guide-section headings. Logs showed 99k-173k token repair calls, several failed/empty calls, and a `Training|Jasmijn_section_repair` path that could fail the run while sending no useful source context.
+- **Root cause**: Python validators treated formatting deviations as repair-worthy substance failures, then repair calls often received polluted broad context or no direct context. Phase 3 repair still used legacy validator-error prompts even when source-grounded retention evidence was available.
+- **Change**: Built Slice 4 evidence retention reporting and Slice 5 repair planning. Added deterministic retention reports for facts lost between source ledger, analysis, and docs. Added `repair_planner.py` to classify Phase 2 issues into deterministic marker/summary patches versus blocking substantive gaps, enforce a 50k-token repair packet cap, redact secrets, and build source-grounded Phase 3 repair packets from retention reports. Phase 2 marker/depth issues now write repair plans instead of calling blind LLM repair. Missing `GROUP_SUMMARY` gets a deterministic structural shell; missing substantive Talend sections stay blocking. Phase 3 targeted repair now prefers retention packets and bounded direct context before falling back to legacy repair.
+- **Why this approach**: Keeps Python in charge of deciding whether evidence exists, but removes LLM repair for syntactic-only failures. When a model is needed, it gets a compact evidence packet tied to actual retained or missing facts instead of the whole staging context.
+- **Verification**: Inspection initially blocked on Phase 3 still using legacy repair and deterministic section patching hiding substantive missing sections; both blockers fixed. Final inspection verdict: PASS. Focused checks run: `python3 -m py_compile` on changed Slice 5 Python files passed; `uv run pytest tests/test_providers/test_repair_planner.py tests/test_providers/test_custom_provider.py -q` passed with 188 tests; `uv run pytest tests/test_providers/test_repair_planner.py tests/test_providers/test_evidence_retention.py tests/test_pipeline tests/test_providers/test_custom_provider.py -q` passed with 218 tests. Formal all-slices `/validate` remains intentionally deferred per user instruction.

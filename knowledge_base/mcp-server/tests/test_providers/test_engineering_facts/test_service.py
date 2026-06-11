@@ -35,5 +35,16 @@ def test_service_writes_artifacts_from_scan_result(tmp_path):
 
     assert facts.entities
     assert (staging / "engineering_facts.json").exists()
-    assert (staging / "entity_index.json").exists()
     assert any(path.name == "entity_index.csv" for path in written)
+    dead_maps = {
+        "entity_index.json",
+        "usage_index.json",
+        "dependency_map.json",
+        "architecture_map.json",
+        "data_flow_map.json",
+        "api_surface.json",
+        "known_risks.json",
+        "test_coverage_map.json",
+        "change_impact_matrix.json",
+    }
+    assert not any((staging / name).exists() for name in dead_maps)

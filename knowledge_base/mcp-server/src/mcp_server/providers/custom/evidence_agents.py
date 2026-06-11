@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.evidence_bundles import (
     CATEGORY_PATTERNS,
     SUPPORTED_EVIDENCE_CATEGORIES,
@@ -512,20 +513,22 @@ class EvidenceRegistryBuilder:
         }
 
         registry_json = registry_dir / "evidence_registry.json"
-        registry_md = registry_dir / "evidence_registry.md"
         evidence_brief = registry_dir / "evidence_brief.md"
-        survival_json = registry_dir / "survival_report.json"
         doc_slices_dir = registry_dir / "doc_slices"
         registry_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        registry_md.write_text(_registry_markdown(payload), encoding="utf-8")
+        debug_write(
+            debug_dir(self.staging_dir, "_evidence_registry", "evidence_registry.md"),
+            _registry_markdown(payload),
+        )
         evidence_brief.write_text(_brief_markdown(deduped, payload["agents"]), encoding="utf-8")
-        survival_json.write_text(json.dumps(_survival_report(payload), indent=2), encoding="utf-8")
+        debug_write(
+            debug_dir(self.staging_dir, "_evidence_registry", "survival_report.json"),
+            json.dumps(_survival_report(payload), indent=2),
+        )
         _build_doc_slices(deduped, payload["agents"], doc_slices_dir)
         return {
             "json": registry_json.relative_to(self.staging_dir).as_posix(),
-            "md": registry_md.relative_to(self.staging_dir).as_posix(),
             "brief": evidence_brief.relative_to(self.staging_dir).as_posix(),
-            "survival_report": survival_json.relative_to(self.staging_dir).as_posix(),
             "doc_slices_dir": doc_slices_dir.relative_to(self.staging_dir).as_posix(),
         }
 

@@ -95,12 +95,10 @@ def materialize_prompt_packs(staging_dir: Path, analysis_guide_file: str) -> dic
 
 
 def _phase2_sources(preprocess_dir: Path, analysis_guide_file: str) -> list[Path]:
-    if analysis_guide_file == "_analysis_prompts*.md":
-        return sorted(preprocess_dir.glob("_analysis_prompts*.md"))
-
-    guide = preprocess_dir / analysis_guide_file
-    if guide.exists():
-        return [guide]
+    if analysis_guide_file:
+        guide = preprocess_dir / analysis_guide_file
+        if guide.exists():
+            return [guide]
     return sorted(preprocess_dir.glob("_analysis_prompts*.md"))
 
 

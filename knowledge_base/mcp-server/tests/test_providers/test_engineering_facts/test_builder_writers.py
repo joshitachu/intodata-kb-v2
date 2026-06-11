@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from mcp_server.providers.custom.engineering_facts.builder import EngineeringFactsBuilder
 from mcp_server.providers.custom.engineering_facts.extractors.registry import ExtractorRegistry
 from mcp_server.providers.custom.engineering_facts.extractors.registry import default_registry
@@ -56,5 +54,16 @@ def test_writers_emit_required_formats(tmp_path):
     written.extend(MarkdownFactWriter().write(facts, tmp_path))
 
     names = {path.name for path in written}
-    assert {"engineering_facts.json", "entity_index.json", "entity_index.csv", "dependency_map.md"} <= names
-    assert json.loads((tmp_path / "entity_index.json").read_text(encoding="utf-8"))[0]["name"] == "app"
+    assert {"engineering_facts.json", "entity_index.csv", "dependency_map.md"} <= names
+    dead_maps = {
+        "entity_index.json",
+        "usage_index.json",
+        "dependency_map.json",
+        "architecture_map.json",
+        "data_flow_map.json",
+        "api_surface.json",
+        "known_risks.json",
+        "test_coverage_map.json",
+        "change_impact_matrix.json",
+    }
+    assert dead_maps.isdisjoint(names)

@@ -1589,7 +1589,6 @@ def covered_source_files(staging_dir: Path) -> set[str]:
     paths: set[str] = set()
     candidates = [
         staging_dir / "_preprocess" / "_source_coverage.json",
-        staging_dir / "_preprocess" / "_source_context" / "coverage.json",
     ]
     for candidate in candidates:
         if not candidate.exists():

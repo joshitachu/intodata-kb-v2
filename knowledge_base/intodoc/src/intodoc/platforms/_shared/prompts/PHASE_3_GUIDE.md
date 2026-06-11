@@ -36,6 +36,8 @@ Document every canonical unit with name, group, source artifact, unit type, purp
 
 Document source-to-target flows, schemas/entities/fields, mappings, transformations, validation, reject/error paths, readers/writers, and lineage confidence.
 
+For every API endpoint or output structure, include a **complete field inventory table** covering every output field -- including fields that are plain SQL aliases with no further transformation. The table must show: source column/system, SQL alias (if applicable), output field name, and transformation applied (or "direct" if none). Fields with no transformation are not exempt -- their absence from the table is a documentation gap, not a valid omission.
+
 ## 04 Business Rules And Transformations
 
 Document business rules, formulas, conditions, transformations, lookup behavior, hardcoded values, conflict cases, and downstream impact.

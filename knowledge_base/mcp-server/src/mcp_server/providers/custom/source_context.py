@@ -330,8 +330,6 @@ def materialize_direct_redacted_source(
         (preprocess_dir / f"{group}.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
         processed_groups.append(group)
 
-    coverage_path = source_dir / "coverage.json"
-    coverage_path.write_text(json.dumps(coverage, indent=2), encoding="utf-8")
     (preprocess_dir / SOURCE_COVERAGE_NAME).write_text(json.dumps(coverage, indent=2), encoding="utf-8")
     _write_schema_dictionary(scan_output_dir, preprocess_dir.parent)
     write_sql_usage_artifacts(scan_output_dir, preprocess_dir.parent)

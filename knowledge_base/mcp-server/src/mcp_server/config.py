@@ -146,7 +146,7 @@ class MCPServerConfig(BaseSettings):
     # Doc generation bundle size limits (bytes)
     max_prompt_bundle_bytes: int = 200_000   # MCP_MAX_PROMPT_BUNDLE_BYTES
     max_ref_bundle_bytes: int = 80_000       # MCP_MAX_REF_BUNDLE_BYTES
-    max_param_val_chars: int = 400           # MCP_MAX_PARAM_VAL_CHARS
+    max_param_val_chars: int = 16_000        # MCP_MAX_PARAM_VAL_CHARS (was 400; raised 2026-06-10 to stop truncating Lobster field_wiring past 14 of 123 arrows)
 
     # Quick scan anti-pattern thresholds (job/component counts)
     qs_god_profile_threshold: int = 15       # MCP_QS_GOD_PROFILE_THRESHOLD

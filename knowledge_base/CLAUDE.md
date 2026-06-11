@@ -40,23 +40,54 @@ cd ../RAG_pipeline/backend && python -m uvicorn src.api.main:app --port 8000
 5. **No intermediate files** -- only final `.md` docs in `output/{project_id}/docs/` (generated via `docs_staging/`, see Documentation Generation)
 6. **Never hardcode group names** -- use whatever `get_chunks()` returns
 7. **Never call `trigger_scan()`** unless cache is explicitly stale or missing
+8. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
+9. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
+10. **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
+11. **Full pipeline gate** -- any non-Scout change requires the full pipeline: `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. See root `CLAUDE.md` Development Workflow.
+12. **Inspector required** -- after building any change to harness pipeline phases or MCP API routes, run `/inspect` before committing. Max 2 block cycles before escalating to the human.
+13. **Emergency path** -- use `/lfe-force` for production emergencies only; it logs to `PROTOCOL_DEBT.md` and session-start will warn until `/debt-resolve` clears it.
 
 ## Documentation Generation
 
-The MCP-based 4-phase documentation workflow is documented in:
+The MCP-based 7-phase documentation workflow is documented in:
 **`.agent/system/mcp-workflow.md`**
 
 This is the primary method for generating project documentation. Follow it exactly.
 
 ### Current Custom Harness Notes
 
-- Custom doc generation now uses a bounded internal agent runtime in `mcp-server/src/mcp_server/providers/custom/agent_runtime.py`.
+- Doc generation runs a **7-phase pipeline** orchestrated by `PipelineRunner` in
+  `mcp-server/src/mcp_server/providers/custom/pipeline/runner.py`.
+- Phase bodies live in `providers/custom/pipeline/phases/` (one file per phase);
+  `evidence_quality_gate.py` is at the package root (not under `phases/`).
+  `harness.py` owns setup, state management, enterprise gate evaluation, and the
+  staging swap; it no longer contains phase logic.
+- The seven phases are: `phase1_investigation`, `phase2_analysis`, `phase26_scorecard`,
+  `phase28_bundles`, `evidence_quality_gate`, `phase3_docs`, `phase4_cleanup`.
+- `evidence_quality_gate` is a pure Python phase (no LLM calls) that checks
+  `_preprocess/{group}.md` file sizes before Phase 3. Groups below 500 bytes emit a
+  `THIN_BUNDLE` warning and are listed in `state.thin_bundle_groups`. Phase 3 prepends
+  an evidence notice to all generated docs when thin groups are detected.
 - Phase 2 dispatches one persisted group-analysis task per scanner group, with configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Oversized/split group work is merged by an LLM merge task, not by Python-authored prose.
 - Phase 2.6 scorecard and Phase 3 document writing are also persisted agent tasks under `docs_staging/_agent_tasks/{phase}/{target_id}/`.
 - Phase 3 dispatches one document task per required markdown document, with configurable concurrency (`MCP_AGENT_PHASE3_CONCURRENCY`, default 4).
-- Runtime task directories store `contract.json`, exact LLM `output.md`, `validation_report.json`, `tool_call_ledger.json`, `provider_metrics.json`, and `status.json`. Resume should skip accepted task artifacts and retry rejected/incomplete tasks independently.
+- `EvidenceTraceabilityValidator` (`providers/custom/evidence_traceability.py`) runs
+  after Phase 3 and writes `_assessment/evidence_traceability.json`.
+- Runtime task directories store `status.json` and exact LLM `output.md` as
+  always-on breadcrumb artifacts; `contract.json`, `validation_report.json`,
+  `tool_call_ledger.json`, and `provider_metrics.json` are written under
+  `docs_staging/_agent_tasks/<phase>/<target>/_debug/` only when
+  `MCP_PIPELINE_DEBUG=1`. Resume should skip accepted task artifacts (via
+  `status.json`+`output.md`) and retry rejected/incomplete tasks independently.
 - Python may construct contracts, constrain context/tools, validate coverage, trigger retries/repairs, and persist exact LLM output. Python must not synthesize business explanations or fill final documentation prose itself.
 - Generic `list_artifacts` / `read_artifact` tools must not be exposed to Phase 2/3 core generation without hard byte and accumulated input-token caps. Phase 2 core writing uses bounded context files by default; retrieval may be agentic only in budgeted selection/repair steps.
+- **Doc catalog**: standard document definitions are in `mcp-server/data/doc_catalog.yaml`,
+  loaded by `providers/custom/doc_catalog.py`. Plugin packs can override this with
+  their own `doc_catalog.yaml` at the pack root.
+- **Prompt templates**: prompt bodies live in `mcp-server/data/prompt_templates/`
+  and are rendered via `providers/custom/prompt_renderer.py` (`${SLOT}` substitution).
+  Plugin packs can override individual phase prompts by placing `.md` files in
+  `{plugin_pack_dir}/prompts/`.
 
 ### Steven Project Finding
 
@@ -76,6 +107,10 @@ Doc generation uses a **staging directory** (`docs_staging/`) to protect existin
 Key files: `claude_service.py` (prompt + staging dir setup), `projects.py:_run_generate_background` (swap logic + server-side RAG push).
 
 **Do NOT** add `insert_to_rag` back to the Claude Code prompt -- RAG push is handled server-side in `_run_generate_background` via `RagBridge.push_docs()`.
+
+### Debug Forensics (`MCP_PIPELINE_DEBUG`)
+
+Set `MCP_PIPELINE_DEBUG=1` to materialize the full forensic record under `docs_staging/_debug/` (per-call prompt/context/request/response snapshots, agent-task contracts/ledgers/traces, and the gated `_assessment/` advisory reports). Default runs (`MCP_PIPELINE_DEBUG=0`) keep only the always-on breadcrumb artifacts: per-call `_model_inputs/<phase>/<NNN>_<target>/manifest.json` and `_agent_tasks/<phase>/<target>/{status.json,output.md}`. Use the flag to reproduce a failed run with full traces; do not enable it for production runs (output bloat).
 
 ## Code Conventions
 

@@ -151,8 +151,10 @@ def test_registry_builder_writes_claims(tmp_path: Path) -> None:
     assert registry["claim_count"] >= 1
     assert registry["agents"][0]["prompt"].strip()
     assert registry["claims"][0]["category"] == "sql_queries"
-    assert (staging / paths["md"]).exists()
-    assert (staging / paths["survival_report"]).exists()
+    # evidence_registry.md and survival_report.json are debug-only; not in manifest keys
+    assert "md" not in paths
+    assert "survival_report" not in paths
+    assert (staging / paths["brief"]).exists()
 
 
 @pytest.mark.asyncio
@@ -329,10 +331,10 @@ def test_evidence_brief_no_agent_prompts(tmp_path: Path) -> None:
 
     paths = EvidenceRegistryBuilder(staging).build(resolution.agents)
 
-    for output_file in [paths["md"], paths["brief"]]:
-        text = (staging / output_file).read_text(encoding="utf-8")
-        assert "## Agent Prompts" not in text, f"{output_file} contains agent prompt section"
-        assert "You are the core" not in text, f"{output_file} contains agent prompt body"
+    # evidence_registry.md is debug-only; check brief (always-on) instead
+    brief_text = (staging / paths["brief"]).read_text(encoding="utf-8")
+    assert "## Agent Prompts" not in brief_text
+    assert "You are the core" not in brief_text
 
 
 def test_build_phase2_slice_filters_to_allowed_units(tmp_path: Path) -> None:

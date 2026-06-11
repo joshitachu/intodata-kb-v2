@@ -40,6 +40,7 @@ from mcp_server.providers.custom.debug_artifacts import (
     debug_write,
     pipeline_debug_enabled,
 )
+from mcp_server.providers.custom.transient_artifacts import transient_dir, transient_write
 from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, EvidenceBundleBuilder
 from mcp_server.providers.custom.talend_intelligence import write_talend_intelligence
 from mcp_server.providers.custom.agent_runtime import (
@@ -104,16 +105,7 @@ from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
 
 LARGE_CONTEXT_ARTIFACTS = {
     "engineering_facts.json",
-    "entity_index.json",
-    "usage_index.json",
-    "dependency_map.json",
-    "architecture_map.json",
-    "data_flow_map.json",
-    "api_surface.json",
     "config_runtime_map.json",
-    "known_risks.json",
-    "test_coverage_map.json",
-    "change_impact_matrix.json",
 }
 
 ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
@@ -425,6 +417,9 @@ class _PipelineLog:
         })
 
     def flush(self, staging_dir: "Path") -> None:
+        from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write, pipeline_debug_enabled
+        if not pipeline_debug_enabled():
+            return
         rows = [
             "| Phase | Calls | Tokens In | Tokens Out | Duration (ms) | Validation | Notes |",
             "|-------|-------|-----------|-----------|--------------|-----------|-------|",
@@ -436,9 +431,9 @@ class _PipelineLog:
             )
         if not self._entries:
             rows.append("| - | - | - | - | - | - | - |")
-        (staging_dir / "_pipeline_log.md").write_text(
+        debug_write(
+            debug_dir(staging_dir, "_pipeline_log.md"),
             "# Pipeline Log\n\n" + "\n".join(rows) + "\n",
-            encoding="utf-8",
         )
 
 
@@ -1248,8 +1243,9 @@ Fallback plan example:
                     )
                 # validate investigation coverage after phase 1
                 investigation_coverage = validate_investigation_coverage(state.investigation_reports, facts)
-                (investigation_dir / "_coverage_report.json").write_text(
-                    investigation_coverage.model_dump_json(indent=2), encoding="utf-8"
+                debug_write(
+                    debug_dir(ctx.staging_dir, "_investigation", "_coverage_report.json"),
+                    investigation_coverage.model_dump_json(indent=2),
                 )
                 if not investigation_coverage.ok or investigation_coverage.coverage_count != facts.unit_count:
                     await log_cb(
@@ -1354,10 +1350,9 @@ Fallback plan example:
             entry["output_tokens"] += call.result.output_tokens or 0
             entry["calls"] += 1
             entry["latency_ms"] += call.result.latency_ms or 0
-        assessment_dir = staging_dir / "_assessment"
-        assessment_dir.mkdir(parents=True, exist_ok=True)
-        (assessment_dir / "phase_costs.json").write_text(
-            json.dumps(phase_costs, indent=2), encoding="utf-8"
+        debug_write(
+            debug_dir(staging_dir, "_assessment", "phase_costs.json"),
+            json.dumps(phase_costs, indent=2),
         )
         # Warn operator if any phase exceeds configured threshold.
         for phase, costs in phase_costs.items():
@@ -1653,12 +1648,12 @@ Fallback plan example:
         opts: ModelOptions,
         log_cb: LogCallback,
     ) -> str:
-        merge_dir = ctx.staging_dir / "_analysis" / "_merge_inputs"
-        merge_dir.mkdir(parents=True, exist_ok=True)
-        merge_input = merge_dir / f"{self._safe_name(group)}_chunks.md"
-        merge_input.write_text(
+        merge_input = transient_dir(
+            ctx.staging_dir, f"phase2_merge_{self._safe_name(group)}.md"
+        )
+        transient_write(
+            merge_input,
             "\n\n--- CHUNK ANALYSIS ---\n\n".join(chunk_outputs),
-            encoding="utf-8",
         )
         prompt = (
             f"Merge the supplied Phase 2 chunk analyses for group `{group}` into one cohesive "
@@ -1724,14 +1719,14 @@ Fallback plan example:
     ) -> str:
         """Append a bounded synthesis section for relationships only visible across chunks."""
 
-        synthesis_dir = ctx.staging_dir / "_analysis" / "_synthesis_inputs"
-        synthesis_dir.mkdir(parents=True, exist_ok=True)
-        synthesis_input = synthesis_dir / f"{self._safe_name(group)}_cross_chunk.md"
-        synthesis_input.write_text(
+        synthesis_input = transient_dir(
+            ctx.staging_dir, f"phase2_synthesis_{self._safe_name(group)}.md"
+        )
+        transient_write(
+            synthesis_input,
             "# Merged Phase 2 Analysis\n\n"
             f"{merged_analysis.strip()}\n\n"
             + "\n\n--- CHUNK ANALYSIS ---\n\n".join(chunk_outputs),
-            encoding="utf-8",
         )
         prompt = (
             f"Analyze the supplied merged and per-chunk Phase 2 evidence for group `{group}`. "
@@ -2061,9 +2056,10 @@ Fallback plan example:
             return
         repair_causes = self._repair_root_causes(errors, missing_units) if config.agent_smart_repair_enabled else []
         if repair_causes:
-            repair_dir = ctx.staging_dir / "_assessment" / "repair"
-            repair_dir.mkdir(parents=True, exist_ok=True)
-            (repair_dir / "phase2_root_causes.json").write_text(json.dumps(repair_causes, indent=2), encoding="utf-8")
+            debug_write(
+                debug_dir(ctx.staging_dir, "_assessment", "repair", "phase2_root_causes.json"),
+                json.dumps(repair_causes, indent=2),
+            )
         await log_cb(
             ctx.project_id,
             "[custom] Phase 2 targeted repair starting: "
@@ -2224,10 +2220,8 @@ Fallback plan example:
         scorecard_pack: Path,
         log_cb: LogCallback,
     ) -> ModelResult:
-        reducer_dir = ctx.staging_dir / "_assessment" / "_scorecard_reduce"
-        reducer_dir.mkdir(parents=True, exist_ok=True)
-        slice_path = reducer_dir / "scorecard_slice_outputs.md"
-        slice_path.write_text(slice_text.strip() + "\n", encoding="utf-8")
+        slice_path = transient_dir(ctx.staging_dir, "scorecard_slice_outputs.md")
+        transient_write(slice_path, slice_text.strip() + "\n")
         prompt = (
             "Reduce the supplied Phase 2.6 scorecard slice outputs into one coherent global "
             "assessment scorecard. Preserve concrete evidence, exact unit names, anti-pattern IDs, "
@@ -2290,20 +2284,6 @@ Fallback plan example:
             p for p in sorted(analysis_dir.glob("*.md"))
             if not p.name.startswith("_") and "_chunk_" not in p.name
         ]
-        for bundle_name, doc_names in self._doc_assignments.items():
-            section_names = self._bundle_sections_for_docs(doc_names)
-            analysis_text = self._targeted_analysis_bundle_text(analysis_files, section_names)
-            (analysis_dir / f"_bundle_{bundle_name}.md").write_text(
-                f"# Analysis Bundle: {bundle_name}\n\n"
-                f"Validated canonical coverage: {facts.unit_count} units.\n\n"
-                "Included Phase 2 sections: "
-                f"{', '.join(sorted(section_names))}.\n\n"
-                "## Investigation Evidence Summaries\n\n"
-                f"{investigation_text}\n\n"
-                "## Phase 2 Analysis\n\n"
-                f"{analysis_text}",
-                encoding="utf-8",
-            )
         manifest: dict[str, object] = {"source_analyses": [p.name for p in analysis_files], "doc_packs": {}}
         for doc_name in self._required_docs:
             section_names = self._bundle_sections_for_docs([doc_name])
@@ -2665,8 +2645,6 @@ Fallback plan example:
         log_cb: LogCallback,
     ) -> None:
         """Write a cross-document consistency report before final validation gates."""
-        assessment_dir = ctx.staging_dir / "_assessment"
-        assessment_dir.mkdir(parents=True, exist_ok=True)
         docs = [
             ctx.staging_dir / f"{doc}.md"
             for doc in self._required_docs
@@ -2707,12 +2685,15 @@ Fallback plan example:
             "docs_checked": [p.name for p in docs],
             "unit_count": expected,
         }
-        (assessment_dir / "consistency_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        debug_write(
+            debug_dir(ctx.staging_dir, "_assessment", "consistency_report.json"),
+            json.dumps(report, indent=2),
+        )
         self._record_dag_node_result(
             ctx,
             "consistency",
             "passed" if report["ok"] else "failed",
-            artifacts=["_assessment/consistency_report.json"],
+            artifacts=[],
             validation="consistency",
         )
         if report["ok"]:
@@ -2740,9 +2721,10 @@ Fallback plan example:
             return
         repair_causes = self._repair_root_causes(errors, missing_units) if config.agent_smart_repair_enabled else []
         if repair_causes:
-            repair_dir = ctx.staging_dir / "_assessment" / "repair"
-            repair_dir.mkdir(parents=True, exist_ok=True)
-            (repair_dir / "phase3_root_causes.json").write_text(json.dumps(repair_causes, indent=2), encoding="utf-8")
+            debug_write(
+                debug_dir(ctx.staging_dir, "_assessment", "repair", "phase3_root_causes.json"),
+                json.dumps(repair_causes, indent=2),
+            )
 
         if self._plugin_mode:
             undeclared = sorted({
@@ -2923,8 +2905,6 @@ Fallback plan example:
         context_files: list[Path],
         estimated_tokens: int,
     ) -> None:
-        repair_dir = ctx.staging_dir / "_assessment" / "repair"
-        repair_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "phase": phase,
             "target": target,
@@ -2939,9 +2919,9 @@ Fallback plan example:
             "token_cap": REPAIR_TOKEN_CAP,
         }
         safe_target = self._safe_name(target)
-        (repair_dir / f"{phase}_{safe_target}_context.json").write_text(
+        debug_write(
+            debug_dir(ctx.staging_dir, "_assessment", "repair", f"{phase}_{safe_target}_context.json"),
             json.dumps(payload, indent=2),
-            encoding="utf-8",
         )
 
     @staticmethod
@@ -3057,21 +3037,18 @@ Fallback plan example:
                 analysis_files.append(direct)
             elif safe.exists():
                 analysis_files.append(safe)
-        if not analysis_files:
-            bundle = self._doc_bundle_map.get(doc_name, "core")
-            fallback = analysis_dir / f"_bundle_{bundle}.md"
-            analysis_files = [fallback] if fallback.exists() else []
+        # No fallback: _bundle_*.md is no longer written (removed in Track A Slice 3).
 
-        repair_dir = analysis_dir / "_repair_context"
-        repair_dir.mkdir(parents=True, exist_ok=True)
-        repair_bundle = repair_dir / f"{self._safe_name(doc_name)}_repair_bundle.md"
+        repair_bundle = transient_dir(
+            ctx.staging_dir, f"phase3_repair_{self._safe_name(doc_name)}.md"
+        )
         if analysis_files:
-            repair_bundle.write_text(
+            transient_write(
+                repair_bundle,
                 "# Targeted Repair Evidence\n\n"
                 f"Included Phase 2 sections: {', '.join(sorted(section_names))}.\n\n"
                 + self._targeted_analysis_bundle_text(analysis_files, section_names)
                 + "\n",
-                encoding="utf-8",
             )
 
         files = [
@@ -3746,8 +3723,7 @@ Missing units:
         if not path.exists() or path.stat().st_size <= max_bytes:
             return [path]
         text = path.read_text(encoding="utf-8", errors="replace")
-        split_dir = ctx.staging_dir / "_context_slices" / phase
-        split_dir.mkdir(parents=True, exist_ok=True)
+        split_dir = transient_dir(ctx.staging_dir, "context_slices", phase)
         chunks: list[Path] = []
         start = 0
         idx = 1
@@ -3759,9 +3735,9 @@ Missing units:
                 end = newline
             body = text[start:end]
             chunk = split_dir / f"{CustomHarnessProvider._safe_name(target)}_{path.stem}_slice_{idx}.md"
-            chunk.write_text(
+            transient_write(
+                chunk,
                 f"# Context slice {idx} from {path.name}\n\n{body}",
-                encoding="utf-8",
             )
             chunks.append(chunk)
             if end >= len(text):
@@ -3944,11 +3920,10 @@ Missing units:
                     "note": "Plugin-pack run uses manifest-scoped publish gates; default full-document reviewer rubric is not blocking.",
                 }
             ]
-            review_dir = ctx.staging_dir / "_assessment" / "reviewers"
-            review_dir.mkdir(parents=True, exist_ok=True)
             for report in reports:
-                (review_dir / f"{self._safe_name(report['reviewer'])}.json").write_text(
-                    json.dumps(report, indent=2), encoding="utf-8"
+                debug_write(
+                    debug_dir(ctx.staging_dir, "_assessment", "reviewers", f"{self._safe_name(report['reviewer'])}.json"),
+                    json.dumps(report, indent=2),
                 )
             return reports
 
@@ -3982,28 +3957,16 @@ Missing units:
                 ],
             },
         ]
-        review_dir = ctx.staging_dir / "_assessment" / "reviewers"
-        review_dir.mkdir(parents=True, exist_ok=True)
         for report in reports:
-            (review_dir / f"{self._safe_name(report['reviewer'])}.json").write_text(
-                json.dumps(report, indent=2), encoding="utf-8"
+            debug_write(
+                debug_dir(ctx.staging_dir, "_assessment", "reviewers", f"{self._safe_name(report['reviewer'])}.json"),
+                json.dumps(report, indent=2),
             )
         return reports
 
     async def _write_audit_bundle(self, ctx: DocGenContext, state: HarnessRunState, gate_report: dict) -> None:
         audit_dir = ctx.staging_dir / "_audit"
         audit_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("facts_manifest.json", "documentation_obligations.json", "provider_calls.json"):
-            source = ctx.staging_dir / name
-            if source.exists():
-                shutil.copy2(source, audit_dir / name)
-        for dirname in ("_assessment", "_analysis", "_investigation"):
-            source = ctx.staging_dir / dirname
-            target = audit_dir / dirname
-            if source.exists() and source.is_dir():
-                if target.exists():
-                    await asyncio.to_thread(shutil.rmtree, target, True)
-                await asyncio.to_thread(shutil.copytree, source, target)
         hashes: dict[str, str] = {}
         try:
             import hashlib
@@ -4350,8 +4313,6 @@ Allowed docs:
         if not sql_tables:
             return 0
 
-        assessment_dir = ctx.staging_dir / "_assessment"
-        assessment_dir.mkdir(parents=True, exist_ok=True)
         changes: list[dict[str, Any]] = []
         for path in sorted(ctx.staging_dir.glob("*.md")):
             if path.name in {"sql_usage.md", "schema_dictionary.md", "engineering_facts.md"}:
@@ -4386,14 +4347,15 @@ Allowed docs:
             "changed_count": len(changes),
             "sql_table_count": len(sql_tables),
         }
-        (assessment_dir / "sql_usage_reconciliation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        debug_write(
+            debug_dir(ctx.staging_dir, "_assessment", "sql_usage_reconciliation.json"),
+            json.dumps(report, indent=2),
+        )
         return len(changes)
 
     def _validate_sql_usage_publication(self, ctx: DocGenContext) -> list[str]:
         """Block publishable docs when deterministic SQL evidence is lost."""
 
-        assessment_dir = ctx.staging_dir / "_assessment"
-        assessment_dir.mkdir(parents=True, exist_ok=True)
         sql_usage_path = ctx.staging_dir / "sql_usage.json"
         facts_path = ctx.staging_dir / "engineering_facts.json"
         errors: list[str] = []
@@ -4455,7 +4417,10 @@ Allowed docs:
                     errors.append(f"SQL usage gate: {table} has SQL usage evidence but final docs mark it as DDL-only")
 
         report["ok"] = not errors
-        (assessment_dir / "sql_usage_gate.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        debug_write(
+            debug_dir(ctx.staging_dir, "_assessment", "sql_usage_gate.json"),
+            json.dumps(report, indent=2),
+        )
         return errors
 
     def _prepare_pack_artifacts(self, ctx: DocGenContext) -> None:
@@ -4552,12 +4517,11 @@ Allowed docs:
             elif self._phase_policy("analysis") == "bounded":
                 # bounded mode: include the analysis guide so the model knows the
                 # platform-specific extraction rules even without tool access.
-                if ctx.analysis_guide_file and ctx.analysis_guide_file != "_analysis_prompts*.md":
-                    guide = preprocess_dir / ctx.analysis_guide_file
-                    if guide.exists():
-                        files.append(guide)
-                else:
-                    files.extend(sorted(preprocess_dir.glob("_analysis_prompts*.md")))
+                files.extend(
+                    self._phase2_analysis_guide_files(
+                        preprocess_dir, ctx.analysis_guide_file
+                    )
+                )
             return files
         if not source_coverage.exists():
             files.extend(self._engineering_fact_context(ctx))
@@ -4574,16 +4538,31 @@ Allowed docs:
         analysis_pack = pack_dir / "_analysis_prompt_pack.md"
         if analysis_pack.exists():
             files.append(analysis_pack)
-        elif ctx.analysis_guide_file == "_analysis_prompts*.md":
-            files.extend(sorted(preprocess_dir.glob("_analysis_prompts*.md")))
         else:
-            guide = preprocess_dir / ctx.analysis_guide_file
-            if guide.exists():
-                files.append(guide)
-            else:
-                logger.warning("phase2 guide file missing, using glob fallback: %s", guide)
-                files.extend(sorted(preprocess_dir.glob("_analysis_prompts*.md")))
+            files.extend(
+                self._phase2_analysis_guide_files(
+                    preprocess_dir, ctx.analysis_guide_file
+                )
+            )
         return files
+
+    @staticmethod
+    def _phase2_analysis_guide_files(
+        preprocess_dir: Path, analysis_guide_file: str
+    ) -> list[Path]:
+        """Resolve Phase 2 analysis guide source files (single source of truth).
+
+        Mirrors ``prompt_packs._phase2_sources``: prefer the named guide if it
+        exists, otherwise glob ``_analysis_prompts*.md``. The sentinel string
+        ``_analysis_prompts*.md`` falls through to the glob branch by design.
+        """
+
+        if analysis_guide_file:
+            guide = preprocess_dir / analysis_guide_file
+            if guide.exists():
+                return [guide]
+            logger.warning("phase2 guide file missing, using glob fallback: %s", guide)
+        return sorted(preprocess_dir.glob("_analysis_prompts*.md"))
 
     @staticmethod
     def _group_units(state: HarnessRunState, group: str) -> list[str]:
@@ -4682,7 +4661,7 @@ Allowed docs:
                 files.append(doc_prompt_file)
             return files
         # bounded / run analysis: fall through to enterprise context path below,
-        # which picks up _doc_pack_*.md or _bundle_*.md from Phase 2 output.
+        # which picks up _doc_pack_*.md from Phase 2 output.
         obligations = ctx.staging_dir / "documentation_obligations.json"
         if obligations.exists():
             files.append(obligations)
@@ -4700,9 +4679,6 @@ Allowed docs:
         doc_pack = analysis_dir / f"_doc_pack_{doc_name}.md"
         if doc_pack.exists():
             files.append(doc_pack)
-        bundle_path = analysis_dir / f"_bundle_{bundle}.md"
-        if bundle_path.exists() and not doc_pack.exists():
-            files.append(bundle_path)
         evidence_file = self._phase3_evidence_file(ctx, doc_name)
         if evidence_file is not None:
             files.append(evidence_file)

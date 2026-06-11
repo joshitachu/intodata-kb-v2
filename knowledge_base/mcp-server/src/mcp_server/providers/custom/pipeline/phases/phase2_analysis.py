@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
 from mcp_server.providers.custom.pipeline.warning_collector import WarningCode
 
@@ -233,11 +234,9 @@ class Phase2Analysis(Phase):
         )
 
     async def _write_repair_plan(self, ctx: "DocGenContext", plan, name: str) -> None:
-        repair_dir = ctx.staging_dir / "_assessment" / "repair"
-        repair_dir.mkdir(parents=True, exist_ok=True)
-        (repair_dir / f"{name}_repair_plan.json").write_text(
+        debug_write(
+            debug_dir(ctx.staging_dir, "_assessment", "repair", f"{name}_repair_plan.json"),
             plan.model_dump_json(indent=2),
-            encoding="utf-8",
         )
 
     def _patch_coverage_markers(

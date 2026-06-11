@@ -139,7 +139,7 @@ Every claim needs a specific profile name and component reference.
 
 Extract for each profile:
 - Profile name, type (agent type), group (path_of_group), active/suspended status
-- Agent component: type, host/port/URL, schedule interval, polling directory, file patterns, manual/HTTP endpoint details
+- Agent component: type, host/port/URL, schedule interval, polling directory, file patterns, manual/HTTP endpoint details, accepted HTTP methods (`accept_get`, `accept_post`, `accept_put`, `accept_patch`, `accept_delete` -- note any profile that accepts POST on what appears to be a read-only endpoint)
 - Parser component: parser class, file type, encoding, delimiter/fixed-width/XML/JSON/EDI settings, record tag, XPath settings
 - Source schema: compact tree with field names, types, cardinality, node paths, and scanner-limited missing metadata
 - Output mapping: compact tree with field names, calculation nodes, no_output fields, and filter chain summaries
@@ -202,13 +202,14 @@ Cross-profile data flows:
 
 For EVERY profile with filter chains, produce a per-profile field mapping breakdown:
 
-1. **Field mapping table** (ALL output fields with filters):
+1. **Field mapping table** (ALL output fields -- including direct copies, pass-through fields, and constant-only fields. Pass-through fields are NOT exempt. Every output field name must appear in the table, even if the only operation is `copy(field:x)` or the field maps directly from an SQL alias with no further transformation):
 
    | Source Field | Filter Chain Summary | Target Field | Explanation |
    |--------------|---------------------|--------------|-------------|
    | S-companyName | copy(field:S-companyName) | companyName | Direct mapping |
    | S-orderDate | copy(field:S-orderDate), substring(result:0, const:"0", const:"10") | date | Extract date portion |
    | (variable) | copy(var:VAR_PARTNER_ID) | partnerId | From profile variable |
+   | (SQL alias) | TRIM(ABAC08) AS IndustrySoldToCode | IndustrySoldToCode | JDE column renamed in SQL -- no output-tree filter |
 
 2. **Step-by-step filter chain traces**: For complex chains (3+ filters):
    - Document each filter in order with its inputs and output
@@ -296,13 +297,20 @@ Additional extraction depth:
 
 If no SQL queries exist in this group, write exactly: `None`
 
-Extract EVERY SQL query in FULL (never truncate). For each:
-- Which database agent, response unit, or filter contains it
+Extract EVERY SQL query in FULL (never truncate). SQL appears in two places in Lobster profiles:
+- **Top-level `source_sql`**: in `<dataproperties>` for DB_Cron profiles
+- **Node `sqltable` attributes**: in input tree nodes for HTTP profiles that do inline DB lookups -- these are equally important and must be extracted with the same depth
+
+For each query (regardless of location):
+- Which profile, component (DB agent / input tree node / response unit / filter), and node path contains it
 - Query type: SELECT, INSERT, UPDATE, DELETE, DDL, stored procedure call
-- Tables and columns referenced
+- **Full field alias inventory**: for every `COLUMN AS alias` or `TRIM(x) AS alias` in the SELECT list, document the JDE/source column name and the alias it maps to -- this is the ground-truth source→API field mapping
+- Tables and JOIN conditions referenced (including schema prefix, e.g. `CRPDTA.F0101`)
 - Parameterized placeholders or variable/filter interpolation
 - Dynamic parts and injection risk
 - WHERE/JOIN/CASE/HAVING clauses that encode business rules
+
+**SQL stored as filter constants**: In Lobster HTTP profiles, the database query is often stored as a `fieldconstant` value on a `<a type="constant">` element inside a filter chain (commonly a `concat` filter). The scanner promotes these to `inline_sql_{id}` params with `field_type=SQL`. Treat these identically to top-level SQL queries -- extract the full text and apply the field alias inventory requirement above.
 
 ### EXTERNAL_SYSTEMS
 
@@ -378,6 +386,8 @@ Check against these risk categories:
 - Base64-encoded credentials in filter chain constants
 - HTTP endpoints without authentication (auth_type=0)
 - API keys in filter constants
+- Credentials or tokens embedded in URL query parameters (e.g. `?access_token=...`, `?api_key=...`) -- flag these as CRITICAL regardless of whether the URL is in an agent, response unit, or http-json-lookup filter
+- File-based lookup references (`./conf/...` paths) -- document the file name, purpose, and which profiles depend on it; flag as a risk if the file is not version-controlled or its format is undocumented
 
 **Performance risks:**
 - Unbounded max_records (2147483647)

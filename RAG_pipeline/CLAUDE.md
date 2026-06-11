@@ -129,6 +129,12 @@ return (
 6. **Logging**: Log EVERY change to `.claude/PROGRESS_LOG.md` — no exceptions (see Logging rules above)
 7. **Context**: Read all `.claude/` files at session start, update them after every change
 8. **Specificity**: Always reference exact file paths, line numbers, and error messages in logs
+9. **No workarounds**: Fixes must address the root cause, not suppress symptoms. If a proper fix requires broader refactoring, do it. Never ship a narrow patch when the defect pattern exists elsewhere.
+10. **Generalize fixes**: Before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences — one-off special-case branches are not acceptable.
+11. **Use design patterns**: Before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.
+12. **Full pipeline gate**: Any non-Scout change requires the full pipeline: `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. See root `CLAUDE.md` Development Workflow.
+13. **Inspector required**: After building any change to the RAG retrieval chain (`src/retrieval/`) or auth/RBAC (`src/auth/`, `src/rbac/`), run `/inspect` before committing. Max 2 block cycles before escalating to the human.
+14. **Emergency path**: Use `/lfe-force` for production emergencies only; it logs to `PROTOCOL_DEBT.md` and session-start will warn until `/debt-resolve` clears it.
 
 ## Agent Docs
 

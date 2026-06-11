@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
 
 if TYPE_CHECKING:
@@ -54,11 +54,13 @@ class Phase4Cleanup(Phase):
         if state.warnings:
             index["warnings"] = state.warnings
             index["warnings_count"] = len(state.warnings)
-        (ctx.staging_dir / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+        debug_write(
+            debug_dir(ctx.staging_dir, "index.json"),
+            json.dumps(index, indent=2),
+        )
         if state.warning_collector.has_warnings():
-            assessment_dir = ctx.staging_dir / "_assessment"
-            assessment_dir.mkdir(parents=True, exist_ok=True)
-            (assessment_dir / "warnings.json").write_text(
+            debug_write(
+                debug_dir(ctx.staging_dir, "_assessment", "warnings.json"),
                 json.dumps(
                     {
                         "schema_version": 1,
@@ -66,20 +68,12 @@ class Phase4Cleanup(Phase):
                     },
                     indent=2,
                 ),
-                encoding="utf-8",
             )
-        (ctx.staging_dir / "provider_calls.json").write_text(
-            json.dumps([c.model_dump() for c in state.calls], indent=2),
-            encoding="utf-8",
-        )
-        audit_calls = ctx.staging_dir / "_audit" / "provider_calls.json"
-        if audit_calls.parent.exists():
-            audit_calls.write_text(
-                json.dumps([c.model_dump() for c in state.calls], indent=2),
-                encoding="utf-8",
-            )
+        calls_json = json.dumps([c.model_dump() for c in state.calls], indent=2)
+        debug_write(debug_dir(ctx.staging_dir, "provider_calls.json"), calls_json)
+        debug_write(debug_dir(ctx.staging_dir, "_audit", "provider_calls.json"), calls_json)
 
-        for directory in ("_preprocess", "_analysis"):
+        for directory in ("_preprocess", "_analysis", "_transient"):
             target = ctx.staging_dir / directory
             if target.exists():
                 shutil.rmtree(target, ignore_errors=True)

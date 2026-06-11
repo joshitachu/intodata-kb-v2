@@ -12,13 +12,58 @@
 
 ## MANDATORY: Session Start
 
-Before writing ANY code, read these files:
+Run `/session-start` first. It loads context, checks for an active plan, and classifies
+the work as Scout or full pipeline. Do not skip.
+
+Manual steps (if not using the command):
 1. `knowledge_base/CLAUDE.md` -- KB platform rules, doc generation workflow, known pitfalls
 2. `RAG_pipeline/CLAUDE.md` -- RAG system rules, logging format, code style
 3. The relevant `.claude/context.md` for the area you're working on
 4. The relevant `.claude/PROJECT_MEMORY.md` for architecture decisions and gotchas
+5. `.plans/active_plan.md` -- check for an active plan and its verdict before coding
 
 For knowledge_base work, also read `.agent/README.md` to find the right SOPs and system docs.
+
+## Development Workflow
+
+### Scout mode — minor fix (< 3 files, no new abstractions, no schema changes, no critical-area changes)
+1. `/session-start` → confirms Scout classification
+2. Build
+3. `/validate` → commit
+
+### Full pipeline (everything else)
+1. `/session-start` → full pipeline classification + pipeline state recovery
+2. `/grill <description>` → `.plans/01_grill.md` — clarifying questions, assumptions, risk
+3. `/prd` → `.plans/02_prd.md` — product requirements
+4. `/slices` → `.plans/03_slices.md` — vertical slice breakdown
+5. `/plan <slice>` → `.plans/04_active_plan.md` with `verdict: PENDING`
+6. `/plan-approve pass` → `verdict: PASS` (gate opens)
+7. Build (only after `verdict: PASS`)
+8. `/inspect` → `.plans/05_inspection_report.md`
+9. `/validate` → commit (only after Inspector PASS or WARN)
+
+Repeat steps 5–9 for each remaining slice.
+
+### Emergency path
+- `/lfe-force <description>` → immediate patch, bypasses plan gate and Inspector
+- Logs to `PROTOCOL_DEBT.md` — session-start warns until `/debt-resolve` clears it
+
+**Critical areas requiring `/inspect` without exception:**
+- Harness pipeline phases (`knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/`)
+- MCP API routes (`knowledge_base/mcp-server/src/mcp_server/api/`)
+- RAG retrieval chain (`RAG_pipeline/backend/src/retrieval/`)
+- Auth / RBAC (`RAG_pipeline/backend/src/auth/`, `RAG_pipeline/backend/src/rbac/`)
+
+### Pipeline coordination files (`.plans/`)
+```
+01_grill.md             — clarifying questions + risk assessment
+02_prd.md               — product requirements
+03_slices.md            — vertical slice breakdown
+04_active_plan.md       — current slice plan (verdict: PENDING/PASS/BLOCK)
+05_inspection_report.md — Inspector audit result
+PROTOCOL_DEBT.md        — open emergency hotfix debt
+```
+Session-start reads these files to recover the pipeline position after a crash.
 
 ## Project Structure
 
@@ -125,3 +170,6 @@ Never skip. Use specific file paths and verbatim error messages.
 6. **Doc generation uses staging** -- Claude Code writes to `docs_staging/`, server swaps to `docs/` on success (see `knowledge_base/CLAUDE.md` for details)
 7. **ALWAYS document changes** -- run `/session-end` after every change; update sub-project CLAUDE.md and `.agent/` docs if architecture or workflow changed; stale docs are worse than no docs
 8. **Python builds**: hatchling not setuptools; **Testing**: pytest (Python), Vitest (frontend)
+9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
+10. **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
+11. **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.

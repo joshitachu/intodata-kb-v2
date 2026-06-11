@@ -12,16 +12,7 @@ from mcp_server.providers.custom.engineering_facts.models import EngineeringFact
 
 
 JSON_ARTIFACTS: dict[str, str] = {
-    "entity_index": "entities",
-    "usage_index": "usage",
-    "dependency_map": "dependencies",
-    "change_impact_matrix": "impacts",
-    "architecture_map": "architecture",
-    "data_flow_map": "data_flows",
-    "api_surface": "api_surface",
     "config_runtime_map": "config_runtime",
-    "test_coverage_map": "test_coverage",
-    "known_risks": "known_risks",
 }
 
 

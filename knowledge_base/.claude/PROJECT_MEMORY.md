@@ -44,6 +44,32 @@
 
 - **Agentic investigation (items 4–5) scaffolding is already in the codebase but disconnected.** `StagingToolbox`, `ALLOWED_ACTIONS = {"read_file", "search_text", "list_dir", "finish"}`, and `InvestigatorLimits.max_rounds = 18` are all declared in `investigator.py` but unused in the live `SingleShotInvestigator` path. `ChunkManifestInvestigator` is the live implementation added 2026-06-01.
 
+- **`HarnessHelpersImpl` is the only place outside `harness.py` that calls private provider methods.** This is intentional: the `HarnessHelpers` Protocol exposes a clean testable interface; `HarnessHelpersImpl` delegates to `self._p._private_method()` directly. This is the approved pattern — do not add provider private-method calls anywhere else. Added 2026-06-03.
+
+- **Phase bodies still live in `harness.py` even after the Phase interface refactor.** `_phase2_analysis()`, `_phase2_group_agent()`, `_phase3_docs()`, targeted repair methods, etc. are shared infrastructure called by multiple phase classes through `HarnessHelpers`. They were not moved to individual phase files. `harness.py` is 4,819 lines post-refactor; `pipeline/phases/` contains orchestration logic, not implementation. Do not try to move the helper methods — they are dependencies shared across phases. Added 2026-06-03.
+
+- **`string.Template.safe_substitute` not Jinja2 for prompt templates.** Prompt text contains many literal `{` and `}` characters (code blocks, JSON examples, markdown tables). Jinja2 `{{ }}` delimiters would require `{% raw %}` escaping throughout. `${UPPER_SNAKE_CASE}` never appears naturally in prompts. `safe_substitute` leaves unknown `${...}` tokens as-is rather than raising — useful during development. Added 2026-06-03.
+
+- **`Phase.estimate()` is designed to work with `helpers=None`.** The dry-run estimate endpoint constructs Phase objects with `helpers=None` because `estimate()` is purely deterministic and never calls helpers. This is the intended usage. Do not add a None-guard that raises — it would break the estimate endpoint. Added 2026-06-03.
+
+- **`load_doc_catalog()` is a module-level singleton — tests must pass a `path` arg to override.** The singleton caches on first call. If a test modifies doc catalog state and does not pass a custom `path`, it will see the production catalog. Use `load_doc_catalog(path=Path("...test_catalog.yaml"))` in tests; the function bypasses the singleton when `path` is provided. Added 2026-06-03.
+
+- **`EvidenceTraceabilityValidator` is non-blocking by design.** Phantom absence detections are warnings + JSON artifacts only — they do not trigger repair or fail the run. This is intentional for initial rollout: the regex window approach may have edge-case false positives on some projects. Promote to blocking only after confirming low false-positive rate on real projects. Added 2026-06-03.
+
+- **`EvidenceQualityGate.should_skip()` always returns False — it reads `_preprocess/`, not `_analysis/`.** Phase28Bundles writes to `_analysis/`; `_preprocess/{group}.md` files are written by harness setup before the pipeline runs. The gate's thin-check is valid and independent of whether Phase28Bundles was skipped. Do not add a coordination check with Phase28Bundles' doc_bundles flag — it is not needed. Added 2026-06-09.
+
+- **Form-only Phase 2 validation findings must not trigger LLM repair.** Missing `- COVERED:` markers, byte-count depth warnings, and missing `GROUP_SUMMARY` headings are repair-plan findings first. `repair_planner.py` may deterministically append covered markers only when the unit already appears in the group analysis, and may add a structural `GROUP_SUMMARY` shell. It must not create deterministic shells for substantive Talend guide sections; those stay blocking so missing content is visible. Added 2026-06-10.
+
+- **Phase 3 targeted repair should prefer evidence-retention packets over legacy broad repair.** When an `evidence_retention.json` report exists, `_phase3_targeted_repair` builds a source-grounded repair packet and sends bounded direct context capped at 50k tokens. Do not fall back to broad staging context before trying the retention packet path. Empty or source-less packet plans should not run an LLM call. Added 2026-06-10.
+
+- **Thin-bundle notice is prepended before Phase 3 validation gates.** In `phase3_docs.py`, the `_thin_bundle_notice` block runs immediately after `helpers.phase3_docs()` and before `validate_docs`. If validation subsequently fails and `phase3_targeted_repair` rewrites a doc, the notice is lost. This is a known, accepted limitation (thin evidence groups are unlikely to pass repair). Do not move the notice after repair without ensuring it re-applies post-repair. Added 2026-06-09.
+
+- **`WarningCode` must be imported at top level in Phase files — not as a local import.** It is a lightweight `StrEnum` with no circular import risk. `phase1_investigation.py` and `phase2_analysis.py` both import it at top level; `evidence_quality_gate.py` was corrected to match during inspection. Any new Phase file that emits warnings must follow the same pattern. Added 2026-06-09.
+
+- **`source_fact_ledger` JSON must be stable for identical scan artifacts.** The ledger is intended for retention/diff checks in later documentation-evidence slices, so repeated builds against the same scan must serialize identically. `generated_at` is derived from scan artifact mtime rather than wall-clock time. Do not reintroduce `datetime.now()` into the canonical ledger payload; put run-time timestamps in outer reports if needed. Added 2026-06-09.
+
+- **`transient_artifacts.py` is the un-gated sibling of `debug_artifacts.py`; same module layout (constant + helpers) but no `if not config.pipeline_debug: return` branch.** `_transient/` holds in-pipeline throwaway files consumed in-process by the model call that produced them (merge inputs, synthesis inputs, repair bundles, scorecard-slice outputs, split-context chunks). The dir is deleted at Phase 4 alongside `_preprocess/` and `_analysis/`. No new config flags, no `tmp.replace` (throwaway; the model call is wrapped by retries). When adding a new transient write site: route through `transient_write(transient_dir(staging_dir, ...), content)` — never inline `mkdir` + `write_text` with a literal `staging_dir / "_transient" / ...` path. Added 2026-06-10.
+
 | Decision | Choice | Rationale | Date |
 |----------|--------|-----------|------|
 | MCP over CLI | Claude Code + MCP replaces CLI-based LLM analyzer | No API keys needed, better quality, parallel sub-agents | 2026-02 |

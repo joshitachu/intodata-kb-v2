@@ -4,6 +4,7 @@ Each Lobster profile is a self-contained <datawizardprofile> XML file containing
 - Agent (transport/trigger config: FTP, HTTP, Cron, Message, etc.)
 - DataProperties (parser config: filetype, encoding, delimiters)
 - Input/Output trees (hierarchical data schemas with field-level filters)
+- MappingInformation (flat source->destination wiring table, separate from filter chains)
 - Variables (system + user-defined context variables)
 - Response units (output destinations: FTP, HTTP, file, email, etc.)
 - Integration settings (output encoding, format)
@@ -12,6 +13,7 @@ Each Lobster profile is a self-contained <datawizardprofile> XML file containing
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
@@ -111,6 +113,13 @@ _EXTRA_SKIP_TAGS: frozenset[str] = frozenset({
     "structuredefinition", "inputtree", "outputtree", "variables",
     "responseunits", "realm", "note", "aiDoc", "aiDocumentation",
 })
+
+# fieldconstant values longer than this that start with a SQL keyword are
+# extracted as dedicated SQL params instead of being embedded in the filter expr.
+_SQL_CONSTANT_MIN_LEN: int = 200
+_SQL_CONSTANT_PREFIXES: tuple[str, ...] = (
+    "SELECT ", "WITH ", "INSERT ", "UPDATE ", "DELETE ", "MERGE ",
+)
 
 
 class LobsterParser(BaseParser):
@@ -276,6 +285,13 @@ class LobsterParser(BaseParser):
             if vars_el is not None:
                 ctx_groups = self._parse_variables(vars_el)
                 context_groups.extend(ctx_groups)
+
+            # Mapping information (flat source->destination wiring table)
+            mi_el = self._child(sd_el, "mappinginformation")
+            if mi_el is not None:
+                mi_comp = self._parse_mapping_information(mi_el)
+                if mi_comp.params:
+                    components.append(mi_comp)
 
         # 4. Integration settings
         is_el = self._child(root, "integrationsettings")
@@ -555,9 +571,22 @@ class LobsterParser(BaseParser):
                 elif ptype == "destination":
                     args.append(f"dest:{pfc}")
                 elif ptype == "constant":
-                    # Use fieldconstant as the display value (pre-encoding)
-                    val = pfc if pfc else "(base64)"
-                    args.append(f'const:"{val}"')
+                    # Large constants that look like SQL are extracted as
+                    # dedicated SQL params so they survive chunking intact
+                    # rather than being buried inside a filter expression.
+                    pfc_stripped = pfc.lstrip()
+                    if (
+                        len(pfc) >= _SQL_CONSTANT_MIN_LEN
+                        and pfc_stripped.upper().startswith(_SQL_CONSTANT_PREFIXES)
+                    ):
+                        sql_key = f"inline_sql_{fid}"
+                        params.append(ComponentParam(
+                            name=sql_key, value=pfc, field_type="SQL",
+                        ))
+                        args.append(f"sql:{sql_key}")
+                    else:
+                        val = pfc if pfc else "(base64)"
+                        args.append(f'const:"{val}"')
                 elif ptype:
                     args.append(f"{ptype}:{pfc}")
                 elif tag != "value":
@@ -626,6 +655,46 @@ class LobsterParser(BaseParser):
                 "VAR_AUTOSERIALIZE_DATA", "VAR_SYS_MESSAGE",
                 "VAR_SYS_MESSAGE_ID",
             )
+        )
+
+    # ── Mapping information ──────────────────────────────────────────
+
+    @staticmethod
+    def _parse_mapping_information(mi_el: ET.Element) -> Component:
+        """Parse <mappinginformation> into a flat wiring table component.
+
+        This block contains the definitive source->destination field wiring for
+        direct mappings that have no filter chain in the output tree.  Without
+        it, plain SQL-alias-to-API-field renames (e.g. industrySoldToCode ->
+        categoryCode08) are invisible to the scanner.
+        """
+        entries: list[str] = []
+        for child in list(mi_el):
+            tag = _local_name(child.tag)
+            if tag != "mappingentry":
+                continue
+            src = child.get("source", "")
+            dst = child.get("destination", "")
+            if not src or not dst:
+                continue
+            # Strip internal numeric suffixes used by Lobster for deduplication
+            # e.g. "industrySoldToCode-181" -> "industrySoldToCode"
+            #      "categoryCode08#159"     -> "categoryCode08"
+            src_clean = re.sub(r"[-#]\d+$", "", src)
+            dst_clean = re.sub(r"[-#]\d+$", "", dst)
+            entries.append(f"{src_clean} -> {dst_clean}")
+
+        params: list[ComponentParam] = []
+        if entries:
+            params.append(ComponentParam(
+                name="field_wiring",
+                value="\n".join(entries),
+                field_type="MAPPING",
+            ))
+        return Component(
+            unique_name="mapping_table",
+            component_type="LobsterMappingTable",
+            params=params,
         )
 
     # ── Integration settings ─────────────────────────────────────────

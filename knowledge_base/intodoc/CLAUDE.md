@@ -89,3 +89,6 @@ intodoc scan <source-dir> --platform talend --output-dir ../intodoc-output
 - Run credential filter BEFORE any LLM calls -- never send raw credentials to API
 - Legacy CLI analyzer: claude-sonnet for passes 1-17, opus for pass 18 (synthesis)
 - Legacy CLI hard budget limit default: $50
+- **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.
+- **Generalize fixes** -- before fixing anything, check whether the same failure can occur in other places. Fix it at the level that prevents all recurrences. One-off special-case branches are not acceptable solutions.
+- **Use design patterns** -- before writing a new class, service, or module, identify whether an established pattern fits (Strategy, Repository, Factory, Observer, Pipeline, etc.). Don't invent bespoke structures when a well-understood pattern solves the problem.

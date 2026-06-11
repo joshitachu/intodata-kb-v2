@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ class Phase26Scorecard(Phase):
             default_input_budget,
             default_tool_budget,
         )
-        from mcp_server.providers.custom.models import ModelOptions, ModelResult, ProviderCallLog
+        from mcp_server.providers.custom.models import ModelOptions, ModelResult
         from mcp_server.providers.custom.prompts import scorecard_prompt
         from mcp_server.providers.custom.validators import validate_scorecard_contract
 
@@ -136,8 +137,9 @@ class Phase26Scorecard(Phase):
                     "[custom] Phase 2.6 scorecard contract gaps: " + "; ".join(sc_check["errors"][:5]),
                     "warning",
                 )
-                (assessment_dir / "_scorecard_contract_errors.json").write_text(
-                    __import__("json").dumps(sc_check, indent=2), encoding="utf-8"
+                debug_write(
+                    debug_dir(ctx.staging_dir, "_assessment", "_scorecard_contract_errors.json"),
+                    __import__("json").dumps(sc_check, indent=2),
                 )
                 state.warnings.extend(sc_check["errors"])
 

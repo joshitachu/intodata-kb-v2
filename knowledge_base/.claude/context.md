@@ -1,6 +1,14 @@
 # KB Sub-project Context
 
-## Last Completed (2026-06-02)
+## Last Completed (2026-06-10) — Track A Slice 4
+
+Transient-dir consolidation + prompt corpus dedup (FR-6, FR-8) is built, validated, and inspected. New `transient_artifacts.py` helper (un-gated mirror of `debug_artifacts.py`) consolidates 5 scattered transient dirs (`_context_slices/`, `_analysis/_merge_inputs/`, `_analysis/_synthesis_inputs/`, `_analysis/_repair_context/`, `_assessment/_scorecard_reduce/`) into a single `_transient/` deleted at Phase 4 alongside `_preprocess/` and `_analysis/`. Three duplicates of the Phase 2 analysis-guide source-lookup logic (one in `prompt_packs._phase2_sources`, two in `harness._phase2_shared_context` branches) reduced to one canonical resolver (`CustomHarnessProvider._phase2_analysis_guide_files` static method). LLM input is byte-identical (only file paths changed); no new config flags. Inspection verdict: WARN (two minor deviations: helper preserves `logger.warning` for missing-guide case that `_phase2_sources` doesn't log; helper drops unused `ctx`/`pack_dir` from plan's suggested signature) — both acceptable, non-blocking. 587 tests pass.
+
+## Last Completed (2026-06-10) — Documentation Evidence Depth + Repair Quality Slices 1-5
+
+Documentation Evidence Depth + Repair Quality Slices 1-5 are built and inspected. Slices 1-3 added source completeness auditing and the deterministic source-fact ledger. Slice 4 added evidence-retention reporting to compare source facts against analysis/docs and identify facts lost before the chatbot can answer. Slice 5 replaced broad/form-driven repair behavior with evidence-gated repair planning: `repair_planner.py` classifies syntactic Phase 2 failures, applies deterministic marker/`GROUP_SUMMARY` patches only when safe, keeps substantive missing sections blocking, and routes Phase 3 repair through source-grounded retention packets capped at 50k tokens. Inspection verdict: PASS after fixing Phase 3 packet usage and avoiding deterministic shells for substantive Talend sections. Formal `/validate` is intentionally deferred until all planned slices are complete.
+
+## Previous (2026-06-02)
 
 Flagged dynamic DAG harness foundation implemented. New `ExecutionPlan` / `ExecutionGraph` / `ExecutionNode` contracts, deterministic graph fallback, optional LLM Phase 0 planner, graph validation, and `_plans/` telemetry (`execution_plan.json`, `execution_graph.json`, `node_results.json`, `graph_events.jsonl`) are in place. DAG mode is off by default (`MCP_AGENT_DAG_ENABLED=false`), planner is separately off (`MCP_AGENT_PLANNER_ENABLED=false`), and final validators/publish gates remain mandatory. Phase 2 now has a planner-selected skeleton/deep-dive path: skeleton sidecars in `_analysis/_skeleton/`, shallow groups via direct Phase 2, deep groups via `phase2.deep_dive`. Tools are enabled only for explicit phases (`phase1.investigate`, `phase2.deep_dive`, repair, critic/consistency, Phase 3), never globally for Phase 2. Added Phase 3.6 consistency report and flagged smart-repair root-cause classification. Focused tests: 205 passed. Docker rebuild succeeded for mcp-server, backend, frontend, dashboard, and mission-control images.
 
@@ -35,6 +43,10 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Current State
 
+- **Track A (artifact reduction)**: Slices 1-3 are built (Slices 1+2 committed `5e16911`; Slice 3 in working dir uncommitted). Slice 4 just built and inspected (transient-dir consolidation + prompt corpus dedup, 587 tests pass, WARN verdict). Slice 5 is next: dead JSON maps + audit-tree manifest + docs + paired-run acceptance (FR-2, FR-7, FR-10, FR-11 remainder). Active artifact: `.plans/04_active_plan.md` is Slice 4 with verdict PASS; `.plans/05_inspection_report.md` is WARN.
+- Documentation evidence improvement work is in progress. Slices 1-5 are built and have focused smoke checks, but full validation and commit are deferred until all slices are complete.
+- New untracked slice files must be added before commit: `knowledge_base/mcp-server/src/mcp_server/services/doc_evidence_auditor.py`, `knowledge_base/mcp-server/tests/test_services/test_doc_evidence_auditor.py`, `knowledge_base/mcp-server/src/mcp_server/providers/custom/source_fact_ledger.py`, `knowledge_base/mcp-server/tests/test_providers/test_source_fact_ledger.py`, `knowledge_base/mcp-server/src/mcp_server/providers/custom/evidence_retention.py`, `knowledge_base/mcp-server/tests/test_providers/test_evidence_retention.py`, `knowledge_base/mcp-server/src/mcp_server/providers/custom/repair_planner.py`, `knowledge_base/mcp-server/tests/test_providers/test_repair_planner.py`.
+- Harness A-grade refactor complete. 527 tests pass. Pipeline is now composable: six `Phase` classes, `PipelineRunner`, data-driven doc catalog, file-editable prompt templates, per-phase pack model/concurrency overrides, evidence traceability validator, and dry-run estimate endpoint.
 - Integration Suite Reliability Layer complete. 508+ focused tests have passed across recent harness changes.
 - Flagged dynamic DAG harness foundation is implemented but disabled by default. Enable with `MCP_AGENT_DAG_ENABLED=true`; enable LLM planning separately with `MCP_AGENT_PLANNER_ENABLED=true`.
 - DAG mode persists `_plans/execution_plan.json`, `_plans/execution_graph.json`, `_plans/node_results.json`, and `_plans/graph_events.jsonl` for audit.
@@ -51,7 +63,13 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Immediate Next Steps
 
-1. **Validate DAG mode on a small project**: Run with `MCP_AGENT_DAG_ENABLED=true`, `MCP_AGENT_PLANNER_ENABLED=false`. Confirm deterministic fallback graph mirrors current behavior, `_plans/*.json` files are written, final gates still pass, and no Phase 2 core tool calls happen unless `phase2.deep_dive` is selected.
+1. **Plan Track A Slice 5** (dead JSON maps + audit-tree manifest + docs + paired-run acceptance; FR-2, FR-7, FR-10, FR-11). Drops the 9 never-read root JSON maps, reduces `_audit/` to `enterprise_gates.json` + `final_doc_hashes.json`, updates CLAUDE.md/mcp-workflow.md, runs paired-run acceptance (≤300 files / ≤20 MB, LLM-input invariance, byte-identical docs, flag-on forensics). Depends on Slices 1-4. Update `.plans/03_slices.md` `current_slice` to 5, then `/plan` -> `/plan-approve pass` -> `/execute` -> `/inspect` -> commit.
+2. **Plan the next documentation-evidence slice**: likely Phase 3 handoff/writer input quality, answerability inspection, or final cross-slice validation harness. Keep token cost visible and preserve the rule that formal `/validate` waits until all slices are complete.
+2. **Do not run formal `/validate` yet**: user wants validation across all slices together after the remaining slices are complete.
+3. **Keep current slice files staged mentally but not committed yet**: Slices 1-5 are built/inspected; validation and commit happen after all slices.
+4. **When all slices are complete, run full `/validate`** across the combined evidence-depth work before commit.
+5. **Smoke-test estimate endpoint**: `curl -s http://localhost:8001/mcp/projects/{project_id}/generate/estimate` — confirm 7 phases returned (EvidenceQualityGate should appear with calls_min=0, calls_max=0).
+3. **Validate DAG mode on a small project**: Run with `MCP_AGENT_DAG_ENABLED=true`, `MCP_AGENT_PLANNER_ENABLED=false`. Confirm deterministic fallback graph mirrors current behavior, `_plans/*.json` files are written, final gates still pass, and no Phase 2 core tool calls happen unless `phase2.deep_dive` is selected.
 2. **Validate LLM planner separately**: Run with `MCP_AGENT_DAG_ENABLED=true`, `MCP_AGENT_PLANNER_ENABLED=true` on a non-client draft project. Confirm unsafe/invalid JSON falls back cleanly and valid planner output cannot add undeclared docs or omit final gates.
 3. **Validate tiered Phase 2 on complex project**: Force or request `analysis_mode=skeleton_plus_deep_dive`; confirm `_analysis/_skeleton/*.json` exists, deep groups use `phase2.deep_dive`, shallow groups use direct Phase 2, and final Phase 2 validators still pass.
 4. **Validate consistency report**: Introduce or find a known inventory-count contradiction in staging and confirm `_assessment/consistency_report.json` flags it before final gates.

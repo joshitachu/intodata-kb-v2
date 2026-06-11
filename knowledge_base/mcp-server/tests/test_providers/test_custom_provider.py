@@ -2544,8 +2544,9 @@ async def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_pa
     assert not (staging / "engineering_facts.md").exists()
     assert not (staging / "dependency_map.md").exists()
     assert (staging / "_facts" / "engineering_facts.md").exists()
-    index = json.loads((staging / "index.json").read_text(encoding="utf-8"))
-    assert index["engineering_facts"] == ["_facts/dependency_map.md", "_facts/engineering_facts.md"]
+    # index.json is debug-only; check via state instead
+    assert not (staging / "index.json").exists()
+    assert not (staging / "_debug" / "index.json").exists()  # pipeline_debug=False by default
 
 
 @pytest.mark.asyncio
@@ -2581,9 +2582,54 @@ async def test_phase4_cleanup_preserves_generation_warnings(tmp_path):
     provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
     await Phase4Cleanup(HarnessHelpersImpl(provider)).run(ctx, state, log_cb)
 
-    index = json.loads((staging / "index.json").read_text(encoding="utf-8"))
+    # index.json is debug-only; warnings are preserved in state
+    assert not (staging / "index.json").exists()
+    assert state.warnings == ["Generated doc 06_OPERATIONS_TESTING_AND_DEBUGGING.md missing expected sections/terms: Debug"]
+
+
+@pytest.mark.asyncio
+async def test_phase4_cleanup_debug_flag_writes_index_and_calls(tmp_path, monkeypatch):
+    from mcp_server.config import config as mcp_config
+    monkeypatch.setattr(mcp_config, "pipeline_debug", True)
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    (staging / "_assessment").mkdir()
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    state = HarnessRunState(
+        project_id="proj",
+        facts_manifest=facts,
+        warnings=["Missing sections: Debug"],
+    )
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/deepseek",
+        write_model="fake/deepseek",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        return None
+
+    from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+
+    provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    await Phase4Cleanup(HarnessHelpersImpl(provider)).run(ctx, state, log_cb)
+
+    debug = staging / "_debug"
+    index = json.loads((debug / "index.json").read_text(encoding="utf-8"))
     assert index["warnings_count"] == 1
-    assert "06_OPERATIONS_TESTING_AND_DEBUGGING.md" in index["warnings"][0]
+    assert index["project_id"] == "proj"
+    assert (debug / "provider_calls.json").exists()
+    assert (debug / "_audit" / "provider_calls.json").exists()
 
 
 def test_phase3_repair_targets_uses_doc_named_in_validation_error(tmp_path):
@@ -4272,7 +4318,8 @@ async def test_custom_harness_generates_valid_staging(tmp_path, monkeypatch):
     assert result.cost_usd > 0
     assert (staging / "facts_manifest.json").exists()
     assert (staging / "_investigation" / "_summary.md").exists()
-    assert (staging / "index.json").exists()
+    # index.json is debug-only (gated in Track A Slice 3)
+    assert not (staging / "index.json").exists()
     # 09_EXECUTIVE_SUMMARY is enterprise-only; this test uses enterprise_mode=False
     expected_docs = [d for d in REQUIRED_DOCS if d != "09_EXECUTIVE_SUMMARY"]
     assert all((staging / f"{doc}.md").exists() for doc in expected_docs)
@@ -5333,3 +5380,221 @@ def test_phase2_coverage_partial_context_fields() -> None:
     assert "total" in w.context
     assert w.context["covered"] == 2
     assert w.context["total"] == 5
+
+
+def test_transient_artifacts_writes_under_unified_dir(tmp_path: Path) -> None:
+    from mcp_server.providers.custom.transient_artifacts import (
+        TRANSIENT_DIR_NAME,
+        transient_dir,
+        transient_write,
+    )
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+
+    path = transient_dir(staging, "phase2_merge_group_a.md")
+    assert path == staging / TRANSIENT_DIR_NAME / "phase2_merge_group_a.md"
+    assert not path.exists()
+
+    transient_write(path, "content")
+    assert path.read_text(encoding="utf-8") == "content"
+
+
+@pytest.mark.asyncio
+async def test_phase4_cleanup_removes_transient_dir(tmp_path: Path) -> None:
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    transient = staging / "_transient"
+    transient.mkdir()
+    (transient / "phase2_merge_A.md").write_text("stale", encoding="utf-8")
+    (staging / "_preprocess").mkdir()
+    (staging / "_analysis").mkdir()
+
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/deepseek",
+        write_model="fake/deepseek",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        return None
+
+    from mcp_server.providers.custom.pipeline.helpers import HarnessHelpersImpl
+    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+
+    provider = CustomHarnessProvider(
+        OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1")
+    )
+    await Phase4Cleanup(HarnessHelpersImpl(provider)).run(ctx, state, log_cb)
+
+    assert not (staging / "_transient").exists()
+    assert not (staging / "_preprocess").exists()
+    assert not (staging / "_analysis").exists()
+
+
+def test_transient_dir_regenerated_on_resume(tmp_path: Path) -> None:
+    """Mid-phase-interrupt: a stale _transient/ is fully replaced on the next run.
+
+    The consolidated _transient/ dir is throwaway. If a previous run died
+    mid-phase, the next run deletes the stale dir and the phase body
+    regenerates whatever transient files it needs. No resume key.
+    """
+
+    import shutil
+
+    from mcp_server.providers.custom.transient_artifacts import transient_write
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    transient = staging / "_transient"
+    transient.mkdir()
+    (transient / "phase2_merge_stale_group.md").write_text("stale from previous run", encoding="utf-8")
+
+    shutil.rmtree(transient, ignore_errors=True)
+
+    target = transient / "phase2_merge_new_group.md"
+    transient_write(target, "regenerated on resume")
+
+    assert not (transient / "phase2_merge_stale_group.md").exists()
+    assert target.read_text(encoding="utf-8") == "regenerated on resume"
+
+
+def test_phase2_source_lookup_single_source_of_truth(tmp_path: Path) -> None:
+    """Harness helper and prompt_packs._phase2_sources must agree on every input shape."""
+
+    from mcp_server.providers.custom.harness import CustomHarnessProvider
+    from mcp_server.providers.custom.prompt_packs import _phase2_sources as pp_phase2_sources
+
+    preprocess_dir = tmp_path / "_preprocess"
+    preprocess_dir.mkdir()
+    (preprocess_dir / "_analysis_prompts_generic.md").write_text("glob-a", encoding="utf-8")
+    (preprocess_dir / "_analysis_prompts_extra.md").write_text("glob-b", encoding="utf-8")
+    (preprocess_dir / "_my_guide.md").write_text("specific", encoding="utf-8")
+
+    guide = "_my_guide.md"
+    cases = [
+        ("specific-guide-present", guide),
+        ("sentinel-string", "_analysis_prompts*.md"),
+        ("missing-guide-name", "_does_not_exist.md"),
+        ("empty-guide", ""),
+    ]
+    for label, guide_file in cases:
+        harness_result = CustomHarnessProvider._phase2_analysis_guide_files(
+            preprocess_dir, guide_file
+        )
+        prompt_packs_result = pp_phase2_sources(preprocess_dir, guide_file)
+        assert [p.name for p in harness_result] == [p.name for p in prompt_packs_result], (
+            f"mismatch for {label}: harness={harness_result} pp={prompt_packs_result}"
+        )
+
+    guide_present = CustomHarnessProvider._phase2_analysis_guide_files(preprocess_dir, guide)
+    assert guide_present == [preprocess_dir / "_my_guide.md"]
+
+    sentinel_result = CustomHarnessProvider._phase2_analysis_guide_files(
+        preprocess_dir, "_analysis_prompts*.md"
+    )
+    assert {p.name for p in sentinel_result} == {
+        "_analysis_prompts_extra.md",
+        "_analysis_prompts_generic.md",
+    }
+
+
+@pytest.mark.asyncio
+async def test_audit_bundle_only_writes_gates_and_hashes(tmp_path: Path) -> None:
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    (staging / "01_OVERVIEW.md").write_text("# Overview\n", encoding="utf-8")
+    (staging / "02_COMPONENT_INVENTORY.md").write_text("# Inventory\n", encoding="utf-8")
+    (staging / "facts_manifest.json").write_text("{}", encoding="utf-8")
+    (staging / "documentation_obligations.json").write_text("{}", encoding="utf-8")
+    (staging / "provider_calls.json").write_text("[]", encoding="utf-8")
+    (staging / "_assessment").mkdir()
+    (staging / "_assessment" / "scorecard.md").write_text("# Scorecard\n", encoding="utf-8")
+    (staging / "_analysis").mkdir()
+    (staging / "_analysis" / "group_a.md").write_text("# Group A\n", encoding="utf-8")
+    (staging / "_investigation").mkdir()
+    (staging / "_investigation" / "group_a.json").write_text("{}", encoding="utf-8")
+
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/deepseek",
+        write_model="fake/deepseek",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    gate_report = {"mode": "enterprise", "client_ready": True, "gates": {}}
+    provider = CustomHarnessProvider(
+        OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1")
+    )
+    await provider._write_audit_bundle(ctx, state, gate_report)
+
+    audit_dir = staging / "_audit"
+    assert audit_dir.is_dir()
+    contents = sorted(p.name for p in audit_dir.iterdir())
+    assert contents == ["enterprise_gates.json", "final_doc_hashes.json"]
+
+    gates = json.loads((audit_dir / "enterprise_gates.json").read_text(encoding="utf-8"))
+    assert gates == gate_report
+
+    hashes = json.loads((audit_dir / "final_doc_hashes.json").read_text(encoding="utf-8"))
+    assert set(hashes.keys()) == {"01_OVERVIEW.md", "02_COMPONENT_INVENTORY.md"}
+    assert all(len(value) == 64 for value in hashes.values())
+
+
+def test_load_enterprise_gate_results_falls_back_to_audit(tmp_path: Path) -> None:
+    from mcp_server.api.routes.projects import _load_enterprise_gate_results
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    audit_dir = staging / "_audit"
+    audit_dir.mkdir()
+    audit_payload = {
+        "mode": "enterprise",
+        "client_ready": True,
+        "gates": {"valid_fresh_scan": {"ok": True}},
+    }
+    (audit_dir / "enterprise_gates.json").write_text(
+        json.dumps(audit_payload), encoding="utf-8"
+    )
+
+    result = _load_enterprise_gate_results(staging)
+    assert result == audit_payload
+
+
+def test_load_enterprise_gate_results_prefers_assessment_over_audit(tmp_path: Path) -> None:
+    from mcp_server.api.routes.projects import _load_enterprise_gate_results
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    assessment_dir = staging / "_assessment"
+    assessment_dir.mkdir()
+    (assessment_dir / "enterprise_gates.json").write_text(
+        json.dumps({"mode": "draft", "client_ready": False}), encoding="utf-8"
+    )
+    audit_dir = staging / "_audit"
+    audit_dir.mkdir()
+    (audit_dir / "enterprise_gates.json").write_text(
+        json.dumps({"mode": "enterprise", "client_ready": True}), encoding="utf-8"
+    )
+
+    result = _load_enterprise_gate_results(staging)
+    assert result == {"mode": "draft", "client_ready": False}

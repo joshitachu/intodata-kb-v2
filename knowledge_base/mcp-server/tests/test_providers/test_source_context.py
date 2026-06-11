@@ -61,8 +61,9 @@ def test_direct_source_packaging_preserves_redacted_content_and_coverage(tmp_pat
     assert "[REDACTED]" in src_bundle
     assert coverage["summary"]["total_files"] == 2
     assert coverage["summary"]["included_full"] == 2
+    # Coverage is written once, to the canonical preprocess location only
     assert (preprocess / "_source_coverage.json").exists()
-    assert (preprocess / "_source_context" / "coverage.json").exists()
+    assert not (preprocess / "_source_context" / "coverage.json").exists()
 
 
 def test_direct_source_packaging_redacts_reordered_xml_appsetting_values(tmp_path):

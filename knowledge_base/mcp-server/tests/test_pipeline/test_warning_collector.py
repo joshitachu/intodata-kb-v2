@@ -135,14 +135,12 @@ async def test_phase4_writes_warnings_json(tmp_path: Path) -> None:
     result = await phase.run(ctx, state, log_cb=MagicMock())
 
     assert result.success is True
-    warnings_path = staging / "_assessment" / "warnings.json"
-    assert warnings_path.exists(), "warnings.json must be written when collector is non-empty"
-
-    data = json.loads(warnings_path.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 1
-    assert len(data["warnings"]) == 1
-    assert data["warnings"][0]["code"] == "PHASE1_GROUP_FAILURE"
-    assert data["warnings"][0]["context"] == {"group": "X"}
+    # warnings.json is debug-only; verify the warning survived in the collector
+    assert not (staging / "_assessment" / "warnings.json").exists()
+    assert not (staging / "_debug" / "_assessment" / "warnings.json").exists()
+    assert len(state.warning_collector.warnings) == 1
+    assert state.warning_collector.warnings[0].code == WarningCode.PHASE1_GROUP_FAILURE
+    assert state.warning_collector.warnings[0].context == {"group": "X"}
 
 
 @pytest.mark.asyncio
