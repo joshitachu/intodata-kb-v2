@@ -71,17 +71,27 @@ This is the primary method for generating project documentation. Follow it exact
 - Phase 2 dispatches one persisted group-analysis task per scanner group, with configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Oversized/split group work is merged by an LLM merge task, not by Python-authored prose.
 - Phase 2.6 scorecard and Phase 3 document writing are also persisted agent tasks under `docs_staging/_agent_tasks/{phase}/{target_id}/`.
 - Phase 3 dispatches one document task per required markdown document, with configurable concurrency (`MCP_AGENT_PHASE3_CONCURRENCY`, default 4).
+- **Phase 2 section parser** (`_parse_phase2_sections`): recognises h3-only headings (`### SECTION_NAME`). All-caps sub-headings (e.g. `#### HIGH` inside `RISK_FLAGS`) do not break the owning section. `CROSS_CHUNK_FINDINGS` is a registered section name. Plugin ANALYSIS_GUIDE h3 sections are registered at call time via `_guide_section_names` + `extra_section_names` param.
+- **Phase 2.8 BASELINE floor**: `BASELINE_BUNDLE_SECTIONS = {GROUP_SUMMARY_SECTION}`. Every doc pack includes `GROUP_SUMMARY` plus its own `phase2_sections` from `doc_catalog.yaml` (standard runs) or `evidence_profiles` (plugin/pack runs). Five previously shared sections (`COMPONENTS`, `EXECUTION_FLOW`, `CROSS_GROUP_REFS`, `RISK_FLAGS`, `UNCLASSIFIED`) were removed from the floor.
+- **Phase 3 targeted dispatch (non-plugin runs)**: For tool-capable providers (non-plugin mode), `_complete_core_generation` injects the targeted doc pack (`_doc_pack_*.md`, capped at 100 KB) into `opts.system_prompt` instead of sending an empty context (hint-only). Plugin-mode Phase 3 disables tools entirely (`_tool_policy` line 727) so this path is unreachable for plugin runs. Phase 2 calls are unaffected (no `_doc_pack_` files in their context).
+- **Phase 3 static context** (`_phase3_context_files`): `_doc_pack_manifest.json` is excluded — it is a build-artifact index, not evidence. `entity_index.csv` and `usage_index.csv` are excluded from `_engineering_fact_context` for all Phase 3 doc names; they remain on disk for tool access.
 - `EvidenceTraceabilityValidator` (`providers/custom/evidence_traceability.py`) runs
   after Phase 3 and writes `_assessment/evidence_traceability.json`.
-- **Phase 3 obligation failures are advisory warnings, not errors.** Validators
-  (`validate_docs`, `validate_doc_depth`, `validate_source_provenance`) still
-  run and write their reports under `_assessment/`. If a report returns
-  `ok=False`, the failure is emitted as a `log_cb` warning (count + first 3
-  obligation messages) and the docs ship as-written. No model-call repair
-  loop; no retry; no `RuntimeError`. The operator decides whether to
-  manually fix the missing section. Phase 4 cleanup and the atomic swap
-  proceed normally. (Added 2026-06-11 — removed the
-  `_phase3_targeted_repair` mechanism.)
+- **All 4 Phase 3 final-check gates are advisory warnings, not exceptions.**
+  Validators (`validate_docs`, `validate_doc_depth`,
+  `validate_source_provenance`) and the SQL usage gate
+  (`_validate_sql_usage_publication`) still run and write their
+  reports under `_assessment/`. If any return errors, the failure is
+  emitted as a `log_cb` warning (count + first 3 messages) and the
+  docs ship as-written. No `RuntimeError`. The operator decides
+  whether to manually fix the gap. Phase 4 cleanup and the atomic
+  swap to `docs/` proceed normally. The 4 gates are:
+  doc-validation, doc-depth, source-provenance, and SQL usage. The
+  enterprise publish gates (`valid_fresh_scan`,
+  `complete_evidence_coverage`, etc.) are also advisory: failed
+  gates surface as warnings, the swap happens. (Added 2026-06-11 —
+  removed the `_phase3_targeted_repair` mechanism; softened the
+  remaining hard-fail gates in a follow-up commit.)
 - Runtime task directories store `status.json` and exact LLM `output.md` as
   always-on breadcrumb artifacts; `contract.json`, `validation_report.json`,
   `tool_call_ledger.json`, and `provider_metrics.json` are written under

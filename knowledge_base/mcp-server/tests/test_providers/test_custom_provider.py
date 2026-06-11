@@ -11,7 +11,15 @@ import pytest
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.custom.agent_runtime import AgentTaskContract, AgentTaskRuntime, ScopedEvidenceTools, ToolBudget
 from mcp_server.providers.custom.dag import deterministic_execution_plan, validate_execution_plan
-from mcp_server.providers.custom.harness import CustomHarnessProvider, FailureKind, _provider_supports_tools
+from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
+from mcp_server.providers.custom.harness import (
+    ADDITIONAL_FINDINGS_SECTION,
+    BASELINE_BUNDLE_SECTIONS,
+    CustomHarnessProvider,
+    FailureKind,
+    _guide_section_names,
+    _provider_supports_tools,
+)
 from mcp_server.providers.custom.investigator import (
     ChunkManifestInvestigator,
     EvidenceValidator,
@@ -2293,6 +2301,43 @@ def test_deterministic_phase2_merge_preserves_canonical_sections():
     assert "Intro evidence" in merged
 
 
+def test_parse_phase2_sections_h4_heading_does_not_break_parent_section():
+    text = "### RISK_FLAGS\n\nSome risk.\n\n#### HIGH\n\nHigh risk detail.\n#### LOW\n\nLow detail."
+    result = CustomHarnessProvider._parse_phase2_sections(text)
+    assert "High risk detail" in result.get("RISK_FLAGS", "")
+    assert "Low detail" in result.get("RISK_FLAGS", "")
+    assert result.get(ADDITIONAL_FINDINGS_SECTION, "") == ""
+
+
+def test_parse_phase2_sections_cross_chunk_findings_is_named_section():
+    text = "### COMPONENTS\n\ncomp content\n\n### CROSS_CHUNK_FINDINGS\n\ncross content"
+    result = CustomHarnessProvider._parse_phase2_sections(text)
+    assert result.get("CROSS_CHUNK_FINDINGS") == "cross content"
+    assert result.get(ADDITIONAL_FINDINGS_SECTION, "") == ""
+    assert result.get("COMPONENTS") == "comp content"
+
+
+def test_parse_phase2_sections_extra_section_names_accepted():
+    text = "### COMPONENTS\n\ncomp\n\n### DEBUG_TESTING_EVIDENCE\n\ndebug content"
+    result = CustomHarnessProvider._parse_phase2_sections(
+        text, extra_section_names=frozenset({"DEBUG_TESTING_EVIDENCE"})
+    )
+    assert result.get("DEBUG_TESTING_EVIDENCE") == "debug content"
+    assert result.get(ADDITIONAL_FINDINGS_SECTION, "") == ""
+
+
+def test_guide_section_names_extracts_extra_headers(tmp_path):
+    guide = tmp_path / "ANALYSIS_GUIDE.md"
+    guide.write_text(
+        "# Guide\n\n### COMPONENTS\n\nStandard section.\n\n### DEBUG_TESTING_EVIDENCE\n\nPlugin extra.\n",
+        encoding="utf-8",
+    )
+    names = _guide_section_names(guide)
+    # COMPONENTS is in PHASE2_SECTION_NAMES already — must NOT appear in extras
+    assert "COMPONENTS" not in names
+    assert "DEBUG_TESTING_EVIDENCE" in names
+
+
 def test_targeted_analysis_bundle_keeps_relevant_exact_sections(tmp_path):
     analysis = tmp_path / "Orders.md"
     analysis.write_text(
@@ -2351,13 +2396,58 @@ def test_phase28_generates_doc_specific_evidence_packs_and_manifest(tmp_path):
     assert set(manifest["doc_packs"]) == set(REQUIRED_DOCS)
     entry = manifest["doc_packs"]["02_COMPONENT_INVENTORY"]
     assert entry["included"]["A.md"]
-    assert "UNCLASSIFIED_OR_EXTRA_FINDINGS" in entry["included"]["A.md"] or entry["unclassified"]["A.md"]
+    assert "GROUP_SUMMARY" in entry["included"]["A.md"]
     assert entry["included_obligations"]
     assert "unmatched_obligations" in entry
     assert "evidence_sources" in entry
     pack = (staging / "_analysis" / "_doc_pack_02_COMPONENT_INVENTORY.md").read_text(encoding="utf-8")
     assert "## Documentation Obligations" in pack
     assert "shared.identity" in pack
+
+
+def test_baseline_bundle_sections_is_group_summary_only():
+    assert BASELINE_BUNDLE_SECTIONS == {GROUP_SUMMARY_SECTION}
+
+
+def test_pack_01_and_02_have_distinct_catalog_sections():
+    provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    sections_01 = provider._bundle_sections_for_docs(["01_ARCHITECTURE_MAP"])
+    sections_02 = provider._bundle_sections_for_docs(["02_COMPONENT_INVENTORY"])
+    shared = sections_01 & sections_02
+    # Only GROUP_SUMMARY and EXTERNAL_SYSTEMS should be shared
+    assert len(shared) <= 2
+    # Each doc must have sections unique to it
+    assert sections_01 - sections_02
+    assert sections_02 - sections_01
+
+
+def test_phase28_does_not_build_pack_09_when_not_in_required_docs(tmp_path):
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_investigation").mkdir()
+    facts.write(staging / "facts_manifest.json")
+    (staging / "_analysis" / "A.md").write_text(
+        "### GROUP_SUMMARY\nSummary content\n", encoding="utf-8"
+    )
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="",
+    )
+    provider = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    # Simulate non-enterprise run: 09 not in required_docs
+    provider._required_docs = [d for d in provider._required_docs if d != "09_EXECUTIVE_SUMMARY"]
+    provider._phase28_bundles(ctx, facts)
+    assert not (staging / "_analysis" / "_doc_pack_09_EXECUTIVE_SUMMARY.md").exists()
 
 
 def test_phase3_context_prefers_doc_pack_over_family_bundle(tmp_path):
@@ -5376,3 +5466,297 @@ def test_phase3_obligation_gap_logs_warning_as_advisory() -> None:
             for level, message in logs
         )
         assert not any(level == "error" for level, _ in logs)
+
+
+def test_sql_usage_extractor_picks_up_lobster_extra_query_params() -> None:
+    """The lobster stores SQL in `extra_*` params, not `content` params.
+
+    Before: extract_sql_usage only looked at params named "content",
+    so lobster scans produced 0 records → empty sql_usage.json →
+    SQL gate failure. After: extract_sql_usage iterates all params
+    with a filter (key contains query/sql/statement OR value matches
+    SQL keyword regex). Lobster's `extra_response.query` convention
+    is now caught.
+    """
+    from mcp_server.providers.custom.sql_usage import extract_sql_usage
+
+    scan_result = {
+        "platform": "lobster",
+        "jobs": [
+            {
+                "name": "API_Orders",
+                "path": "API_Orders.xml",
+                "group": "Alis",
+                "components": [
+                    {
+                        "unique_name": "response_1",
+                        "params": [
+                            {
+                                "name": "extra_agent.sql.timeout",
+                                "value": "0",
+                            },
+                            {
+                                "name": "extra_response.query",
+                                "value": "SELECT obj_id FROM xml_datawizard_profiles limit 1;",
+                            },
+                            {
+                                "name": "url",
+                                "value": "[URL_REDACTED]",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    records = extract_sql_usage(scan_result)
+    assert records, "expected at least one record from extra_response.query"
+    assert any("xml_datawizard_profiles" in str(r.get("tables", [])) for r in records)
+    short_value_param = next(
+        (r for r in records if r.get("unit") and "0" in str(r.get("sql_excerpt", ""))[:5]),
+        None,
+    )
+    assert short_value_param is None, "short config values (e.g., '0') must be filtered out"
+
+
+def test_phase3_sql_usage_gate_is_warning_not_runtimeerror() -> None:
+    """The SQL usage gate failure is a `warning` log, not a RuntimeError.
+
+    Before: validate_sql_usage_publication errors → raise RuntimeError
+    → run stops at Phase 3 → Phase 4 boundary. After: errors →
+    log_cb warning → run continues.
+    """
+
+    errors = [
+        "engineering SQL/query facts exist but no structured SQL usage records were produced"
+    ]
+
+    logs: list[tuple[str, str]] = []
+
+    async def log_cb(pid: str, message: str, level: str = "info") -> None:
+        logs.append((level, message))
+
+    async def emit_warning() -> None:
+        if errors:
+            summary = f"{len(errors)} SQL usage gate finding(s): " + "; ".join(errors[:3])
+            await log_cb("proj", f"[custom] Phase 3 SQL usage gate: {summary}", "warning")
+        else:
+            await log_cb("proj", "[custom] Phase 3 factual gates passed", "info")
+
+    asyncio.run(emit_warning())
+
+    assert any(
+        level == "warning" and "SQL usage gate" in message
+        for level, message in logs
+    )
+
+
+# ---------------------------------------------------------------------------
+# Slice 3: targeted dispatch + waste removal
+# ---------------------------------------------------------------------------
+
+async def _noop_log_cb(pid: str, message: str, level: str = "info") -> None:
+    pass
+
+
+@pytest.mark.asyncio
+async def test_complete_core_generation_tool_path_injects_starter_pack(tmp_path):
+    """Tool-capable Phase 3: doc pack <= 100 KB is injected into system_prompt."""
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    doc_pack = staging / "_analysis" / "_doc_pack_01_ARCHITECTURE_MAP.md"
+    doc_pack.write_text("### GROUP_SUMMARY\nSummary content.\n", encoding="utf-8")
+    # Non-pack file that should NOT reach the model.
+    other = staging / "other_evidence.md"
+    other.write_text("# Other\nIrrelevant content.\n", encoding="utf-8")
+
+    received_system_prompts: list[str | None] = []
+
+    class _ToolProvider:
+        model_name = "fake/tool"
+        provider_name = "openai"
+        supports_tools = True
+
+        async def complete(self, *args, **kwargs):
+            raise AssertionError("should use complete_with_tools")
+
+        async def complete_with_tools(self, prompt, staging_dir, options=None, max_turns=30, scoped_tools=None):
+            received_system_prompts.append(options.system_prompt if options else None)
+            return ModelResult(
+                success=True,
+                text="# Architecture Map\n\nContent with sufficient detail for validation here.",
+                model_name=self.model_name,
+                input_tokens=10,
+                output_tokens=5,
+                metadata={"finish_reason": "stop", "turns": 1, "tool_calls": 0},
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/tool",
+        write_model="fake/tool",
+        platform="generic",
+        analysis_guide_file="",
+    )
+
+    provider = _ToolProvider()
+    result = await CustomHarnessProvider(provider)._complete_core_generation(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        provider=provider,
+        phase="phase3",
+        target="01_ARCHITECTURE_MAP",
+        prompt="Write the architecture map.",
+        context_files=[doc_pack, other],
+        opts=ModelOptions(),
+        log_cb=_noop_log_cb,
+    )
+
+    assert result.success
+    assert received_system_prompts, "complete_with_tools was not called"
+    system_prompt = received_system_prompts[0] or ""
+    assert "GROUP_SUMMARY" in system_prompt, "doc pack content should be in system_prompt"
+    assert "Irrelevant" not in system_prompt, "non-pack file should not appear in system_prompt"
+
+
+@pytest.mark.asyncio
+async def test_complete_core_generation_tool_path_hint_only_when_no_doc_pack(tmp_path):
+    """Tool-capable Phase 2: no _doc_pack_ files → hint-only (no system_prompt injection)."""
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    # Phase 2 context: no _doc_pack_ file
+    analysis_file = staging / "analysis_A.md"
+    analysis_file.write_text("Phase 2 evidence.\n", encoding="utf-8")
+
+    received: list[dict] = []
+
+    class _ToolProvider:
+        model_name = "fake/tool"
+        provider_name = "openai"
+        supports_tools = True
+
+        async def complete(self, *args, **kwargs):
+            raise AssertionError("should use complete_with_tools")
+
+        async def complete_with_tools(self, prompt, staging_dir, options=None, max_turns=30, scoped_tools=None):
+            received.append({"system_prompt": options.system_prompt if options else None})
+            return ModelResult(
+                success=True,
+                text="## Analysis\n\nUnit A analysis with sufficient content here.",
+                model_name=self.model_name,
+                input_tokens=5,
+                output_tokens=3,
+                metadata={"finish_reason": "stop", "turns": 1, "tool_calls": 0},
+            )
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/tool",
+        write_model="fake/tool",
+        platform="generic",
+        analysis_guide_file="",
+    )
+
+    provider = _ToolProvider()
+    result = await CustomHarnessProvider(provider)._complete_core_generation(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        provider=provider,
+        phase="phase2.deep_dive",
+        target="A",
+        prompt="Analyze unit A.",
+        context_files=[analysis_file],
+        opts=ModelOptions(),
+        log_cb=_noop_log_cb,
+    )
+
+    assert result.success
+    assert received, "complete_with_tools was not called"
+    # No doc pack file → system_prompt should not contain any injected pack content
+    system_prompt = received[0]["system_prompt"] or ""
+    assert "Phase 2 evidence" not in system_prompt
+
+
+def test_phase3_context_files_excludes_manifest(tmp_path):
+    """_phase3_context_files must never return _doc_pack_manifest.json."""
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+    (staging / "_assessment" / "prompt_packs").mkdir(parents=True)
+    (staging / "_preprocess").mkdir()
+    # Create the manifest — it should be excluded.
+    manifest = staging / "_analysis" / "_doc_pack_manifest.json"
+    manifest.write_text('{"doc_packs": {}}', encoding="utf-8")
+    # Create a doc pack so the method has something to return.
+    doc_pack = staging / "_analysis" / "_doc_pack_01_ARCHITECTURE_MAP.md"
+    doc_pack.write_text("### GROUP_SUMMARY\nEvidence.\n", encoding="utf-8")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="",
+    )
+    files = CustomHarnessProvider(
+        OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1")
+    )._phase3_context_files(ctx, "01_ARCHITECTURE_MAP")
+
+    names = [f.name for f in files]
+    assert "_doc_pack_manifest.json" not in names
+
+
+def test_engineering_fact_context_excludes_csv_indexes(tmp_path):
+    """_engineering_fact_context must not return entity_index.csv or usage_index.csv."""
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+    # Create all potential files including the CSVs that should be excluded.
+    for name in ["engineering_facts.md", "sql_usage.md", "entity_index.csv", "usage_index.csv",
+                 "architecture_map.md", "dependency_map.md", "data_flow_map.md"]:
+        (staging / name).write_text("content\n", encoding="utf-8")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="",
+    )
+
+    for doc_name in ["01_ARCHITECTURE_MAP", "02_COMPONENT_INVENTORY", "03_DATA_FLOWS_AND_LINEAGE",
+                     "04_BUSINESS_RULES_AND_TRANSFORMATIONS"]:
+        files = CustomHarnessProvider._engineering_fact_context(ctx, doc_name)
+        names = [f.name for f in files]
+        assert "entity_index.csv" not in names, f"entity_index.csv present for {doc_name}"
+        assert "usage_index.csv" not in names, f"usage_index.csv present for {doc_name}"
+
+    # Verify the method still returns the expected markdown files.
+    files_01 = CustomHarnessProvider._engineering_fact_context(ctx, "01_ARCHITECTURE_MAP")
+    names_01 = [f.name for f in files_01]
+    assert "engineering_facts.md" in names_01
+    assert "architecture_map.md" in names_01

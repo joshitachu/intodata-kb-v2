@@ -109,15 +109,8 @@ LARGE_CONTEXT_ARTIFACTS = {
 }
 
 ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
-PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION, ADDITIONAL_FINDINGS_SECTION,)
-BASELINE_BUNDLE_SECTIONS = {
-    GROUP_SUMMARY_SECTION,
-    "COMPONENTS",
-    "EXECUTION_FLOW",
-    "CROSS_GROUP_REFS",
-    "RISK_FLAGS",
-    ADDITIONAL_FINDINGS_SECTION,
-}
+PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION, "CROSS_CHUNK_FINDINGS", ADDITIONAL_FINDINGS_SECTION,)
+BASELINE_BUNDLE_SECTIONS = {GROUP_SUMMARY_SECTION}
 
 # Maps evidence profile category strings -> Phase 2 section names.
 # Used to enforce evidence_profiles from plugin.yaml in Phase 2.8 doc bundles.
@@ -135,6 +128,21 @@ _BUNDLE_CATEGORY_TO_PHASE2_SECTIONS: dict[str, set[str]] = {
     "naming_patterns": {"NAMING_PATTERNS"},
     "cross_group_refs": {"CROSS_GROUP_REFS"},
 }
+
+
+def _guide_section_names(guide_path: Path) -> frozenset[str]:
+    """Return all-caps h3 section names from a plugin ANALYSIS_GUIDE not already in PHASE2_SECTION_NAMES."""
+    if not guide_path.exists():
+        return frozenset()
+    heading_re = re.compile(r"^### ([A-Z][A-Z0-9_ ]+)\s*$")
+    names: set[str] = set()
+    for line in guide_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = heading_re.match(line.strip())
+        if m:
+            candidate = re.sub(r"[^A-Z0-9_]+", "_", m.group(1).strip().upper()).strip("_")
+            if candidate not in PHASE2_SECTION_NAMES:
+                names.add(candidate)
+    return frozenset(names)
 
 
 def _evidence_register_section(text: str) -> str | None:
@@ -1551,7 +1559,9 @@ Fallback plan example:
                         log_cb,
                     )
                 else:
-                    model_analysis = self._deterministic_phase2_merge(group, chunk_outputs)
+                    _guide_file = ctx.staging_dir / "_preprocess" / ctx.analysis_guide_file if ctx.analysis_guide_file else None
+                    _extra = _guide_section_names(_guide_file) if _guide_file else frozenset()
+                    model_analysis = self._deterministic_phase2_merge(group, chunk_outputs, _extra)
                     await log_cb(
                         ctx.project_id,
                         f"[custom] Phase 2 deterministic merge complete: {group} ({len(chunk_outputs)} chunks)",
@@ -1595,8 +1605,10 @@ Fallback plan example:
             await log_cb(ctx.project_id, f"[custom] Phase 2 complete: {group}", "info")
 
     @classmethod
-    def _deterministic_phase2_merge(cls, group: str, chunk_outputs: list[str]) -> str:
-        parsed_chunks = [cls._parse_phase2_sections(text) for text in chunk_outputs]
+    def _deterministic_phase2_merge(
+        cls, group: str, chunk_outputs: list[str], extra_section_names: frozenset[str] = frozenset()
+    ) -> str:
+        parsed_chunks = [cls._parse_phase2_sections(text, extra_section_names) for text in chunk_outputs]
         parts: list[str] = [
             f"Deterministic merge of {len(chunk_outputs)} Phase 2 chunk analyses for group `{group}`.",
             "Chunk text is preserved verbatim under provenance headings.",
@@ -1613,11 +1625,13 @@ Fallback plan example:
         return "\n\n".join(parts).rstrip() + "\n"
 
     @staticmethod
-    def _parse_phase2_sections(text: str) -> dict[str, str]:
-        section_names = set(PHASE2_SECTION_NAMES)
-        sections: dict[str, list[str]] = {name: [] for name in PHASE2_SECTION_NAMES}
+    def _parse_phase2_sections(
+        text: str, extra_section_names: frozenset[str] = frozenset()
+    ) -> dict[str, str]:
+        section_names = set(PHASE2_SECTION_NAMES) | extra_section_names
+        sections: dict[str, list[str]] = {name: [] for name in section_names}
         current = ADDITIONAL_FINDINGS_SECTION
-        heading_re = re.compile(r"^#{1,6}\s+([A-Z][A-Z0-9_ ]+)\s*$")
+        heading_re = re.compile(r"^### ([A-Z][A-Z0-9_ ]+)\s*$")
         for line in text.splitlines():
             match = heading_re.match(line.strip())
             if match:
@@ -2332,7 +2346,9 @@ Fallback plan example:
         investigation_text: str,
         facts,
     ) -> tuple[str, dict[str, object]]:
-        selected, manifest = self._targeted_analysis_bundle_parts(analysis_files, section_names)
+        _guide_file = ctx.staging_dir / "_preprocess" / ctx.analysis_guide_file if ctx.analysis_guide_file else None
+        _extra = _guide_section_names(_guide_file) if _guide_file else frozenset()
+        selected, manifest = self._targeted_analysis_bundle_parts(analysis_files, section_names, _extra)
         included_obligations, unmatched_obligations, obligation_text = self._doc_obligation_context(facts, doc_name)
         groups = ", ".join(f"{group}={count}" for group, count in sorted(facts.groups.items())) or "none"
         units = "\n".join(
@@ -2444,17 +2460,24 @@ Fallback plan example:
         return included, unmatched, "\n".join(lines)
 
     @classmethod
-    def _targeted_analysis_bundle_text(cls, analysis_files: list[Path], section_names: set[str]) -> str:
-        text, _ = cls._targeted_analysis_bundle_parts(analysis_files, section_names)
+    def _targeted_analysis_bundle_text(
+        cls, analysis_files: list[Path], section_names: set[str], extra_section_names: frozenset[str] = frozenset()
+    ) -> str:
+        text, _ = cls._targeted_analysis_bundle_parts(analysis_files, section_names, extra_section_names)
         return text
 
     @classmethod
-    def _targeted_analysis_bundle_parts(cls, analysis_files: list[Path], section_names: set[str]) -> tuple[str, dict[str, object]]:
+    def _targeted_analysis_bundle_parts(
+        cls,
+        analysis_files: list[Path],
+        section_names: set[str],
+        extra_section_names: frozenset[str] = frozenset(),
+    ) -> tuple[str, dict[str, object]]:
         parts: list[str] = []
         manifest: dict[str, object] = {"included": {}, "omitted": {}, "unclassified": {}}
         for path in analysis_files:
             text = path.read_text(encoding="utf-8", errors="replace")
-            sections = cls._parse_phase2_sections(text)
+            sections = cls._parse_phase2_sections(text, extra_section_names)
             selected = [
                 (section, sections[section])
                 for section in PHASE2_SECTION_NAMES
@@ -2814,6 +2837,18 @@ Fallback plan example:
             use_tools = False
         if use_tools:
             prompt = _with_agent_contract(prompt, task_contract)
+            # Plugin-mode Phase 3 never reaches here (tool_policy disabled at line 727).
+            # complete_with_tools does not accept context_files, so the starter pack must
+            # be injected into system_prompt which propagates through tool_opts.
+            # Phase 2 calls have no _doc_pack_ files, so they still get hint-only dispatch.
+            _STARTER_PACK_BYTE_CAP = 100 * 1024
+            doc_packs = [f for f in context_files if "_doc_pack_" in f.name and f.exists()]
+            if doc_packs:
+                combined = "\n\n".join(f.read_text(encoding="utf-8", errors="replace") for f in doc_packs)
+                if len(combined.encode("utf-8")) <= _STARTER_PACK_BYTE_CAP:
+                    existing = opts.system_prompt or ""
+                    sep = "\n\n" if existing else ""
+                    opts = opts.model_copy(update={"system_prompt": existing + sep + combined})
             context_files = []
         estimated = estimate_input_tokens(prompt, context_files)
         hard = config.core_context_hard_ceiling_tokens
@@ -4349,9 +4384,6 @@ Allowed docs:
         evidence_file = self._phase3_evidence_file(ctx, doc_name)
         if evidence_file is not None:
             files.append(evidence_file)
-        manifest = analysis_dir / "_doc_pack_manifest.json"
-        if manifest.exists():
-            files.append(manifest)
         source_coverage = preprocess_dir / "_source_coverage.json"
         if not source_coverage.exists():
             files.extend(self._engineering_fact_context(ctx, doc_name))
@@ -4404,12 +4436,11 @@ Allowed docs:
             # Phase 2 analysis: lightweight markdown only — large JSON indexes blow the context window
             names = ["engineering_facts.md", "sql_usage.md", "dependency_map.md", "known_risks.md", "config_runtime_map.md"]
         else:
-            names = ["engineering_facts.md", "sql_usage.md", "entity_index.csv", "usage_index.csv"]
+            names = ["engineering_facts.md", "sql_usage.md"]
             if doc_name in {"01_ARCHITECTURE_MAP", "02_COMPONENT_INVENTORY"}:
                 names.extend(["architecture_map.md", "dependency_map.md"])
             elif doc_name == "03_DATA_FLOWS_AND_LINEAGE":
-                # CSV versions are more readable and cover the same data as the JSON base — drop JSON duplicates
-                names = ["engineering_facts.md", "data_flow_map.md", "entity_index.csv", "usage_index.csv"]
+                names = ["engineering_facts.md", "data_flow_map.md"]
             elif doc_name == "08_CHANGE_PLAYBOOK":
                 names.extend(["change_impact_matrix.md"])
             elif doc_name == "05_RUNTIME_CONFIG_AND_EXTERNALS":

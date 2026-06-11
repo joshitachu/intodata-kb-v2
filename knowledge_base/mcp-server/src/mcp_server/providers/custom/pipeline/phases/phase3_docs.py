@@ -132,8 +132,10 @@ class Phase3Docs(Phase):
         self._helpers.reconcile_sql_usage_classification(ctx)
         sql_gate_errors = self._helpers.validate_sql_usage_publication(ctx)
         if sql_gate_errors:
-            raise RuntimeError("; ".join(sql_gate_errors))
-        await log_cb(ctx.project_id, "[custom] Phase 3 factual gates passed", "info")
+            summary = f"{len(sql_gate_errors)} SQL usage gate finding(s): " + "; ".join(sql_gate_errors[:3])
+            await log_cb(ctx.project_id, f"[custom] Phase 3 SQL usage gate: {summary}", "warning")
+        else:
+            await log_cb(ctx.project_id, "[custom] Phase 3 factual gates passed", "info")
 
         if execution_plan is not None:
             self._helpers.record_dag_node_result(
@@ -205,16 +207,17 @@ class Phase3Docs(Phase):
                 if not entry.get("ok")
             ]
             if failed:
+                summary = f"{len(failed)} enterprise gate finding(s): " + " | ".join(failed[:5])
+                await log_cb(ctx.project_id, f"[custom] Phase 3 enterprise gates: {summary}", "warning")
                 if execution_plan is not None:
                     self._helpers.record_dag_node_result(
                         ctx,
                         "enterprise_gates",
-                        "failed",
+                        "advisory",
                         artifacts=["_assessment/enterprise_gates.json"],
                         validation="enterprise_gates",
                         error=" | ".join(failed[:5]),
                     )
-                raise RuntimeError("Enterprise publish gates failed: " + " | ".join(failed))
             if execution_plan is not None:
                 self._helpers.record_dag_node_result(
                     ctx,

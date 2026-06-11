@@ -85,20 +85,41 @@ def extract_sql_usage(scan_result: dict[str, Any]) -> list[dict[str, Any]]:
         job_path = str(job.get("path") or unit)
         for component in job.get("components", []) or []:
             params = component.get("params", []) or []
-            content = _param_value(params, "content")
-            if not content:
-                continue
-            path = _param_value(params, "file_path") or job_path
-            for candidate in _sql_candidates(content, path):
-                record = _record_for_content(candidate, unit=unit, group=group, path=path, source_content=content)
-                if not record["tables"]:
+            for param in params:
+                if not _should_process_param(param):
                     continue
-                key = (record["source_path"], record["unit"], _fingerprint(record["sql_excerpt"]))
-                if key in seen:
+                content = str(param.get("value") or "")
+                if not content:
                     continue
-                seen.add(key)
-                records.append(record)
+                path = str(param.get("file_path") or job_path)
+                for candidate in _sql_candidates(content, path):
+                    record = _record_for_content(candidate, unit=unit, group=group, path=path, source_content=content)
+                    if not record["tables"]:
+                        continue
+                    key = (record["source_path"], record["unit"], _fingerprint(record["sql_excerpt"]))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(record)
     return sorted(records, key=lambda item: (item["group"], item["source_path"], item["unit"]))
+
+
+def _should_process_param(param: dict[str, Any]) -> bool:
+    """Return True if the param is a candidate for SQL extraction.
+
+    Filter: skip params whose key has no SQL hint and whose value
+    does not match the SQL keyword regex. This avoids false
+    positives from short config values like
+    ``extra_agent.sql.timeout=0`` while catching the lobster's
+    ``extra_response.query`` / ``extra_agent.sql_query`` convention.
+    """
+    key = str(param.get("name") or "").lower()
+    value = str(param.get("value") or "")
+    if any(token in key for token in ("query", "sql", "statement")):
+        return True
+    if _SQL_KEYWORD_RE.search(value):
+        return True
+    return False
 
 
 def _sql_candidates(content: str, path: str) -> list[str]:

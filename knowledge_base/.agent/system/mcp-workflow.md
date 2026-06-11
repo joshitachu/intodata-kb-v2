@@ -15,9 +15,9 @@ files.
 | 1 | phase1_investigation | `phase1_investigation.py` | Runs `SingleShotInvestigator` per scanner group to extract structured evidence (facts manifest, chunk reports). Writes `_investigation/` and `facts_manifest.json`. | N .. N*3 (N = groups) | `plan.investigation_mode == "skip"` |
 | 2 | phase2_analysis | `phase2_analysis.py` | Produces structured group-level analysis (`_analysis/{group}.md`). Supports three sub-modes: direct (small projects), bounded (pack policy), and DAG-tiered. Persists one agent task per group under `_agent_tasks/phase2/`. | N .. N*4 | `plan.analysis_mode == "skip"` |
 | 2.6 | phase26_scorecard | `phase26_scorecard.py` | Generates the quality/risk scorecard from analysis output. Single persisted agent task. | 1 .. 2 | `plan.scorecard == False` |
-| 2.8 | phase28_bundles | `phase28_bundles.py` | Deterministic reassembly of analysis sections into per-doc evidence bundles (`_analysis/_doc_pack_*.md`). No LLM calls. | 0 | `plan.doc_bundles == False` |
+| 2.8 | phase28_bundles | `phase28_bundles.py` | Deterministic reassembly of analysis sections into per-doc evidence bundles (`_analysis/_doc_pack_*.md`). Each bundle = `GROUP_SUMMARY` (baseline floor) + doc's `phase2_sections` from `doc_catalog.yaml` (standard) or `evidence_profiles` (plugin). No LLM calls. | 0 | `plan.doc_bundles == False` |
 | 2.9 | evidence_quality_gate | `pipeline/evidence_quality_gate.py` | Pure Python thin-bundle check over `_preprocess/{group}.md`. Emits `THIN_BUNDLE` warnings and `_assessment/thin_bundle_report.json`. | 0 | never skipped |
-| 3 | phase3_docs | `phase3_docs.py` | Writes one markdown document per required doc in `docs_staging/`. Persists one agent task per doc under `_agent_tasks/phase3/`. Runs `EvidenceTraceabilityValidator` post-write. | N .. N*3 (N = required docs) | never skipped |
+| 3 | phase3_docs | `phase3_docs.py` | Writes one markdown document per required doc in `docs_staging/`. Persists one agent task per doc under `_agent_tasks/phase3/`. For tool-capable non-plugin providers, pushes the targeted doc pack (≤100 KB) as starter context in `system_prompt`; model uses tools for drill-down. Plugin-mode runs disable Phase 3 tools entirely. Runs `EvidenceTraceabilityValidator` post-write. | N .. N*3 (N = required docs) | never skipped |
 | 4 | phase4_cleanup | `phase4_cleanup.py` | Enterprise gate evaluation, audit bundle write, engineering artifact archival, and run log. No LLM calls. | 0 | never skipped |
 
 Inputs flow forward: Phase 1 populates `facts_manifest.json`; Phase 2 reads it
@@ -97,10 +97,15 @@ traceability report to `_assessment/evidence_traceability.json`.
 
 `validate_docs` / `validate_doc_depth` / `validate_source_provenance` produce
 `_assessment/doc_validation_report.json` / `doc_depth_report.json` /
-`source_provenance_report.json` after Phase 3. Failures are advisory warnings
-emitted via `log_cb` (count + first 3 messages) — the docs ship as-written.
-No model-call repair loop; no retry; no `RuntimeError`. The operator decides
-whether to manually fix the missing section. Added 2026-06-11.
+`source_provenance_report.json` after Phase 3. The SQL usage gate
+(`_validate_sql_usage_publication`) produces
+`_assessment/sql_usage_gate.json`. All 4 final-check gates are
+**advisory warnings** — failures are emitted via `log_cb` (count +
+first 3 messages), the docs ship as-written, the atomic swap
+proceeds. No model-call repair loop; no retry; no `RuntimeError`.
+The operator decides whether to manually fix the gap. Added
+2026-06-11 (3 obligation gates) and 2026-06-11 (SQL usage gate +
+enterprise publish gates).
 
 ## Debug Forensics (`MCP_PIPELINE_DEBUG`)
 

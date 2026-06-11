@@ -2,7 +2,7 @@
 feature: Track B -- Phase 3 input quality (parser fix, BASELINE reduction, targeted context dispatch)
 pipeline_step: 3_slices
 total_slices: 3
-current_slice: 1
+current_slice: 3
 # Pre-condition: Track A (Slices 1-5) must be committed before any Track B slice
 # starts. Track B Slice 1 touches harness.py which has uncommitted Track A FR-8
 # changes. Hard sequencing dependency -- do not start Track B until Track A lands.

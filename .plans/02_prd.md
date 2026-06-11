@@ -1,201 +1,178 @@
 ---
-feature: Remove Phase 3 targeted repair mechanism
+feature: Track B -- Phase 3 input quality (parser fix, BASELINE reduction, targeted context dispatch)
 pipeline_step: 2_prd
 ---
 
 ## Executive Summary
 
-Phase 3 targeted repair is unreliable, often wrong-triggered, and expensive.
-A 30-minute silent hang in the lobster run is the symptom. Remove the
-mechanism. Validators stay — they still produce obligation reports and
-warnings. Docs ship as-written; the obligation gap surfaces in the run
-summary. Done when the live lobster run reaches Phase 4 within ~5 min after
-doc writes complete, with the gap logged as `warning` not `error`.
+Phase 3 consumes 5.1M input tokens per run on the Koopmans reference project. Four
+compounding root causes: hint-only dispatch (O(n^2) conversation replay), BASELINE
+too broad (51% of bytes in every pack), parser 3 defects (104 KB routed to UNCLASSIFIED),
+and 3 waste sources (manifest, CSV indexes, unused pack 09). Fix these in three slices
+(parser fix → pack differentiation → targeted dispatch) and reduce Phase 3 input tokens
+by >= 40% with no quality regression.
 
 ## Problem
 
-Phase 3 currently has a "targeted repair" pass that:
+Phase 3 dispatches 61 LLM calls per run on Koopmans, consuming 5,126,576 input tokens
+(deepseek/deepseek-v4-pro). The cost compounds from 4 causes:
 
-1. Runs after Phase 3 writes all 10 docs
-2. Calls `validate_docs`, `validate_doc_depth`, and
-   `validate_source_provenance` on the result
-3. If any return `ok=False`, retries with a model call that produces a
-   patched version of the failing doc (`_phase3_targeted_repair`)
-4. Re-validates; if still failing, retries up to 3 times
-5. If all retries fail with `failure_kind=unknown`, the run hangs silently
+**Hint-only dispatch**: On tool-capable providers, `_complete_core_generation`
+(harness.py:3144-3150) drops all context files (`context_files = []`) and relies on
+the model paging 348-535 KB evidence packs via 50 KB `read_artifact` reads. Each tool
+turn appends to the conversation, replaying the full prior context O(n^2). This is the
+dominant driver.
 
-Three problems with this:
+**BASELINE too broad**: `BASELINE_BUNDLE_SECTIONS` contains 6 sections covering 51.1%
+of all Phase 2 bytes. The shared floor (~349 KB) is 87-89% of median pack size.
+Packs 01 and 02 resolve to identical section sets — there is no differentiation.
 
-- **Unreliable**: 30-min silent hang today, with no progress to the
-  dashboard. The 3-attempt loop has no fast-fail on
-  `failure_kind=unknown`. Both providers can fail in sequence; the loop
-  just keeps trying.
-- **Wrong-triggered**: The repair prompt asks the model to fix a doc
-  based on a list of error messages. The model often returns text that
-  passes the re-validation check (e.g., the Evidence Register merge in
-  `_phase3_targeted_repair_content` does a topic-keyed merge that hides
-  the original failure) but may have introduced new hallucinations or
-  removed content the operator wanted.
-- **Expensive**: Each repair call is 47K-400K input tokens, 60-300s
-  latency. A 3-attempt retry on 1 doc is 3-15 minutes of model spend on
-  top of the original doc generation. For projects where multiple docs
-  fail (rare but possible), the cost compounds.
+**Parser defects**: `_parse_phase2_sections` routes 104 KB per run to UNCLASSIFIED:
+75,950 bytes of CROSS_CHUNK_FINDINGS (harness-generated but unregistered), ~21 KB of
+plugin guide sections (ANALYSIS_GUIDE mandates sections not registered in
+PHASE2_SECTION_NAMES), ~6.8 KB from h4 sub-headings inside known sections breaking
+the parser. Because UNCLASSIFIED is in BASELINE, this inflates every pack.
+
+**Waste**: 155 KB manifest in Phase 3 context (harness bookkeeping, not needed by
+model), 3.1 MB CSV indexes pushed even when `_source_coverage.json` is absent, 349 KB
+pack 09 built by Phase 2.8 but never consumed.
 
 ## Goals
 
-1. Live run on Lobsterprofiles_v3 (or any project with failing obligations)
-   reaches Phase 4 within ~5 min after doc writes complete.
-2. Run summary shows the obligation gap as a warning, not a 30-min retry
-   loop.
-3. Final docs are byte-identical to what the model wrote (no merge, no
-   patch, no LLM-revised text).
-4. The validators (`validate_docs`, `validate_doc_depth`,
-   `validate_source_provenance`) still run and still produce their reports
-   under `_assessment/`.
-5. The unit-test suite stays green (590 → 588 baseline; the 2
-   repair-specific tests are removed).
+1. Phase 3 input tokens per run drop by >= 40% (Koopmans re-run: from ~5.1M).
+2. No quality regression on human spot-check of all 10 generated docs.
+3. UNCLASSIFIED bytes per group analysis file drop to <= 5 KB.
+4. Doc packs 01 and 02 differ by >= 30% by byte count.
+5. Pack 09 is no longer built.
+6. Manifest and CSV indexes removed from Phase 3 context.
+7. All 590 existing tests pass; new tests cover each fix.
 
 ## Non-Goals
 
-- Phase 2 repair (`_phase2_targeted_repair`, `_narrow_repair_context`)
-  stays. It has the same theoretical issue but lower call volume and
-  is out of scope for this slice.
-- The 4 PRD out-of-scope bugs (validator parentheses,
-  incremental-regen cache, preamble stripping, scorecard weight-format
-  mismatch) stay for a separate slice.
-- The traceability validator stays (different concern, also advisory).
-- The smart-repair config flag (`MCP_AGENT_SMART_REPAIR_ENABLED`)
-  becomes Phase-2-only. Default `False` is unchanged.
-- Track B (Phase 3 input quality) is unblocked and continues separately.
-  Track B reduces the obligation gap by improving Phase 3 context
-  assembly — orthogonal to this slice.
+- Phase 1 investigation, Phase 2 analysis, Phase 2.6 scorecard.
+- RAG pipeline, dashboard, scanner CLI.
+- Provider-specific optimizations (caching, batching).
+- Phase 2 repair (`_phase2_targeted_repair`) — separate track.
+- The 4 legacy out-of-scope bugs (validator parentheses, incremental-regen cache,
+  preamble stripping, scorecard weight-format mismatch).
 
 ## User Stories
 
-1. As the platform owner, I want failed obligation checks to surface as
-   warnings in the run summary (visible immediately) rather than trigger
-   a 30-minute silent repair loop, so I can decide whether to manually
-   fix the doc or accept it as-is.
-2. As the platform owner, I want final docs to be byte-identical to what
-   the model wrote, so I don't have to audit a regex-patched merge that
-   may have introduced a hallucination.
-3. As a developer debugging a Phase 3 obligation gap, I want the gap to
-   appear in the run log as a `warning` line, so I can grep for it
-   without waiting 30 minutes.
+1. As the platform owner, I want Phase 3 to push a targeted evidence pack to the model
+   (not rely on hint-only tool paging) so I pay for one full read, not O(n^2) replay.
+2. As the platform owner, I want doc packs to contain only the sections relevant to
+   each document so the model has focused context, not 349 KB of shared floor.
+3. As a developer debugging UNCLASSIFIED bloat, I want the parser to correctly route
+   all Phase 2 output to named sections so UNCLASSIFIED stays near zero.
 
 ## Functional Requirements
 
-**FR-R1 (remove Phase 3 repair orchestration)**: Delete the three
-`if not <report>.ok:` repair-then-revalidate blocks in
-`phase3_docs.py:129-139, 166-176, 210-223`. Each block currently calls
-`self._helpers.phase3_targeted_repair(ctx, state, <report>, log_cb)` and
-re-validates. After removal, the revalidation call stays (so the
-`_assessment/doc_validation_report.json` etc. files are still written)
-but the repair call is gone. The exception-raising `raise RuntimeError` at
-line 141 is also removed — failed obligations are warnings, not errors.
+**FR-B1 (parser fix)**: Fix `_parse_phase2_sections` (harness.py:1616):
+- Change heading regex from `r"^#{1,6}\s+..."` to `r"^### ([A-Z][A-Z0-9_ ]+)\s*$"` so
+  h4+ sub-headings inside known sections do not break the parse context.
+- Add `"CROSS_CHUNK_FINDINGS"` to `PHASE2_SECTION_NAMES` so harness-generated
+  cross-chunk synthesis content routes to its own bucket, not UNCLASSIFIED.
+- Add `extra_section_names: frozenset[str] = frozenset()` param to
+  `_parse_phase2_sections` + a `_guide_section_names(guide_path)` helper that extracts
+  all-caps `### HEADING` names from the plugin ANALYSIS_GUIDE. Thread through
+  `_deterministic_phase2_merge` and `_targeted_analysis_bundle_parts`; compute from
+  `ctx.analysis_guide_file` in instance callers.
 
-**FR-R2 (remove Phase 3 repair implementation)**: Delete the
-`_phase3_targeted_repair` method, the `_phase3_repair_targets` helper,
-the `_phase3_repair_prompt` helper, the `_phase3_repair_context_files`
-helper, and the `_phase3_targeted_repair_content` method. All from
-`harness.py`. The `_write_repair_context_summary` and `_repair_root_causes`
-helpers stay (Phase 2 still calls them).
+**FR-B2 (BASELINE reduction)**: Change `BASELINE_BUNDLE_SECTIONS` (harness.py:113-120)
+from 6 sections to `{GROUP_SUMMARY_SECTION}` only. Each doc pack's section set comes
+entirely from its `doc_catalog.yaml` `phase2_sections` list plus this single baseline.
+Depends on FR-B1 (parser must correctly classify CROSS_CHUNK_FINDINGS before UNCLASSIFIED
+is removed from BASELINE, otherwise 76 KB of synthesis content is silently discarded).
 
-**FR-R3 (remove repair facade)**: Delete the
-`HarnessHelpersImpl.phase3_targeted_repair` method at
-`helpers.py:235-236`. After removal, no other code path can call the
-removed method.
+**FR-B3 (catalog differentiation)**: Update `data/doc_catalog.yaml` so docs
+`01_ARCHITECTURE_MAP` and `02_COMPONENT_INVENTORY` have distinct `phase2_sections` lists
+that differ by >= 30% in resolved pack size. Currently both resolve to the same set.
 
-**FR-R4 (replace repair tests with warning tests)**: Delete the two
-`test_phase3_targeted_repair_*` tests. Add a new test
-`test_phase3_obligation_gap_logs_warning` that creates a scenario where
-`validate_docs` returns `ok=False` and asserts the obligation gap appears
-in the log as a warning line (no model call is made).
+**FR-B4 (targeted dispatch)**: Replace the hint-only branch in
+`_complete_core_generation` (harness.py:3144-3150) with a targeted pack push: when
+`ctx` has a doc pack for the target document, pass it as a context file (capped at
+100 KB; if the pack exceeds cap, include only GROUP_SUMMARY + the doc's `phase2_sections`
+worth of content). Tools remain available for drill-down.
 
-**FR-R5 (update CLAUDE.md and mcp-workflow.md)**: Remove the
-"Phase 3 targeted repair" mention if present. Add a one-liner: "Failed
-obligation checks surface as warnings; the docs ship as-written."
+**FR-B5 (manifest removal)**: Remove `_doc_pack_manifest.json` from the Phase 3 context
+file list in `_phase3_context_files` (harness.py:~4685-4687). The manifest is harness
+bookkeeping; the model uses the pack files directly.
+
+**FR-B6 (CSV index fix)**: In `_engineering_fact_context` (harness.py:~4734-4754), do
+not add CSV index entries when `_source_coverage.json` is absent. The current code
+builds a fallback CSV list regardless. When absent, the model can use tools to discover
+CSV files if needed.
+
+**FR-B7 (drop pack 09)**: In `_phase28_bundles` (harness.py:2277-2301), skip building
+`_doc_pack_09_EXECUTIVE_SUMMARY.md`. Doc 09 is not in `required_docs`; no Phase 3 code
+path reads this 349 KB file.
+
+**FR-B8 (docs update)**: Update `knowledge_base/CLAUDE.md` (Current Custom Harness
+Notes) and `knowledge_base/.agent/system/mcp-workflow.md` to document: targeted
+dispatch (not hint-only), GROUP_SUMMARY-only BASELINE, parser scope, pack 09 removal.
 
 ## Non-Functional Requirements
 
-- **No runtime behavior change for successful runs.** A run where all
-  obligations pass must produce byte-identical output to today (modulo
-  the absence of the repair-call `_model_inputs/phase3.repair/*` files
-  and `_agent_tasks/phase3_doc/<doc>/_debug/repair_*` artifacts).
-- **Run completes in < 1 min after doc writes** when obligations fail
-  (today: 30+ min).
-- **No new config flags.** `MCP_AGENT_SMART_REPAIR_ENABLED` becomes
-  Phase-2-only; default `False` is unchanged.
-- **No DB or API schema changes.**
-- **The atomic swap behavior is unchanged.** `_audit/enterprise_gates.json`
-  is still written (FR-7 from Track A Slice 5).
+- Phase 3 input tokens >= 40% reduction on Koopmans re-run (acceptance criterion).
+- No regression in doc obligation pass rate vs the pre-Track-B baseline.
+- No new config flags.
+- No DB or API schema changes.
+- Parser fix is strictly additive: content that already parses into a named section
+  must still parse into the same section after the fix.
 
 ## Architecture Impact
 
-- **Harness pipeline (critical area — `/inspect` mandatory)**: `harness.py`
-  (5 method deletions), `phase3_docs.py` (3 block simplifications),
-  `helpers.py` (1 method deletion).
-- **Tests**: `test_custom_provider.py` (2 test deletions, 1 test addition).
-- **Docs**: `knowledge_base/CLAUDE.md` (one-line update),
-  `knowledge_base/.agent/system/mcp-workflow.md` (one-line update).
-- **No impact on**: Phase 1 investigation, Phase 2 analysis / 2.6
-  scorecard / 2.8 bundles, evidence quality gate, Phase 4 cleanup,
-  MCP API routes, RAG retrieval chain, auth/RBAC, dashboard, scanner,
-  doc catalog, prompt templates.
+- **Harness pipeline (critical area — `/inspect` mandatory for each slice)**:
+  `harness.py` (PHASE2_SECTION_NAMES, BASELINE_BUNDLE_SECTIONS, _parse_phase2_sections,
+  _deterministic_phase2_merge, _targeted_analysis_bundle_parts, _phase28_bundles,
+  _complete_core_generation, _phase3_context_files, _engineering_fact_context).
+- **Doc catalog**: `data/doc_catalog.yaml` (phase2_sections for 01, 02).
+- **Docs**: `knowledge_base/CLAUDE.md`, `knowledge_base/.agent/system/mcp-workflow.md`.
+- **Tests**: `test_custom_provider.py` (new tests per slice).
+- **No impact on**: Phase 1, Phase 2 LLM calls, Phase 2.6 scorecard, evidence quality
+  gate, Phase 4 cleanup, MCP API routes, RAG retrieval, auth/RBAC, dashboard, scanner.
 
-## Implementation
+## Implementation Phases
 
-Single slice. The plan steps are:
+**Slice 1 — Parser fix (FR-B1)**: Fix `_parse_phase2_sections`, register
+CROSS_CHUNK_FINDINGS, add extra_section_names mechanism. No BASELINE change.
+Acceptance: UNCLASSIFIED <= 5 KB per group file. Tests: 3 new.
 
-1. Delete the 3 repair-then-revalidate blocks in `phase3_docs.py`. Each
-   block becomes a single validation report write (keep the report) +
-   a `log_cb` warning if `not <report>.ok` (new — emit the gap as a
-   warning). Remove the `raise RuntimeError`.
-2. Delete `_phase3_targeted_repair` and the 4 helpers in `harness.py`.
-3. Delete `HarnessHelpersImpl.phase3_targeted_repair` facade.
-4. Delete the 2 `test_phase3_targeted_repair_*` tests. Add
-   `test_phase3_obligation_gap_logs_warning`.
-5. Update `CLAUDE.md` and `mcp-workflow.md` (one line each).
-6. Run pytest (expect 588 passing).
-7. Re-run Lobsterprofiles_v3 (resume from preserved staging). Time
-   from doc-write-complete to Phase 4. Verify `_run_manifest.json`
-   shows `phase4_cleanup` as the last phase.
+**Slice 2 — Pack differentiation (FR-B2, FR-B3, FR-B7)**: BASELINE → GROUP_SUMMARY
+only; 01/02 catalog differentiation; drop pack 09. Depends on Slice 1 (UNCLASSIFIED
+must be correctly classified before it leaves BASELINE).
+Acceptance: 01 vs 02 packs differ >= 30%; pack 09 absent. Tests: 3 new.
+
+**Slice 3 — Targeted dispatch + waste removal + docs (FR-B4, FR-B5, FR-B6, FR-B8)**:
+Replace hint-only with 100 KB targeted push; remove manifest and CSV indexes from
+context; update docs. Depends on Slices 1 and 2 (targeted pack must be differentiated
+and correctly parsed before this is meaningful).
+Acceptance: >= 40% Phase 3 token reduction on Koopmans re-run; no quality regression.
+Tests: 4 new.
 
 ## Risks and Open Questions
 
-- **Risk**: Operator will need to manually fix docs that previously got
-  auto-repaired. This becomes operational toil if many projects
-  produce failing obligations. **Mitigation**: Track B reduces the
-  obligation gap by improving Phase 3 context assembly. If Track B
-  lands before the next run, this concern is moot.
-- **Risk**: Phase 4 cleanup or downstream consumers (RAG push, dashboard)
-  may have hidden assumptions about the obligation check being a
-  hard gate. **Mitigation**: Audit confirms Phase 4 only reads
-  `_audit/enterprise_gates.json` and the 10 final `.md` docs. The
-  swap is not gated on obligation-level warnings. (Verified in
-  Track A Slice 5 inspection.)
-- **Open question**: Should the warning include the list of
-  failing obligations, or just a count? Default: include a count +
-  first 3 obligation messages. Operator can re-run validate_docs to
-  see the full list.
+- If a doc's `phase2_sections` in `doc_catalog.yaml` is underspecified, the targeted
+  pack will be thin and the model will over-use tools. Mitigated by the acceptance run.
+- If CROSS_CHUNK_FINDINGS removal from UNCLASSIFIED (via parser fix) reduces pack
+  quality for docs that were implicitly benefiting from UNCLASSIFIED content, those docs
+  may need explicit `phase2_sections` entries. Mitigated by the acceptance run spot-check.
+- Parser fix is additive and has tests; no regression risk.
+- Pack 09 drop is safe (confirmed by grep: no caller reads it).
 
 ## Acceptance Criteria
 
-- [ ] `_phase3_targeted_repair` and the 4 helpers are deleted from
-      `harness.py`.
-- [ ] The 3 repair-then-revalidate blocks in `phase3_docs.py` are
-      replaced with single validation writes + warning emissions.
-- [ ] The `raise RuntimeError` for failing obligations is removed.
-- [ ] `HarnessHelpersImpl.phase3_targeted_repair` is deleted.
-- [ ] The 2 `test_phase3_targeted_repair_*` tests are deleted.
-- [ ] `test_phase3_obligation_gap_logs_warning` is added and passes.
-- [ ] `CLAUDE.md` and `mcp-workflow.md` are updated (1 line each).
-- [ ] Full pytest suite green (588 tests).
-- [ ] `py_compile` clean on all touched files.
-- [ ] No new config flags. `MCP_AGENT_SMART_REPAIR_ENABLED` defaults
-      to `False` and becomes Phase-2-only.
-- [ ] Live re-run of Lobsterprofiles_v3 reaches Phase 4 within
-      ~5 min after doc writes complete.
-- [ ] `_run_manifest.json` shows `phase4_cleanup` as the last phase
-      for the re-run.
-- [ ] `/inspect` verdict PASS or WARN; no BLOCK before committing.
+- [ ] `_parse_phase2_sections` h4 sub-headings do not break owning section.
+- [ ] `CROSS_CHUNK_FINDINGS` in PHASE2_SECTION_NAMES; UNCLASSIFIED <= 5 KB/group.
+- [ ] `extra_section_names` mechanism works; plugin guide sections classified correctly.
+- [ ] `BASELINE_BUNDLE_SECTIONS` = `{GROUP_SUMMARY_SECTION}` only.
+- [ ] `01_ARCHITECTURE_MAP` and `02_COMPONENT_INVENTORY` packs differ by >= 30% bytes.
+- [ ] `_doc_pack_09_EXECUTIVE_SUMMARY.md` no longer built.
+- [ ] `_complete_core_generation` passes a targeted starter pack (>= 1 context file)
+      on tool-capable providers.
+- [ ] `_doc_pack_manifest.json` absent from Phase 3 context file list.
+- [ ] CSV indexes absent from starter files when `_source_coverage.json` is absent.
+- [ ] >= 40% Phase 3 token reduction on Koopmans re-run; no quality regression.
+- [ ] All existing tests pass (590 baseline); new tests per slice added and green.
+- [ ] `/inspect` PASS or WARN for each slice before commit.
+- [ ] `CLAUDE.md` and `mcp-workflow.md` updated.

@@ -33,9 +33,9 @@ docs:
       - "Boundaries"
     phase2_sections:
       - "EXECUTION_FLOW"
-      - "EXTERNAL_SYSTEMS"
-      - "SCHEMA_DICTIONARY"
+      - "DATA_FLOWS"
       - "CROSS_GROUP_REFS"
+      - "EXTERNAL_SYSTEMS"
     doc_specific_instructions: |
       SPECIFIC REQUIREMENTS:
       - Describe the system topology and execution/orchestration shape.
@@ -60,9 +60,9 @@ docs:
       - "Scanner-Limited Evidence"
     phase2_sections:
       - "COMPONENTS"
-      - "EXECUTION_FLOW"
-      - "EXTERNAL_SYSTEMS"
       - "SCHEMA_DICTIONARY"
+      - "NAMING_PATTERNS"
+      - "EXTERNAL_SYSTEMS"
     doc_specific_instructions: |
       SPECIFIC REQUIREMENTS:
       - Provide a canonical unit inventory table covering every unit: name | group | source artifact/path | type | purpose | key dependencies | evidence confidence.

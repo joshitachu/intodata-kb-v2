@@ -1,203 +1,194 @@
 ---
 feature: Track B -- Phase 3 input quality
-slice: Slice 1 -- Phase 2 section parser fix (FR-B1)
+slice: Slice 3 -- Targeted dispatch + waste removal + docs (FR-B4, FR-B5, FR-B6, FR-B8)
 sub_project: knowledge_base
-critical_area: yes -- harness pipeline phases (/inspect required)
-verdict: PENDING
-approved_at:
+critical_area: yes -- harness pipeline phases (`/inspect` required)
+verdict: PASS
+approved_at: 2026-06-11
 ---
 
 ## Problem Statement
 
-`_parse_phase2_sections` (harness.py:1616) leaks 104,477 bytes per run into
-`UNCLASSIFIED_OR_EXTRA_FINDINGS` via three defects:
+After Slices 1 and 2, UNCLASSIFIED leakage is fixed and doc packs are differentiated.
+Three remaining waste sources drive Phase 3 input token counts:
 
-1. **Heading level (biggest)**: The regex `r"^#{1,6}\s+([A-Z][A-Z0-9_ ]+)\s*$"` matches
-   h1-h6 headings. Inside a RISK_FLAGS section, `#### HIGH`, `#### CRITICAL`, `#### MEDIUM`,
-   `#### LOW` and unit-name headings like `#### UPLOAD_CRM_JDE_PDF` all match and
-   trigger a section boundary change, booting the parser into ADDITIONAL_FINDINGS
-   mid-section. ~6.8 KB per run.
+1. **Hint-only dispatch (non-plugin runs only)**: When Phase 3 runs with a
+   tool-capable provider (non-plugin mode), `_complete_core_generation` sets
+   `context_files = []` (line 2840), discarding the targeted doc pack built by
+   Phase 2.8. The model must reconstruct all context via tool calls (O(n) tool
+   round-trips). The targeted doc pack — now differentiated and correctly parsed
+   after Slices 1+2 — should be pushed as a starter so the model begins grounded.
+   Note: plugin mode (Koopmans, lobster) disables Phase 3 tools at line 727, so
+   this change does NOT apply to the Koopmans acceptance run.
 
-2. **CROSS_CHUNK_FINDINGS not registered (73% of the leak)**: The harness itself generates
-   `### CROSS_CHUNK_FINDINGS` in `_phase2_cross_chunk_synthesis` (harness.py:1733-1764).
-   This is intentional output appended to the merged analysis for split groups. But the
-   section name is not in `PHASE2_SECTION_NAMES`, so the parser routes all 75,950 bytes
-   of cross-chunk synthesis content to ADDITIONAL_FINDINGS.
+2. **Manifest in every Phase 3 call (all runs)**: `_phase3_context_files`
+   appends `_doc_pack_manifest.json` (155 KB) to every Phase 3 call (lines
+   4375-4377). The manifest is a debug index of what went into each pack. The
+   model does not need it to write a document; the doc pack itself is the input.
+   Removing it saves ~155 KB × 61 calls = ~9.4 MB per reference run.
 
-3. **Plugin ANALYSIS_GUIDE extra sections**: The lobster plugin's ANALYSIS_GUIDE mandates
-   sections like `DEBUG_TESTING_EVIDENCE`, `CHANGE_IMPACT_EXTRACTION`,
-   `ASSISTANT_DOC_OBLIGATIONS` that the harness has never registered. Content after these
-   headers falls into ADDITIONAL_FINDINGS. ~21 KB per run.
-
-Because `UNCLASSIFIED_OR_EXTRA_FINDINGS` is in `BASELINE_BUNDLE_SECTIONS`, all 104 KB
-reaches every doc pack. This must be fixed BEFORE Slice 2 (BASELINE reduction), otherwise
-removing UNCLASSIFIED from BASELINE would silently discard 76 KB of legitimate
-cross-chunk synthesis and ~21 KB of plugin guide analysis.
+3. **CSV indexes in every Phase 3 call (all runs where source_coverage absent)**:
+   `_engineering_fact_context` (lines 4430 and 4435) adds `entity_index.csv` and
+   `usage_index.csv` (combined ~3.1 MB) to Phase 3 context when
+   `_source_coverage.json` is absent. These large index files are not needed in
+   static context when the doc pack already contains the relevant Phase 2 evidence.
+   Removing the CSVs from static context lets the model tool-read them on demand
+   if it needs to; they remain on disk.
 
 ## Proposed Solution
 
-Three targeted fixes to `_parse_phase2_sections`, all additive:
+**Change 1 — Targeted starter pack for tool-capable Phase 3 (line 2838-2840)**:
+In `_complete_core_generation`, when `use_tools=True`, replace `context_files = []`
+with a filter that keeps doc-pack files (`_doc_pack_` in name) up to a 100 KB cap.
+If the doc pack exceeds 100 KB (unlikely after Slice 2 differentiation), fall back to
+empty (preserve existing hint-only behavior). Phase 2 calls are unaffected because
+their `context_files` never contain `_doc_pack_` files.
 
-**Fix 1 (heading level)**: Restrict the section boundary trigger to h3 only. Change
-`r"^#{1,6}\s+..."` to `r"^### ([A-Z][A-Z0-9_ ]+)\s*$"`. Sub-headings at h4+ inside a
-known section no longer break the owning section's parse context. Phase 2 prompts
-(`prompts.py:88`) already instruct the LLM to use exactly `### NAME` for top-level
-sections, so this correctly matches the intended protocol.
+```python
+_STARTER_PACK_BYTE_CAP = 100 * 1024
+doc_packs = [f for f in context_files if "_doc_pack_" in f.name]
+total_bytes = sum(f.stat().st_size for f in doc_packs if f.exists())
+context_files = doc_packs if total_bytes <= _STARTER_PACK_BYTE_CAP else []
+```
 
-**Fix 2 (CROSS_CHUNK_FINDINGS)**: Add `"CROSS_CHUNK_FINDINGS"` to `PHASE2_SECTION_NAMES`
-in `harness.py:112`. It is a real section intentionally produced by the harness. Adding
-it to the tuple means the parser buckets its content correctly. Since no `doc_catalog.yaml`
-entry lists it in `phase2_sections`, it will never appear in any doc pack — but it will
-no longer bloat ADDITIONAL_FINDINGS.
+**Change 2 — Remove manifest from `_phase3_context_files` (lines 4375-4377)**:
+Delete the three-line block that appends `_doc_pack_manifest.json`. The manifest
+is a build-artifact index, not evidence. Its removal has no effect on doc quality.
 
-**Fix 3 (plugin guide sections)**: Add an `extra_section_names: frozenset[str] = frozenset()`
-parameter to `_parse_phase2_sections`. Add a module-level helper
-`_guide_section_names(guide_path: Path) -> frozenset[str]` that reads the ANALYSIS_GUIDE
-file and extracts all-caps `### HEADING` patterns. Thread this through the two classmethod
-callers (`_deterministic_phase2_merge` and `_targeted_analysis_bundle_parts`) with a new
-optional parameter, and populate it in the instance-method callers where `ctx` is available.
+**Change 3 — Remove CSV indexes from `_engineering_fact_context` (lines 4430, 4435)**:
+Remove `entity_index.csv` and `usage_index.csv` from both list assignments:
+- Line 4430: `names = ["engineering_facts.md", "sql_usage.md", "entity_index.csv", "usage_index.csv"]`
+  → `names = ["engineering_facts.md", "sql_usage.md"]`
+- Line 4435 (`03_DATA_FLOWS_AND_LINEAGE`): `names = ["engineering_facts.md", "data_flow_map.md", "entity_index.csv", "usage_index.csv"]`
+  → `names = ["engineering_facts.md", "data_flow_map.md"]`
+
+The `doc_name is None` branch (Phase 2 calls) is not touched — it already excludes
+CSV files.
+
+**Change 4 — Docs**: Update `knowledge_base/CLAUDE.md` (Current Custom Harness Notes)
+and `knowledge_base/.agent/system/mcp-workflow.md` to document:
+- BASELINE_BUNDLE_SECTIONS is GROUP_SUMMARY only (from Slice 2)
+- Section parser scope (from Slice 1)
+- Targeted starter pack dispatch + tool drill-down for non-plugin Phase 3
+- Manifest and CSV indexes removed from static Phase 3 context
+
+**Change 5 — Acceptance run**: Run LobsterProfileExportKoopmansTest on deepseek/deepseek-v4-pro.
+Compare Phase 3 input token total against 5,126,576 baseline. Target: ≥40% reduction
+(≤3,075,946 tokens). Spot-check at least 2 generated docs for quality regression.
 
 ## Affected Files
 
-- `mcp-server/src/mcp_server/providers/custom/harness.py`:
-  - `PHASE2_SECTION_NAMES` (harness.py:112) -- add `"CROSS_CHUNK_FINDINGS"`
-  - `_parse_phase2_sections` (harness.py:1616-1636) -- fix heading regex; add
-    `extra_section_names` param; merge extra names into `section_names` set
-  - `_deterministic_phase2_merge` (harness.py:1597-1613) -- add `extra_section_names`
-    param; forward to `_parse_phase2_sections`
-  - `_targeted_analysis_bundle_parts` (harness.py:2452-2473) -- add `extra_section_names`
-    param; forward to `_parse_phase2_sections`
-  - Instance method callers of `_targeted_analysis_bundle_parts` (`_phase28_bundles`
-    harness.py:2335, and the repair context builder at harness.py:2448) -- compute guide
-    section names from `ctx` and pass through
-  - New module-level helper `_guide_section_names(guide_path: Path) -> frozenset[str]`
-    (add near the top of `harness.py` or in `prompt_packs.py`)
-- `mcp-server/tests/test_providers/test_custom_provider.py`:
-  - New test `test_parse_phase2_sections_h4_heading_does_not_break_parent_section`
-  - New test `test_parse_phase2_sections_cross_chunk_findings_is_named_section`
-  - New test `test_parse_phase2_sections_extra_section_names_accepted`
-  - Update existing `test_deterministic_phase2_merge_preserves_canonical_sections`
-    (line 2274) if it needs to account for `CROSS_CHUNK_FINDINGS` in PHASE2_SECTION_NAMES
+- `mcp-server/src/mcp_server/providers/custom/harness.py`
+  - `_complete_core_generation` (lines 2838-2840): Change 1 (targeted dispatch)
+  - `_phase3_context_files` (lines 4375-4377): Change 2 (manifest removal)
+  - `_engineering_fact_context` (lines 4430, 4435): Change 3 (CSV removal)
+- `mcp-server/tests/test_providers/test_custom_provider.py`
+  - 4 new tests (see Verification Strategy)
+- `knowledge_base/CLAUDE.md`
+  - "Current Custom Harness Notes" section: document Slice 1+2+3 changes
+- `knowledge_base/.agent/system/mcp-workflow.md`
+  - Phase 3 row in Phase Table, and Phase 2.8 dispatch description
 
 ## Architecture Contracts
 
-- `knowledge_base/CLAUDE.md` "Current Custom Harness Notes": parser behavior is not
-  documented there; no update needed for this slice.
-- `knowledge_base/.agent/system/mcp-workflow.md`: Phase 2.8 doc-pack assembly description
-  is unchanged by this slice (BASELINE change is Slice 2).
-- **Parser fix is strictly additive**: content that already parses into a named section
-  must still parse into the same section after the fix. Only content that was landing in
-  ADDITIONAL_FINDINGS should move to a named section.
-- **`PHASE2_SECTION_NAMES` is iterated by `_deterministic_phase2_merge`** — adding
-  CROSS_CHUNK_FINDINGS to it means the merge output loop will check for it. It will be
-  empty for individual chunk inputs (which never have CROSS_CHUNK_FINDINGS), so the merge
-  output is unchanged.
-- **No change to `BASELINE_BUNDLE_SECTIONS`** in this slice — that is Slice 2.
-- **No change to doc_catalog.yaml** -- that is Slice 2.
-- **Track A pre-condition**: harness.py has uncommitted Track A FR-8 changes in
-  `_phase3_context_files`. Track A must be committed before this slice starts.
+- **`knowledge_base/CLAUDE.md` "Current Custom Harness Notes"** (deferred from Slices 1+2):
+  this slice must document BASELINE_BUNDLE_SECTIONS = GROUP_SUMMARY only, section
+  parser scope (`PHASE2_SECTION_NAMES` + extra_section_names), targeted dispatch, and
+  manifest/CSV removal.
+- **`knowledge_base/.agent/system/mcp-workflow.md`** Phase Table: Phase 3 description
+  should say "Pushes targeted doc pack (≤100 KB) as starter context; uses tools for
+  evidence drill-down (non-plugin only)."
+- **No intermediate files rule (global CLAUDE.md)**: CSV files are removed from static
+  context, not deleted. They remain on disk for tool access. This is correct.
+- **Plugin mode tool gate (harness.py line 727)**: Change 1 is unreachable for plugin
+  runs — `_tool_policy` returns `enabled=False` for `self._plugin_mode and
+  phase.startswith("phase3")`. The starter pack selection block will never execute for
+  plugin mode. This is intentional — document in code comment.
+- **Phase 2 tool path not regressed**: The `_doc_pack_` filter in Change 1 returns
+  empty list for Phase 2 calls (no `_doc_pack_` in Phase 2 context_files), preserving
+  existing Phase 2 hint-only behavior.
+- **Slices 1 and 2 are pre-conditions**: Change 1 is only meaningful once doc packs
+  are correctly parsed (Slice 1) and differentiated (Slice 2).
 
 ## Implementation Steps
 
-1. **Add `CROSS_CHUNK_FINDINGS` to `PHASE2_SECTION_NAMES`** (harness.py:112):
+1. **Change `_complete_core_generation` (lines 2838-2840)** — replace hint-only:
    ```python
-   PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (
-       GROUP_SUMMARY_SECTION,
-       "CROSS_CHUNK_FINDINGS",
-       ADDITIONAL_FINDINGS_SECTION,
-   )
+   if use_tools:
+       prompt = _with_agent_contract(prompt, task_contract)
+       _STARTER_PACK_BYTE_CAP = 100 * 1024
+       doc_packs = [f for f in context_files if "_doc_pack_" in f.name]
+       total_bytes = sum(f.stat().st_size for f in doc_packs if f.exists())
+       context_files = doc_packs if total_bytes <= _STARTER_PACK_BYTE_CAP else []
+   ```
+   The constant can be a module-level `_PHASE3_STARTER_PACK_BYTE_CAP = 100 * 1024`
+   if preferred for testability. Either is acceptable.
+
+2. **Remove manifest block from `_phase3_context_files` (lines 4375-4377)**:
+   Delete:
+   ```python
+   manifest = analysis_dir / "_doc_pack_manifest.json"
+   if manifest.exists():
+       files.append(manifest)
    ```
 
-2. **Fix heading level regex in `_parse_phase2_sections`** (harness.py:1621):
-   Change `r"^#{1,6}\s+([A-Z][A-Z0-9_ ]+)\s*$"` to `r"^### ([A-Z][A-Z0-9_ ]+)\s*$"`.
-   This is a one-line change. The `match.group(1)` reference stays the same.
+3. **Remove CSV indexes from `_engineering_fact_context` (lines 4430 and 4435)**:
+   - Line 4430: `names = ["engineering_facts.md", "sql_usage.md"]`
+   - Line 4435 (03_DATA_FLOWS_AND_LINEAGE branch): `names = ["engineering_facts.md", "data_flow_map.md"]`
 
-3. **Add `extra_section_names` param to `_parse_phase2_sections`** (harness.py:1616):
-   ```python
-   @staticmethod
-   def _parse_phase2_sections(
-       text: str, extra_section_names: frozenset[str] = frozenset()
-   ) -> dict[str, str]:
-       section_names = set(PHASE2_SECTION_NAMES) | extra_section_names
-       sections: dict[str, list[str]] = {name: [] for name in section_names}
-       ...
-   ```
-   The `sections` dict initialization must also cover the extra names.
+4. **Write 4 tests** in `test_custom_provider.py` (see Verification Strategy).
 
-4. **Add `_guide_section_names` helper** (new function near `_parse_phase2_sections`):
-   ```python
-   def _guide_section_names(guide_path: Path) -> frozenset[str]:
-       if not guide_path.exists():
-           return frozenset()
-       heading_re = re.compile(r"^### ([A-Z][A-Z0-9_ ]+)\s*$")
-       names: set[str] = set()
-       for line in guide_path.read_text(encoding="utf-8", errors="replace").splitlines():
-           m = heading_re.match(line.strip())
-           if m:
-               candidate = re.sub(r"[^A-Z0-9_]+", "_", m.group(1).strip().upper()).strip("_")
-               if candidate not in PHASE2_SECTION_NAMES:
-                   names.add(candidate)
-       return frozenset(names)
-   ```
+5. **Update `knowledge_base/CLAUDE.md`** "Current Custom Harness Notes":
+   Add bullet points for BASELINE = GROUP_SUMMARY only, parser coverage
+   (CROSS_CHUNK_FINDINGS registered, plugin guide headers via extra_section_names),
+   Phase 3 targeted dispatch (non-plugin), and manifest/CSV removal.
 
-5. **Thread `extra_section_names` through `_deterministic_phase2_merge`**:
-   Add `extra_section_names: frozenset[str] = frozenset()` param; pass to each
-   `cls._parse_phase2_sections(text, extra_section_names)` call.
+6. **Update `knowledge_base/.agent/system/mcp-workflow.md`**:
+   - Phase Table Phase 3 row: update "LLM calls" description to note starter pack.
+   - Phase 2.8 row description: confirm "no LLM calls" still accurate.
+   - Add a short note in Key Config about the targeted dispatch approach.
 
-6. **Thread `extra_section_names` through `_targeted_analysis_bundle_parts`**:
-   Add `extra_section_names: frozenset[str] = frozenset()` param; pass to each
-   `cls._parse_phase2_sections(text, extra_section_names)` call.
+7. **Run pytest** — expect all 595 existing tests + 4 new tests passing.
 
-7. **Compute guide section names in instance callers of `_targeted_analysis_bundle_parts`**:
-   In `_phase28_bundles` (harness.py:2335) and any other instance-method caller of
-   `_targeted_analysis_bundle_parts`, compute:
-   ```python
-   preprocess_dir = ctx.staging_dir / "_preprocess"
-   guide_file = preprocess_dir / ctx.analysis_guide_file if ctx.analysis_guide_file else None
-   extra = _guide_section_names(guide_file) if guide_file else frozenset()
-   ```
-   Pass `extra_section_names=extra` to the method call.
-
-8. **Compute guide section names in `_phase2_analysis_group` caller of
-   `_deterministic_phase2_merge`** (harness.py:1599): same pattern.
-
-9. **Run pytest** — expect existing 590 tests to pass (CROSS_CHUNK_FINDINGS added to
-   PHASE2_SECTION_NAMES may affect `test_deterministic_phase2_merge_preserves_canonical_sections`
-   at line 2274 — update if needed).
-
-10. **Add new tests** (see Verification Strategy).
+8. **Acceptance run** on LobsterProfileExportKoopmansTest with deepseek/deepseek-v4-pro.
+   Measure total Phase 3 input tokens and compare to 5,126,576 baseline.
+   Spot-check docs 01 and 02 for quality (verify catalog section changes from Slice 2
+   did not degrade content; see Slice 2 inspection WARN 2).
 
 ## Verification Strategy
 
-**New tests in `test_custom_provider.py`:**
+**Tests (all in `test_custom_provider.py`):**
 
-- `test_parse_phase2_sections_h4_heading_does_not_break_parent_section`:
-  Input: `"### RISK_FLAGS\n\nSome risk.\n\n#### HIGH\n\nHigh risk detail.\n#### LOW\n\nLow detail."`
-  Assert: `result["RISK_FLAGS"]` contains `"High risk detail"` and `"Low detail"`;
-  `result.get(ADDITIONAL_FINDINGS_SECTION, "")` is empty.
+1. `test_complete_core_generation_tool_path_pushes_starter_pack`:
+   Create a mock provider that supports tools. Call `_complete_core_generation` with
+   `context_files` containing a small `_doc_pack_testdoc.md` temp file (< 100 KB) and
+   a non-pack file. Assert the call to the underlying provider receives only the doc_pack
+   file (non-pack file excluded). Use `unittest.mock.AsyncMock` for the provider.
 
-- `test_parse_phase2_sections_cross_chunk_findings_is_named_section`:
-  Input: `"### COMPONENTS\n\ncomp content\n\n### CROSS_CHUNK_FINDINGS\n\ncross content"`
-  Assert: `result["CROSS_CHUNK_FINDINGS"] == "cross content"`;
-  `result.get(ADDITIONAL_FINDINGS_SECTION, "")` is empty;
-  `result["COMPONENTS"] == "comp content"`.
+2. `test_complete_core_generation_tool_path_empty_when_pack_too_large`:
+   Same setup but doc_pack temp file is > 100 KB. Assert the provider call receives
+   `context_files=[]` (fallback to hint-only).
 
-- `test_parse_phase2_sections_extra_section_names_accepted`:
-  Input: `"### COMPONENTS\n\ncomp\n\n### DEBUG_TESTING_EVIDENCE\n\ndebug content"`
-  Call with `extra_section_names=frozenset({"DEBUG_TESTING_EVIDENCE"})`.
-  Assert: `result["DEBUG_TESTING_EVIDENCE"] == "debug content"`;
-  `result.get(ADDITIONAL_FINDINGS_SECTION, "")` is empty.
+3. `test_phase3_context_files_excludes_manifest`:
+   Create a staging dir with a real `_doc_pack_manifest.json` present. Call
+   `_phase3_context_files(ctx, "01_ARCHITECTURE_MAP")`. Assert no returned path has
+   `_doc_pack_manifest.json` as its name.
 
-**Manual check on reference run artifacts:**
-If `_analysis/` files are accessible from the last Koopmans run, parse them with
-the updated `_parse_phase2_sections` and measure the UNCLASSIFIED size. Target:
-< 5 KB per group file (from ~15 KB/group current).
+4. `test_engineering_fact_context_excludes_csv_indexes`:
+   Create a staging dir with both `entity_index.csv` and `usage_index.csv` present.
+   Call `_engineering_fact_context(ctx, "01_ARCHITECTURE_MAP")`. Assert neither CSV
+   appears in the returned list. Also assert `engineering_facts.md` IS returned when
+   present (to verify the method still functions).
+
+**Acceptance run gate** (Koopmans, deepseek): Token total ≤ 3,075,946 (≥40% reduction
+from 5,126,576 baseline). Quality: at least docs 01, 02, 03 spot-checked for evidence
+coverage.
 
 ## Out of Scope
 
-- `BASELINE_BUNDLE_SECTIONS` change — Slice 2.
-- `doc_catalog.yaml` 01/02 differentiation — Slice 2.
-- Stopping pack 09 from being built — Slice 2.
-- `_complete_core_generation` targeted dispatch — Slice 3.
-- Manifest and CSV index removal from context — Slice 3.
-- Track A uncommitted changes (FR-8 fallback removal) — must land before this slice.
+- Phase 2 analysis context changes — untouched.
+- Plugin pack evidence_profiles — untouched.
+- Any changes to Phase 1 investigation or Phase 2.6 scorecard.
+- Adding CSV files back via tools — they remain on disk for tool access, no code needed.
+- Changing `_BUNDLE_CATEGORY_TO_PHASE2_SECTIONS` or evidence profile mappings.
+- Changing how manifest is written (Phase 2.8 still writes it for debug/forensic use).
