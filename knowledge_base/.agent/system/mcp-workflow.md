@@ -18,7 +18,7 @@ files.
 | 2.8 | phase28_bundles | `phase28_bundles.py` | Deterministic reassembly of analysis sections into per-doc evidence bundles (`_analysis/_doc_pack_*.md`). Each bundle = `GROUP_SUMMARY` (baseline floor) + doc's `phase2_sections` from `doc_catalog.yaml` (standard) or `evidence_profiles` (plugin). No LLM calls. | 0 | `plan.doc_bundles == False` |
 | 2.9 | evidence_quality_gate | `pipeline/evidence_quality_gate.py` | Pure Python thin-bundle check over `_preprocess/{group}.md`. Emits `THIN_BUNDLE` warnings and `_assessment/thin_bundle_report.json`. | 0 | never skipped |
 | 3 | phase3_docs | `phase3_docs.py` | Writes one markdown document per required doc in `docs_staging/`. Persists one agent task per doc under `_agent_tasks/phase3/`. For tool-capable non-plugin providers, pushes the targeted doc pack (≤100 KB) as starter context in `system_prompt`; model uses tools for drill-down. Plugin-mode runs disable Phase 3 tools entirely. Runs `EvidenceTraceabilityValidator` post-write. | N .. N*3 (N = required docs) | never skipped |
-| 4 | phase4_cleanup | `phase4_cleanup.py` | Enterprise gate evaluation, audit bundle write, engineering artifact archival, and run log. No LLM calls. | 0 | never skipped |
+| 4 | phase4_cleanup | `phase4_cleanup.py` | Enterprise gate evaluation, audit bundle write, engineering artifact archival, `_rag_support/` packaging (Phase 2 group analyses + manifest, via `services/rag_support_package.py`, before `_preprocess`/`_analysis`/`_transient` deletion), and run log. No LLM calls. | 0 | never skipped |
 
 Inputs flow forward: Phase 1 populates `facts_manifest.json`; Phase 2 reads it
 and writes `_analysis/`; Phase 2.6 reads `_analysis/`; Phase 2.8 reads

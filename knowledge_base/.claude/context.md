@@ -1,6 +1,10 @@
 # KB Sub-project Context
 
-## Last Completed (2026-06-10) — Track A COMPLETE (Slices 1-5)
+## Last Completed (2026-06-12) — Layered RAG Slice 2 (commit `fc3788a`)
+
+Harness `_rag_support/` persistence and analysis_cache restore shipped. New service `mcp-server/src/mcp_server/services/rag_support_package.py`: Phase 4 packages Phase 2 group analyses (facts-manifest allowlist only) into `docs_staging/_rag_support/{phase2_analysis/,manifest.json}` before deleting `_analysis/`; the atomic swap carries it into `docs/`. The dead post-swap `docs/_analysis` copy in `_run_generate_background` is replaced by `replace_analysis_cache_from_rag_support()` — flat `analysis_cache/*.md` restore; absent/empty package removes stale cache (full-regen fallback). RagBridge still pushes only top-level visible docs (regression-tested). Inspector verdict WARN, all code findings fixed in-session; 613 tests pass. Slice 3 (internal-layer ingestion into RAG) is next.
+
+## Previous (2026-06-10) — Track A COMPLETE (Slices 1-5)
 
 Track A artifact reduction is **shipped**: Slices 1+2 committed in `5e16911`; Slices 3-5 built+inspected+committed in `1a62a82` and pushed to `master`. Default runs now produce ~290 files / ~20 MB (down from 666 / 52 MB). New `transient_artifacts.py` (un-gated mirror of `debug_artifacts.py`) consolidates 5 transient dirs to one `_transient/`; 9 never-read root JSON maps no longer written; `_audit/` reduced from wholesale copies of 3 dirs + 3 files to just `enterprise_gates.json` + `final_doc_hashes.json`; `CLAUDE.md` and `mcp-workflow.md` updated; 590 tests pass. LLM input is byte-identical (the removed artifacts were never sent to the model). Docker: `mcp-server` rebuilt and healthy on port 8002. Inspection verdicts: Slice 4 WARN, Slice 5 WARN (both non-blocking, both documented). Follow-ups logged in PROGRESS_LOG: silent `try/except OSError` in hash compute (more visible now); pre-existing `JSONDecodeError` ordering in REST fallback; manual paired-run acceptance on reference project; Track B (Phase 3 input quality) is unblocked and ready to start.
 
@@ -68,7 +72,8 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Immediate Next Steps
 
-1. **Run Track B full pipeline** (`/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → commit). Track A FR-8 dead-fallback removal is the prerequisite and is committed. Per Track B PRD: output-affecting, before/after human spot-check on >=3 docs required before commit is accepted. Target: average Phase 3 context <=150 KB per doc (down from ~400 KB); packs for docs with disjoint `phase2_sections` differ by >=30% by byte count.
+1. **Layered RAG Slice 3**: `/plan` the internal-layer ingestion slice (push `_rag_support/phase2_analysis/` to the RAG backend with `source_layer`/`visibility` metadata) → `/plan-approve pass` → build → `/inspect` → `/validate` → commit. Reuse `rag_support_package.py` path constants. Manual Slice 2 acceptance still open: run one generation on a scanned project and confirm `docs/_rag_support/` contents + repopulated `analysis_cache/`.
+2. **Run Track B full pipeline** (`/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → commit). Track A FR-8 dead-fallback removal is the prerequisite and is committed. Per Track B PRD: output-affecting, before/after human spot-check on >=3 docs required before commit is accepted. Target: average Phase 3 context <=150 KB per doc (down from ~400 KB); packs for docs with disjoint `phase2_sections` differ by >=30% by byte count.
 2. **Optional: paired-run acceptance on reference project** for Track A. Verify staging file count, total bytes, and per-call `_model_inputs/**/manifest.json` invariance against a recorded model-response baseline. Manual step; requires a scanned project + working model + ~10-30 min runtime.
 3. **Plan the next documentation-evidence slice**: likely Phase 3 handoff/writer input quality, answerability inspection, or final cross-slice validation harness. Keep token cost visible and preserve the rule that formal `/validate` waits until all slices are complete.
 2. **Do not run formal `/validate` yet**: user wants validation across all slices together after the remaining slices are complete.

@@ -77,6 +77,16 @@ This is the primary method for generating project documentation. Follow it exact
 - **Phase 3 static context** (`_phase3_context_files`): `_doc_pack_manifest.json` is excluded — it is a build-artifact index, not evidence. `entity_index.csv` and `usage_index.csv` are excluded from `_engineering_fact_context` for all Phase 3 doc names; they remain on disk for tool access.
 - `EvidenceTraceabilityValidator` (`providers/custom/evidence_traceability.py`) runs
   after Phase 3 and writes `_assessment/evidence_traceability.json`.
+- **`_rag_support/` package (layered RAG Slice 2)**: Phase 4 calls
+  `services/rag_support_package.py::build_rag_support_package()` before deleting
+  `_analysis/` — copies only facts-manifest group analyses into
+  `docs_staging/_rag_support/phase2_analysis/` with a `manifest.json`
+  (allowlist; never `_doc_pack_*`/`_bundle_*`/reports). The atomic swap carries
+  it into `docs/`. Post-swap, `_run_generate_background` restores the flat
+  `analysis_cache/` via `replace_analysis_cache_from_rag_support()`; an absent
+  or empty package removes stale cache so incremental webhook regen falls back
+  to full regeneration. `RagBridge` pushes only top-level `docs/*.md`, so
+  `_rag_support/` stays invisible until Slice 3 ingests it deliberately.
 - **All 4 Phase 3 final-check gates are advisory warnings, not exceptions.**
   Validators (`validate_docs`, `validate_doc_depth`,
   `validate_source_provenance`) and the SQL usage gate
