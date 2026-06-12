@@ -286,6 +286,7 @@ async def search_and_rerank(
     top_k: int = settings.default_top_k,
     threshold: float = settings.default_threshold,
     rerank_candidates: int | None = None,
+    prefetch_limit: int | None = None,
     document_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
     source_layers: list[str] | None = None,
@@ -311,6 +312,7 @@ async def search_and_rerank(
             user_groups=user_groups,
             top_k=candidates_n,
             threshold=0.0,
+            prefetch_limit=prefetch_limit,
             document_ids=document_ids,
             project_ids=project_ids,
             source_layers=source_layers,
@@ -580,6 +582,147 @@ def _process_results(
     return sources
 
 
+def _build_unit_filter(
+    user_groups: list[str],
+    units: list[str],
+    project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
+) -> Filter:
+    """RBAC/project/layer filter plus exact `unit` payload match."""
+    base = _build_search_filter(
+        user_groups, document_ids=None, project_ids=project_ids,
+        source_layers=source_layers,
+    )
+    conditions = list(base.must) if base and base.must else []
+    conditions.append(FieldCondition(key="unit", match=MatchAny(any=units)))
+    return Filter(must=conditions)
+
+
+async def fetch_unit_chunks(
+    client: AsyncQdrantClient,
+    user_groups: list[str],
+    units: list[str],
+    *,
+    source_layers: list[str],
+    project_ids: list[str] | None = None,
+    limit: int | None = None,
+) -> list[Source]:
+    """Deterministically fetch chunks whose `unit` payload matches a named unit.
+
+    The exact-match counterpart to semantic search: when the query names a
+    known job/component/unit, its chunks are retrieved by payload filter,
+    not embedding similarity — an alias-matched unit can never lose the
+    ranking contest. Scores are pinned to 1.0 so merged ranking keeps these
+    guaranteed hits on top.
+    """
+    if not units:
+        return []
+    points, _ = await client.scroll(
+        collection_name=COLLECTION_NAME,
+        scroll_filter=_build_unit_filter(
+            user_groups, units, project_ids=project_ids, source_layers=source_layers,
+        ),
+        limit=limit if limit is not None else settings.rung2_entity_match_limit,
+        with_payload=True,
+        with_vectors=False,
+    )
+    sources = [_source_from_payload(p.payload, 1.0) for p in points]
+    sources.sort(key=lambda s: (s.document_id, s.chunk_index))
+    logger.info("Unit payload fetch: units=%s → %d chunks", units, len(sources))
+    return sources
+
+
+def _build_section_filter(
+    user_groups: list[str],
+    document_id: int,
+    section: str,
+    project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
+) -> Filter:
+    """Same-document same-section filter under the standard RBAC constraints."""
+    base = _build_search_filter(
+        user_groups, document_ids=[document_id], project_ids=project_ids,
+        source_layers=source_layers,
+    )
+    conditions = list(base.must) if base and base.must else []
+    conditions.append(FieldCondition(key="section", match=MatchAny(any=[section])))
+    return Filter(must=conditions)
+
+
+async def expand_section_chunks(
+    client: AsyncQdrantClient,
+    sources: list[Source],
+    user_groups: list[str],
+    project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
+    limit: int | None = None,
+) -> list[Source]:
+    """Replace each section-bearing hit with its complete owning section.
+
+    A retrieved chunk is often a fragment of one logical technical passage;
+    fetching the full section (same document_id + section payload) gives the
+    LLM the whole passage in chunk_index order. Sources without section
+    metadata are kept as-is (legacy chunks keep neighbor-expansion behavior
+    from the upstream search). Total fetched chunks are capped.
+    """
+    cap = limit if limit is not None else settings.rung2_section_expansion_limit
+    expanded: list[Source] = []
+    seen: set[tuple[int, int]] = set()
+    expanded_sections: set[tuple[int, str]] = set()
+    fetched = 0
+
+    for src in sources:
+        key = (src.document_id, src.chunk_index)
+        if not src.section:
+            if key not in seen:
+                expanded.append(src)
+                seen.add(key)
+            continue
+
+        section_key = (src.document_id, src.section)
+        if section_key in expanded_sections:
+            if key not in seen:
+                expanded.append(src)
+                seen.add(key)
+            continue
+
+        section_chunks: list[Source] = []
+        if fetched < cap:
+            try:
+                points, _ = await client.scroll(
+                    collection_name=COLLECTION_NAME,
+                    scroll_filter=_build_section_filter(
+                        user_groups, src.document_id, src.section,
+                        project_ids=project_ids, source_layers=source_layers,
+                    ),
+                    limit=cap - fetched,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                section_chunks = sorted(
+                    (_source_from_payload(p.payload, src.score) for p in points),
+                    key=lambda s: s.chunk_index,
+                )
+                fetched += len(section_chunks)
+                expanded_sections.add(section_key)
+            except Exception as e:
+                logger.warning(
+                    "Section expansion failed for doc=%s section=%r: %s",
+                    src.document_id, src.section, e,
+                )
+
+        if not section_chunks:
+            section_chunks = [src]
+        for chunk in section_chunks:
+            chunk_key = (chunk.document_id, chunk.chunk_index)
+            if chunk_key not in seen:
+                expanded.append(chunk)
+                seen.add(chunk_key)
+
+    logger.info("Section expansion: %d hits → %d context chunks", len(sources), len(expanded))
+    return expanded
+
+
 async def search_layered(
     client: AsyncQdrantClient,
     query: str,
@@ -589,30 +732,73 @@ async def search_layered(
     top_k: int = settings.default_top_k,
     threshold: float = settings.default_threshold,
     project_ids: list[str] | None = None,
+    matched_units: list[str] | None = None,
 ) -> list[Source]:
-    """Run the configured search strategy against explicit corpus layers.
+    """Deep-rung search against explicit corpus layers.
 
     Used by retrieval-ladder rung 2: same RBAC/project filters as the default
     path, but with an exact ``source_layers`` filter (no legacy is-empty
-    tolerance). ``source_layers`` is required — this helper must never fall
-    back to the default partition.
+    tolerance) and wider recall — forced query expansion, a larger candidate
+    pool (`rung2_prefetch_limit`/`rung2_rerank_top_n`), guaranteed unit-payload
+    hits for alias-matched entities, and whole-section expansion. Rung 1 and
+    `/query` keep the default settings. ``source_layers`` is required — this
+    helper must never fall back to the default partition.
     """
-    if settings.reranker_enabled:
-        return await search_and_rerank(
-            client=client, query=query, user_groups=user_groups,
-            top_k=top_k, threshold=threshold, project_ids=project_ids,
-            source_layers=source_layers,
-        )
-    if settings.hybrid_search_enabled:
-        return await search_similar_hybrid(
-            client=client, query=query, user_groups=user_groups,
-            top_k=top_k, threshold=threshold, project_ids=project_ids,
-            source_layers=source_layers,
-        )
-    return await search_similar(
-        client=client, query=query, user_groups=user_groups,
-        top_k=top_k, threshold=threshold, project_ids=project_ids,
-        source_layers=source_layers,
+    queries = [query]
+    if settings.rung2_query_expansion_enabled:
+        queries = await expand_query(query, force=True)
+
+    semantic: list[Source] = []
+    seen: set[tuple[int, int]] = set()
+    for q in queries:
+        if settings.reranker_enabled:
+            results = await search_and_rerank(
+                client=client, query=q, user_groups=user_groups,
+                top_k=top_k, threshold=threshold, project_ids=project_ids,
+                source_layers=source_layers,
+                rerank_candidates=settings.rung2_rerank_top_n,
+                prefetch_limit=settings.rung2_prefetch_limit,
+            )
+        elif settings.hybrid_search_enabled:
+            results = await search_similar_hybrid(
+                client=client, query=q, user_groups=user_groups,
+                top_k=top_k, threshold=threshold, project_ids=project_ids,
+                source_layers=source_layers,
+                prefetch_limit=settings.rung2_prefetch_limit,
+            )
+        else:
+            results = await search_similar(
+                client=client, query=q, user_groups=user_groups,
+                top_k=top_k, threshold=threshold, project_ids=project_ids,
+                source_layers=source_layers,
+            )
+        for s in results:
+            key = (s.document_id, s.chunk_index)
+            if key not in seen:
+                seen.add(key)
+                semantic.append(s)
+
+    unit_hits: list[Source] = []
+    if matched_units:
+        try:
+            for s in await fetch_unit_chunks(
+                client, user_groups, matched_units,
+                source_layers=source_layers, project_ids=project_ids,
+            ):
+                key = (s.document_id, s.chunk_index)
+                if key not in seen:
+                    seen.add(key)
+                    unit_hits.append(s)
+        except Exception as e:
+            logger.warning("Unit payload fetch failed for units=%s: %s", matched_units, e)
+
+    # Guaranteed entity hits lead; semantic candidates follow in rank order.
+    merged = unit_hits + semantic
+    if not merged:
+        return []
+    return await expand_section_chunks(
+        client, merged, user_groups,
+        project_ids=project_ids, source_layers=source_layers,
     )
 
 

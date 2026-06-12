@@ -40,13 +40,17 @@ def should_expand_query(query: str) -> bool:
     return True
 
 
-async def expand_query(query: str) -> list[str]:
+async def expand_query(query: str, force: bool = False) -> list[str]:
     """Generate alternative query phrasings using LLM.
 
     Returns a list of 1-3 queries (original + alternatives).
     Falls back to [original] if LLM fails.
+
+    ``force=True`` bypasses the global ``query_expansion_enabled`` switch —
+    used by retrieval-ladder rung 2, which widens recall independently of the
+    default search configuration.
     """
-    if not settings.query_expansion_enabled:
+    if not settings.query_expansion_enabled and not force:
         return [query]
 
     if not should_expand_query(query):

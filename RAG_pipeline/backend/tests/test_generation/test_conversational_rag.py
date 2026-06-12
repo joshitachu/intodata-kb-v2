@@ -799,3 +799,112 @@ class TestRetrievalLadder:
             )
 
         assert mock_gen.await_args.kwargs.get("images") == ["base64imagedata"]
+
+
+class TestLadderEntityMatching:
+    """Slice 5: alias-table entity matching drives descent and unit retrieval."""
+
+    disable_new_features = TestRetrievalLadder.__dict__["disable_new_features"]
+    mock_conversation = TestRetrievalLadder.__dict__["mock_conversation"]
+    mock_db = TestRetrievalLadder.__dict__["mock_db"]
+    _canonical_source = TestRetrievalLadder.__dict__["_canonical_source"]
+    _internal_source = TestRetrievalLadder.__dict__["_internal_source"]
+
+    @staticmethod
+    def _match(alias="resource_logDir", unit=None, entity_type="config"):
+        from src.retrieval.entity_matcher import EntityMatch
+        return EntityMatch(
+            alias=alias, canonical_name=alias, entity_type=entity_type,
+            project_id="phase2", unit_name=unit, source_path=None,
+            source_artifact="entity_index.csv", confidence=1.0,
+        )
+
+    async def test_alias_match_descends_and_passes_units(
+        self, mock_conversation, mock_db, disable_new_features
+    ):
+        from src.db.models import DocGapEvent
+        from src.retrieval.entity_matcher import EntityMatchResult
+
+        match = self._match(alias="tDBOutput_9", unit="sjItem_OnRamp", entity_type="component")
+        with (
+            patch("src.generation.conversational_rag.match_query_entities", new_callable=AsyncMock) as mock_match,
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            mock_match.return_value = EntityMatchResult(matches=[match], alias_rows_present=True)
+            mock_search.return_value = [self._canonical_source()]  # text lacks tDBOutput_9
+            mock_layered.return_value = [self._internal_source()]
+            mock_gen.side_effect = [
+                "Confident answer that never mentions the asked entity [1].",
+                "Grounded internal answer about tDBOutput_9 [1].",
+            ]
+
+            response = await run_conversational_rag(
+                conversation=mock_conversation,
+                query="What does tDBOutput_9 do?",
+                user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+                project_ids=["phase2"],
+            )
+
+        assert response.doc_gap is True
+        assert mock_layered.await_args.kwargs["matched_units"] == ["sjItem_OnRamp"]
+        events = [o for o in mock_db.added_objects if isinstance(o, DocGapEvent)]
+        assert events[0].detected_entities == ["tDBOutput_9"]
+        assert events[0].insufficiency_reason == "missing_identifiers"
+
+    async def test_no_alias_match_means_no_heuristic_descent(
+        self, mock_conversation, mock_db, disable_new_features
+    ):
+        from src.retrieval.entity_matcher import EntityMatchResult
+
+        with (
+            patch("src.generation.conversational_rag.match_query_entities", new_callable=AsyncMock) as mock_match,
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            # Alias table has rows; "JavaScript" matches none of them.
+            mock_match.return_value = EntityMatchResult(matches=[], alias_rows_present=True)
+            mock_search.return_value = [self._canonical_source()]
+            mock_gen.return_value = "Confident grounded answer [1]."
+
+            response = await run_conversational_rag(
+                conversation=mock_conversation,
+                query="Is JavaScript used in the OffRamp frontend?",
+                user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+                project_ids=["phase2"],
+            )
+
+        mock_layered.assert_not_awaited(), "PascalCase without alias match must not descend"
+        assert response.fallback_used is False
+
+    async def test_legacy_project_falls_back_to_heuristic(
+        self, mock_conversation, mock_db, disable_new_features
+    ):
+        from src.retrieval.entity_matcher import EntityMatchResult
+
+        with (
+            patch("src.generation.conversational_rag.match_query_entities", new_callable=AsyncMock) as mock_match,
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            # No alias rows at all (project never synced) — heuristic applies.
+            mock_match.return_value = EntityMatchResult(matches=[], alias_rows_present=False)
+            mock_search.return_value = [self._canonical_source()]
+            mock_layered.return_value = [self._internal_source()]
+            mock_gen.side_effect = [
+                "Answer that lacks the asked identifier [1].",
+                "Grounded internal answer [1].",
+            ]
+
+            response = await run_conversational_rag(
+                conversation=mock_conversation,
+                query="What does tSetGlobalVar_9 store?",
+                user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+                project_ids=["phase2"],
+            )
+
+        mock_layered.assert_awaited_once()
+        assert response.doc_gap is True

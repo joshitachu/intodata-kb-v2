@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # ensures legacy chunks (no source_layer payload key) are always included too.
     default_source_layers: list[str] = ["canonical_docs"]
 
+    # Retrieval ladder rung 2 (internal layers). Wider recall than rung 1:
+    # the deep rung exists to find what rung 1 missed, so it can afford a
+    # larger candidate pool, forced query expansion, and section expansion.
+    # Rung 1 and /query keep the defaults above.
+    rung2_prefetch_limit: int = 150
+    rung2_rerank_top_n: int = 75
+    rung2_query_expansion_enabled: bool = True
+    rung2_entity_match_limit: int = 25
+    rung2_section_expansion_limit: int = 40
+
     # Metadata queries
     metadata_queries_enabled: bool = True
     system_knowledge_injection: bool = True

@@ -571,3 +571,165 @@ class TestSearchLayered:
             )
 
         assert mock_rerank.await_args.kwargs["source_layers"] == ["scorecard"]
+
+
+def _make_chunk(doc_id: int, idx: int, *, section: str | None = None, unit: str | None = None, layer="technical_analysis") -> Source:
+    return Source(
+        document_id=doc_id, filename=f"p/_internal/{layer}/doc.md", chunk_index=idx,
+        score=0.5, text=f"chunk {doc_id}:{idx}", source_layer=layer,
+        section=section, unit=unit, project_id="p",
+    )
+
+
+class TestSearchLayeredDeepRung:
+    """Rung-2 recall widening: settings, unit merge, forced expansion."""
+
+    async def test_uses_rung2_recall_settings(self) -> None:
+        from src.retrieval import search as search_mod
+
+        with (
+            patch.object(search_mod.settings, "reranker_enabled", True),
+            patch.object(search_mod.settings, "rung2_query_expansion_enabled", False),
+            patch.object(search_mod.settings, "rung2_rerank_top_n", 75),
+            patch.object(search_mod.settings, "rung2_prefetch_limit", 150),
+            patch.object(search_mod, "search_and_rerank", new_callable=AsyncMock) as mock_rerank,
+            patch.object(search_mod, "expand_section_chunks", new_callable=AsyncMock) as mock_section,
+        ):
+            mock_rerank.return_value = [_make_chunk(1, 0)]
+            mock_section.side_effect = lambda client, sources, *a, **k: sources
+
+            await search_mod.search_layered(
+                AsyncMock(), "q", ["g"], source_layers=["technical_analysis"],
+            )
+
+        kwargs = mock_rerank.await_args.kwargs
+        assert kwargs["rerank_candidates"] == 75
+        assert kwargs["prefetch_limit"] == 150
+
+    async def test_unit_hits_lead_even_when_semantic_misses(self) -> None:
+        from src.retrieval import search as search_mod
+
+        unit_chunk = _make_chunk(7, 2, unit="sjItem_OffRamp_DB")
+        with (
+            patch.object(search_mod.settings, "reranker_enabled", True),
+            patch.object(search_mod.settings, "rung2_query_expansion_enabled", False),
+            patch.object(search_mod, "search_and_rerank", new_callable=AsyncMock) as mock_rerank,
+            patch.object(search_mod, "fetch_unit_chunks", new_callable=AsyncMock) as mock_units,
+            patch.object(search_mod, "expand_section_chunks", new_callable=AsyncMock) as mock_section,
+        ):
+            mock_rerank.return_value = []
+            mock_units.return_value = [unit_chunk]
+            mock_section.side_effect = lambda client, sources, *a, **k: sources
+
+            results = await search_mod.search_layered(
+                AsyncMock(), "q", ["g"], source_layers=["technical_analysis"],
+                matched_units=["sjItem_OffRamp_DB"],
+            )
+
+        assert results == [unit_chunk], "alias-matched unit chunks must survive a semantic miss"
+        assert mock_units.await_args.kwargs["source_layers"] == ["technical_analysis"]
+
+    async def test_forced_expansion_runs_with_global_disabled(self) -> None:
+        from src.retrieval import search as search_mod
+
+        with (
+            patch.object(search_mod.settings, "reranker_enabled", True),
+            patch.object(search_mod.settings, "query_expansion_enabled", False),
+            patch.object(search_mod.settings, "rung2_query_expansion_enabled", True),
+            patch.object(search_mod, "expand_query", new_callable=AsyncMock) as mock_expand,
+            patch.object(search_mod, "search_and_rerank", new_callable=AsyncMock) as mock_rerank,
+            patch.object(search_mod, "expand_section_chunks", new_callable=AsyncMock) as mock_section,
+        ):
+            mock_expand.return_value = ["q", "alt one", "alt two"]
+            mock_rerank.return_value = []
+            mock_section.side_effect = lambda client, sources, *a, **k: sources
+
+            await search_mod.search_layered(
+                AsyncMock(), "q", ["g"], source_layers=["technical_analysis"],
+            )
+
+        mock_expand.assert_awaited_once_with("q", force=True)
+        assert mock_rerank.await_count == 3, "original + both expansions searched"
+
+
+class TestUnitFilter:
+    def test_unit_filter_carries_rbac_and_layers(self) -> None:
+        from src.retrieval.search import _build_unit_filter
+
+        f = _build_unit_filter(
+            ["groupA"], ["sjItem_OffRamp_DB"],
+            project_ids=["phase2"], source_layers=["technical_analysis"],
+        )
+        compiled = str(f)
+        assert "unit" in compiled
+        assert "sjItem_OffRamp_DB" in compiled
+        assert "source_layer" in compiled
+        assert "technical_analysis" in compiled
+        assert "phase2" in compiled
+
+
+class TestSectionExpansion:
+    async def test_fetches_complete_section_in_order(self, mock_qdrant) -> None:
+        from src.retrieval.search import expand_section_chunks
+
+        hit = _make_chunk(1, 5, section="Item > ERROR_HANDLING")
+        section_points = [
+            MagicMock(payload={
+                "document_id": 1, "filename": "p/_internal/technical_analysis/doc.md",
+                "chunk_index": idx, "text": f"t{idx}", "section": "Item > ERROR_HANDLING",
+            })
+            for idx in (6, 4, 5)
+        ]
+        mock_qdrant.scroll = AsyncMock(return_value=(section_points, None))
+
+        result = await expand_section_chunks(
+            mock_qdrant, [hit], ["g"], source_layers=["technical_analysis"],
+        )
+
+        assert [s.chunk_index for s in result] == [4, 5, 6], "section in chunk_index order"
+
+    async def test_source_without_section_kept_as_is(self, mock_qdrant) -> None:
+        from src.retrieval.search import expand_section_chunks
+
+        hit = _make_chunk(1, 5, section=None)
+        mock_qdrant.scroll = AsyncMock()
+
+        result = await expand_section_chunks(
+            mock_qdrant, [hit], ["g"], source_layers=["technical_analysis"],
+        )
+
+        assert result == [hit]
+        mock_qdrant.scroll.assert_not_awaited()
+
+    async def test_cap_limits_fetched_chunks(self, mock_qdrant) -> None:
+        from src.retrieval.search import expand_section_chunks
+
+        hit = _make_chunk(1, 0, section="S")
+        mock_qdrant.scroll = AsyncMock(return_value=([], None))
+
+        await expand_section_chunks(
+            mock_qdrant, [hit], ["g"], source_layers=["technical_analysis"], limit=7,
+        )
+
+        assert mock_qdrant.scroll.await_args.kwargs["limit"] == 7
+
+
+class TestEnsureCollectionIndexes:
+    async def test_unit_and_section_indexes_requested(self) -> None:
+        from src.retrieval.vector_store import ensure_collection
+
+        client = AsyncMock()
+        collections = MagicMock()
+        existing = MagicMock()
+        existing.name = "documents"
+        collections.collections = [existing]
+        client.get_collections.return_value = collections
+        info = MagicMock()
+        info.config.params.vectors = {"dense": MagicMock(size=1024)}
+        client.get_collection.return_value = info
+
+        with patch("src.retrieval.vector_store.get_embedding_dim", return_value=1024):
+            await ensure_collection(client)
+
+        indexed = {c.kwargs["field_name"] for c in client.create_payload_index.await_args_list}
+        assert {"allowed_groups", "document_id", "source_layer", "unit", "section"} <= indexed

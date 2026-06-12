@@ -42,6 +42,7 @@ from src.memory.hindsight_client import (
     retain_correction,
     retain_interaction,
 )
+from src.retrieval.entity_matcher import match_query_entities, matched_unit_names
 from src.retrieval.search import (
     merge_sources_by_document,
     search_and_rerank,
@@ -846,7 +847,26 @@ async def _prepare_rag_context(
             )
 
         # --- Retrieval ladder rung 1: default corpus partition ---
-        identifiers = _extract_query_identifiers(query)
+        # Entity detection: the per-project alias table is the primary source
+        # (deterministic, no PascalCase false positives). The regex heuristic
+        # remains only for projects that were never alias-synced.
+        entity_matches: list = []
+        alias_backed = False
+        if db is not None:
+            try:
+                match_result = await match_query_entities(
+                    db, query, project_ids, limit=settings.rung2_entity_match_limit,
+                )
+                entity_matches = match_result.matches
+                alias_backed = match_result.alias_rows_present
+            except Exception as e:
+                logger.warning("Entity alias matching failed; using heuristic: %s", e, exc_info=True)
+        if alias_backed:
+            identifiers = [m.alias for m in entity_matches]
+        else:
+            identifiers = _extract_query_identifiers(query)
+        matched_units = matched_unit_names(entity_matches)
+
         insufficiency: str | None = None
         rung1_answer: str | None = None
         rung1_messages: list[dict[str, str]] = []
@@ -911,6 +931,7 @@ async def _prepare_rag_context(
             top_k=top_k,
             threshold=threshold,
             project_ids=project_ids,
+            matched_units=matched_units or None,
         )
 
         if internal_sources:
@@ -941,7 +962,10 @@ async def _prepare_rag_context(
                         "project_id": gap_project,
                         "run_id": internal_docs[0].run_id,
                         "insufficiency_reason": insufficiency,
-                        "detected_entities": identifiers,
+                        "detected_entities": (
+                            [m.canonical_name for m in entity_matches]
+                            if alias_backed else identifiers
+                        ),
                         "layers_used": rung2_layers,
                         "supporting_artifacts": sorted({s.filename for s in internal_sources}),
                         "supporting_chunk_ids": [

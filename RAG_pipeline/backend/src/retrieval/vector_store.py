@@ -74,6 +74,16 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
         field_name="source_layer",
         field_schema=PayloadSchemaType.KEYWORD,
     )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="unit",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="section",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
 
 
 async def delete_collection(client: AsyncQdrantClient) -> None:
