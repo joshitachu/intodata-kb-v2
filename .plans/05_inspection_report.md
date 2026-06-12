@@ -1,81 +1,72 @@
 ---
 inspected_at: 2026-06-12
 verdict: WARN
+slice: 3 — Layered ingestion push with entity index
 ---
 
 ## Verdict Summary
-Implementation conforms to the approved Slice 2 plan with no blocking defects;
-four warnings, the most substantive being an empty-package edge case that
-weakens the documented full-regen fallback semantics.
+Implementation matches the approved Slice 3 plan with no blocking defects; the
+one substantive finding is an unescaped SQL LIKE wildcard in the internal-delete
+guard (bounded by the project_id equality condition, but imprecise for a
+destructive filter).
 
 ## Check Results
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | All 7 build steps implemented as specified; step 8 (docs/context update) is explicitly deferred to /session-end. |
-| Root cause         | PASS   | Replaces the dead post-swap `docs/_analysis` copy with a persisted package built before Phase 4 deletes `_analysis/`; fixes the cause, not the symptom. |
-| Generalized        | PASS   | `analysis_cache` now has exactly one writer (`rag_support_package.py`) and one reader (`git_reingestion.py`); no other `docs/_analysis` lookups remain in `src/`. |
-| Design patterns    | PASS   | Service-level pure-filesystem helper shared by the Phase 4 producer and the route consumer; allowlist-driven, deterministic, no synthesis. |
-| Contract respect   | WARN   | Staging/atomic-swap contract intact; RagBridge pushes only top-level docs (tested). But `.agent/system/mcp-workflow.md` Phase 4 row does not yet mention `_rag_support/` packaging — must be updated at /session-end (Finding 3). |
-| No special-casing  | PASS   | No flags, shims, or one-off branches; the helper is generic across standard and resumed runs (stale package files are removed before rebuild, tested). |
-| Edge cases         | WARN   | Plan's verification strategy executed (targeted + critical-area + full suite, 608 passed). Two gaps: empty-package semantics (Finding 1) and untested missing-groups warning branch (Finding 2). |
-| RBAC               | PASS   | No route signatures or access checks changed; `_run_generate_background` is an internal background task behind the existing generate route's `require_project_access`. |
-| Credential safety  | PASS   | Manifest contains only paths, byte counts, and SHA-256 hashes; no content is sent to any LLM; no credentials touched. |
+| Plan conformance   | PASS   | All 6 plan steps implemented: EntityAlias model + migration 028, internal delete + alias replace endpoints, RagBridge discovery/sync, CSV alias generation, both entry points wired, default retrieval untouched. |
+| Root cause         | PASS   | Internal lifecycle is wholesale delete-and-repush — the correct answer to removed groups being invisible to the visible-doc diff. |
+| Generalized        | PASS   | Alias cleanup added to BOTH the internal lifecycle and the full project delete (stale aliases cannot survive project deletion). Layer constants live in one module shared by builder and consumer. |
+| Design patterns    | PASS   | Discovery/alias-building are pure filesystem functions in the service layer; RagBridge owns transport only; backend endpoints mirror existing ingest route idioms. |
+| Contract respect   | PASS   | `default_source_layers` untouched; `_read_md_files`/`_diff_generated_docs` are top-level digit-prefixed only so canonical push/delete cannot touch `_internal/`; staging contract unaffected. |
+| No special-casing  | PASS   | `_internal/` prefix is a single documented scoping convention, mirrored as constants on both sides with cross-references. |
+| Edge cases         | WARN   | LIKE wildcard finding (1); internal docs appear in admin document lists (2). Tests cover delete-first ordering, delete-failure abort, partial push errors, empty-tree no-op, `Training|Jasmijn` encoding, CSV dedupe, missing-CSV no-op. |
+| RBAC               | PASS   | New endpoints are `verify_ingest_api_key`-protected like every ingest route; internal chunks flow through the same `ingest_text` path and carry the same project scoping; retrieval-side RBAC filter unchanged. |
+| Credential safety  | PASS   | No credentials in code; alias records carry names/paths/confidence only; pushed internal content is LLM output already covered by upstream credential redaction (same exposure class as canonical docs). |
 
 ## Findings
 
-1. **WARN — empty support package produces an empty-but-present `analysis_cache/`**
-   `rag_support_package.py:104-118`. When Phase 2 is skipped
-   (`plan.analysis_mode == "skip"`) or all groups are missing, the package dir
-   exists with zero `.md` files, so `replace_analysis_cache_from_rag_support`
-   creates an empty `analysis_cache/` and returns True. Verified by probe.
-   `setup_incremental_staging` (`git_reingestion.py:215`) treats a
-   present-but-empty cache as usable and proceeds with incremental staging
-   instead of the documented full-regen fallback. Functionally Phase 2
-   regenerates the groups anyway, but the plan's stated semantics ("falls back
-   to full regen") are better served by treating an empty package as no
-   package: skip cache creation and return False.
+1. **WARN — unescaped LIKE wildcards in the internal-delete filter**
+   `RAG_pipeline/backend/src/api/routes/ingest.py` (delete_project_internal_documents):
+   `Document.filename.like(f"{project_id}/_internal/%")` — `_` is a single-char
+   SQL wildcard, and `project_id` may itself contain `_`/`%` (e.g. `cdc_v2`).
+   Blast radius is bounded: the query also requires `Document.project_id ==
+   project_id`, and no current writer produces filenames like
+   `proj/Xinternal/...`. Still, a destructive filter should be exact: use
+   `Document.filename.startswith(f"{project_id}/_internal/", autoescape=True)`.
 
-2. **WARN — missing-groups warning branch untested**
-   `phase4_cleanup.py:85-91`. The `await log_cb(...)` path fires only when
-   manifest groups lack `_analysis/{group}.md` (e.g. analysis-skip runs); no
-   test exercises it. Note the existing Phase 4 tests pass `log_cb=MagicMock()`,
-   which would raise if this branch were hit — a test must use an async-capable
-   mock.
+2. **WARN — internal docs appear in RAG document-list endpoints**
+   `Document` rows named `{project}/_internal/...` will show up in admin
+   document listings and counts. Retrieval-side invisibility is guaranteed by
+   `source_layer`, and the plan scopes UI display out (Slice 4+), but operators
+   may be surprised by the row count change. Optional: filter `_internal/` from
+   user-facing document list queries in a later slice.
 
-3. **WARN — workflow contract doc not yet updated**
-   `.agent/system/mcp-workflow.md` (Phase 4 row, line 21) describes Phase 4 as
-   "Enterprise gate evaluation, audit bundle write, engineering artifact
-   archival, and run log" — it now also builds `_rag_support/`. Plan step 8
-   defers docs updates to /session-end; include this file alongside
-   `PROJECT_MEMORY.md` and `context.md`.
+3. **Note — `/push-to-rag` `last_rag_push_at` gating is stricter**
+   Previously updated when `pushed > 0` even with errors; now requires zero
+   total errors. Consistent with the generation path (`rag_error_message is
+   None`) and with the plan's "only after successful RAG push work". Intended.
 
-4. **WARN — `setup_incremental_staging` has no direct test coverage**
-   Pre-existing gap, not introduced by this diff. Plan step 6 says to "keep
-   git_reingestion.setup_incremental_staging() flat-cache behavior unchanged";
-   no code change was made, but there is no regression net asserting the flat
-   `analysis_cache/*.md` → `docs_staging/_analysis/` behavior the new helper
-   now feeds.
+4. **Note — partial internal state on mid-sync push failure**
+   Delete succeeds, some pushes fail → internal layer is partially populated
+   until the next push. Errors are surfaced into `rag_errors` (generation
+   verdict becomes `published_with_rag_error`) and any re-push repairs the
+   state. Acceptable lifecycle for non-user-facing layers.
 
 ## Required Actions
 
 No blocking changes.
 
-WARN (optional improvements):
-- Finding 1: make `replace_analysis_cache_from_rag_support` treat an empty
-  package as absent (return False, leave no cache dir).
-- Finding 2: add a missing-groups test with an async log_cb mock.
-- Finding 3: update `.agent/system/mcp-workflow.md` Phase 4 row at /session-end.
-- Finding 4: add a minimal `setup_incremental_staging` regression test.
+WARN (should address before commit, cheap):
+- Finding 1: switch the internal-delete filter to
+  `filename.startswith(..., autoescape=True)`.
+
+WARN (optional/follow-up):
+- Finding 2: consider excluding `_internal/` from document-list endpoints in a
+  future slice; log as backlog.
 
 ## Resolution (post-inspection, same session)
 
-- Finding 1: FIXED — empty package now returns False and leaves no cache dir
-  (`rag_support_package.py`); regression test
-  `test_cache_restore_treats_empty_package_as_absent`.
-- Finding 2: FIXED — `test_phase4_logs_missing_group_analyses` exercises the
-  warning branch with an AsyncMock log_cb.
-- Finding 3: OPEN — deferred to /session-end docs update as planned.
-- Finding 4: FIXED — new `tests/test_services/test_git_reingestion.py` covers
-  flat-cache staging, absent-cache fallback, and first-push skip.
-
-Full suite after fixes: 613 passed.
+- Finding 1: FIXED — filter switched to `startswith(..., autoescape=True)`;
+  test updated to assert escaped compiled SQL.
+- Finding 2: OPEN — logged as follow-up; retrieval invisibility already
+  enforced by source_layer.

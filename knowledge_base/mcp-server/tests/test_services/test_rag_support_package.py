@@ -8,7 +8,10 @@ from pathlib import Path
 
 from mcp_server.services.rag_support_package import (
     MANIFEST_SCHEMA_VERSION,
+    build_entity_aliases,
     build_rag_support_package,
+    collect_internal_artifacts,
+    internal_doc_filename,
     replace_analysis_cache_from_rag_support,
 )
 
@@ -144,3 +147,127 @@ def test_cache_restore_treats_empty_package_as_absent(tmp_path: Path) -> None:
         "an empty package must not leave an empty cache dir — "
         "incremental regen must fall back to full regeneration"
     )
+
+
+# ---------------------------------------------------------------------------
+# Internal artifact discovery (Slice 3)
+# ---------------------------------------------------------------------------
+
+
+def _make_docs_tree(tmp_path: Path) -> Path:
+    docs = tmp_path / "docs"
+    pkg = docs / "_rag_support" / "phase2_analysis"
+    pkg.mkdir(parents=True)
+    (pkg / "Item.md").write_text("# Item analysis", encoding="utf-8")
+    (pkg / "Training%7CJasmijn.md").write_text("# Training analysis", encoding="utf-8")
+    (docs / "_rag_support" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "artifacts": [
+                    {"path": "phase2_analysis/Item.md", "group": "Item"},
+                    {"path": "phase2_analysis/Training%7CJasmijn.md", "group": "Training|Jasmijn"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    facts = docs / "_facts"
+    facts.mkdir()
+    (facts / "engineering_facts.md").write_text("# Facts", encoding="utf-8")
+    (facts / "engineering_facts.json").write_text("{}", encoding="utf-8")
+    (facts / "entity_index.csv").write_text(
+        "id,entity_type,name,path,unit_name,confidence,evidence\n"
+        'e1,component,tDBOutput_1,Item/Out/job.item,sjItem_OffRamp_DB,0.95,"[]"\n'
+        'e2,component,tDBOutput_1,Item/Out/job.item,sjItem_OffRamp_DB,0.80,"[]"\n'
+        'e3,table,SALESTABLE,Item/Out/job.item,sjItem_OffRamp_DB,1.0,"[]"\n',
+        encoding="utf-8",
+    )
+    (facts / "usage_index.csv").write_text(
+        "id,usage_type,name,entity_id,location,confidence,evidence\n"
+        'u1,configured,connection_Demo_Login,,tDBOutput_1,0.85,"[]"\n',
+        encoding="utf-8",
+    )
+    assessment = docs / "_assessment"
+    assessment.mkdir()
+    (assessment / "scorecard.md").write_text("# Scorecard", encoding="utf-8")
+    slices = docs / "_evidence_registry" / "doc_slices"
+    slices.mkdir(parents=True)
+    (slices / "01_ARCHITECTURE_MAP.md").write_text("# Slice", encoding="utf-8")
+    (slices / "empty.md").write_text("", encoding="utf-8")
+    (docs / "01_OVERVIEW.md").write_text("# Visible doc", encoding="utf-8")
+    return docs
+
+
+def test_internal_doc_filename_encodes_unsafe_characters() -> None:
+    assert internal_doc_filename("technical_analysis", "Training|Jasmijn.md") == (
+        "_internal/technical_analysis/Training%7CJasmijn.md"
+    )
+    assert internal_doc_filename("scorecard", "scorecard.md") == (
+        "_internal/scorecard/scorecard.md"
+    )
+    assert "/" not in internal_doc_filename("support_maps", "a/b.md").removeprefix(
+        "_internal/support_maps/"
+    )
+
+
+def test_collect_internal_artifacts_layers_and_metadata(tmp_path: Path) -> None:
+    docs = _make_docs_tree(tmp_path)
+
+    artifacts = collect_internal_artifacts(docs, project_id="proj", run_id=209)
+
+    by_layer: dict[str, list[dict]] = {}
+    for a in artifacts:
+        by_layer.setdefault(a["metadata"]["source_layer"], []).append(a)
+
+    assert sorted(by_layer) == [
+        "evidence_slices", "scorecard", "support_maps", "technical_analysis",
+    ]
+    assert len(by_layer["technical_analysis"]) == 2
+    assert len(by_layer["support_maps"]) == 1, "only .md from _facts, never csv/json"
+    assert len(by_layer["evidence_slices"]) == 1, "empty slice files are dropped"
+
+    item = next(a for a in by_layer["technical_analysis"] if a["metadata"]["group"] == "Item")
+    assert item["filename"] == "_internal/technical_analysis/Item.md"
+    assert item["metadata"]["visibility"] == "internal"
+    assert item["metadata"]["artifact_type"] == "phase2_group_analysis"
+    assert item["metadata"]["artifact_path"] == "_rag_support/phase2_analysis/Item.md"
+    assert item["metadata"]["project_id"] == "proj"
+    assert item["metadata"]["run_id"] == 209
+
+    scorecard = by_layer["scorecard"][0]
+    assert scorecard["filename"] == "_internal/scorecard/scorecard.md"
+    assert scorecard["metadata"]["artifact_type"] == "scorecard"
+
+    names = {a["filename"] for a in artifacts}
+    assert not any("01_OVERVIEW" in n for n in names), "visible docs are never internal"
+
+
+def test_collect_internal_artifacts_missing_layers_is_noop(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    assert collect_internal_artifacts(docs, project_id="proj") == []
+
+
+def test_build_entity_aliases_dedupes_and_sorts(tmp_path: Path) -> None:
+    docs = _make_docs_tree(tmp_path)
+
+    aliases = build_entity_aliases(docs)
+
+    keys = [(a["alias"], a["entity_type"], a["source_artifact"]) for a in aliases]
+    assert keys == [
+        ("connection_Demo_Login", "configured", "usage_index.csv"),
+        ("SALESTABLE", "table", "entity_index.csv"),
+        ("tDBOutput_1", "component", "entity_index.csv"),
+    ]
+    tdb = next(a for a in aliases if a["alias"] == "tDBOutput_1")
+    assert tdb["confidence"] == 0.95, "duplicate rows keep the highest confidence"
+    assert tdb["alias_normalized"] == "tdboutput_1"
+    assert tdb["unit_name"] == "sjItem_OffRamp_DB"
+    usage = next(a for a in aliases if a["alias"] == "connection_Demo_Login")
+    assert usage["source_path"] == "tDBOutput_1"
+
+
+def test_build_entity_aliases_missing_csvs_is_noop(tmp_path: Path) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    assert build_entity_aliases(docs) == []

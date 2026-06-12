@@ -19,6 +19,7 @@ from src.db.models.system_config import SystemConfig
 from src.db.models.wizard_event import WizardEvent
 from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
+from src.db.models.entity_alias import EntityAlias
 
 __all__ = [
     "User",
@@ -44,4 +45,5 @@ __all__ = [
     "AccessRequest",
     "EmailOTPCode",
     "UserInvite",
+    "EntityAlias",
 ]

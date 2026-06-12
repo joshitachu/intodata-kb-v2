@@ -9,11 +9,22 @@ from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.routes.auth import limiter
 from src.config import settings
 from src.db.models.document import Document
+from src.db.models.entity_alias import EntityAlias
 from src.db.models.user import ProjectAssignment
 from src.ingestion.pipeline import ingest_document, ingest_text
 from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
-from src.schemas import IngestResponse, MarkdownIngestRequest
+from src.schemas import (
+    EntityAliasReplaceRequest,
+    EntityAliasReplaceResponse,
+    IngestResponse,
+    MarkdownIngestRequest,
+)
+
+# Internal support-layer docs are scoped as "{project_id}/_internal/...". The
+# prefix separates them from canonical docs ("{project_id}/NN_*.md") so the
+# internal lifecycle (full delete-and-repush) can never touch user-facing docs.
+INTERNAL_DOC_PREFIX = "_internal/"
 
 logger = logging.getLogger(__name__)
 
@@ -122,15 +133,120 @@ async def delete_project_documents(
         doc_ids = [d.id for d in docs]
         await db.execute(delete(Document).where(Document.id.in_(doc_ids)))
 
-    # Delete project_assignments for this project
+    # Delete project_assignments and entity aliases for this project
     await db.execute(
         delete(ProjectAssignment).where(ProjectAssignment.project_id == project_id)
+    )
+    await db.execute(
+        delete(EntityAlias).where(EntityAlias.project_id == project_id)
     )
 
     await db.commit()
 
     logger.info("Deleted %d documents for project %s", len(docs), project_id)
     return {"deleted_documents": len(docs), "project_id": project_id}
+
+
+@router.delete(
+    "/ingest/by-project/{project_id}/internal",
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Delete all internal support-layer documents for a project",
+)
+async def delete_project_internal_documents(
+    project_id: str,
+    db: DBSession,
+    qdrant: QdrantClient,
+) -> dict:
+    """Delete internal-layer docs (and their vectors) plus entity aliases.
+
+    Used by the MCP server before re-pushing internal support layers: removed
+    groups are invisible to the canonical-doc diff, so the internal set is
+    always replaced wholesale. Canonical documents and project assignments are
+    never touched.
+    """
+    result = await db.execute(
+        select(Document).where(
+            Document.project_id == project_id,
+            # autoescape: "_" in project ids and in "_internal" are literals,
+            # not LIKE wildcards — this filter is destructive and must be exact.
+            Document.filename.startswith(
+                f"{project_id}/{INTERNAL_DOC_PREFIX}", autoescape=True
+            ),
+        )
+    )
+    docs = list(result.scalars().all())
+
+    for doc in docs:
+        try:
+            await delete_document_points(qdrant, doc.id)
+        except Exception as e:
+            logger.warning("Failed to delete Qdrant points for document %d: %s", doc.id, e)
+
+    if docs:
+        doc_ids = [d.id for d in docs]
+        await db.execute(delete(Document).where(Document.id.in_(doc_ids)))
+
+    alias_result = await db.execute(
+        delete(EntityAlias).where(EntityAlias.project_id == project_id)
+    )
+
+    await db.commit()
+
+    logger.info(
+        "Deleted %d internal documents and %d entity aliases for project %s",
+        len(docs), alias_result.rowcount, project_id,
+    )
+    return {
+        "deleted_documents": len(docs),
+        "deleted_aliases": alias_result.rowcount,
+        "project_id": project_id,
+    }
+
+
+@router.post(
+    "/ingest/entity-aliases",
+    response_model=EntityAliasReplaceResponse,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Replace all entity aliases for a project",
+)
+async def replace_entity_aliases(
+    request: EntityAliasReplaceRequest,
+    db: DBSession,
+) -> EntityAliasReplaceResponse:
+    """Replace the entity alias set for one project in a single transaction.
+
+    Aliases come from the MCP server's `_facts/entity_index.csv` and
+    `_facts/usage_index.csv`; they feed query-time entity lookup, never the
+    vector corpus. Other projects' aliases are unaffected.
+    """
+    deleted = await db.execute(
+        delete(EntityAlias).where(EntityAlias.project_id == request.project_id)
+    )
+    db.add_all(
+        EntityAlias(
+            project_id=request.project_id,
+            alias=record.alias,
+            alias_normalized=record.alias_normalized,
+            canonical_name=record.canonical_name,
+            entity_type=record.entity_type,
+            unit_name=record.unit_name,
+            source_path=record.source_path,
+            source_artifact=record.source_artifact,
+            confidence=record.confidence,
+        )
+        for record in request.aliases
+    )
+    await db.commit()
+
+    logger.info(
+        "Replaced entity aliases for project %s: %d deleted, %d inserted",
+        request.project_id, deleted.rowcount, len(request.aliases),
+    )
+    return EntityAliasReplaceResponse(
+        project_id=request.project_id,
+        deleted=deleted.rowcount,
+        inserted=len(request.aliases),
+    )
 
 
 @router.delete(

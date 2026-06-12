@@ -9,6 +9,10 @@ import httpx
 
 from mcp_server.config import config
 from mcp_server.services.log_manager import LogManager
+from mcp_server.services.rag_support_package import (
+    build_entity_aliases,
+    collect_internal_artifacts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,94 @@ class RagBridge:
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def delete_internal_documents(self, project_id: str) -> dict:
+        """Delete all internal support-layer docs (and aliases) for a project."""
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        async with httpx.AsyncClient(timeout=config.rag_delete_timeout_s) as client:
+            resp = await client.delete(
+                f"{self.base_url}/api/v1/ingest/by-project/{project_id}/internal",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def post_entity_aliases(self, project_id: str, aliases: list[dict]) -> dict:
+        """Replace the project's entity alias set on the RAG backend."""
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        async with httpx.AsyncClient(timeout=config.rag_push_timeout_s) as client:
+            resp = await client.post(
+                f"{self.base_url}/api/v1/ingest/entity-aliases",
+                json={"project_id": project_id, "aliases": aliases},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def sync_internal_layers(
+        self,
+        project_id: str,
+        docs_dir: Path,
+        run_id: int | None = None,
+    ) -> dict:
+        """Replace the project's internal support layers and entity aliases.
+
+        Removed groups are invisible to the canonical-doc diff, so the
+        internal set is always deleted wholesale and re-pushed from the
+        current `docs/` tree. Canonical doc push behavior is unaffected.
+
+        Returns: {pushed: int, aliases: int, errors: list[str]}
+        """
+        result: dict = {"pushed": 0, "aliases": 0, "errors": []}
+
+        artifacts = collect_internal_artifacts(docs_dir, project_id=project_id, run_id=run_id)
+        aliases = build_entity_aliases(docs_dir)
+
+        try:
+            await self.delete_internal_documents(project_id)
+        except Exception as e:
+            # Without a clean delete, a re-push could leave stale internal
+            # docs from removed groups — stop rather than mix old and new.
+            result["errors"].append(f"Internal-layer delete failed: {e}")
+            logger.error("Internal-layer delete failed for %s: %s", project_id, e)
+            return result
+
+        for artifact in artifacts:
+            try:
+                await self.push_markdown(
+                    project_id=project_id,
+                    filename=artifact["filename"],
+                    content=artifact["content"],
+                    metadata=artifact["metadata"],
+                )
+                result["pushed"] += 1
+            except Exception as e:
+                error_msg = f"Failed to push internal {artifact['filename']}: {e}"
+                result["errors"].append(error_msg)
+                logger.error(error_msg)
+
+        if aliases:
+            try:
+                alias_result = await self.post_entity_aliases(project_id, aliases)
+                result["aliases"] = alias_result.get("inserted", len(aliases))
+            except Exception as e:
+                result["errors"].append(f"Entity alias ingest failed: {e}")
+                logger.error("Entity alias ingest failed for %s: %s", project_id, e)
+
+        if self.log_manager:
+            await self.log_manager.emit(
+                project_id,
+                f"Internal RAG sync: {result['pushed']} docs, "
+                f"{result['aliases']} aliases, {len(result['errors'])} errors",
+                level="info",
+            )
+        return result
 
     async def push_markdown(
         self,

@@ -113,6 +113,30 @@ class MarkdownIngestRequest(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
+class EntityAliasRecord(BaseModel):
+    """One entity alias extracted from a project's generated fact indexes."""
+    alias: str = Field(..., min_length=1, max_length=500)
+    alias_normalized: str = Field(..., min_length=1, max_length=500)
+    canonical_name: str = Field(..., min_length=1, max_length=500)
+    entity_type: str = Field(..., min_length=1, max_length=100)
+    unit_name: str | None = Field(default=None, max_length=500)
+    source_path: str | None = Field(default=None, max_length=1000)
+    source_artifact: str | None = Field(default=None, max_length=100)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class EntityAliasReplaceRequest(BaseModel):
+    """Replace all entity aliases for one project in a single transaction."""
+    project_id: str = Field(..., min_length=1, max_length=255)
+    aliases: list[EntityAliasRecord] = Field(default_factory=list)
+
+
+class EntityAliasReplaceResponse(BaseModel):
+    project_id: str
+    deleted: int
+    inserted: int
+
+
 # --- Health ---
 
 class ServiceStatus(BaseModel):

@@ -144,6 +144,107 @@ async def test_push_docs_from_list(bridge):
         assert result["pushed"] == 2
 
 
+def _make_internal_docs_tree(tmp_path):
+    docs = tmp_path / "docs"
+    pkg = docs / "_rag_support" / "phase2_analysis"
+    pkg.mkdir(parents=True)
+    (pkg / "Item.md").write_text("# Item analysis")
+    facts = docs / "_facts"
+    facts.mkdir()
+    (facts / "entity_index.csv").write_text(
+        "id,entity_type,name,path,unit_name,confidence,evidence\n"
+        'e1,table,SALESTABLE,Item/job.item,sjItem,1.0,"[]"\n'
+    )
+    (docs / "01_OVERVIEW.md").write_text("# Visible")
+    return docs
+
+
+async def test_sync_internal_layers_deletes_then_pushes_with_metadata(bridge, tmp_path):
+    docs = _make_internal_docs_tree(tmp_path)
+    calls: list[str] = []
+
+    with (
+        patch.object(bridge, "delete_internal_documents", new_callable=AsyncMock) as mock_delete,
+        patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push,
+        patch.object(bridge, "post_entity_aliases", new_callable=AsyncMock) as mock_aliases,
+    ):
+        mock_delete.side_effect = lambda *a, **k: calls.append("delete")
+        mock_push.side_effect = lambda *a, **k: calls.append("push")
+        mock_aliases.return_value = {"inserted": 1}
+
+        result = await bridge.sync_internal_layers("proj", docs, run_id=209)
+
+    assert result["pushed"] == 1
+    assert result["aliases"] == 1
+    assert result["errors"] == []
+    assert calls[0] == "delete", "previous internal set must be deleted before pushing"
+    push_kwargs = mock_push.await_args.kwargs
+    assert push_kwargs["filename"] == "_internal/technical_analysis/Item.md"
+    assert push_kwargs["metadata"]["source_layer"] == "technical_analysis"
+    assert push_kwargs["metadata"]["visibility"] == "internal"
+    assert push_kwargs["metadata"]["run_id"] == 209
+    alias_args = mock_aliases.await_args
+    assert alias_args.args[0] == "proj"
+    assert alias_args.args[1][0]["alias"] == "SALESTABLE"
+
+
+async def test_sync_internal_layers_aborts_on_delete_failure(bridge, tmp_path):
+    docs = _make_internal_docs_tree(tmp_path)
+
+    with (
+        patch.object(bridge, "delete_internal_documents", new_callable=AsyncMock) as mock_delete,
+        patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push,
+        patch.object(bridge, "post_entity_aliases", new_callable=AsyncMock) as mock_aliases,
+    ):
+        mock_delete.side_effect = Exception("Connection refused")
+
+        result = await bridge.sync_internal_layers("proj", docs)
+
+    assert result["pushed"] == 0
+    assert len(result["errors"]) == 1
+    assert "Internal-layer delete failed" in result["errors"][0]
+    mock_push.assert_not_awaited()
+    mock_aliases.assert_not_awaited()
+
+
+async def test_sync_internal_layers_push_error_continues(bridge, tmp_path):
+    docs = _make_internal_docs_tree(tmp_path)
+    (docs / "_assessment").mkdir()
+    (docs / "_assessment" / "scorecard.md").write_text("# Scorecard")
+
+    with (
+        patch.object(bridge, "delete_internal_documents", new_callable=AsyncMock),
+        patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push,
+        patch.object(bridge, "post_entity_aliases", new_callable=AsyncMock) as mock_aliases,
+    ):
+        mock_push.side_effect = [Exception("boom"), {"status": "ok"}]
+        mock_aliases.return_value = {"inserted": 1}
+
+        result = await bridge.sync_internal_layers("proj", docs)
+
+    assert result["pushed"] == 1
+    assert len(result["errors"]) == 1
+    assert mock_push.await_count == 2
+    mock_aliases.assert_awaited_once()
+
+
+async def test_sync_internal_layers_empty_docs_tree_is_noop(bridge, tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+
+    with (
+        patch.object(bridge, "delete_internal_documents", new_callable=AsyncMock) as mock_delete,
+        patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push,
+        patch.object(bridge, "post_entity_aliases", new_callable=AsyncMock) as mock_aliases,
+    ):
+        result = await bridge.sync_internal_layers("proj", docs)
+
+    assert result == {"pushed": 0, "aliases": 0, "errors": []}
+    mock_delete.assert_awaited_once(), "delete still runs so stale internal docs are removed"
+    mock_push.assert_not_awaited()
+    mock_aliases.assert_not_awaited()
+
+
 async def test_push_docs_skips_empty(bridge):
     docs = [
         {"filename": "", "content": "# A"},

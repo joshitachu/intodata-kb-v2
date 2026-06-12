@@ -910,6 +910,17 @@ async def _run_generate_background(
                     level="error",
                 )
 
+            # Sync internal support layers (Phase 2 analyses, support maps,
+            # scorecard, evidence slices) and entity aliases. Full
+            # delete-and-repush: removed groups are invisible to the visible
+            # doc diff. Errors merge into rag_errors so the run verdict
+            # reports partial RAG sync.
+            internal_sync = await bridge.sync_internal_layers(
+                project_id, docs_dir, run_id=run_id
+            )
+            if internal_sync["errors"]:
+                rag_errors = (rag_errors or []) + internal_sync["errors"]
+
             # Persist token usage to RAG backend
             try:
                 await bridge.post_usage(
@@ -1138,15 +1149,20 @@ async def push_to_rag(req: PushToRagRequest, request: Request):
             output_dir=str(docs_dir),
             extra_doc_names=pack_docs or None,
         )
+        internal_sync = await bridge.sync_internal_layers(req.project_id, docs_dir)
+        total_errors = len(result["errors"]) + len(internal_sync["errors"])
 
-        if result["pushed"] > 0:
+        if (result["pushed"] > 0 or internal_sync["pushed"] > 0) and total_errors == 0:
             await registry.update_rag_push(req.project_id)
 
         await db.commit()
 
     return StatusResponse(
         status="completed",
-        message=f"Pushed {result['pushed']} docs to RAG. Errors: {len(result['errors'])}",
+        message=(
+            f"Pushed {result['pushed']} docs and {internal_sync['pushed']} internal "
+            f"artifacts ({internal_sync['aliases']} aliases) to RAG. Errors: {total_errors}"
+        ),
     )
 
 
