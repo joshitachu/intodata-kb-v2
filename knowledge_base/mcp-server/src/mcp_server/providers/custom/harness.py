@@ -2600,8 +2600,30 @@ Fallback plan example:
             if exec_result and isinstance(exec_result[0], BaseException):
                 await log_cb(ctx.project_id, f"[custom] Phase 3 executive summary failed (non-fatal): {exec_result[0]}", "warning")
 
+    @staticmethod
+    def _strip_llm_preamble(content: str) -> str:
+        """Drop conversational lead-in emitted before the document's first heading.
+
+        Models routinely prefix output with chatter like "Now I have all the
+        evidence. Let me compose the document." followed by a horizontal rule.
+        Final docs must start at their first heading. The 500-char cap keeps
+        this from discarding substantial pre-heading content that would signal
+        a different problem than a leaked preamble.
+        """
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            if not re.match(r"^#{1,6}\s", line):
+                continue
+            if i == 0:
+                return content
+            preamble = [ln for ln in lines[:i] if ln.strip() and ln.strip() != "---"]
+            if preamble and sum(len(ln) for ln in preamble) <= 500:
+                return "\n".join(lines[i:])
+            return content
+        return content
+
     def _final_doc_content(self, state: HarnessRunState, doc_name: str, body: str) -> str:
-        content = body.strip()
+        content = self._strip_llm_preamble(body.strip())
         canonical_title = doc_name.replace("_", " ").title()
         first_heading = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
         if not first_heading or canonical_title.lower() not in first_heading.group(1).lower():

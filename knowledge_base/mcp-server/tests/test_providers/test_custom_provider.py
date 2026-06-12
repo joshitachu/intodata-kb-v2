@@ -2497,6 +2497,71 @@ def test_final_doc_content_only_adds_unit_inventory_to_component_inventory():
     assert "Unit A" not in brief
 
 
+def test_final_doc_content_strips_llm_preamble():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    body = (
+        "I have read all the evidence packs. Here is the synthesized "
+        "`04_BUSINESS_RULES_AND_TRANSFORMATIONS.md`:\n\n---\n\n"
+        "# 04 Business Rules And Transformations\n\nReal content."
+    )
+    content = harness._final_doc_content(state, "04_BUSINESS_RULES_AND_TRANSFORMATIONS", body)
+
+    assert content.startswith("# 04 Business Rules And Transformations")
+    assert "evidence packs" not in content
+    assert "Real content." in content
+
+
+def test_final_doc_content_strips_preamble_before_nonmatching_heading():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    body = (
+        "Now I have all the evidence. Let me compose the document.\n\n---\n\n"
+        "# 01_ARCHITECTURE_MAP\n\nReal content."
+    )
+    content = harness._final_doc_content(state, "01_ARCHITECTURE_MAP", body)
+
+    assert "Let me compose" not in content
+    assert content.startswith("# 01 Architecture Map\n")
+    assert "Real content." in content
+
+
+def test_final_doc_content_keeps_heading_first_body_unchanged():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    body = "# 00 Agent Brief\n\nBrief body."
+    assert harness._final_doc_content(state, "00_AGENT_BRIEF", body) == body + "\n"
+
+
+def test_final_doc_content_keeps_long_preheading_content():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    long_intro = "Substantial pre-heading paragraph. " * 20
+    body = f"{long_intro}\n\n# 00 Agent Brief\n\nBrief body."
+    content = harness._final_doc_content(state, "00_AGENT_BRIEF", body)
+
+    assert "Substantial pre-heading paragraph." in content
+
+
+def test_final_doc_content_headingless_body_gets_title():
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    harness = CustomHarnessProvider(OpenAICompatibleProvider("fake", api_key="test", base_url="http://example.test/v1"))
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+
+    content = harness._final_doc_content(state, "00_AGENT_BRIEF", "Body without any heading.")
+
+    assert content.startswith("# 00 Agent Brief\n")
+    assert "Body without any heading." in content
+
+
 @pytest.mark.asyncio
 async def test_phase4_cleanup_archives_engineering_markdown_off_top_level(tmp_path):
     staging = tmp_path / "docs_staging"
