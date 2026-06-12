@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from mcp_server.providers.custom.debug_artifacts import debug_dir, debug_write
 from mcp_server.providers.custom.pipeline.phase import Phase, PhaseEstimate, PhaseResult
+from mcp_server.services.rag_support_package import build_rag_support_package
 
 if TYPE_CHECKING:
     from mcp_server.providers.base import DocGenContext, LogCallback
@@ -72,6 +73,22 @@ class Phase4Cleanup(Phase):
         calls_json = json.dumps([c.model_dump() for c in state.calls], indent=2)
         debug_write(debug_dir(ctx.staging_dir, "provider_calls.json"), calls_json)
         debug_write(debug_dir(ctx.staging_dir, "_audit", "provider_calls.json"), calls_json)
+
+        # Persist Phase 2 group analyses into _rag_support/ before _analysis/
+        # is deleted; the atomic swap carries the package into docs/.
+        package_manifest = build_rag_support_package(
+            ctx.staging_dir,
+            state.facts_manifest.groups,
+            project_id=ctx.project_id,
+            platform=state.facts_manifest.platform,
+        )
+        if package_manifest["missing_groups"]:
+            await log_cb(
+                ctx.project_id,
+                "[custom] RAG support package missing group analyses: "
+                + ", ".join(package_manifest["missing_groups"]),
+                "warning",
+            )
 
         for directory in ("_preprocess", "_analysis", "_transient"):
             target = ctx.staging_dir / directory

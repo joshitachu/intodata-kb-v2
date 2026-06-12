@@ -72,6 +72,7 @@ from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
 from mcp_server.services.rag_bridge import RagBridge
+from mcp_server.services.rag_support_package import replace_analysis_cache_from_rag_support
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.services.summary_service import SummaryService
@@ -868,14 +869,10 @@ async def _run_generate_background(
             # recover_stale_backups().
             swap_docs(output_dir)
 
-            # Preserve Phase 2 analysis files for incremental webhook regen.
-            # After the swap, docs/_analysis/ holds the freshest group summaries.
-            _analysis_src = docs_dir / "_analysis"
-            if _analysis_src.exists():
-                _cache = output_dir / "analysis_cache"
-                if _cache.exists():
-                    shutil.rmtree(_cache)
-                shutil.copytree(_analysis_src, _cache)
+            # Refresh the incremental-regen analysis cache from the persisted
+            # _rag_support/ package (Phase 4 packages the Phase 2 group
+            # analyses before deleting _analysis/).
+            replace_analysis_cache_from_rag_support(output_dir)
 
             # Push new docs to RAG server-side
             bridge = RagBridge(log_manager=log_mgr)

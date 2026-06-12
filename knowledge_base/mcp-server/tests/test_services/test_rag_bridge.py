@@ -74,6 +74,23 @@ async def test_push_docs_from_output_dir_with_filename_filter(bridge, tmp_path):
         assert mock_push.await_args.kwargs["filename"] == "02_file2.md"
 
 
+async def test_push_docs_ignores_nested_rag_support(bridge, tmp_path):
+    docs_dir = tmp_path / "docs"
+    package_dir = docs_dir / "_rag_support" / "phase2_analysis"
+    package_dir.mkdir(parents=True)
+    (docs_dir / "01_OVERVIEW.md").write_text("# Overview")
+    (package_dir / "A.md").write_text("# Internal Phase 2 analysis")
+    (docs_dir / "_rag_support" / "manifest.json").write_text("{}")
+
+    with patch.object(bridge, "push_markdown", new_callable=AsyncMock) as mock_push:
+        mock_push.return_value = {"status": "ok"}
+
+        result = await bridge.push_docs("proj", output_dir=str(docs_dir))
+        assert result["pushed"] == 1
+        mock_push.assert_awaited_once()
+        assert mock_push.await_args.kwargs["filename"] == "01_OVERVIEW.md"
+
+
 async def test_delete_document_sends_scoped_request(bridge):
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()

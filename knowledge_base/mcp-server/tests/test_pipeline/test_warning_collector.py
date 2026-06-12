@@ -78,13 +78,14 @@ async def test_warnings_returns_copy() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_facts_manifest():
+def _make_facts_manifest(groups: dict[str, int] | None = None):
     from mcp_server.providers.custom.models import FactsManifest
     return FactsManifest(
         project_id="test_proj",
         platform="talend",
         canonical_unit_label="job",
         unit_count=1,
+        groups=groups or {},
     )
 
 
@@ -165,3 +166,71 @@ async def test_phase4_no_warnings_json_on_clean_run(tmp_path: Path) -> None:
     assert not (staging / "_assessment" / "warnings.json").exists(), (
         "warnings.json must NOT be written on a clean run"
     )
+
+
+@pytest.mark.asyncio
+async def test_phase4_builds_rag_support_before_deleting_analysis(tmp_path: Path) -> None:
+    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+
+    staging = tmp_path / "docs_staging"
+    analysis = staging / "_analysis"
+    analysis.mkdir(parents=True)
+    (analysis / "A.md").write_text("# Group A analysis", encoding="utf-8")
+    (analysis / "_doc_pack_01_ARCHITECTURE_MAP.md").write_text("pack", encoding="utf-8")
+    (staging / "01_OVERVIEW.md").write_text("# Overview", encoding="utf-8")
+
+    state = HarnessRunState(
+        project_id="test_proj",
+        facts_manifest=_make_facts_manifest(groups={"A": 1}),
+    )
+
+    helpers = _make_helpers(staging)
+    ctx = _make_context(staging)
+
+    phase = Phase4Cleanup(helpers=helpers)
+    result = await phase.run(ctx, state, log_cb=MagicMock())
+
+    assert result.success is True
+    assert not (staging / "_analysis").exists(), "_analysis must still be cleaned up"
+    package_dir = staging / "_rag_support" / "phase2_analysis"
+    assert (package_dir / "A.md").read_text(encoding="utf-8") == "# Group A analysis"
+    assert sorted(p.name for p in package_dir.iterdir()) == ["A.md"]
+    manifest = json.loads(
+        (staging / "_rag_support" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert [a["group"] for a in manifest["artifacts"]] == ["A"]
+    assert manifest["missing_groups"] == []
+    assert (staging / "01_OVERVIEW.md").read_text(encoding="utf-8") == "# Overview", (
+        "top-level visible docs must be untouched by packaging"
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase4_logs_missing_group_analyses(tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock
+
+    from mcp_server.providers.custom.pipeline.phases.phase4_cleanup import Phase4Cleanup
+
+    staging = tmp_path / "docs_staging"
+    staging.mkdir()
+
+    state = HarnessRunState(
+        project_id="test_proj",
+        facts_manifest=_make_facts_manifest(groups={"A": 1, "B": 2}),
+    )
+
+    helpers = _make_helpers(staging)
+    ctx = _make_context(staging)
+    log_cb = AsyncMock()
+
+    phase = Phase4Cleanup(helpers=helpers)
+    result = await phase.run(ctx, state, log_cb=log_cb)
+
+    assert result.success is True
+    manifest = json.loads(
+        (staging / "_rag_support" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["missing_groups"] == ["A", "B"]
+    assert manifest["artifacts"] == []
+    warning_calls = [c for c in log_cb.await_args_list if c.args[2] == "warning"]
+    assert any("A, B" in c.args[1] for c in warning_calls)
