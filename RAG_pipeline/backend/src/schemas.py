@@ -31,6 +31,11 @@ class Source(BaseModel):
     section: str | None = None
     unit: str | None = None
     group: str | None = None
+    display_name: str | None = None
+    artifact_path: str | None = None
+    visibility: str | None = None
+    run_id: int | None = None
+    project_id: str | None = None
 
 
 class DocumentSource(BaseModel):
@@ -45,6 +50,11 @@ class DocumentSource(BaseModel):
     section: str | None = None
     unit: str | None = None
     group: str | None = None
+    display_name: str | None = None
+    artifact_path: str | None = None
+    visibility: str | None = None
+    run_id: int | None = None
+    project_id: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -182,6 +192,9 @@ class MessageResponse(BaseModel):
     latency_ms: int | None = None
     status: str = "completed"
     error_message: str | None = None
+    primary_source_layer: str | None = None
+    fallback_used: bool = False
+    doc_gap: bool = False
     created_at: datetime.datetime
 
 

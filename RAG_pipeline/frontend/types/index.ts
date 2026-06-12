@@ -9,6 +9,10 @@ export const DocumentSourceSchema = z.object({
   text: z.string(),
   reference_number: z.number(),
   chunk_indexes: z.array(z.number()).optional().default([]),
+  source_layer: z.string().nullable().optional(),
+  display_name: z.string().nullable().optional(),
+  visibility: z.string().nullable().optional(),
+  project_id: z.string().nullable().optional(),
 });
 
 export type DocumentSource = z.infer<typeof DocumentSourceSchema>;

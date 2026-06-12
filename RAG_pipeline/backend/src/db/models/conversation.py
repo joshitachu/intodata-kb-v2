@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -48,6 +48,13 @@ class ConversationMessage(Base):
         server_default="completed",
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    primary_source_layer: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    fallback_used: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    doc_gap: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE")
     )

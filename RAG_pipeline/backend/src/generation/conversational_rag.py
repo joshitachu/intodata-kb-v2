@@ -12,7 +12,7 @@ import tiktoken
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import Conversation, ConversationMessage, QueryUsage
+from src.db.models import Conversation, ConversationMessage, DocGapEvent, QueryUsage
 from src.generation.agent_orchestrator import AgentStep, AgentTool, AgentTrace
 from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
 from src.generation.prompt_builder import build_conversation_summary_messages
@@ -45,6 +45,7 @@ from src.memory.hindsight_client import (
 from src.retrieval.search import (
     merge_sources_by_document,
     search_and_rerank,
+    search_layered,
     search_multi_query,
     search_similar,
     search_similar_hybrid,
@@ -189,7 +190,11 @@ def get_previous_sources(
             if project_ids is not None:
                 doc_sources = [
                     ds for ds in doc_sources
-                    if any(ds.filename.startswith(f"{pid}/") for pid in project_ids)
+                    if (ds.project_id in project_ids)
+                    or (
+                        ds.project_id is None
+                        and any(ds.filename.startswith(f"{pid}/") for pid in project_ids)
+                    )
                 ]
             return doc_sources
     return []
@@ -214,6 +219,71 @@ def needs_new_search(answer: str) -> bool:
     return False
 
 
+# --- Retrieval ladder (Slice 4) -------------------------------------------
+#
+# Rung 1 is the default corpus partition (canonical docs + legacy chunks).
+# Rung 2 descends to internal support layers, selected deterministically from
+# the query wording. Order matters: first matching route wins.
+
+_RUNG2_ROUTES: list[tuple[re.Pattern[str], list[str]]] = [
+    (
+        re.compile(r"\b(risk|secur|vulnerab|quality|score|audit|complian|hardcod)", re.IGNORECASE),
+        ["scorecard", "support_maps", "technical_analysis"],
+    ),
+    (
+        re.compile(r"\b(field|column|table|schema|mapping|endpoint|api\b|payload)", re.IGNORECASE),
+        ["technical_analysis", "evidence_slices"],
+    ),
+    (
+        re.compile(r"\b(config|connection|context variable|environment|runtime|credential|parameter|setting)", re.IGNORECASE),
+        ["technical_analysis", "support_maps"],
+    ),
+    (
+        re.compile(r"\b(depend|lineage|upstream|downstream|impact|calls\b|invokes?\b)", re.IGNORECASE),
+        ["technical_analysis", "support_maps"],
+    ),
+]
+_RUNG2_DEFAULT_LAYERS = ["technical_analysis"]
+
+# Identifier-like tokens: snake_case, camelCase/PascalCase with an internal
+# capital, or long ALLCAPS names. Common format acronyms are not identifiers.
+_IDENTIFIER_PATTERN = re.compile(
+    r"\b(?:"
+    r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+"
+    r"|[a-z]+[A-Z][A-Za-z0-9]*"
+    r"|[A-Z][a-z]+[A-Z][A-Za-z0-9]*"
+    r"|[A-Z]{4,}[0-9]*"
+    r")\b"
+)
+_IDENTIFIER_STOPWORDS = {"json", "http", "https", "rest", "html", "xml", "csv", "yaml", "sql"}
+
+
+def _route_internal_layers(query: str) -> list[str]:
+    """Deterministic rung-2 layer selection from query wording."""
+    for pattern, layers in _RUNG2_ROUTES:
+        if pattern.search(query):
+            return layers
+    return list(_RUNG2_DEFAULT_LAYERS)
+
+
+def _extract_query_identifiers(query: str) -> list[str]:
+    """Identifier-like tokens from the query (no alias-table lookup; Slice 5)."""
+    seen: dict[str, str] = {}
+    for match in _IDENTIFIER_PATTERN.findall(query):
+        key = match.lower()
+        if key not in seen and key not in _IDENTIFIER_STOPWORDS:
+            seen[key] = match
+    return list(seen.values())
+
+
+def _identifiers_missing_from_sources(identifiers: list[str], sources: list[Source]) -> bool:
+    """True when none of the asked-about identifiers appear in the source text."""
+    if not identifiers or not sources:
+        return False
+    blob = " ".join(s.text for s in sources).lower()
+    return not any(ident.lower() in blob for ident in identifiers)
+
+
 def build_context_from_document_sources(
     doc_sources: list[DocumentSource],
     max_tokens: int = MAX_CONTEXT_TOKENS,
@@ -227,12 +297,15 @@ def build_context_from_document_sources(
     total_tokens = 0
 
     for ds in doc_sources:
-        # Extract project name from scoped filename (format: project_id/filename)
-        fname_parts = ds.filename.split("/", 1)
-        if len(fname_parts) == 2:
-            display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+        if ds.display_name:
+            display_name = ds.display_name
         else:
-            display_name = ds.filename
+            # Legacy sources: extract project from scoped filename (project_id/filename)
+            fname_parts = ds.filename.split("/", 1)
+            if len(fname_parts) == 2:
+                display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+            else:
+                display_name = ds.filename
 
         header = f"[Reference {ds.reference_number}: {display_name}]"
         block = f"{header}\n{ds.text}\n"
@@ -342,6 +415,7 @@ def build_conversational_messages(
     reference_numbers: dict[int, int] | None = None,
     memory_context: str | None = None,
     answer_style: str = "assistant",
+    context_first: bool = False,
 ) -> list[dict[str, str]]:
     """Build chat messages with system prompt, context, history, and current query.
 
@@ -355,7 +429,15 @@ def build_conversational_messages(
     messages: list[dict[str, str]] = []
 
     # 1. System prompt
-    system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT if answer_style == "code" else CONVERSATIONAL_SYSTEM_PROMPT
+    if answer_style == "code":
+        system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT
+        if context_first:
+            system_prompt += (
+                "\n\nIf the retrieved context does not contain enough evidence, "
+                "respond with exactly [NEED_SEARCH] and nothing else."
+            )
+    else:
+        system_prompt = CONTEXT_FIRST_SYSTEM_PROMPT if context_first else CONVERSATIONAL_SYSTEM_PROMPT
     messages.append({"role": "system", "content": system_prompt})
 
     # 2. Memory context
@@ -380,6 +462,34 @@ def build_conversational_messages(
     return messages
 
 
+def _add_doc_gap_event(
+    db: AsyncSession,
+    ctx: "RAGContext",
+    query: str,
+    user_id: str | None,
+    conversation_id: int,
+    message_id: int | None,
+) -> None:
+    """Persist a DocGapEvent for a rung-2 answer. No-op unless ctx.doc_gap."""
+    if not ctx.doc_gap or not ctx.doc_gap_details:
+        return
+    details = ctx.doc_gap_details
+    db.add(DocGapEvent(
+        project_id=details["project_id"],
+        run_id=details.get("run_id"),
+        user_id=int(user_id) if user_id else None,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        query_text=query,
+        detected_entities=details.get("detected_entities"),
+        insufficiency_reason=details["insufficiency_reason"],
+        primary_source_layer=ctx.primary_source_layer,
+        layers_used=details.get("layers_used"),
+        supporting_artifacts=details.get("supporting_artifacts"),
+        supporting_chunk_ids=details.get("supporting_chunk_ids"),
+    ))
+
+
 @dataclass
 class RAGContext:
     """Result of the RAG preparation step (search + routing)."""
@@ -392,6 +502,14 @@ class RAGContext:
     """Intent classifier output, passed through to retention for gating decisions."""
     agent_steps: list[AgentStep] | None = None
     """Read-only agent tool steps used to prepare the answer."""
+    primary_source_layer: str | None = None
+    """Corpus layer the answer was grounded in (None for non-document answers)."""
+    fallback_used: bool = False
+    """True when the retrieval ladder descended to rung 2 (internal layers)."""
+    doc_gap: bool = False
+    """True when internal material answered what the final docs could not."""
+    doc_gap_details: dict | None = None
+    """DocGapEvent payload (reason, layers, entities, artifacts) when doc_gap is True."""
 
 
 async def _prepare_rag_context(
@@ -405,6 +523,7 @@ async def _prepare_rag_context(
     precompute: bool = True,
     project_ids: list[str] | None = None,
     db: AsyncSession | None = None,
+    images: list[str] | None = None,
 ) -> RAGContext:
     """Run intent routing, search, and context building.
 
@@ -726,6 +845,12 @@ async def _prepare_rag_context(
                 project_ids=project_ids,
             )
 
+        # --- Retrieval ladder rung 1: default corpus partition ---
+        identifiers = _extract_query_identifiers(query)
+        insufficiency: str | None = None
+        rung1_answer: str | None = None
+        rung1_messages: list[dict[str, str]] = []
+
         if sources:
             logger.info("--- Retrieved Chunks ---")
             for i, s in enumerate(sources, 1):
@@ -745,39 +870,107 @@ async def _prepare_rag_context(
 
             document_sources = merge_sources_by_document(sources)
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            llm_messages = build_conversational_messages(
+            rung1_messages = build_conversational_messages(
                 query, sources, existing_messages, reference_numbers=ref_map,
                 memory_context=memory_context,
                 answer_style=answer_style,
+                context_first=True,
             )
-            return RAGContext(
-                llm_messages=llm_messages,
-                document_sources=document_sources,
-                precomputed_answer=None,
-                analysis=analysis,
-                agent_steps=trace.steps,
-            )
+            # The ladder gate needs the rung-1 answer to judge sufficiency, so
+            # it is generated here even on the streaming path (emitted as a
+            # single token, like the context-first reuse behavior).
+            rung1_answer = await generate_answer(rung1_messages, images=images)
+            if needs_new_search(rung1_answer):
+                insufficiency = "need_search"
+            elif _identifiers_missing_from_sources(identifiers, sources):
+                insufficiency = "missing_identifiers"
         else:
-            # No results — let LLM respond helpfully
-            history = truncate_history(existing_messages) if has_history else None
-            llm_messages = build_no_results_messages(
-                query,
-                history=history,
-                memory_context=memory_context,
-                system_knowledge=system_knowledge,
-                answer_style=answer_style,
-            )
-            if precompute:
-                answer = await generate_answer(llm_messages)
-            else:
-                answer = None
+            insufficiency = "no_sources"
+
+        if insufficiency is None:
             return RAGContext(
-                llm_messages=llm_messages,
-                document_sources=[],
-                precomputed_answer=answer,
+                llm_messages=rung1_messages,
+                document_sources=document_sources,
+                precomputed_answer=rung1_answer,
                 analysis=analysis,
                 agent_steps=trace.steps,
+                primary_source_layer=document_sources[0].source_layer or "canonical_docs",
             )
+
+        # --- Retrieval ladder rung 2: explicit internal layers ---
+        rung2_layers = _route_internal_layers(query)
+        logger.info(
+            "Retrieval ladder rung 2: reason=%s layers=%s identifiers=%s",
+            insufficiency, rung2_layers, identifiers,
+        )
+        internal_sources = await search_layered(
+            qdrant,
+            analysis.cleaned_query,
+            user_groups,
+            source_layers=rung2_layers,
+            top_k=top_k,
+            threshold=threshold,
+            project_ids=project_ids,
+        )
+
+        if internal_sources:
+            internal_docs = merge_sources_by_document(internal_sources)
+            ref_map = {doc.document_id: doc.reference_number for doc in internal_docs}
+            llm_messages = build_conversational_messages(
+                query, internal_sources, existing_messages, reference_numbers=ref_map,
+                memory_context=memory_context,
+                answer_style=answer_style,
+                context_first=True,
+            )
+            answer = await generate_answer(llm_messages, images=images)
+            if not needs_new_search(answer):
+                gap_project = (
+                    internal_docs[0].project_id
+                    or internal_docs[0].filename.split("/", 1)[0]
+                )
+                return RAGContext(
+                    llm_messages=llm_messages,
+                    document_sources=internal_docs,
+                    precomputed_answer=answer,
+                    analysis=analysis,
+                    agent_steps=trace.steps,
+                    primary_source_layer=internal_docs[0].source_layer or rung2_layers[0],
+                    fallback_used=True,
+                    doc_gap=True,
+                    doc_gap_details={
+                        "project_id": gap_project,
+                        "run_id": internal_docs[0].run_id,
+                        "insufficiency_reason": insufficiency,
+                        "detected_entities": identifiers,
+                        "layers_used": rung2_layers,
+                        "supporting_artifacts": sorted({s.filename for s in internal_sources}),
+                        "supporting_chunk_ids": [
+                            f"{s.document_id}:{s.chunk_index}" for s in internal_sources
+                        ],
+                    },
+                )
+
+        # Rung 2 unsupported — refuse cleanly, no doc-gap event
+        history = truncate_history(existing_messages) if has_history else None
+        llm_messages = build_no_results_messages(
+            query,
+            history=history,
+            memory_context=memory_context,
+            system_knowledge=system_knowledge,
+            answer_style=answer_style,
+        )
+        if precompute:
+            answer = await generate_answer(llm_messages)
+        else:
+            answer = None
+        return RAGContext(
+            llm_messages=llm_messages,
+            document_sources=[],
+            precomputed_answer=answer,
+            analysis=analysis,
+            agent_steps=trace.steps,
+            fallback_used=True,
+        )
 
 
 async def _detect_and_store_correction(
@@ -844,7 +1037,7 @@ async def run_conversational_rag(
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id, project_ids=project_ids, db=db,
+        user_id=user_id, project_ids=project_ids, db=db, images=images,
     )
 
     if ctx.precomputed_answer is not None:
@@ -897,6 +1090,9 @@ async def run_conversational_rag(
         content=answer,
         sources=sources_data,
         latency_ms=latency_ms,
+        primary_source_layer=ctx.primary_source_layer,
+        fallback_used=ctx.fallback_used,
+        doc_gap=ctx.doc_gap,
     )
     db.add(assistant_msg)
 
@@ -907,6 +1103,8 @@ async def run_conversational_rag(
 
     # Flush to get the ID assigned
     await db.flush()
+
+    _add_doc_gap_event(db, ctx, query, user_id, conversation.id, assistant_msg.id)
 
     # Retain interaction to Hindsight (fire-and-forget — does not block response)
     if user_id:
@@ -944,6 +1142,9 @@ async def run_conversational_rag(
         content=answer,
         sources=[DocumentSource(**s) for s in sources_data] if sources_data else None,
         latency_ms=latency_ms,
+        primary_source_layer=ctx.primary_source_layer,
+        fallback_used=ctx.fallback_used,
+        doc_gap=ctx.doc_gap,
         created_at=assistant_msg.created_at,
     )
 
@@ -991,6 +1192,7 @@ async def run_conversational_rag_stream(
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
         user_id=user_id, precompute=False, project_ids=project_ids, db=db,
+        images=images,
     )
 
     import json
@@ -1040,9 +1242,14 @@ async def run_conversational_rag_stream(
         content=accumulated,
         sources=sources_db,
         latency_ms=latency_ms,
+        primary_source_layer=ctx.primary_source_layer,
+        fallback_used=ctx.fallback_used,
+        doc_gap=ctx.doc_gap,
     )
     db.add(assistant_msg)
     await db.flush()
+
+    _add_doc_gap_event(db, ctx, query, user_id, conversation.id, assistant_msg.id)
 
     # Persist usage to DB
     if usage:
@@ -1096,4 +1303,10 @@ async def run_conversational_rag_stream(
         f"{len(ctx.document_sources)} document sources, conversation {conversation.id}"
     )
 
-    yield ("done", json.dumps({"message_id": assistant_msg.id, "latency_ms": latency_ms}))
+    yield ("done", json.dumps({
+        "message_id": assistant_msg.id,
+        "latency_ms": latency_ms,
+        "primary_source_layer": ctx.primary_source_layer,
+        "fallback_used": ctx.fallback_used,
+        "doc_gap": ctx.doc_gap,
+    }))

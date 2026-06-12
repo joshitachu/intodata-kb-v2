@@ -497,3 +497,77 @@ class TestMergeSourcesLayerMetadata:
         merged = merge_sources_by_document(sources)
         assert merged[0].source_layer is None
         assert merged[0].section is None
+
+
+class TestFriendlyDisplayName:
+    def test_canonical_doc(self) -> None:
+        from src.retrieval.search import friendly_display_name
+        assert friendly_display_name("phase2/01_ARCHITECTURE_MAP.md") == (
+            "01_ARCHITECTURE_MAP.md (Project: phase2)"
+        )
+
+    def test_internal_doc_never_shows_raw_path(self) -> None:
+        from src.retrieval.search import friendly_display_name
+        name = friendly_display_name(
+            "phase2/_internal/technical_analysis/Item.md", "technical_analysis"
+        )
+        assert name == "Technical Analysis: Item (Project: phase2)"
+        assert "_internal" not in name
+
+    def test_internal_doc_percent_decoded(self) -> None:
+        from src.retrieval.search import friendly_display_name
+        name = friendly_display_name(
+            "proj/_internal/technical_analysis/Training%7CJasmijn.md",
+            "technical_analysis",
+        )
+        assert "Training|Jasmijn" in name
+        assert "%7C" not in name
+
+    def test_internal_layer_from_path_when_not_passed(self) -> None:
+        from src.retrieval.search import friendly_display_name
+        name = friendly_display_name("proj/_internal/scorecard/scorecard.md")
+        assert name == "Quality Scorecard: scorecard (Project: proj)"
+
+    def test_unscoped_filename_unchanged(self) -> None:
+        from src.retrieval.search import friendly_display_name
+        assert friendly_display_name("plain.md") == "plain.md"
+
+
+class TestSearchLayered:
+    """Rung-2 helper: explicit layers + same RBAC/project scoping."""
+
+    async def test_passes_explicit_layers_and_rbac(self) -> None:
+        from src.retrieval import search as search_mod
+
+        with (
+            patch.object(search_mod.settings, "reranker_enabled", False),
+            patch.object(search_mod.settings, "hybrid_search_enabled", False),
+            patch.object(search_mod, "search_similar", new_callable=AsyncMock) as mock_dense,
+        ):
+            mock_dense.return_value = []
+            await search_mod.search_layered(
+                AsyncMock(),
+                "query",
+                ["groupA"],
+                source_layers=["technical_analysis", "support_maps"],
+                project_ids=["phase2"],
+            )
+
+        kwargs = mock_dense.await_args.kwargs
+        assert kwargs["source_layers"] == ["technical_analysis", "support_maps"]
+        assert kwargs["user_groups"] == ["groupA"]
+        assert kwargs["project_ids"] == ["phase2"]
+
+    async def test_uses_reranker_strategy_when_enabled(self) -> None:
+        from src.retrieval import search as search_mod
+
+        with (
+            patch.object(search_mod.settings, "reranker_enabled", True),
+            patch.object(search_mod, "search_and_rerank", new_callable=AsyncMock) as mock_rerank,
+        ):
+            mock_rerank.return_value = []
+            await search_mod.search_layered(
+                AsyncMock(), "query", ["g"], source_layers=["scorecard"]
+            )
+
+        assert mock_rerank.await_args.kwargs["source_layers"] == ["scorecard"]

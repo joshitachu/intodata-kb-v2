@@ -20,6 +20,7 @@ from src.db.models.wizard_event import WizardEvent
 from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
 from src.db.models.entity_alias import EntityAlias
+from src.db.models.doc_gap_event import DocGapEvent
 
 __all__ = [
     "User",
@@ -46,4 +47,5 @@ __all__ = [
     "EmailOTPCode",
     "UserInvite",
     "EntityAlias",
+    "DocGapEvent",
 ]

@@ -47,6 +47,15 @@ def _deserialize_sources(raw: list[dict]) -> list[DocumentSource]:
             text=s["text"],
             reference_number=s.get("reference_number", i),
             chunk_indexes=s.get("chunk_indexes", []),
+            source_layer=s.get("source_layer"),
+            section=s.get("section"),
+            unit=s.get("unit"),
+            group=s.get("group"),
+            display_name=s.get("display_name"),
+            artifact_path=s.get("artifact_path"),
+            visibility=s.get("visibility"),
+            run_id=s.get("run_id"),
+            project_id=s.get("project_id"),
         ))
     return result
 
@@ -146,6 +155,9 @@ async def get_conversation(
                 latency_ms=m.latency_ms,
                 status=m.status,
                 error_message=m.error_message,
+                primary_source_layer=m.primary_source_layer,
+                fallback_used=m.fallback_used,
+                doc_gap=m.doc_gap,
                 created_at=m.created_at,
             )
             for m in conversation.messages

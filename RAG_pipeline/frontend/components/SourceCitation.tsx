@@ -40,7 +40,7 @@ export function SourceCitation({ source, index }: SourceCitationProps) {
           {displayNumber}
         </span>
         <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
-        <span className="font-medium truncate">{source.filename}</span>
+        <span className="font-medium truncate">{source.display_name ?? source.filename}</span>
         <span className="text-muted-foreground ml-auto shrink-0">
           {(source.score * 100).toFixed(0)}% match
         </span>

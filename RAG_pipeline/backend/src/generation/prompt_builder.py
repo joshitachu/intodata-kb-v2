@@ -233,12 +233,15 @@ def _build_context(
     truncated_sources = 0
 
     for src in sources:
-        # Extract project name from scoped filename (format: project_id/filename)
-        fname_parts = src.filename.split("/", 1)
-        if len(fname_parts) == 2:
-            display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+        if src.display_name:
+            display_name = src.display_name
         else:
-            display_name = src.filename
+            # Legacy sources: extract project from scoped filename (project_id/filename)
+            fname_parts = src.filename.split("/", 1)
+            if len(fname_parts) == 2:
+                display_name = f"{fname_parts[1]} (Project: {fname_parts[0]})"
+            else:
+                display_name = src.filename
 
         if reference_numbers and src.document_id in reference_numbers:
             ref_num = reference_numbers[src.document_id]

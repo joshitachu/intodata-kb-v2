@@ -1,111 +1,148 @@
-# Active Plan: Slice 3 - Layered Ingestion Push With Entity Index
-
+---
+feature: Layered RAG Over Final Docs and Phase 2 Analysis
+slice: Slice 4 - Retrieval ladder and doc-gap logging
+sub_project: rag_pipeline
+critical_area: yes - RAG retrieval chain, conversational QA path, answer schemas; /inspect required before validation/commit
 verdict: PASS
 approved_at: 2026-06-12
-slice_id: 3
-slice_name: Layered ingestion push with entity index
-sub_project: both
-critical_area: yes - MCP API routes and RAG ingestion/storage; /inspect required before validation/commit
 depends_on:
-- Slice 1: RAG layer-aware retrieval contract
-- Slice 2: MCP _rag_support persistence and analysis_cache restore
+  - Slice 3 committed as 39895b1: internal-layer ingestion push + entity index
+---
 
-## Goal
+## Problem Statement
 
-After each generation or manual push, RAG receives the internal support layers created by the MCP harness:
+Slice 3 puts internal support layers into RAG, but the conversational QA path still performs one default search. Because `source_layers=None` intentionally searches only canonical docs plus legacy chunks, questions that final docs cannot answer never descend to the new `technical_analysis`, `support_maps`, `scorecard`, or `evidence_slices` layers.
 
-- `technical_analysis` from `docs/_rag_support/phase2_analysis/*.md`
-- `support_maps` from `docs/_facts/*.md`
-- `scorecard` from `docs/_assessment/scorecard.md`
-- `evidence_slices` from `docs/_evidence_registry/doc_slices/*.md` when present
-- Entity and usage CSV indexes as a per-project alias lookup, not vector corpus chunks
+The current path also lacks the Slice 4 answer contract:
 
-Default user retrieval must remain canonical-only. Internal artifacts are only available when callers explicitly request internal `source_layers`.
+- no `primary_source_layer`, `fallback_used`, or `doc_gap` metadata on answers;
+- no doc-gap event storage when internal analysis fills a final-doc omission;
+- previous-source reuse and conversation reload do not preserve all layer/display metadata;
+- internal citations would currently render raw scoped filenames such as `_internal/...` in the chat source list.
 
-## Current State
+## Proposed Solution
 
-- Slice 1 added layer metadata fields, default canonical retrieval, source-layer filters, and RAG ingestion metadata threading.
-- Slice 2 persists `_rag_support/` after generation and restores `analysis_cache/`, but `RagBridge` still pushes only top-level visible docs.
-- Visible doc deletion uses changed/removed final docs. Internal support artifacts need full delete-and-repush because removed groups are hidden from the visible diff.
-- `POST /api/v1/ingest/md` already accepts metadata. The missing pieces are MCP internal push orchestration, internal-layer delete support, and entity alias ingestion/storage.
+Add a two-rung retrieval ladder to the conversational QA path only:
 
-## Implementation Plan
+1. Rung 1 searches the existing default corpus partition (`source_layers=None`), which remains canonical docs plus legacy chunks.
+2. Rung 1 attempts one context-grounded answer using the existing `[NEED_SEARCH]` contract. If it answers cleanly, return that answer with no rung-2 search and no extra LLM call.
+3. If rung 1 has no sources, emits `[NEED_SEARCH]`, trips the existing `needs_new_search()` safety net, or misses identifier-like entities from the query, run rung 2.
+4. Rung 2 searches exact internal layers selected by deterministic query-type routing:
+   - component/job/unit detail: `technical_analysis`
+   - field/table/mapping/endpoint/API: `technical_analysis`, `evidence_slices`
+   - runtime/config/connection: `technical_analysis`, `support_maps`
+   - dependency/lineage/calls: `technical_analysis`, `support_maps`
+   - risk/security/quality: `scorecard`, `support_maps`, `technical_analysis`
+   - generic technical fallback: `technical_analysis`
+5. If rung 2 supplies sources, answer from those sources with friendly citations, mark `fallback_used=true`, set `primary_source_layer`, and log a doc-gap event.
+6. If rung 2 also cannot support the answer, refuse cleanly from the no-results/support-gap prompt and do not log a doc-gap event.
 
-1. Add RAG backend entity alias storage.
-   - Add an `EntityAlias` model under `RAG_pipeline/backend/src/db/models/`.
-   - Add an Alembic migration, likely `028_add_entity_aliases.py`.
-   - Store at least: `project_id`, `alias`, `alias_normalized`, `canonical_name`, `entity_type`, `unit_name`, `source_path`, `source_artifact`, and `confidence`.
-   - Add indexes for `(project_id, alias_normalized)` and `project_id`.
-   - Import the model from `db/models/__init__.py` so tests and metadata creation include it.
+Use a dedicated `DocGapEvent` table instead of overloading `QueryLog`. The existing `QueryLog` model is sparse, is not written by conversational RAG, and does not have the fields needed for repeated-omission analysis.
 
-2. Add RAG backend ingest endpoints for internal lifecycle.
-   - Add an API-key-protected endpoint to delete all internal-layer docs for a project.
-   - Delete only documents whose DB filename is scoped under the project and uses the internal prefix, for example `{project_id}/_internal/...`.
-   - For each deleted document, call the existing Qdrant point delete path by `document_id`; do not delete canonical docs or project assignments.
-   - Clear entity aliases for the project as part of internal lifecycle cleanup so stale aliases do not survive a failed or partial re-push.
-   - Add an API-key-protected entity alias ingest endpoint that replaces aliases for one project in a single transaction.
-   - Keep `/ingest/md` metadata handling compatible with Slice 1.
+Add friendly source display metadata while preserving raw scoped filenames for storage and project filtering. Backend context builders and frontend citation rendering should use `display_name` when present and fall back to `filename` for legacy sources.
 
-3. Extend MCP `RagBridge` with internal artifact discovery and sync.
-   - Reuse Slice 2 `_rag_support` constants where possible.
-   - Add a deterministic internal filename builder using layer-prefixed names under `_internal/`.
-   - Percent-encode unsafe path components so names like `Training|Jasmijn.md` cannot leak raw separators or collide with canonical docs.
-   - Build metadata for every internal Markdown artifact:
-     - `source_layer`
-     - `artifact_type`
-     - `visibility: internal`
-     - `artifact_path`
-     - `doc_name`
-     - `project_id`
-     - `run_id` when available
-     - `group`, `unit`, or `section` when available from manifests or path context
-   - Push internal Markdown through the existing `push_markdown(..., metadata=...)` path.
-   - Do not ingest `_facts/*.csv` or `_facts/*.json` as vector documents.
+## Affected Files
 
-4. Add MCP entity alias payload generation.
-   - Parse `docs/_facts/entity_index.csv` and `docs/_facts/usage_index.csv` with `csv.DictReader`.
-   - Convert entity names and useful unit names into alias records.
-   - Include usage rows as alias records with source metadata from `usage_index.csv`.
-   - Normalize and dedupe aliases deterministically before posting to the RAG backend.
-   - Treat missing CSV files as a successful no-op.
+Backend:
 
-5. Wire both MCP push entry points through the same sync path.
-   - In `_run_generate_background`, keep the current visible doc push behavior, then run internal sync for the final `docs/` directory.
-   - In manual `/push-to-rag`, call the same internal sync method after the visible push.
-   - Combine internal push and alias ingest errors into the existing RAG error handling so generation reports partial RAG sync correctly.
-   - Preserve `last_rag_push_at` update behavior only after successful RAG push work.
-
-6. Preserve default retrieval behavior.
-   - Internal chunks must always carry a non-canonical `source_layer`.
-   - Do not change `default_source_layers`.
-   - Add or keep tests proving default search excludes internal layers unless explicitly requested.
-
-## Expected File Changes
-
-- `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py`
-- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
-- `knowledge_base/mcp-server/tests/...` for bridge and route coverage
-- `RAG_pipeline/backend/src/api/routes/ingest.py`
+- `RAG_pipeline/backend/src/generation/conversational_rag.py`
+- `RAG_pipeline/backend/src/generation/prompt_builder.py`
+- `RAG_pipeline/backend/src/retrieval/search.py`
 - `RAG_pipeline/backend/src/schemas.py`
-- `RAG_pipeline/backend/src/db/models/entity_alias.py`
+- `RAG_pipeline/backend/src/db/models/doc_gap_event.py` (new)
+- `RAG_pipeline/backend/src/db/models/conversation.py`
 - `RAG_pipeline/backend/src/db/models/__init__.py`
-- `RAG_pipeline/backend/alembic/versions/028_add_entity_aliases.py`
-- `RAG_pipeline/backend/tests/...` for ingest delete, alias replace, metadata threading, and retrieval default safety
+- `RAG_pipeline/backend/alembic/versions/029_add_doc_gap_events.py` (new)
+- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag.py`
+- `RAG_pipeline/backend/tests/test_generation/test_prompt_builder.py`
+- `RAG_pipeline/backend/tests/test_retrieval/test_search.py`
+- `RAG_pipeline/backend/tests/test_db/test_doc_gap_event.py` (new)
+- `RAG_pipeline/backend/tests/test_api/test_conversations.py`
 
-## Test Plan
+Frontend, only if needed for citation display:
 
-Targeted MCP tests:
+- `RAG_pipeline/frontend/types/index.ts`
+- `RAG_pipeline/frontend/components/SourceCitation.tsx`
+- `RAG_pipeline/frontend/tests/components/MessageList.test.tsx` or a focused citation test
 
-```bash
-cd knowledge_base/mcp-server
-uv run pytest tests/test_services/test_rag_bridge.py tests/test_api/test_projects.py tests/test_services/test_rag_support_package.py
-```
+## Architecture Contracts
 
-Targeted RAG backend tests:
+- RBAC filtering remains mandatory on every Qdrant query, including rung 2.
+- Rung 2 must pass explicit `source_layers`; it must not use the default legacy-tolerant layer condition.
+- Default retrieval behavior remains unchanged for all non-ladder paths.
+- The happy path pays no rung-2 retrieval cost and no second LLM generation.
+- Internal source reuse is allowed only after a previous answer already passed the ladder gate.
+- Raw `_internal/...` paths must not be used as user-facing citation names.
+- Doc-gap events are logged only when rung 2 supplies answer-supporting internal material after rung 1 is insufficient.
+- Do not hardcode project, group, job, table, or entity names.
+
+## Implementation Steps
+
+1. Extend schemas and source mapping.
+   - Add optional `display_name`, `artifact_path`, `visibility`, `run_id`, and `project_id` to `Source` and `DocumentSource`.
+   - Add `primary_source_layer`, `fallback_used`, and `doc_gap` to `MessageResponse`; add the same optional fields to `QueryResponse` only as compatibility defaults if needed.
+   - Update `_source_from_payload()` and `merge_sources_by_document()` to preserve the new fields.
+   - Add a shared friendly display-name helper for canonical and internal layers.
+
+2. Preserve source metadata across conversations.
+   - Update `get_previous_sources()` to filter by explicit `project_id` when available and fall back to scoped filename prefixes for legacy data.
+   - Update `build_context_from_document_sources()` and prompt context builders to use `display_name`.
+   - Update `api/routes/conversations.py::_deserialize_sources()` so GET conversation responses keep layer, display, artifact, and project metadata.
+
+3. Add doc-gap persistence.
+   - Add `DocGapEvent` model and migration `029_add_doc_gap_events.py` with `down_revision="028"`.
+   - Store `project_id`, optional `run_id`, `user_id`, `conversation_id`, optional `message_id`, `query_text`, `detected_entities`, `insufficiency_reason`, `primary_source_layer`, `layers_used`, `supporting_artifacts`, and `supporting_chunk_ids`.
+   - Use generic `JSON().with_variant(JSONB(), "postgresql")` for SQLite-compatible JSON fields.
+
+4. Add layer-scoped retrieval helpers.
+   - Add a small helper in `retrieval/search.py` that runs the existing search strategy with explicit `source_layers` and the same `user_groups`/`project_ids`.
+   - Keep reranker failure fallback and neighbor expansion behavior unchanged.
+   - Add tests that rung-2 searches carry both RBAC/project filters and the explicit layer filter.
+
+5. Add deterministic ladder routing and insufficiency checks.
+   - Add query keyword routing for rung-2 layer selection.
+   - Add identifier-like entity extraction from the user query for the Slice 4 entity-presence check; do not query the alias table yet.
+   - Treat rung 1 as insufficient when identifier-like query terms are absent from canonical source text.
+   - Keep the existing `[NEED_SEARCH]` and `needs_new_search()` checks as the primary insufficiency signal.
+
+6. Wire the ladder into `_prepare_rag_context()`.
+   - Apply only to QA searches, after previous-source reuse and before no-results fallback.
+   - For rung-1 sufficient answers, return the precomputed answer with canonical sources and metadata `fallback_used=false`, `doc_gap=false`.
+   - For rung-2 answers, return internal sources and metadata `fallback_used=true`, `doc_gap=true`.
+   - For unsupported answers after rung 2, return a clean support-gap answer with no doc-gap event.
+   - Streaming may emit a precomputed answer as a single token for ladder decisions, matching the existing context-first reuse behavior.
+
+7. Persist and return answer metadata.
+   - Add nullable/default fields to `ConversationMessage` for `primary_source_layer`, `fallback_used`, and `doc_gap`.
+   - Fill those fields in non-streaming and streaming conversation paths.
+   - Include the fields in SSE `done` payload if practical; at minimum include them in persisted message retrieval and `MessageResponse`.
+   - Insert `DocGapEvent` after the assistant message has an id.
+
+8. Add frontend citation display support if backend exposes `display_name`.
+   - Extend `DocumentSourceSchema` with optional layer/display fields.
+   - Render `source.display_name ?? source.filename` in `SourceCitation`.
+   - Keep existing source rendering layout unchanged.
+
+## Verification Strategy
+
+Targeted backend tests:
 
 ```bash
 cd RAG_pipeline/backend
-uv run pytest tests/test_api/test_ingest_delete.py tests/test_api/test_entity_aliases.py tests/test_ingestion/test_pipeline.py tests/test_retrieval/test_search.py
+uv run pytest \
+  tests/test_generation/test_conversational_rag.py \
+  tests/test_generation/test_prompt_builder.py \
+  tests/test_retrieval/test_search.py \
+  tests/test_db/test_doc_gap_event.py \
+  tests/test_api/test_conversations.py
+```
+
+Targeted frontend tests if citation rendering changes:
+
+```bash
+cd RAG_pipeline/frontend
+npx tsc --noEmit
+npm test -- SourceCitation
 ```
 
 Syntax checks for every changed Python file:
@@ -117,11 +154,11 @@ python3 -m py_compile <changed-file>
 Full validation before commit:
 
 ```bash
-cd knowledge_base/mcp-server && uv run pytest
 cd RAG_pipeline/backend && uv run pytest
+cd RAG_pipeline/frontend && npx tsc --noEmit && npm test
 ```
 
-Required gate after implementation:
+Required gates after implementation:
 
 ```text
 /inspect
@@ -130,21 +167,21 @@ Required gate after implementation:
 
 ## Acceptance Criteria
 
-- Generation and manual push both sync canonical docs plus internal layers.
-- Internal-layer sync deletes the previous internal set for the project before pushing the new set.
-- Canonical documents and project assignments are not removed by internal cleanup.
-- Internal filenames are scoped, layer-prefixed, and sanitized; `Training|Jasmijn.md` is covered by a test.
-- `_facts/*.md`, scorecard, evidence slices, and `_rag_support` technical analysis receive correct metadata.
-- `_facts/*.csv` feeds the entity alias table and is not pushed as vector Markdown.
-- Entity alias ingest replaces aliases per project and does not affect other projects.
-- Default retrieval remains canonical-only.
-- Explicit internal `source_layers` continue to work through the Slice 1 retrieval path.
+- A final-doc-answerable question answers from rung 1 with no rung-2 search.
+- A Phase-2-only/internal answer descends to rung 2 and answers with internal support.
+- Unsupported questions refuse cleanly after rung 2 instead of fabricating.
+- Rung-2 Qdrant calls apply RBAC, project scoping, and explicit source-layer filtering.
+- Answer responses and persisted assistant messages include `primary_source_layer`, `fallback_used`, and `doc_gap`.
+- Rung-2 answers log a queryable `DocGapEvent` with insufficiency reason, layers used, artifacts, chunk ids, and detected identifiers.
+- Previous-source reuse preserves layer/display metadata and can reuse internal sources.
+- Internal citations use friendly names; raw `_internal/...` filenames do not render in chat citations.
+- Default canonical retrieval and non-conversation query paths do not regress.
 
-## Out Of Scope
+## Out of Scope
 
-- Retrieval ladder routing across layers.
-- Query-time entity/alias matching.
-- Section-parent expansion.
-- UI display of internal citations.
-- `source_evidence` raw file ingestion.
-- Bulk reindex of existing projects outside generation or manual push.
+- Query-time alias lookup from `entity_aliases` and guaranteed `unit` payload matching; that is Slice 5.
+- Widened rung-2 recall, query expansion on rung 2, and section-parent expansion; those are Slice 5.
+- Evaluation harness tuning and golden-set scoring; that is Slice 6.
+- MCP ingestion changes; Slice 3 already shipped internal push and alias ingest.
+- Admin document-list filtering for `_internal/` rows; this remains the Slice 3 inspection follow-up unless separately scheduled.
+- Raw `source_evidence` ingestion.

@@ -1,72 +1,70 @@
 ---
 inspected_at: 2026-06-12
-verdict: WARN
-slice: 3 — Layered ingestion push with entity index
+verdict: BLOCK
+slice: 4 — Retrieval ladder and doc-gap logging
+block_cycle: 1
 ---
 
 ## Verdict Summary
-Implementation matches the approved Slice 3 plan with no blocking defects; the
-one substantive finding is an unescaped SQL LIKE wildcard in the internal-delete
-guard (bounded by the project_id equality condition, but imprecise for a
-destructive filter).
+The ladder matches the approved plan and preserves RBAC/layer contracts, but
+the rung-1 precompute silently drops the `images` vision parameter for every
+fresh QA question — a functional regression that must be fixed before commit.
 
 ## Check Results
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | All 6 plan steps implemented: EntityAlias model + migration 028, internal delete + alias replace endpoints, RagBridge discovery/sync, CSV alias generation, both entry points wired, default retrieval untouched. |
-| Root cause         | PASS   | Internal lifecycle is wholesale delete-and-repush — the correct answer to removed groups being invisible to the visible-doc diff. |
-| Generalized        | PASS   | Alias cleanup added to BOTH the internal lifecycle and the full project delete (stale aliases cannot survive project deletion). Layer constants live in one module shared by builder and consumer. |
-| Design patterns    | PASS   | Discovery/alias-building are pure filesystem functions in the service layer; RagBridge owns transport only; backend endpoints mirror existing ingest route idioms. |
-| Contract respect   | PASS   | `default_source_layers` untouched; `_read_md_files`/`_diff_generated_docs` are top-level digit-prefixed only so canonical push/delete cannot touch `_internal/`; staging contract unaffected. |
-| No special-casing  | PASS   | `_internal/` prefix is a single documented scoping convention, mirrored as constants on both sides with cross-references. |
-| Edge cases         | WARN   | LIKE wildcard finding (1); internal docs appear in admin document lists (2). Tests cover delete-first ordering, delete-failure abort, partial push errors, empty-tree no-op, `Training|Jasmijn` encoding, CSV dedupe, missing-CSV no-op. |
-| RBAC               | PASS   | New endpoints are `verify_ingest_api_key`-protected like every ingest route; internal chunks flow through the same `ingest_text` path and carry the same project scoping; retrieval-side RBAC filter unchanged. |
-| Credential safety  | PASS   | No credentials in code; alias records carry names/paths/confidence only; pushed internal content is LLM output already covered by upstream credential redaction (same exposure class as canonical docs). |
+| Plan conformance   | PASS   | All 8 plan steps implemented: schemas, source metadata preservation, DocGapEvent + migration 029, search_layered, deterministic routing + identifier checks, ladder wiring, persistence/SSE, frontend display_name. |
+| Root cause         | PASS   | Two-rung ladder with explicit layer search addresses the actual gap (default partition never descends); doc-gap events stored in a dedicated table, not bolted onto QueryLog. |
+| Generalized        | PASS   | Display-name logic is one helper (`friendly_display_name`) populated at payload mapping; all context builders use `display_name or legacy-format`; `merge_sources_by_document` propagates all new fields once. |
+| Design patterns    | PASS   | Strategy selection reused via `search_layered`; deterministic routing table (data, not branches); RAGContext carries ladder metadata as a value object. |
+| Contract respect   | PASS   | Threshold 0.3 default untouched; no LangChain; anti-hallucination prompts extended, not weakened (rung 1 uses the existing [NEED_SEARCH] contract); raw `_internal/` paths never rendered (tested). |
+| No special-casing  | PASS   | Ladder applies uniformly to the QA search path; METADATA/RESPOND/SUMMARY paths untouched; no per-project or per-layer branches. |
+| Edge cases         | BLOCK  | Finding 1 (images dropped). Otherwise well-covered: rung-1 sufficient (1 LLM call, no rung-2 search), need_search + missing-identifier descent, unsupported refusal without gap event, DocGapEvent roundtrip incl. nullables, layer routing units. |
+| RBAC               | PASS   | `search_layered` requires explicit `source_layers` and threads `user_groups`/`project_ids` into the same `_build_search_filter`; tested (`test_passes_explicit_layers_and_rbac`). Conversation routes still enforce ownership. |
+| Credential safety  | PASS   | No credentials; doc-gap events store query text, layer names, artifact paths, chunk ids — no secret material beyond what the corpus already holds. |
 
 ## Findings
 
-1. **WARN — unescaped LIKE wildcards in the internal-delete filter**
-   `RAG_pipeline/backend/src/api/routes/ingest.py` (delete_project_internal_documents):
-   `Document.filename.like(f"{project_id}/_internal/%")` — `_` is a single-char
-   SQL wildcard, and `project_id` may itself contain `_`/`%` (e.g. `cdc_v2`).
-   Blast radius is bounded: the query also requires `Document.project_id ==
-   project_id`, and no current writer produces filenames like
-   `proj/Xinternal/...`. Still, a destructive filter should be exact: use
-   `Document.filename.startswith(f"{project_id}/_internal/", autoescape=True)`.
+1. **BLOCK — `images` dropped for fresh QA questions**
+   `_prepare_rag_context` has no `images` parameter, but now precomputes the
+   rung-1 answer (conversational_rag.py, rung-1 `generate_answer(rung1_messages)`).
+   Before this change, fresh-search QA returned `precomputed_answer=None` and
+   the caller generated with `images=images`
+   (`run_conversational_rag`:1045, `run_conversational_rag_stream`:1214). Now a
+   user attaching a screenshot to a question gets an answer that never saw the
+   image. Fix: thread `images` into `_prepare_rag_context` and pass it to the
+   rung-1 and rung-2 `generate_answer` calls.
 
-2. **WARN — internal docs appear in RAG document-list endpoints**
-   `Document` rows named `{project}/_internal/...` will show up in admin
-   document listings and counts. Retrieval-side invisibility is guaranteed by
-   `source_layer`, and the plan scopes UI display out (Slice 4+), but operators
-   may be surprised by the row count change. Optional: filter `_internal/` from
-   user-facing document list queries in a later slice.
+2. **WARN — streaming UX: fresh QA answers now arrive as one blob**
+   The ladder gate precomputes the answer, so the SSE stream emits a single
+   token for every fresh QA question, not just follow-up reuse. Plan-authorized
+   ("Streaming may emit a precomputed answer as a single token for ladder
+   decisions"), but it changes perceived latency on the most common path.
+   Acceptable for Slice 4; revisit if users notice.
 
-3. **Note — `/push-to-rag` `last_rag_push_at` gating is stricter**
-   Previously updated when `pushed > 0` even with errors; now requires zero
-   total errors. Consistent with the generation path (`rag_error_message is
-   None`) and with the plan's "only after successful RAG push work". Intended.
+3. **WARN — fallback path costs up to 3 LLM calls**
+   Rung-1 gate + rung-2 answer (+ refusal generation when unsupported).
+   The happy path stays at one call (tested). Acceptable; the fallback path is
+   by definition the rare path, but worth watching in usage metrics.
 
-4. **Note — partial internal state on mid-sync push failure**
-   Delete succeeds, some pushes fail → internal layer is partially populated
-   until the next push. Errors are surfaced into `rag_errors` (generation
-   verdict becomes `published_with_rag_error`) and any re-push repairs the
-   state. Acceptable lifecycle for non-user-facing layers.
+4. **Note — identifier heuristic can descend spuriously**
+   PascalCase words like "JavaScript" count as identifiers; if canonical text
+   lacks them, rung 2 runs unnecessarily. Failure mode is graceful (extra
+   search + LLM call; gap events only log when rung 2 actually answers).
+   Slice 5's alias-table lookup replaces this heuristic.
 
 ## Required Actions
 
-No blocking changes.
-
-WARN (should address before commit, cheap):
-- Finding 1: switch the internal-delete filter to
-  `filename.startswith(..., autoescape=True)`.
-
-WARN (optional/follow-up):
-- Finding 2: consider excluding `_internal/` from document-list endpoints in a
-  future slice; log as backlog.
+BLOCK:
+- Finding 1: add `images` to `_prepare_rag_context` and pass through to the
+  rung-1/rung-2 generation calls; keep caller behavior for non-precomputed
+  paths unchanged.
 
 ## Resolution (post-inspection, same session)
 
-- Finding 1: FIXED — filter switched to `startswith(..., autoescape=True)`;
-  test updated to assert escaped compiled SQL.
-- Finding 2: OPEN — logged as follow-up; retrieval invisibility already
-  enforced by source_layer.
+- Finding 1: FIXED — `images` threaded into `_prepare_rag_context` and both
+  ladder generation calls; callers pass it; regression test added
+  (`test_rung1_passes_images_to_generation`). Full suite re-run green.
+- Findings 2-4: documented above as accepted for Slice 4.
+
+Re-inspection after fix: verdict WARN (findings 2-3 stand as accepted).

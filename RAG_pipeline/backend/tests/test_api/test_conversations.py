@@ -40,6 +40,9 @@ def _mock_message(id: int = 1, role: str = "user", content: str = "Hello"):
     msg.latency_ms = None
     msg.status = "completed"
     msg.error_message = None
+    msg.primary_source_layer = None
+    msg.fallback_used = False
+    msg.doc_gap = False
     msg.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return msg
 
@@ -307,6 +310,9 @@ class TestSendMessage:
         mock_response.latency_ms = 100
         mock_response.status = "completed"
         mock_response.error_message = None
+        mock_response.primary_source_layer = None
+        mock_response.fallback_used = False
+        mock_response.doc_gap = False
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(
@@ -378,6 +384,9 @@ class TestSendMessage:
         mock_response.latency_ms = 50
         mock_response.status = "completed"
         mock_response.error_message = None
+        mock_response.primary_source_layer = None
+        mock_response.fallback_used = False
+        mock_response.doc_gap = False
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(

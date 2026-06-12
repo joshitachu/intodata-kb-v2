@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from pathlib import Path
+from urllib.parse import unquote
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
@@ -135,6 +137,34 @@ def _build_search_filter(
     return None
 
 
+_LAYER_DISPLAY_LABELS = {
+    "technical_analysis": "Technical Analysis",
+    "support_maps": "Support Map",
+    "scorecard": "Quality Scorecard",
+    "evidence_slices": "Evidence",
+}
+
+
+def friendly_display_name(filename: str, source_layer: str | None = None) -> str:
+    """Human-readable citation name for a scoped RAG filename.
+
+    Canonical docs keep the established "name (Project: id)" format. Internal
+    docs (``{project}/_internal/{layer}/{encoded-name}.md``) never expose the
+    raw ``_internal/`` path: the artifact name is percent-decoded and prefixed
+    with the layer label instead.
+    """
+    project, _, remainder = filename.partition("/")
+    if not remainder:
+        return filename
+    if remainder.startswith("_internal/"):
+        parts = remainder.split("/")
+        layer = source_layer or (parts[1] if len(parts) > 2 else "")
+        stem = unquote(Path(parts[-1]).stem)
+        label = _LAYER_DISPLAY_LABELS.get(layer, "Internal Analysis")
+        return f"{label}: {stem} (Project: {project})"
+    return f"{remainder} (Project: {project})"
+
+
 def _source_from_payload(payload: dict, score: float) -> Source:
     """Build a Source from a Qdrant point payload.
 
@@ -151,6 +181,11 @@ def _source_from_payload(payload: dict, score: float) -> Source:
         section=payload.get("section"),
         unit=payload.get("unit"),
         group=payload.get("group"),
+        display_name=friendly_display_name(payload["filename"], payload.get("source_layer")),
+        artifact_path=payload.get("artifact_path"),
+        visibility=payload.get("visibility"),
+        run_id=payload.get("run_id"),
+        project_id=payload.get("project_id"),
     )
 
 
@@ -545,6 +580,42 @@ def _process_results(
     return sources
 
 
+async def search_layered(
+    client: AsyncQdrantClient,
+    query: str,
+    user_groups: list[str],
+    *,
+    source_layers: list[str],
+    top_k: int = settings.default_top_k,
+    threshold: float = settings.default_threshold,
+    project_ids: list[str] | None = None,
+) -> list[Source]:
+    """Run the configured search strategy against explicit corpus layers.
+
+    Used by retrieval-ladder rung 2: same RBAC/project filters as the default
+    path, but with an exact ``source_layers`` filter (no legacy is-empty
+    tolerance). ``source_layers`` is required — this helper must never fall
+    back to the default partition.
+    """
+    if settings.reranker_enabled:
+        return await search_and_rerank(
+            client=client, query=query, user_groups=user_groups,
+            top_k=top_k, threshold=threshold, project_ids=project_ids,
+            source_layers=source_layers,
+        )
+    if settings.hybrid_search_enabled:
+        return await search_similar_hybrid(
+            client=client, query=query, user_groups=user_groups,
+            top_k=top_k, threshold=threshold, project_ids=project_ids,
+            source_layers=source_layers,
+        )
+    return await search_similar(
+        client=client, query=query, user_groups=user_groups,
+        top_k=top_k, threshold=threshold, project_ids=project_ids,
+        source_layers=source_layers,
+    )
+
+
 def merge_sources_by_document(
     sources: list[Source],
     max_documents: int | None = None,
@@ -580,6 +651,11 @@ def merge_sources_by_document(
                 section=best_chunk.section,
                 unit=best_chunk.unit,
                 group=best_chunk.group,
+                display_name=best_chunk.display_name,
+                artifact_path=best_chunk.artifact_path,
+                visibility=best_chunk.visibility,
+                run_id=best_chunk.run_id,
+                project_id=best_chunk.project_id,
             )
         )
 
