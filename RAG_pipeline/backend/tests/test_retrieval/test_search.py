@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.retrieval.search import (
+    _build_search_filter,
+    _source_from_payload,
     expand_neighbor_chunks,
     merge_sources_by_document,
     search_similar,
@@ -90,9 +92,18 @@ async def test_search_with_empty_user_groups(mock_qdrant):
         mock_embed.return_value = [0.1] * 768
         sources = await search_similar(mock_qdrant, "test query", [])
 
-    # Should call query_points with query_filter=None
+    # Should call query_points with the default layer filter but no RBAC group filter.
     call_kwargs = mock_qdrant.query_points.call_args.kwargs
-    assert call_kwargs["query_filter"] is None
+    query_filter = call_kwargs["query_filter"]
+    assert query_filter is not None
+    assert not any(
+        getattr(condition, "key", None) == "allowed_groups"
+        for condition in query_filter.must
+    )
+    assert any(
+        condition.__class__.__name__ == "Filter"
+        for condition in query_filter.must
+    )
 
 
 async def test_search_custom_top_k_and_threshold(mock_qdrant):
@@ -311,3 +322,178 @@ def test_merge_sources_max_documents_limits():
 def test_merge_sources_empty():
     merged = merge_sources_by_document([])
     assert merged == []
+
+
+# --- Tests for _source_from_payload ---
+
+
+class TestSourceFromPayload:
+    def test_legacy_payload_no_layer_fields(self) -> None:
+        """Legacy chunks (no source_layer) deserialize with None for new fields."""
+        payload = {
+            "document_id": 1,
+            "filename": "doc.md",
+            "chunk_index": 0,
+            "text": "Content",
+        }
+        src = _source_from_payload(payload, 0.8)
+        assert src.document_id == 1
+        assert src.filename == "doc.md"
+        assert src.score == 0.8
+        assert src.source_layer is None
+        assert src.section is None
+        assert src.unit is None
+        assert src.group is None
+
+    def test_full_payload_with_layer_fields(self) -> None:
+        payload = {
+            "document_id": 2,
+            "filename": "proj/api.md",
+            "chunk_index": 3,
+            "text": "API text",
+            "source_layer": "canonical_docs",
+            "section": "proj > API Contracts > Auth",
+            "unit": "Auth",
+            "group": "Nexus",
+        }
+        src = _source_from_payload(payload, 0.92)
+        assert src.source_layer == "canonical_docs"
+        assert src.section == "proj > API Contracts > Auth"
+        assert src.unit == "Auth"
+        assert src.group == "Nexus"
+        assert src.score == 0.92
+
+    def test_score_rounded_to_four_places(self) -> None:
+        payload = {
+            "document_id": 1,
+            "filename": "f.md",
+            "chunk_index": 0,
+            "text": "t",
+        }
+        src = _source_from_payload(payload, 0.123456789)
+        assert src.score == 0.1235
+
+
+# --- Tests for _build_search_filter layer conditions ---
+
+
+class TestLayerFilter:
+    def test_default_filter_includes_legacy_is_empty(self) -> None:
+        """source_layers=None → default filter includes IsEmptyCondition."""
+        from qdrant_client.models import IsEmptyCondition
+        with patch("src.retrieval.search.settings") as mock_settings:
+            mock_settings.default_source_layers = ["canonical_docs"]
+            f = _build_search_filter([], source_layers=None)
+        # The outer filter must have conditions that include a nested should Filter
+        assert f is not None
+        # Find the layer condition (a nested Filter in must)
+        from qdrant_client.models import Filter as QFilter
+        layer_condition = next(
+            (c for c in f.must if isinstance(c, QFilter)), None
+        )
+        assert layer_condition is not None, "Expected a nested Filter for layer conditions"
+        should_types = {type(c) for c in layer_condition.should}
+        assert IsEmptyCondition in should_types, "Expected IsEmptyCondition for legacy tolerance"
+
+    def test_explicit_layers_no_is_empty(self) -> None:
+        """Explicit source_layers list → FieldCondition only, no IsEmptyCondition."""
+        from qdrant_client.models import IsEmptyCondition, FieldCondition
+        f = _build_search_filter([], source_layers=["technical_analysis"])
+        assert f is not None
+        # Should be a FieldCondition, not a nested Filter with IsEmptyCondition
+        layer_conds = [c for c in f.must if isinstance(c, FieldCondition) and c.key == "source_layer"]
+        assert layer_conds, "Expected FieldCondition for source_layer"
+        # No IsEmptyCondition anywhere in the top-level conditions
+        assert not any(isinstance(c, IsEmptyCondition) for c in f.must)
+
+    def test_empty_layer_list_no_layer_condition(self) -> None:
+        """source_layers=[] → no layer condition (all layers visible)."""
+        from qdrant_client.models import FieldCondition, Filter as QFilter
+        f = _build_search_filter([], source_layers=[])
+        # No filter at all (no groups, no layer)
+        assert f is None
+
+    def test_admin_with_project_layer_filter_present(self) -> None:
+        """Admin with project selection still gets layer filter applied."""
+        with patch("src.retrieval.search.settings") as mock_settings:
+            mock_settings.default_source_layers = ["canonical_docs"]
+            f = _build_search_filter(["admin"], project_ids=["proj1"], source_layers=None)
+        assert f is not None
+        from qdrant_client.models import Filter as QFilter
+        layer_cond = next((c for c in f.must if isinstance(c, QFilter)), None)
+        assert layer_cond is not None
+
+    def test_allowed_groups_conditions_unchanged_non_admin(self) -> None:
+        """RBAC allowed_groups condition is unaffected by adding source_layers."""
+        from qdrant_client.models import FieldCondition
+        f = _build_search_filter(["engineering"], source_layers=None)
+        group_conds = [
+            c for c in f.must
+            if isinstance(c, FieldCondition) and c.key == "allowed_groups"
+        ]
+        assert group_conds, "Expected allowed_groups FieldCondition for non-admin"
+
+    def test_no_groups_no_project_no_layer_returns_none(self) -> None:
+        """Empty groups, no projects, empty layer list → no filter."""
+        f = _build_search_filter([], project_ids=None, source_layers=[])
+        assert f is None
+
+    def test_blocking_condition_no_project_assignments(self) -> None:
+        """Non-admin with no groups and empty project list → __none__ block condition."""
+        from qdrant_client.models import FieldCondition
+        f = _build_search_filter([], project_ids=[], source_layers=[])
+        assert f is not None
+        group_conds = [
+            c for c in f.must
+            if isinstance(c, FieldCondition) and c.key == "allowed_groups"
+        ]
+        assert group_conds
+        # Should have __none__ to block all results
+        assert group_conds[0].match.any == ["__none__"]
+
+
+# --- Tests for layer metadata in merge_sources_by_document ---
+
+
+class TestMergeSourcesLayerMetadata:
+    def test_best_chunk_layer_metadata_propagated(self) -> None:
+        """DocumentSource gets layer metadata from the highest-scoring chunk."""
+        sources = [
+            Source(
+                document_id=1,
+                filename="doc.md",
+                chunk_index=0,
+                score=0.7,
+                text="Low score chunk",
+                source_layer="canonical_docs",
+                section="doc > A",
+                unit="A",
+                group="GroupA",
+            ),
+            Source(
+                document_id=1,
+                filename="doc.md",
+                chunk_index=1,
+                score=0.95,
+                text="High score chunk",
+                source_layer="canonical_docs",
+                section="doc > B",
+                unit="B",
+                group="GroupB",
+            ),
+        ]
+        merged = merge_sources_by_document(sources)
+        assert len(merged) == 1
+        assert merged[0].score == 0.95
+        assert merged[0].source_layer == "canonical_docs"
+        assert merged[0].unit == "B"  # from highest-scoring chunk
+        assert merged[0].group == "GroupB"
+
+    def test_legacy_source_no_layer_fields(self) -> None:
+        """Sources without layer metadata merge without error (all None)."""
+        sources = [
+            Source(document_id=1, filename="f.md", chunk_index=0, score=0.8, text="T"),
+        ]
+        merged = merge_sources_by_document(sources)
+        assert merged[0].source_layer is None
+        assert merged[0].section is None

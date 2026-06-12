@@ -1,194 +1,198 @@
 ---
-feature: Track B -- Phase 3 input quality
-slice: Slice 3 -- Targeted dispatch + waste removal + docs (FR-B4, FR-B5, FR-B6, FR-B8)
-sub_project: knowledge_base
-critical_area: yes -- harness pipeline phases (`/inspect` required)
+feature: Layered RAG Over Final Docs and Phase 2 Analysis
+slice: Slice 1 -- Structure-aware chunking, chunk metadata, and layer-aware filtering
+sub_project: rag_pipeline
+critical_area: yes -- RAG retrieval chain (`/inspect` required)
 verdict: PASS
-approved_at: 2026-06-11
+approved_at: 2026-06-12
 ---
 
 ## Problem Statement
 
-After Slices 1 and 2, UNCLASSIFIED leakage is fixed and doc packs are differentiated.
-Three remaining waste sources drive Phase 3 input token counts:
+Three verified defects block the layered-RAG feature and degrade retrieval today:
 
-1. **Hint-only dispatch (non-plugin runs only)**: When Phase 3 runs with a
-   tool-capable provider (non-plugin mode), `_complete_core_generation` sets
-   `context_files = []` (line 2840), discarding the targeted doc pack built by
-   Phase 2.8. The model must reconstruct all context via tool calls (O(n) tool
-   round-trips). The targeted doc pack — now differentiated and correctly parsed
-   after Slices 1+2 — should be pushed as a starter so the model begins grounded.
-   Note: plugin mode (Koopmans, lobster) disables Phase 3 tools at line 727, so
-   this change does NOT apply to the Koopmans acceptance run.
+1. **Context-blind chunks.** `chunk_text_semantic` splits markdown into
+   paragraph windows (<=512 tokens) carrying no heading, section, or document
+   context. A chunk about `API_Contracts` retry behavior embeds with no signal
+   of which document or section it came from, so both the embedder and the
+   Voyage reranker judge it blind.
+2. **Metadata dropped at ingestion.** `/ingest/md` accepts a `metadata` dict
+   but `ingest_text` uses only `author`/`department`; `upsert_chunks` writes a
+   fixed five-field payload. There is no vehicle for `source_layer`,
+   `visibility`, `section`, or any routing metadata.
+3. **No corpus partitioning.** `_build_search_filter` filters on
+   `allowed_groups` only. The moment Slice 3 ingests internal Phase 2
+   artifacts, they would pollute every retrieval path. The layer-aware default
+   filter must exist *before* any internal artifact is pushed (PRD ordering
+   requirement, FR8).
 
-2. **Manifest in every Phase 3 call (all runs)**: `_phase3_context_files`
-   appends `_doc_pack_manifest.json` (155 KB) to every Phase 3 call (lines
-   4375-4377). The manifest is a debug index of what went into each pack. The
-   model does not need it to write a document; the doc pack itself is the input.
-   Removing it saves ~155 KB × 61 calls = ~9.4 MB per reference run.
+Generalization findings that this slice must fix at the root, not per-callsite:
 
-3. **CSV indexes in every Phase 3 call (all runs where source_coverage absent)**:
-   `_engineering_fact_context` (lines 4430 and 4435) adds `entity_index.csv` and
-   `usage_index.csv` (combined ~3.1 MB) to Phase 3 context when
-   `_source_coverage.json` is absent. These large index files are not needed in
-   static context when the doc pack already contains the relevant Phase 2 evidence.
-   Removing the CSVs from static context lets the model tool-read them on demand
-   if it needs to; they remain on disk.
+- `Source` objects are built field-by-field in 4 places (`search.py:256, 344,
+  446, 487`); adding payload fields naively would mean 4 divergent copies.
+- `resolve_document_id` (`map_reduce.py:60-80`) builds its own Qdrant filter,
+  bypassing `_build_search_filter` — it applies `allowed_groups` but **omits
+  the project filter entirely** (latent RBAC inconsistency) and would miss the
+  layer default.
+- Both ingestion entry points (`ingest_document` for uploads, `ingest_text`
+  for generated docs) call `upsert_chunks`; metadata defaulting must cover
+  both, not just the MCP push path.
 
 ## Proposed Solution
 
-**Change 1 — Targeted starter pack for tool-capable Phase 3 (line 2838-2840)**:
-In `_complete_core_generation`, when `use_tools=True`, replace `context_files = []`
-with a filter that keeps doc-pack files (`_doc_pack_` in name) up to a 100 KB cap.
-If the doc pack exceeds 100 KB (unlikely after Slice 2 differentiation), fall back to
-empty (preserve existing hint-only behavior). Phase 2 calls are unaffected because
-their `context_files` never contain `_doc_pack_` files.
+Four coordinated changes inside `RAG_pipeline/backend`, no MCP-server changes:
 
-```python
-_STARTER_PACK_BYTE_CAP = 100 * 1024
-doc_packs = [f for f in context_files if "_doc_pack_" in f.name]
-total_bytes = sum(f.stat().st_size for f in doc_packs if f.exists())
-context_files = doc_packs if total_bytes <= _STARTER_PACK_BYTE_CAP else []
-```
+**1. Markdown structure chunker** (new `src/ingestion/markdown_chunker.py`).
+Parses the heading tree (`#`..`####`), emits one or more chunks per leaf
+section with the heading path prepended to the text
+(`[{doc_name} > {H2} > {H3} > {H4}]\n...`) and per-chunk metadata
+(`section` = heading path string, `unit` = deepest heading title). Small
+sibling sections merge up to 512 tokens (within the same parent); oversized
+sections fall back to paragraph merge/mechanical split, reusing the existing
+`semantic_chunker` helpers. Text without headings delegates to
+`chunk_text_semantic` unchanged. Returns `list[MarkdownChunk]` (Pydantic v2:
+`text`, `section`, `unit`). Used for `file_type == "md"` in both ingestion
+entry points; all other file types keep the current chunker.
 
-**Change 2 — Remove manifest from `_phase3_context_files` (lines 4375-4377)**:
-Delete the three-line block that appends `_doc_pack_manifest.json`. The manifest
-is a build-artifact index, not evidence. Its removal has no effect on doc quality.
+**2. Chunk metadata plumbing.** `upsert_chunks` gains
+`chunk_metadatas: list[dict] | None` merged into each point's payload on top
+of the existing five fields. A single helper in `pipeline.py` builds the
+document-level metadata dict (`project_id`, `source_layer`, `artifact_type`,
+`visibility`, `doc_name`, `group`, `artifact_path`, `run_id` — absent keys
+omitted) from the ingest request, applying defaults when the caller sends
+none: `source_layer="canonical_docs"`, `visibility="public"`,
+`artifact_type="final_doc"` (`uploaded_file` for `ingest_document`). Slice 3
+will later send internal-layer values through the same path — no new endpoint.
+`ensure_collection` additionally creates a keyword payload index on
+`source_layer` (online operation, no recreation).
 
-**Change 3 — Remove CSV indexes from `_engineering_fact_context` (lines 4430, 4435)**:
-Remove `entity_index.csv` and `usage_index.csv` from both list assignments:
-- Line 4430: `names = ["engineering_facts.md", "sql_usage.md", "entity_index.csv", "usage_index.csv"]`
-  → `names = ["engineering_facts.md", "sql_usage.md"]`
-- Line 4435 (`03_DATA_FLOWS_AND_LINEAGE`): `names = ["engineering_facts.md", "data_flow_map.md", "entity_index.csv", "usage_index.csv"]`
-  → `names = ["engineering_facts.md", "data_flow_map.md"]`
+**3. Layer-aware default filter.** `_build_search_filter` gains
+`source_layers: list[str] | None = None`. `None` means default: a nested
+`should` group requiring `source_layer` to match
+`settings.default_source_layers` (`["canonical_docs"]`) **or** be absent
+(`IsEmptyCondition`) so every legacy chunk keeps working without re-ingestion.
+An explicit list scopes to those layers (used by Slice 4's rung 2); the
+neighbor filter and all search functions thread the parameter through with
+`None` default, so current behavior is preserved everywhere by default.
+`resolve_document_id` is rewired through `_build_search_filter` (fixing the
+missing project filter at the same time — root-cause fix, not a patch).
 
-The `doc_name is None` branch (Phase 2 calls) is not touched — it already excludes
-CSV files.
+**4. Source schema + single payload mapping.** `Source` and `DocumentSource`
+gain optional fields (`source_layer`, `section`, `unit`, `group`, defaults
+`None` so persisted message sources and old payloads deserialize unchanged). A
+single `_source_from_payload(payload, score)` helper replaces the two
+payload→Source constructions (`_process_results`, `expand_neighbor_chunks`);
+the two rerank re-constructions switch to `model_copy(update={"score": ...})`.
+Future payload fields then touch exactly one mapping site.
 
-**Change 4 — Docs**: Update `knowledge_base/CLAUDE.md` (Current Custom Harness Notes)
-and `knowledge_base/.agent/system/mcp-workflow.md` to document:
-- BASELINE_BUNDLE_SECTIONS is GROUP_SUMMARY only (from Slice 2)
-- Section parser scope (from Slice 1)
-- Targeted starter pack dispatch + tool drill-down for non-plugin Phase 3
-- Manifest and CSV indexes removed from static Phase 3 context
+Plus the **eval utility** (`scripts/retrieval_eval.py`): loads a JSON fixture
+of `{question, expected_filename, expected_section?}` items, runs
+`search_and_rerank` against the running stack, reports recall@30 pre-rerank
+and recall@8 post-rerank. Establishes the canonical-corpus baseline now;
+Slice 6 extends it.
 
-**Change 5 — Acceptance run**: Run LobsterProfileExportKoopmansTest on deepseek/deepseek-v4-pro.
-Compare Phase 3 input token total against 5,126,576 baseline. Target: ≥40% reduction
-(≤3,075,946 tokens). Spot-check at least 2 generated docs for quality regression.
+**Operational step (end of slice):** re-ingest canonical docs for existing
+projects via the existing MCP per-project RAG push route (delete-by-project +
+re-push), so the corpus is uniformly structured before Slice 3.
 
 ## Affected Files
 
-- `mcp-server/src/mcp_server/providers/custom/harness.py`
-  - `_complete_core_generation` (lines 2838-2840): Change 1 (targeted dispatch)
-  - `_phase3_context_files` (lines 4375-4377): Change 2 (manifest removal)
-  - `_engineering_fact_context` (lines 4430, 4435): Change 3 (CSV removal)
-- `mcp-server/tests/test_providers/test_custom_provider.py`
-  - 4 new tests (see Verification Strategy)
-- `knowledge_base/CLAUDE.md`
-  - "Current Custom Harness Notes" section: document Slice 1+2+3 changes
-- `knowledge_base/.agent/system/mcp-workflow.md`
-  - Phase 3 row in Phase Table, and Phase 2.8 dispatch description
+- `RAG_pipeline/backend/src/ingestion/markdown_chunker.py` — NEW
+- `RAG_pipeline/backend/src/ingestion/pipeline.py` — metadata helper; md routing to new chunker in `ingest_text` + `ingest_document`; pass `chunk_metadatas`
+- `RAG_pipeline/backend/src/retrieval/vector_store.py` — `upsert_chunks` payload merge; `ensure_collection` payload index
+- `RAG_pipeline/backend/src/retrieval/search.py` — `source_layers` param + default layer condition in `_build_search_filter`; `_source_from_payload`; `model_copy` in rerank paths; param threading
+- `RAG_pipeline/backend/src/generation/map_reduce.py` — `resolve_document_id` via `_build_search_filter`
+- `RAG_pipeline/backend/src/schemas.py` — optional `Source`/`DocumentSource` fields
+- `RAG_pipeline/backend/src/config.py` — `default_source_layers`
+- `RAG_pipeline/backend/scripts/retrieval_eval.py` — NEW
+- `RAG_pipeline/backend/tests/test_ingestion/test_markdown_chunker.py` — NEW
+- `RAG_pipeline/backend/tests/test_ingestion/test_pipeline.py` — metadata defaulting cases
+- `RAG_pipeline/backend/tests/test_retrieval/test_search.py` — filter layer/legacy/RBAC cases, payload mapping
 
 ## Architecture Contracts
 
-- **`knowledge_base/CLAUDE.md` "Current Custom Harness Notes"** (deferred from Slices 1+2):
-  this slice must document BASELINE_BUNDLE_SECTIONS = GROUP_SUMMARY only, section
-  parser scope (`PHASE2_SECTION_NAMES` + extra_section_names), targeted dispatch, and
-  manifest/CSV removal.
-- **`knowledge_base/.agent/system/mcp-workflow.md`** Phase Table: Phase 3 description
-  should say "Pushes targeted doc pack (≤100 KB) as starter context; uses tools for
-  evidence drill-down (non-plugin only)."
-- **No intermediate files rule (global CLAUDE.md)**: CSV files are removed from static
-  context, not deleted. They remain on disk for tool access. This is correct.
-- **Plugin mode tool gate (harness.py line 727)**: Change 1 is unreachable for plugin
-  runs — `_tool_policy` returns `enabled=False` for `self._plugin_mode and
-  phase.startswith("phase3")`. The starter pack selection block will never execute for
-  plugin mode. This is intentional — document in code comment.
-- **Phase 2 tool path not regressed**: The `_doc_pack_` filter in Change 1 returns
-  empty list for Phase 2 calls (no `_doc_pack_` in Phase 2 context_files), preserving
-  existing Phase 2 hint-only behavior.
-- **Slices 1 and 2 are pre-conditions**: Change 1 is only meaningful once doc packs
-  are correctly parsed (Slice 1) and differentiated (Slice 2).
+- Root + RAG `CLAUDE.md`: RBAC filter on every vector query (the layer change
+  must never weaken `allowed_groups` conditions); type hints everywhere;
+  Pydantic v2; async I/O; no bare except; no workarounds — hence the
+  `resolve_document_id` rewire and single payload-mapping helper instead of
+  per-callsite patches.
+- `RAG_pipeline/.claude/PROJECT_MEMORY.md`: no LangChain (direct clients);
+  threshold 0.3 rationale (do not change defaults); anti-hallucination prompt
+  rules untouched by this slice.
+- PRD FR3 (metadata fields), FR4 (chunker is load-bearing, heading-path
+  prefix required), FR5 (default canonical + is-empty tolerance), FR8
+  (ordering: this slice ships before Slice 3), NFR (re-ingestion safe, no
+  Postgres migration — chunk metadata lives in Qdrant payloads only).
+- Backward compatibility: legacy chunks (no `source_layer`) and persisted
+  conversation sources (no new fields) must work unchanged — enforced by
+  optional fields + `IsEmptyCondition`.
 
 ## Implementation Steps
 
-1. **Change `_complete_core_generation` (lines 2838-2840)** — replace hint-only:
-   ```python
-   if use_tools:
-       prompt = _with_agent_contract(prompt, task_contract)
-       _STARTER_PACK_BYTE_CAP = 100 * 1024
-       doc_packs = [f for f in context_files if "_doc_pack_" in f.name]
-       total_bytes = sum(f.stat().st_size for f in doc_packs if f.exists())
-       context_files = doc_packs if total_bytes <= _STARTER_PACK_BYTE_CAP else []
-   ```
-   The constant can be a module-level `_PHASE3_STARTER_PACK_BYTE_CAP = 100 * 1024`
-   if preferred for testability. Either is acceptable.
-
-2. **Remove manifest block from `_phase3_context_files` (lines 4375-4377)**:
-   Delete:
-   ```python
-   manifest = analysis_dir / "_doc_pack_manifest.json"
-   if manifest.exists():
-       files.append(manifest)
-   ```
-
-3. **Remove CSV indexes from `_engineering_fact_context` (lines 4430 and 4435)**:
-   - Line 4430: `names = ["engineering_facts.md", "sql_usage.md"]`
-   - Line 4435 (03_DATA_FLOWS_AND_LINEAGE branch): `names = ["engineering_facts.md", "data_flow_map.md"]`
-
-4. **Write 4 tests** in `test_custom_provider.py` (see Verification Strategy).
-
-5. **Update `knowledge_base/CLAUDE.md`** "Current Custom Harness Notes":
-   Add bullet points for BASELINE = GROUP_SUMMARY only, parser coverage
-   (CROSS_CHUNK_FINDINGS registered, plugin guide headers via extra_section_names),
-   Phase 3 targeted dispatch (non-plugin), and manifest/CSV removal.
-
-6. **Update `knowledge_base/.agent/system/mcp-workflow.md`**:
-   - Phase Table Phase 3 row: update "LLM calls" description to note starter pack.
-   - Phase 2.8 row description: confirm "no LLM calls" still accurate.
-   - Add a short note in Key Config about the targeted dispatch approach.
-
-7. **Run pytest** — expect all 595 existing tests + 4 new tests passing.
-
-8. **Acceptance run** on LobsterProfileExportKoopmansTest with deepseek/deepseek-v4-pro.
-   Measure total Phase 3 input tokens and compare to 5,126,576 baseline.
-   Spot-check docs 01 and 02 for quality (verify catalog section changes from Slice 2
-   did not degrade content; see Slice 2 inspection WARN 2).
+1. **Schemas + config.** Add optional `source_layer`/`section`/`unit`/`group`
+   to `Source` and `DocumentSource`; add `default_source_layers` setting.
+   Verify: existing tests pass untouched; `DocumentSource(**old_dict)` works.
+2. **Markdown chunker + tests.** Implement `markdown_chunker.py`
+   (`MarkdownChunk` model, heading-tree walk, sibling merge, oversized
+   fallback, no-heading delegation, heading-path prefix). Tests: nested
+   h1–h4 structure, `### SECTION` + `#### unit` shape from a real Phase 2
+   sample, oversized section split, headingless text delegation, prefix
+   format, ASCII passthrough.
+3. **`upsert_chunks` payload merge + payload index.** `chunk_metadatas`
+   parameter (length-matched, merged after base fields so base keys win);
+   `source_layer` keyword index in `ensure_collection`. Verify: unit test
+   payload contents; index creation idempotent.
+4. **Ingestion plumbing.** Metadata helper with defaults; route md through the
+   new chunker in both `ingest_text` and `ingest_document`; pass per-chunk
+   metadata. Verify: pipeline tests assert defaults
+   (`canonical_docs`/`public`), override via request metadata, md vs non-md
+   routing, chunk/metadata list alignment.
+5. **Layer-aware filter + payload mapping.** `_build_search_filter`
+   `source_layers` param with default canonical-or-absent `should` group;
+   thread through `search_similar`, `search_similar_hybrid`,
+   `search_and_rerank`, `search_multi_query`, `_build_neighbor_filter`;
+   `_source_from_payload` helper; `model_copy` for rerank rebuilds. Verify:
+   filter unit tests — default includes legacy (is-empty) chunks, explicit
+   layers scope correctly, `allowed_groups` conditions unchanged in every
+   branch (admin, role-groups, project-only, none).
+6. **`resolve_document_id` rewire.** Use `_build_search_filter` with
+   `project_ids` threaded from callers where available. Verify: summary
+   resolution test with project scoping; no own-filter construction remains
+   (`grep "Filter(" src/generation/map_reduce.py` shows only the
+   document-scoped scroll).
+7. **Eval utility.** `scripts/retrieval_eval.py` + fixture schema + small
+   starter fixture for one existing project. Verify: runs against local
+   stack, prints recall@30/recall@8 + per-question hits.
+8. **Operational re-ingest + baseline.** Re-push canonical docs for local
+   projects; run the eval before/after to record the chunking improvement as
+   the Slice 1 baseline. Verify: `/query/debug` shows new payload fields;
+   answers on existing projects remain correct.
 
 ## Verification Strategy
 
-**Tests (all in `test_custom_provider.py`):**
-
-1. `test_complete_core_generation_tool_path_pushes_starter_pack`:
-   Create a mock provider that supports tools. Call `_complete_core_generation` with
-   `context_files` containing a small `_doc_pack_testdoc.md` temp file (< 100 KB) and
-   a non-pack file. Assert the call to the underlying provider receives only the doc_pack
-   file (non-pack file excluded). Use `unittest.mock.AsyncMock` for the provider.
-
-2. `test_complete_core_generation_tool_path_empty_when_pack_too_large`:
-   Same setup but doc_pack temp file is > 100 KB. Assert the provider call receives
-   `context_files=[]` (fallback to hint-only).
-
-3. `test_phase3_context_files_excludes_manifest`:
-   Create a staging dir with a real `_doc_pack_manifest.json` present. Call
-   `_phase3_context_files(ctx, "01_ARCHITECTURE_MAP")`. Assert no returned path has
-   `_doc_pack_manifest.json` as its name.
-
-4. `test_engineering_fact_context_excludes_csv_indexes`:
-   Create a staging dir with both `entity_index.csv` and `usage_index.csv` present.
-   Call `_engineering_fact_context(ctx, "01_ARCHITECTURE_MAP")`. Assert neither CSV
-   appears in the returned list. Also assert `engineering_facts.md` IS returned when
-   present (to verify the method still functions).
-
-**Acceptance run gate** (Koopmans, deepseek): Token total ≤ 3,075,946 (≥40% reduction
-from 5,126,576 baseline). Quality: at least docs 01, 02, 03 spot-checked for evidence
-coverage.
+- `cd RAG_pipeline/backend && pytest` — full suite, plus new tests above.
+- Filter edge cases to exercise explicitly: admin with project selected,
+  non-admin with no role groups, empty project assignments (`__none__`
+  blocking), `document_ids` restriction combined with layer default.
+- Mixed-corpus test: one legacy-style point (no `source_layer`) + one new
+  point in a test collection — default search returns both; explicit
+  `source_layers=["technical_analysis"]` returns neither.
+- Chunker property: re-chunking the same input is deterministic; every chunk
+  begins with `[` heading-path prefix when headings exist.
+- Manual: `docker-compose up -d`, re-push one project, ask a known question in
+  the chat UI — answer quality unchanged or better; citations still render
+  (filename format untouched this slice).
+- Baseline eval numbers recorded in the slice log for Slice 6 comparison.
 
 ## Out of Scope
 
-- Phase 2 analysis context changes — untouched.
-- Plugin pack evidence_profiles — untouched.
-- Any changes to Phase 1 investigation or Phase 2.6 scorecard.
-- Adding CSV files back via tools — they remain on disk for tool access, no code needed.
-- Changing `_BUNDLE_CATEGORY_TO_PHASE2_SECTIONS` or evidence profile mappings.
-- Changing how manifest is written (Phase 2.8 still writes it for debug/forensic use).
+- Internal-layer ingestion, entity-index ingestion, filename sanitization,
+  MCP server / `RagBridge` changes (Slice 3).
+- Harness `_rag_support/` persistence (Slice 2).
+- Retrieval ladder, insufficiency gate, doc-gap logging, citation display
+  names (Slice 4).
+- Entity-aware query path, recall widening, query expansion enablement,
+  section-parent expansion (Slice 5) — the `unit` payload index also waits
+  for Slice 5.
+- Golden-set curation beyond the starter fixture (Slice 6).
+- Frontend changes — none.

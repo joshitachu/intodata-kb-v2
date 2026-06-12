@@ -69,6 +69,11 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
         field_name="document_id",
         field_schema=PayloadSchemaType.INTEGER,
     )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="source_layer",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
 
 
 async def delete_collection(client: AsyncQdrantClient) -> None:
@@ -88,12 +93,22 @@ async def upsert_chunks(
     filename: str,
     allowed_groups: list[str],
     sparse_embeddings: list[AppSparseVector] | None = None,
+    chunk_metadatas: list[dict] | None = None,
 ) -> list[str]:
     """Store chunk embeddings in Qdrant with metadata payload.
 
     Supports both dense-only and hybrid (dense + sparse) modes.
+    ``chunk_metadatas``, when provided, must be the same length as ``chunks``.
+    Each dict is merged into the point payload after the base fields, so callers
+    cannot accidentally override ``document_id``, ``filename``, ``chunk_index``,
+    ``text``, or ``allowed_groups`` via metadata.
     Returns point IDs.
     """
+    if chunk_metadatas is not None and len(chunk_metadatas) != len(chunks):
+        raise ValueError(
+            f"chunk_metadatas length {len(chunk_metadatas)} != chunks length {len(chunks)}"
+        )
+
     points = []
     point_ids = []
     for i, (embedding, text) in enumerate(zip(embeddings, chunks)):
@@ -108,17 +123,24 @@ async def upsert_chunks(
                 values=sv.values,
             )
 
+        base_payload: dict = {
+            "document_id": document_id,
+            "filename": filename,
+            "chunk_index": i,
+            "text": text,
+            "allowed_groups": allowed_groups,
+        }
+        if chunk_metadatas is not None:
+            # Caller metadata merged first; base fields overwrite to protect RBAC keys.
+            payload = {**chunk_metadatas[i], **base_payload}
+        else:
+            payload = base_payload
+
         points.append(
             PointStruct(
                 id=point_id,
                 vector=vectors,
-                payload={
-                    "document_id": document_id,
-                    "filename": filename,
-                    "chunk_index": i,
-                    "text": text,
-                    "allowed_groups": allowed_groups,
-                },
+                payload=payload,
             )
         )
 

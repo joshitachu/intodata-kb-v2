@@ -26,6 +26,7 @@
 | Chunk size | 256 tokens / 100 overlap | Larger overlap = better coherence; sentence-boundary snapping prevents mid-sentence splits | 2026-02-23 |
 | Context window | 10000 tokens (search) / 8192 (chat) / per-source truncation | Was 6144/3000; chat was severely under-resourced | 2026-03-27 |
 | Source merging | Document-level (not chunk-level) | Users don't need chunk granularity; numbered refs enable clickable UI links | 2026-02-09 |
+| Layered RAG default | `source_layers=None` means `canonical_docs` plus legacy chunks with no `source_layer`; use an explicit list for internal layers and `[]` only for intentional all-layer searches | Prevents internal analysis artifacts from polluting normal retrieval while keeping pre-Slice-1 chunks visible until re-ingestion is complete. Summary document resolution must preserve this default and still thread `project_ids`. | 2026-06-12 |
 | Markdown rendering | react-markdown + remark-gfm | Standard, lightweight, supports GFM tables/lists | 2026-02-09 |
 | Summarization | Map-reduce (not stuff-all-in-context) | top_k=3 can't summarize a 50-chunk document; map-reduce scales to any size | 2026-02-10 |
 | First-admin on a fresh Nexus stack | `POST /auth/bootstrap-admin` only (no public `/auth/register`, default seed skipped in production) | Smallest attack surface: endpoint returns 409 forever once any user exists. Login page checks `/auth/bootstrap-status` on mount and switches into admin-creation mode automatically on a fresh stack. | 2026-04-21 |

@@ -63,10 +63,13 @@ def chunk_text(
     """
     if not text.strip():
         return []
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
 
     enc = tiktoken.get_encoding(ENCODING_NAME)
     tokens = enc.encode(text)
     total = len(tokens)
+    effective_overlap = max(0, min(overlap, chunk_size - 1))
 
     if total <= chunk_size:
         return [text]
@@ -90,7 +93,7 @@ def chunk_text(
 
         if end >= total:
             break
-        start = end - overlap
+        start = end - effective_overlap
 
     avg_size = total // len(chunks) if chunks else 0
     logger.info(f"Chunked {total} tokens into {len(chunks)} chunks (avg {avg_size} tokens/chunk)")

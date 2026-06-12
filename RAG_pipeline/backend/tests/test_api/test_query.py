@@ -8,6 +8,9 @@ from src.db.models import User, Role
 from src.schemas import DocumentSource, QueryResponse, Source
 
 
+CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
+
+
 def _mock_user():
     role = MagicMock(spec=Role)
     role.name = "engineering"
@@ -57,6 +60,7 @@ async def test_query_endpoint_success(mock_deps):
             resp = await client.post(
                 "/api/v1/query",
                 json={"query": "What is 42?"},
+                headers=CSRF_HEADERS,
             )
 
     assert resp.status_code == 200
@@ -71,6 +75,7 @@ async def test_query_endpoint_validation_error(mock_deps):
         resp = await client.post(
             "/api/v1/query",
             json={"query": "ab"},  # too short (min_length=3)
+            headers=CSRF_HEADERS,
         )
     assert resp.status_code == 422
 
@@ -96,6 +101,7 @@ async def test_query_debug_endpoint(mock_deps):
             resp = await client.post(
                 "/api/v1/query/debug",
                 json={"query": "What is onboarding?"},
+                headers=CSRF_HEADERS,
             )
 
     assert resp.status_code == 200

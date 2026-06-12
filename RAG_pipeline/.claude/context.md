@@ -1,5 +1,7 @@
 # Current State
 
+**Status** (2026-06-12): Layered RAG Slice 1 is implemented, inspected, and validated. Markdown ingestion now uses structure-aware heading-path chunking with `section`/`unit` metadata; ingestion threads default and caller-provided chunk metadata into Qdrant payloads; Qdrant now indexes `source_layer`; retrieval applies the default `canonical_docs` plus legacy-missing-layer filter; source payload mapping is centralized; rerank/neighbor expansion preserve layer metadata; and map-reduce summary document resolution now reuses the shared search filter with project scope and default layer partitioning. During validation, an oversized-section hang was fixed by making the base token chunker cap effective overlap below chunk size, and older API tests were aligned with CSRF middleware. `/inspect` passed and `/validate` passed. Verification: `uv run python -m py_compile ...` passed for changed backend Python files; `uv run pytest` passed with `348 passed, 2 warnings`.
+
 **Status** (2026-06-02): Normal Chat now has a constrained read-only RAG agent layer behind the existing conversation endpoints. This is not a free-form autonomous agent: backend code owns a fixed registry of read-only tool steps and caps the trace at 3 steps. The existing RAG behavior remains the source of truth for memory recall, previous-source reuse, metadata queries, document summaries, document search, citations, RBAC filtering, usage logging, and persistence. Streaming chat can now emit optional `step` SSE events before the existing `sources` / `token` / `usage` / `done` events; the frontend parses those events and shows the latest step label while the assistant is working. Conversation API tests were also updated to include CSRF double-submit headers on state-changing requests. Verification: backend targeted suite `57/57` passed, frontend stream tests `5/5` passed, and `npm run build` passed.
 
 **Status** (2026-06-01): RAG ingestion incident triage complete. Backend health is now fully healthy after rebuild: database, Qdrant, Ollama, and Hindsight all report `ok`. The Documents-page upload path had two issues: `fastapiUpload()` forwarded cookies but omitted the required `X-CSRF-Token` header, and `CSRFMiddleware` turned that CSRF rejection into a raw 500 by raising `HTTPException` from middleware dispatch. Upload proxy now forwards the CSRF header, and middleware now returns a structured `403 csrf_invalid` JSON response directly for real CSRF failures. Direct `/api/v1/ingest/md` markdown ingestion succeeded via Voyage embeddings, and `/mcp/push-to-rag` is present on the MCP server (unauthenticated probe returns 401, not 404). `MCP_INGEST_API_KEY` is currently empty on both backend and MCP, so the observed failure was not an expired shared ingest key.
@@ -168,6 +170,8 @@ cd frontend && npm run dev    # http://localhost:3000
 
 ## Next Steps
 
+- [ ] Commit Layered RAG Slice 1.
+- [ ] With the local stack running, re-ingest canonical docs for existing projects and record the starter retrieval eval baseline.
 - [x] RBAC: Project-scoped document access (2026-03-12)
 - [x] Metadata-aware RAG: "Ask Anything" mode (2026-03-12)
 - [ ] Deploy onboarding: `docker compose up -d --build backend frontend` then `docker exec intodata-kb-v2-backend-1 alembic upgrade head` (applies 014 — creates user_onboarding + notifications tables)

@@ -80,7 +80,7 @@ class TestResolveDocumentId:
         assert call_kwargs["query_filter"] is not None
 
     @pytest.mark.asyncio
-    async def test_no_rbac_filter_when_no_groups(self) -> None:
+    async def test_no_rbac_group_filter_when_no_groups(self) -> None:
         mock_qdrant = AsyncMock()
         result = MagicMock()
         result.points = [
@@ -93,7 +93,43 @@ class TestResolveDocumentId:
             await resolve_document_id(mock_qdrant, "summarize doc", [])
 
         call_kwargs = mock_qdrant.query_points.call_args.kwargs
-        assert call_kwargs["query_filter"] is None
+        query_filter = call_kwargs["query_filter"]
+        assert query_filter is not None
+        assert not any(
+            getattr(condition, "key", None) == "allowed_groups"
+            for condition in query_filter.must
+        )
+        assert any(
+            condition.__class__.__name__ == "Filter"
+            for condition in query_filter.must
+        )
+
+    @pytest.mark.asyncio
+    async def test_applies_project_filter_when_provided(self) -> None:
+        mock_qdrant = AsyncMock()
+        result = MagicMock()
+        result.points = [
+            _make_point(0.8, {"document_id": 1, "filename": "doc.pdf"}),
+        ]
+        mock_qdrant.query_points.return_value = result
+
+        with patch("src.generation.map_reduce.embed_text", new_callable=AsyncMock) as mock_embed:
+            mock_embed.return_value = [0.1] * 768
+            await resolve_document_id(
+                mock_qdrant,
+                "summarize doc",
+                ["admin"],
+                project_ids=["project-alpha"],
+            )
+
+        call_kwargs = mock_qdrant.query_points.call_args.kwargs
+        query_filter = call_kwargs["query_filter"]
+        assert query_filter is not None
+        assert any(
+            getattr(condition, "key", None) == "allowed_groups"
+            and condition.match.any == ["project-alpha"]
+            for condition in query_filter.must
+        )
 
 
 class TestRetrieveDocumentChunks:

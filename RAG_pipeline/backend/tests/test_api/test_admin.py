@@ -16,6 +16,9 @@ from src.db.models import (
 )
 
 
+CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
+
+
 def _mock_admin_user():
     """Create a mock superadmin user."""
     role = MagicMock(spec=Role)
@@ -152,6 +155,7 @@ class TestCreateUser:
                         "email": "new@test.com",
                         "password": "securepass",
                     },
+                    headers=CSRF_HEADERS,
                 )
 
         assert resp.status_code == 201
@@ -175,6 +179,7 @@ class TestCreateUser:
                     "email": "existing@test.com",
                     "password": "password1234",
                 },
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 409
@@ -223,6 +228,7 @@ class TestRoles:
             resp = await client.post(
                 "/api/v1/admin/roles",
                 json={"name": "viewer", "description": "Read-only role"},
+                headers=CSRF_HEADERS,
             )
 
         assert resp.status_code == 201
@@ -242,7 +248,7 @@ class TestRoles:
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/api/v1/admin/roles/1")
+            resp = await client.delete("/api/v1/admin/roles/1", headers=CSRF_HEADERS)
 
         assert resp.status_code == 400
         assert "admin" in resp.json()["detail"].lower()
@@ -285,6 +291,7 @@ class TestProjectAssignments:
                 resp = await client.post(
                     "/api/v1/admin/project-assignments",
                     json={"user_id": 2, "project_id": "project-alpha"},
+                    headers=CSRF_HEADERS,
                 )
 
         assert resp.status_code == 201

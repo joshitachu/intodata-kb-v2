@@ -36,6 +36,12 @@ def test_chunk_size_respected():
         assert len(tokens) <= 200
 
 
+def test_overlap_larger_than_chunk_size_still_progresses():
+    words = ["word"] * 120
+    chunks = chunk_text(" ".join(words), chunk_size=50, overlap=128)
+    assert len(chunks) > 1
+
+
 def test_default_parameters():
     assert DEFAULT_CHUNK_SIZE == 256
     assert DEFAULT_OVERLAP == 100

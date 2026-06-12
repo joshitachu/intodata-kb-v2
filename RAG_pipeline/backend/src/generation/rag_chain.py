@@ -257,7 +257,12 @@ async def run_rag_query(
 
     elif analysis.query_type == QueryType.SUMMARY:
         logger.info("Summary query detected — resolving document")
-        resolved = await resolve_document_id(qdrant, analysis.cleaned_query, user_groups)
+        resolved = await resolve_document_id(
+            qdrant,
+            analysis.cleaned_query,
+            user_groups,
+            project_ids=project_ids,
+        )
         if resolved:
             doc_id, filename = resolved
             answer, doc_source = await run_map_reduce(qdrant, doc_id, filename, user_groups)

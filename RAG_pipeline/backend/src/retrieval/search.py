@@ -9,7 +9,9 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     FusionQuery,
+    IsEmptyCondition,
     MatchAny,
+    PayloadField,
     Prefetch,
     SparseVector as QdrantSparseVector,
 )
@@ -29,8 +31,9 @@ def _build_search_filter(
     user_groups: list[str],
     document_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
 ) -> Filter | None:
-    """Build Qdrant filter combining RBAC groups, project access, and optional document_ids.
+    """Build Qdrant filter combining RBAC groups, project access, document_ids, and layer.
 
     Args:
         user_groups: Role-based groups for allowed_groups filtering.
@@ -38,6 +41,10 @@ def _build_search_filter(
         project_ids: Optional list of project IDs the user has access to.
             None means no project restriction (admin/superadmin).
             Empty list means user has no project assignments → no results.
+        source_layers: Optional corpus layer filter.
+            None → default: canonical_docs + is-empty (legacy chunks included).
+            Non-empty list → exact layer match, no legacy tolerance.
+            Empty list → no layer condition (all layers, including legacy).
     """
     conditions = []
     # Admin users see everything — skip group filter
@@ -96,9 +103,55 @@ def _build_search_filter(
                 match=MatchAny(any=document_ids),
             )
         )
+
+    # Corpus layer partitioning.
+    # source_layers=None  → default canonical filter with is-empty tolerance for
+    #                       legacy chunks that predate the source_layer payload field.
+    # source_layers=[...] → exact match, no legacy tolerance (used by rung 2).
+    # source_layers=[]    → no layer condition (explicitly search all partitions).
+    if source_layers is None:
+        if settings.default_source_layers:
+            conditions.append(
+                Filter(
+                    should=[
+                        FieldCondition(
+                            key="source_layer",
+                            match=MatchAny(any=settings.default_source_layers),
+                        ),
+                        IsEmptyCondition(is_empty=PayloadField(key="source_layer")),
+                    ]
+                )
+            )
+    elif source_layers:
+        conditions.append(
+            FieldCondition(
+                key="source_layer",
+                match=MatchAny(any=source_layers),
+            )
+        )
+
     if conditions:
         return Filter(must=conditions)
     return None
+
+
+def _source_from_payload(payload: dict, score: float) -> Source:
+    """Build a Source from a Qdrant point payload.
+
+    Uses .get() for all optional layer fields so legacy chunks (no source_layer)
+    and persisted conversation sources (missing new fields) deserialize unchanged.
+    """
+    return Source(
+        document_id=payload["document_id"],
+        filename=payload["filename"],
+        chunk_index=payload["chunk_index"],
+        score=round(score, 4),
+        text=payload["text"],
+        source_layer=payload.get("source_layer"),
+        section=payload.get("section"),
+        unit=payload.get("unit"),
+        group=payload.get("group"),
+    )
 
 
 async def search_similar(
@@ -109,6 +162,7 @@ async def search_similar(
     threshold: float = settings.default_threshold,
     document_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
 ) -> list[Source]:
     """Embed query, search Qdrant with RBAC filtering, return sources above threshold.
 
@@ -119,7 +173,7 @@ async def search_similar(
     embed_ms = int((time.perf_counter() - embed_start) * 1000)
     logger.info(f"Embedded query in {embed_ms}ms: {query[:80]!r}")
 
-    search_filter = _build_search_filter(user_groups, document_ids, project_ids)
+    search_filter = _build_search_filter(user_groups, document_ids, project_ids, source_layers)
     logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids}, project_ids={project_ids} | top_k={top_k}")
 
     results = await client.query_points(
@@ -143,6 +197,7 @@ async def search_similar_hybrid(
     prefetch_limit: int | None = None,
     document_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
 ) -> list[Source]:
     """Hybrid search: dense + sparse with Reciprocal Rank Fusion (RRF).
 
@@ -157,7 +212,7 @@ async def search_similar_hybrid(
     embed_ms = int((time.perf_counter() - embed_start) * 1000)
     logger.info(f"Embedded query (dense + sparse) in {embed_ms}ms: {query[:80]!r}")
 
-    search_filter = _build_search_filter(user_groups, document_ids, project_ids)
+    search_filter = _build_search_filter(user_groups, document_ids, project_ids, source_layers)
     logger.info(f"Search filter: groups={user_groups}, doc_ids={document_ids}, project_ids={project_ids} | top_k={top_k}")
 
     # Prefetch from both indexes, fuse with RRF
@@ -198,6 +253,7 @@ async def search_and_rerank(
     rerank_candidates: int | None = None,
     document_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
 ) -> list[Source]:
     """Search with hybrid retrieval then rerank with cross-encoder.
 
@@ -222,6 +278,7 @@ async def search_and_rerank(
             threshold=0.0,
             document_ids=document_ids,
             project_ids=project_ids,
+            source_layers=source_layers,
         )
     else:
         candidates = await search_similar(
@@ -232,6 +289,7 @@ async def search_and_rerank(
             threshold=0.0,
             document_ids=document_ids,
             project_ids=project_ids,
+            source_layers=source_layers,
         )
 
     if not candidates:
@@ -248,19 +306,11 @@ async def search_and_rerank(
         logger.warning(f"Reranker failed ({type(e).__name__}: {e}), falling back to original scores")
         return candidates[:top_k]
 
-    # Build reranked source list with updated scores
+    # Preserve all payload fields (including layer metadata) via model_copy.
     result: list[Source] = []
     for orig_idx, rerank_score in reranked:
         src = candidates[orig_idx]
-        result.append(
-            Source(
-                document_id=src.document_id,
-                filename=src.filename,
-                chunk_index=src.chunk_index,
-                score=round(rerank_score, 4),
-                text=src.text,
-            )
-        )
+        result.append(src.model_copy(update={"score": round(rerank_score, 4)}))
 
     logger.info(f"Reranked: {len(candidates)} candidates → {len(result)} results")
     return await expand_neighbor_chunks(
@@ -268,6 +318,7 @@ async def search_and_rerank(
         sources=result,
         user_groups=user_groups,
         project_ids=project_ids,
+        source_layers=source_layers,
     )
 
 
@@ -276,9 +327,15 @@ def _build_neighbor_filter(
     document_id: int,
     chunk_indexes: list[int],
     project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
 ) -> Filter:
     """Build a same-document/same-project filter for neighbor chunk fetches."""
-    base = _build_search_filter(user_groups, document_ids=[document_id], project_ids=project_ids)
+    base = _build_search_filter(
+        user_groups,
+        document_ids=[document_id],
+        project_ids=project_ids,
+        source_layers=source_layers,
+    )
     conditions = list(base.must) if base and base.must else []
     conditions.append(
         FieldCondition(
@@ -295,6 +352,7 @@ async def expand_neighbor_chunks(
     user_groups: list[str],
     project_ids: list[str] | None = None,
     window: int | None = None,
+    source_layers: list[str] | None = None,
 ) -> list[Source]:
     """Add adjacent chunks around high-scoring retrieved chunks.
 
@@ -333,6 +391,7 @@ async def expand_neighbor_chunks(
                         src.document_id,
                         missing,
                         project_ids=project_ids,
+                        source_layers=source_layers,
                     ),
                     limit=len(missing),
                     with_payload=True,
@@ -341,13 +400,8 @@ async def expand_neighbor_chunks(
                 for point in points:
                     payload = point.payload
                     chunk_index = payload["chunk_index"]
-                    fetched_by_index[chunk_index] = Source(
-                        document_id=payload["document_id"],
-                        filename=payload["filename"],
-                        chunk_index=chunk_index,
-                        score=round(src.score if chunk_index == src.chunk_index else src.score * 0.95, 4),
-                        text=payload["text"],
-                    )
+                    neighbor_score = src.score if chunk_index == src.chunk_index else src.score * 0.95
+                    fetched_by_index[chunk_index] = _source_from_payload(payload, neighbor_score)
             except Exception as e:
                 logger.warning("Neighbor chunk expansion failed for doc=%s chunk=%s: %s",
                                src.document_id, src.chunk_index, e)
@@ -377,6 +431,7 @@ async def search_multi_query(
     threshold: float = settings.default_threshold,
     document_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
+    source_layers: list[str] | None = None,
 ) -> list[Source]:
     """Multi-query search with query expansion + deduplication + reranking.
 
@@ -401,6 +456,7 @@ async def search_multi_query(
                 threshold=threshold,
                 document_ids=document_ids,
                 project_ids=project_ids,
+                source_layers=source_layers,
             )
         else:
             sources = await search_similar(
@@ -411,6 +467,7 @@ async def search_multi_query(
                 threshold=threshold,
                 document_ids=document_ids,
                 project_ids=project_ids,
+                source_layers=source_layers,
             )
         all_sources.extend(sources)
 
@@ -439,23 +496,16 @@ async def search_multi_query(
             )
             unique_sources.sort(key=lambda s: s.score, reverse=True)
             return unique_sources[:top_k]
-        result: list[Source] = []
-        for orig_idx, rerank_score in reranked:
-            src = unique_sources[orig_idx]
-            result.append(
-                Source(
-                    document_id=src.document_id,
-                    filename=src.filename,
-                    chunk_index=src.chunk_index,
-                    score=round(rerank_score, 4),
-                    text=src.text,
-                )
-            )
+        result: list[Source] = [
+            unique_sources[orig_idx].model_copy(update={"score": round(rerank_score, 4)})
+            for orig_idx, rerank_score in reranked
+        ]
         return await expand_neighbor_chunks(
             client=client,
             sources=result,
             user_groups=user_groups,
             project_ids=project_ids,
+            source_layers=source_layers,
         )
 
     # No reranker — sort by score and return top_k
@@ -482,16 +532,7 @@ def _process_results(
         if point.score < threshold:
             dropped_scores.append(round(point.score, 4))
             continue
-        payload = point.payload
-        sources.append(
-            Source(
-                document_id=payload["document_id"],
-                filename=payload["filename"],
-                chunk_index=payload["chunk_index"],
-                score=round(point.score, 4),
-                text=payload["text"],
-            )
-        )
+        sources.append(_source_from_payload(point.payload, point.score))
 
     if dropped_scores:
         logger.info(
@@ -526,15 +567,19 @@ def merge_sources_by_document(
     for doc_id, chunks in groups.items():
         chunks.sort(key=lambda c: c.chunk_index)
         combined_text = "\n\n".join(c.text for c in chunks)
-        best_score = max(c.score for c in chunks)
+        best_chunk = max(chunks, key=lambda c: c.score)
         merged.append(
             DocumentSource(
                 document_id=doc_id,
                 filename=chunks[0].filename,
-                score=best_score,
+                score=best_chunk.score,
                 text=combined_text,
                 reference_number=0,  # assigned below
                 chunk_indexes=[c.chunk_index for c in chunks],
+                source_layer=best_chunk.source_layer,
+                section=best_chunk.section,
+                unit=best_chunk.unit,
+                group=best_chunk.group,
             )
         )
 

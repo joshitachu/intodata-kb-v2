@@ -584,7 +584,12 @@ async def _prepare_rag_context(
         # SUMMARY — map-reduce pipeline for full-document summarization
         logger.info("Summary query detected in conversation — resolving document")
         trace.complete(AgentTool.SUMMARIZE_DOCUMENT)
-        resolved = await resolve_document_id(qdrant, analysis.cleaned_query, user_groups)
+        resolved = await resolve_document_id(
+            qdrant,
+            analysis.cleaned_query,
+            user_groups,
+            project_ids=project_ids,
+        )
         if resolved:
             doc_id, filename = resolved
             answer, doc_source = await run_map_reduce(qdrant, doc_id, filename, user_groups)

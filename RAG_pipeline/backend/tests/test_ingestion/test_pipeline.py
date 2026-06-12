@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.ingestion.pipeline import _replace_existing_document, _scoped_filename, ingest_document
+from src.ingestion.pipeline import (
+    _build_chunk_metadatas,
+    _replace_existing_document,
+    _scoped_filename,
+    ingest_document,
+)
+from src.ingestion.markdown_chunker import MarkdownChunk
 
 
 @pytest.fixture
@@ -103,6 +109,81 @@ class TestScopedFilename:
 
     def test_empty_project_id(self) -> None:
         assert _scoped_filename("file.md", "") == "file.md"
+
+
+class TestBuildChunkMetadatas:
+    def test_defaults_applied_when_no_request_metadata(self) -> None:
+        chunks = ["chunk a", "chunk b"]
+        metas = _build_chunk_metadatas(
+            chunks,
+            {},
+            default_source_layer="canonical_docs",
+            default_artifact_type="final_doc",
+        )
+        assert len(metas) == 2
+        assert metas[0]["source_layer"] == "canonical_docs"
+        assert metas[0]["visibility"] == "public"
+        assert metas[0]["artifact_type"] == "final_doc"
+
+    def test_caller_overrides_layer_and_type(self) -> None:
+        chunks = ["chunk"]
+        metas = _build_chunk_metadatas(
+            chunks,
+            {"source_layer": "technical_analysis", "artifact_type": "group_analysis"},
+            default_source_layer="canonical_docs",
+            default_artifact_type="final_doc",
+        )
+        assert metas[0]["source_layer"] == "technical_analysis"
+        assert metas[0]["artifact_type"] == "group_analysis"
+
+    def test_markdown_chunk_section_unit_included(self) -> None:
+        md_chunks = [
+            MarkdownChunk(
+                text="[doc > H2]\ncontent",
+                section="doc > H2",
+                unit="H2",
+            )
+        ]
+        metas = _build_chunk_metadatas(
+            md_chunks,
+            {},
+            default_source_layer="canonical_docs",
+            default_artifact_type="final_doc",
+        )
+        assert metas[0]["section"] == "doc > H2"
+        assert metas[0]["unit"] == "H2"
+
+    def test_absent_optional_fields_not_in_metadata(self) -> None:
+        chunks = ["chunk"]
+        metas = _build_chunk_metadatas(
+            chunks,
+            {},
+            default_source_layer="canonical_docs",
+            default_artifact_type="final_doc",
+        )
+        # Optional fields not provided → not in dict (no None values cluttering payload)
+        assert "group" not in metas[0]
+        assert "run_id" not in metas[0]
+
+    def test_length_matches_chunks(self) -> None:
+        chunks = ["a", "b", "c"]
+        metas = _build_chunk_metadatas(
+            chunks,
+            {},
+            default_source_layer="canonical_docs",
+            default_artifact_type="final_doc",
+        )
+        assert len(metas) == len(chunks)
+
+    def test_uploaded_file_default_for_ingest_document_path(self) -> None:
+        chunks = ["chunk"]
+        metas = _build_chunk_metadatas(
+            chunks,
+            {},
+            default_source_layer="canonical_docs",
+            default_artifact_type="uploaded_file",
+        )
+        assert metas[0]["artifact_type"] == "uploaded_file"
 
 
 class TestReplaceExistingDocument:

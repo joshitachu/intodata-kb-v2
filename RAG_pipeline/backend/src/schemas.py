@@ -27,6 +27,10 @@ class Source(BaseModel):
     chunk_index: int
     score: float
     text: str
+    source_layer: str | None = None
+    section: str | None = None
+    unit: str | None = None
+    group: str | None = None
 
 
 class DocumentSource(BaseModel):
@@ -37,6 +41,10 @@ class DocumentSource(BaseModel):
     text: str
     reference_number: int
     chunk_indexes: list[int] = Field(default_factory=list)
+    source_layer: str | None = None
+    section: str | None = None
+    unit: str | None = None
+    group: str | None = None
 
 
 class QueryResponse(BaseModel):

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from src.db.models import Document, IngestionJob
 from src.ingestion.chunker import chunk_text
+from src.ingestion.markdown_chunker import MarkdownChunk, chunk_markdown
 from src.ingestion.metadata import extract_metadata
 from src.ingestion.parser import parse_file
 from src.ingestion.semantic_chunker import chunk_text_semantic
@@ -27,6 +28,48 @@ def _scoped_filename(filename: str, project_id: str | None) -> str:
     if project_id:
         return f"{project_id}/{filename}"
     return filename
+
+
+def _build_chunk_metadatas(
+    chunks: list[str] | list[MarkdownChunk],
+    request_metadata: dict,
+    *,
+    default_source_layer: str,
+    default_artifact_type: str,
+) -> list[dict]:
+    """Build per-chunk metadata dicts to store in Qdrant payloads.
+
+    Merges document-level fields from request_metadata with per-chunk
+    structural fields (section, unit) from MarkdownChunk objects.
+    Applies defaults when the caller sends no layer/visibility metadata.
+    """
+    source_layer = request_metadata.get("source_layer") or default_source_layer
+    visibility = request_metadata.get("visibility") or "public"
+    artifact_type = request_metadata.get("artifact_type") or default_artifact_type
+
+    doc_level: dict = {
+        k: v
+        for k, v in {
+            "source_layer": source_layer,
+            "visibility": visibility,
+            "artifact_type": artifact_type,
+            "project_id": request_metadata.get("project_id"),
+            "doc_name": request_metadata.get("doc_name"),
+            "group": request_metadata.get("group"),
+            "artifact_path": request_metadata.get("artifact_path"),
+            "run_id": request_metadata.get("run_id"),
+        }.items()
+        if v is not None
+    }
+
+    metadatas: list[dict] = []
+    for chunk in chunks:
+        if isinstance(chunk, MarkdownChunk):
+            m = {**doc_level, "section": chunk.section, "unit": chunk.unit}
+        else:
+            m = dict(doc_level)
+        metadatas.append(m)
+    return metadatas
 
 
 async def _replace_existing_document(
@@ -68,6 +111,7 @@ async def ingest_document(
     db: AsyncSession,
     qdrant: AsyncQdrantClient,
     project_id: str | None = None,
+    metadata: dict | None = None,
 ) -> tuple[Document, IngestionJob]:
     """Full ingestion pipeline: parse → metadata → chunk → embed → store.
 
@@ -78,6 +122,7 @@ async def ingest_document(
     """
     filename = _scoped_filename(filename, project_id)
     ext = Path(filename).suffix.lower().lstrip(".")
+    request_metadata = metadata or {}
 
     # 0. Replace existing document if same filename exists
     await _replace_existing_document(filename, db, qdrant)
@@ -110,18 +155,37 @@ async def ingest_document(
         if not text.strip():
             raise ValueError(f"No text extracted from {filename}")
 
-        # 4. Chunk (semantic chunking for better retrieval quality)
-        chunks = chunk_text_semantic(text, file_type=ext)
-        if not chunks:
-            raise ValueError(f"No chunks produced from {filename}")
+        # 4. Chunk — markdown files use structure-aware heading-path chunker.
+        doc_name = request_metadata.get("doc_name") or Path(filename).stem
+        if ext == "md":
+            md_chunks = chunk_markdown(text, doc_name=doc_name)
+            if not md_chunks:
+                raise ValueError(f"No chunks produced from {filename}")
+            chunk_texts = [c.text for c in md_chunks]
+            chunk_metadatas = _build_chunk_metadatas(
+                md_chunks,
+                request_metadata,
+                default_source_layer="canonical_docs",
+                default_artifact_type="uploaded_file",
+            )
+        else:
+            chunk_texts = chunk_text_semantic(text, file_type=ext)
+            if not chunk_texts:
+                raise ValueError(f"No chunks produced from {filename}")
+            chunk_metadatas = _build_chunk_metadatas(
+                chunk_texts,
+                request_metadata,
+                default_source_layer="canonical_docs",
+                default_artifact_type="uploaded_file",
+            )
 
         # 5. Embed (dense)
-        embeddings = await embed_texts(chunks)
+        embeddings = await embed_texts(chunk_texts)
 
         # 5b. Sparse embeddings (for hybrid search)
         sparse_embeddings = None
         if settings.hybrid_search_enabled:
-            sparse_embeddings = embed_texts_sparse(chunks)
+            sparse_embeddings = embed_texts_sparse(chunk_texts)
             logger.info(f"Generated {len(sparse_embeddings)} sparse embeddings")
 
         # 6. Store in Qdrant
@@ -129,19 +193,20 @@ async def ingest_document(
         await upsert_chunks(
             client=qdrant,
             embeddings=embeddings,
-            chunks=chunks,
+            chunks=chunk_texts,
             document_id=doc.id,
             filename=filename,
             allowed_groups=allowed_groups,
             sparse_embeddings=sparse_embeddings,
+            chunk_metadatas=chunk_metadatas,
         )
 
         # 7. Update records
-        doc.chunk_count = len(chunks)
+        doc.chunk_count = len(chunk_texts)
         job.status = "completed"
-        job.chunks_created = len(chunks)
+        job.chunks_created = len(chunk_texts)
         job.completed_at = datetime.datetime.now(datetime.timezone.utc)
-        logger.info(f"Ingested {filename}: {len(chunks)} chunks")
+        logger.info(f"Ingested {filename}: {len(chunk_texts)} chunks")
 
     except Exception as e:
         job.status = "failed"
@@ -194,18 +259,26 @@ async def ingest_text(
     await db.flush()
 
     try:
-        # 3. Chunk (semantic)
-        chunks = chunk_text_semantic(text, file_type="md")
-        if not chunks:
+        # 3. Chunk — always md; use structure-aware heading-path chunker.
+        doc_name = metadata.get("doc_name") or Path(filename).stem
+        md_chunks = chunk_markdown(text, doc_name=doc_name)
+        if not md_chunks:
             raise ValueError(f"No chunks produced from {filename}")
+        chunk_texts = [c.text for c in md_chunks]
+        chunk_metadatas = _build_chunk_metadatas(
+            md_chunks,
+            metadata,
+            default_source_layer="canonical_docs",
+            default_artifact_type="final_doc",
+        )
 
         # 4. Embed (dense)
-        embeddings = await embed_texts(chunks)
+        embeddings = await embed_texts(chunk_texts)
 
         # 4b. Sparse embeddings (hybrid search)
         sparse_embeddings = None
         if settings.hybrid_search_enabled:
-            sparse_embeddings = embed_texts_sparse(chunks)
+            sparse_embeddings = embed_texts_sparse(chunk_texts)
 
         # 5. Store in Qdrant
         await ensure_collection(qdrant)
@@ -214,19 +287,20 @@ async def ingest_text(
         await upsert_chunks(
             client=qdrant,
             embeddings=embeddings,
-            chunks=chunks,
+            chunks=chunk_texts,
             document_id=doc.id,
             filename=filename,
             allowed_groups=allowed_groups,
             sparse_embeddings=sparse_embeddings,
+            chunk_metadatas=chunk_metadatas,
         )
 
         # 6. Update records
-        doc.chunk_count = len(chunks)
+        doc.chunk_count = len(chunk_texts)
         job.status = "completed"
-        job.chunks_created = len(chunks)
+        job.chunks_created = len(chunk_texts)
         job.completed_at = datetime.datetime.now(datetime.timezone.utc)
-        logger.info(f"Ingested text {filename}: {len(chunks)} chunks")
+        logger.info(f"Ingested text {filename}: {len(chunk_texts)} chunks")
 
     except Exception as e:
         job.status = "failed"

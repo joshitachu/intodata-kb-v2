@@ -25,6 +25,7 @@ from qdrant_client.models import (
 
 from src.generation.llm_client import generate_answer
 from src.retrieval.embedder import embed_text
+from src.retrieval.search import _build_search_filter
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import DocumentSource
 
@@ -61,23 +62,21 @@ async def resolve_document_id(
     client: AsyncQdrantClient,
     query: str,
     user_groups: list[str],
+    project_ids: list[str] | None = None,
 ) -> tuple[int, str] | None:
     """Identify which document the user wants to summarize via vector search.
+
+    Uses _build_search_filter so RBAC logic (all branches), project scoping,
+    and default corpus layer partitioning are applied consistently.
 
     Returns (document_id, filename) or None if no match found.
     """
     query_embedding = await embed_text(query)
 
-    search_filter = None
-    if user_groups:
-        search_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="allowed_groups",
-                    match=MatchAny(any=user_groups),
-                )
-            ]
-        )
+    search_filter = _build_search_filter(
+        user_groups,
+        project_ids=project_ids,
+    )
 
     results = await client.query_points(
         collection_name=COLLECTION_NAME,

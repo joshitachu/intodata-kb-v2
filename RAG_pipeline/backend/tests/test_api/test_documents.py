@@ -9,6 +9,9 @@ from src.api.main import app
 from src.db.models import User, Role, Document
 
 
+CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
+
+
 def _mock_user():
     role = MagicMock(spec=Role)
     role.name = "engineering"
@@ -85,7 +88,7 @@ async def test_delete_document_success(mock_deps):
     with patch("src.api.routes.documents.delete_document_points", new_callable=AsyncMock):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete("/api/v1/documents/1")
+            resp = await client.delete("/api/v1/documents/1", headers=CSRF_HEADERS)
 
     assert resp.status_code == 204
 
@@ -99,7 +102,7 @@ async def test_delete_document_not_found(mock_deps):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete("/api/v1/documents/999")
+        resp = await client.delete("/api/v1/documents/999", headers=CSRF_HEADERS)
 
     assert resp.status_code == 404
 
@@ -127,7 +130,7 @@ async def test_delete_document_forbidden_wrong_project(mock_deps):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete("/api/v1/documents/1")
+        resp = await client.delete("/api/v1/documents/1", headers=CSRF_HEADERS)
 
     assert resp.status_code == 403
 
@@ -209,7 +212,7 @@ async def test_soft_deleted_document_returns_404_on_delete(db_session):
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.delete(f"/api/v1/documents/{doc.id}")
+            resp = await client.delete(f"/api/v1/documents/{doc.id}", headers=CSRF_HEADERS)
     finally:
         app.dependency_overrides.clear()
 

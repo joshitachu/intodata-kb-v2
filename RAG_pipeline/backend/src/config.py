@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     max_result_documents: int = 6
     neighbor_chunk_expansion_enabled: bool = True
     neighbor_chunk_window: int = 1
+    # Default corpus partition: canonical_docs only. IsEmptyCondition in the filter
+    # ensures legacy chunks (no source_layer payload key) are always included too.
+    default_source_layers: list[str] = ["canonical_docs"]
 
     # Metadata queries
     metadata_queries_enabled: bool = True
