@@ -256,3 +256,11 @@ intodata-kb/
 3. Check `PROGRESS_LOG.md` for what was done in previous sessions
 4. Run backend tests: `cd backend && python -m pytest tests/ -v`
 5. Run frontend build: `cd frontend && npm run build`
+
+### Retrieval ladder (Slice 4, 2026-06-12)
+
+- **The ladder lives only in the conversational QA search path** (`_prepare_rag_context`, after previous-source reuse, before no-results). METADATA/RESPOND/SUMMARY intents and the non-conversation `/query` path never descend to internal layers. Rung 2 must always pass explicit `source_layers` to `search_layered()` — never `None` (that re-enables the legacy is-empty tolerance and would leak the default partition into a layer-scoped search).
+- **Rung-1 answers are generated inside `_prepare_rag_context` under the [NEED_SEARCH] contract** (`build_conversational_messages(context_first=True)`). Consequences to remember: the `images` vision parameter must be threaded into every `generate_answer` call added there (inspection caught a silent vision drop once already), and fresh QA answers stream as a single SSE token by design.
+- **DocGapEvent is written only when rung 2 actually supplies an answer** — clean refusals are not gaps. The event's purpose is repeated-omission analysis per project; do not start logging refusals or rung-1 successes into it.
+- **`friendly_display_name()` in `retrieval/search.py` is the single place internal filenames become human-readable.** Raw `{project}/_internal/...` paths must never reach chat citations or LLM context headers; context builders use `display_name or legacy-format(filename)` for stored legacy sources.
+- **`merge_sources_by_document` must propagate every new Source field** — forgetting it silently nulls metadata on DocumentSource (bit us with `run_id`/`project_id` in this slice; the doc-gap event then loses its run linkage).
