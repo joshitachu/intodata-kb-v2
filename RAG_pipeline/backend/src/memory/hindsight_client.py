@@ -458,7 +458,7 @@ async def _retain_user_bank(
     ts: str,
     doc_id: str | None,
     tags: list[str] | None = None,
-    entities: list[str] | None = None,
+    entities: list[dict[str, str]] | None = None,
 ) -> None:
     """Retain content to the per-user memory bank."""
     try:
@@ -523,9 +523,17 @@ async def _retain_project_bank(
     ts: str,
     doc_id: str | None,
     tags: list[str] | None = None,
-    entities: list[str] | None = None,
+    entities: list[dict[str, str]] | None = None,
 ) -> None:
-    """Retain content to a project-scoped memory bank with observation scopes."""
+    """Retain content to a project-scoped memory bank.
+
+    NOTE: the installed Hindsight client's ``aretain`` does not accept an
+    ``observation_scopes`` argument — passing it raised ``TypeError`` on every
+    project-bank write, silently disabling project-memory retention. Removed to
+    match the other retain calls in this module. Follow-up for the Hindsight
+    owner: if per-tag observation scoping is wanted, upgrade the client to a
+    version that supports it and reinstate the argument here.
+    """
     if not settings.hindsight_project_banks_enabled:
         return
     try:
@@ -536,7 +544,6 @@ async def _retain_project_bank(
             "context": "rag-project-knowledge",
             "timestamp": ts,
             "document_id": doc_id,
-            "observation_scopes": "per_tag",
         }
         if tags:
             kwargs["tags"] = tags
