@@ -1,0 +1,103 @@
+[
+  {
+    "id": "fd-external-systems",
+    "category": "final_doc_answerable",
+    "project_id": "phase2",
+    "question": "What external systems does the Item integration connect to?",
+    "expected_behavior": "answer",
+    "expected_filename": "05_RUNTIME_CONFIG_AND_EXTERNALS.md",
+    "expected_primary_source_layer": "canonical_docs",
+    "expected_answer_contains": ["mssql"],
+    "must_pass": true,
+    "notes": "Verified live: answers on rung 1 from canonical docs, no fallback."
+  },
+  {
+    "id": "fd-architecture",
+    "category": "final_doc_answerable",
+    "project_id": "phase2",
+    "question": "What is the overall architecture of the Item integration end to end?",
+    "expected_behavior": "answer",
+    "expected_filename": "01_ARCHITECTURE_MAP.md",
+    "expected_primary_source_layer": "canonical_docs",
+    "must_pass": true
+  },
+  {
+    "id": "fd-security-risks",
+    "category": "final_doc_answerable",
+    "project_id": "phase2",
+    "question": "What are the main security risks in this project?",
+    "expected_behavior": "answer",
+    "expected_filename": "07_QUALITY_SECURITY_RISK_SCORECARD.md",
+    "expected_primary_source_layer": "canonical_docs",
+    "notes": "Final docs absorbed the risk detail; should not need to descend."
+  },
+  {
+    "id": "entity-logdir",
+    "category": "entity_lookup",
+    "project_id": "phase2",
+    "question": "What is the resource_logDir context variable used for?",
+    "expected_behavior": "answer",
+    "expected_source_layers": ["support_maps", "technical_analysis"],
+    "expected_answer_contains": ["log"],
+    "must_pass": true,
+    "notes": "Slice 4 missed this (refused); Slice 5 alias+unit fetch must find it. Descends."
+  },
+  {
+    "id": "entity-setglobalvar",
+    "category": "entity_lookup",
+    "project_id": "phase2",
+    "question": "What does tSetGlobalVar_4 do in the OffRamp job?",
+    "expected_behavior": "answer",
+    "expected_source_layers": ["technical_analysis", "canonical_docs"],
+    "notes": "tSetGlobalVar_4 is listed in 02_COMPONENT_INVENTORY, so rung 1 may answer it directly; if canonical text omits the detail the alias check descends to technical_analysis. Either layer is acceptable."
+  },
+  {
+    "id": "p2-extract-props",
+    "category": "phase2_only",
+    "project_id": "phase2",
+    "question": "What is the LOOP_QUERY JSONPath configured on tExtractJSONFields_1?",
+    "expected_behavior": "answer",
+    "expected_source_layers": ["technical_analysis", "canonical_docs"],
+    "expected_answer_contains": ["$.item"],
+    "notes": "Component property detail. Answerable from either layer depending on routing."
+  },
+  {
+    "id": "rcd-connection-params",
+    "category": "risk_config_dependency",
+    "project_id": "phase2",
+    "question": "What additional connection parameters are set on the Demo_MSSQL_Output database connection?",
+    "expected_behavior": "answer",
+    "expected_source_layers": ["support_maps", "technical_analysis", "canonical_docs"],
+    "expected_answer_contains": ["trustservercertificate"],
+    "notes": "Config-routed query; answer should mention trustServerCertificate=true."
+  },
+  {
+    "id": "rcd-die-on-error",
+    "category": "risk_config_dependency",
+    "project_id": "phase2",
+    "question": "Does the database insert in the OffRamp job stop the job when it fails?",
+    "expected_behavior": "answer",
+    "expected_source_layers": ["technical_analysis", "canonical_docs", "support_maps"],
+    "notes": "DIE_ON_ERROR=false behavior; the Slice 4 demo question."
+  },
+  {
+    "id": "unsupported-kafka",
+    "category": "unsupported",
+    "project_id": "phase2",
+    "question": "What is the Kafka consumer group rebalance timeout configured in this project?",
+    "expected_behavior": "refuse",
+    "forbidden_answer_contains": ["timeout is set to", "milliseconds", "configured to a value"],
+    "must_pass": true,
+    "notes": "No Kafka anywhere. Forbidden terms are affirmative fabrication markers only — 'rebalance timeout is' was removed because a correct refusal ('no ... rebalance timeout is configured') contains it. Substring matching cannot see negation; see verifier verdict."
+  },
+  {
+    "id": "unsupported-salesforce",
+    "category": "unsupported",
+    "project_id": "phase2",
+    "question": "How is the Salesforce OAuth refresh token rotated in the Item integration?",
+    "expected_behavior": "refuse",
+    "forbidden_answer_contains": ["rotated every", "refresh token is rotated", "rotation interval"],
+    "must_pass": true,
+    "notes": "No Salesforce in this project. Forbidden terms target fabricated rotation specifics, not the topic words echoed by a clean refusal."
+  }
+]

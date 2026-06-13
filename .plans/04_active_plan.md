@@ -1,201 +1,198 @@
 ---
 feature: Layered RAG Over Final Docs and Phase 2 Analysis
-slice: Slice 5 - Deep-rung retrieval quality
+slice: Slice 6 - Evaluation harness and tuning
 sub_project: rag_pipeline
-critical_area: yes - RAG retrieval chain, Qdrant filtering, conversational ladder integration; /inspect required before validation/commit
+critical_area: no - evaluation harness, fixtures, committed eval report, and data-backed config tuning only
 verdict: PASS
 approved_at: 2026-06-13
 depends_on:
-  - Slice 4 committed as d10282a: retrieval ladder + doc-gap logging
+  - Slice 5 committed as 1a34f96: deep-rung retrieval quality
 inspection_basis:
-  - Slice 4 inspection blocker fixed: images now thread into ladder generation calls
-  - Accepted Slice 4 WARN: fresh QA streams as one blob
-  - Accepted Slice 4 WARN: fallback path can cost up to 3 LLM calls
-  - Slice 5 must address the accepted heuristic note: alias lookup replaces noisy PascalCase identifier descent
+  - Slice 5 inspection WARN: alias matcher currently loads every project alias row per QA query
+  - Slice 5 inspection WARN: rung-2 worst-case latency grew because fallback can run expansion, several searches, reranks, unit fetches, section expansion, and extra LLM calls
 ---
 
 ## Problem Statement
 
-Slice 4 added the two-rung conversational retrieval ladder, but rung 2 still uses the same semantic search depth as rung 1 and relies on a heuristic identifier detector. That leaves three quality gaps:
+Slices 1-5 implemented the layered RAG path: canonical markdown chunking, internal-layer ingestion, alias/entity indexing, conversational retrieval ladder, doc-gap logging, and deeper rung-2 recall. What is still missing is a repeatable evidence gate proving the retrieval ladder answers the right questions from the right layer and refuses unsupported questions.
 
-- Exact entity questions can still miss when embeddings do not retrieve the chunk whose `unit` payload matches the named job, component, table, endpoint, or config item.
-- The heuristic identifier detector can descend unnecessarily for PascalCase/common technical words such as `JavaScript`, because it is not grounded in the per-project alias table Slice 3 created.
-- Rung 2 retrieves adjacent chunks, not the complete owning section, so the LLM can still see an incomplete technical passage even when the right section was found.
+The current `scripts/retrieval_eval.py` is still a Slice 1 baseline. It loads a simple fixture of `{question, expected_filename}` and reports filename recall before and after rerank. It does not measure:
 
-Slice 5 should improve rung-2 recall without changing Slice 4's answer contract, doc-gap semantics, or default rung-1 latency.
+- whether final-doc-answerable questions stay on `canonical_docs`;
+- whether Phase-2-only, entity-lookup, risk, config, and dependency questions descend to the correct internal layer;
+- refusal correctness for unsupported questions;
+- `fallback_used`, `primary_source_layer`, and doc-gap behavior from the conversational ladder;
+- the Slice 5 inspection follow-ups: alias lookup scale and fallback-path latency;
+- data-backed verdicts on whether an LLM verifier or `_doc_pack_*` indexing is actually needed.
+
+Slice 6 should turn the starter utility into an operator-facing golden-set harness and commit the first report from at least one real generated project.
 
 ## Proposed Solution
 
-Add deep-rung retrieval quality as a retrieval-layer capability used only by Slice 4 rung 2:
+Extend `RAG_pipeline/backend/scripts/retrieval_eval.py` into a structured evaluation runner with two scopes:
 
-1. Add an `entity_matcher` module over the existing `entity_aliases` table.
-   - Normalize the query and alias rows deterministically.
-   - Match aliases/canonical names/unit names per project, longest match first.
-   - Return structured entity matches: alias, canonical name, unit name, entity type, project id, confidence, source artifact/path.
-   - Use project scoping from the current conversation request; never match aliases from projects the user did not select or cannot access.
+1. Retrieval metrics.
+   - Load a richer golden fixture schema with typed cases.
+   - Measure recall@30 pre-rerank using hybrid candidates.
+   - Measure recall@8 post-rerank using the configured rerank path.
+   - Measure expected source-layer presence and top-result layer selection.
+   - For internal cases, measure rung-2 retrieval through `search_layered()` with explicit layer routes and matched units when entity expectations are present.
 
-2. Replace the Slice 4 primary identifier heuristic with alias-backed entity matching.
-   - Use alias matches for rung-1 entity-presence checks and doc-gap `detected_entities`.
-   - Keep a guarded legacy heuristic fallback only when alias lookup is unavailable or a project has no alias rows, so older unsynced projects degrade gracefully.
-   - Avoid spurious descent when no alias match exists for generic PascalCase terms.
+2. Conversational ladder metrics.
+   - Exercise `_prepare_rag_context()` against a transient conversation so the same ladder contract used by chat is evaluated.
+   - Record `fallback_used`, `primary_source_layer`, `doc_gap`, returned sources, refusal outcome, and end-to-end elapsed time.
+   - Score unsupported cases as pass only when the answer refuses cleanly and does not make fixture-defined factual claims.
+   - Record alias-table row count and alias-match elapsed time per evaluated project to make the Slice 5 scaling warning visible.
 
-3. Add guaranteed unit payload retrieval alongside semantic rung-2 search.
-   - Add Qdrant payload indexes for `unit` and `section` in `ensure_collection()`.
-   - Add a unit-match retrieval helper that scrolls Qdrant with the same RBAC/project/source-layer filter plus `unit in matched_units`.
-   - Merge unit payload hits with semantic candidates before final ranking/expansion.
-   - Deduplicate by `(document_id, chunk_index)` and preserve all `Source` metadata.
+Add an operator-curated fixture for the existing Koopmans generated project, expanding the starter fixture beyond canonical filename checks. The fixture should cover at least these categories:
 
-4. Add rung-2-only recall settings.
-   - Add config fields with conservative defaults:
-     - `rung2_prefetch_limit = 150`
-     - `rung2_rerank_top_n = 75`
-     - `rung2_query_expansion_enabled = True`
-     - `rung2_entity_match_limit = 25`
-     - `rung2_section_expansion_limit = 40`
-   - Thread `prefetch_limit` and `rerank_candidates` through `search_and_rerank()` and `search_similar_hybrid()` without changing default calls.
-   - `search_layered()` should use these rung-2 settings; rung 1 keeps existing defaults.
+- `final_doc_answerable`
+- `phase2_only`
+- `unsupported`
+- `entity_lookup`
+- `risk_config_dependency`
 
-5. Enable query expansion on rung 2 only.
-   - Extend `query_expander.expand_query()` or add a wrapper so callers can force expansion independent of global `settings.query_expansion_enabled`.
-   - `search_layered()` may expand the query when `settings.rung2_query_expansion_enabled` is true.
-   - Default `/query`, rung 1, metadata enrichment, and summary resolution must not pay expansion latency.
-
-6. Add section-parent expansion for rung 2.
-   - Generalize the existing neighbor expansion pattern with a new section expansion helper.
-   - When a source has `section`, fetch all chunks from the same `document_id` and `section` under the same RBAC/project/layer filter.
-   - Sort section chunks by `chunk_index`, cap by `rung2_section_expansion_limit`, and dedupe.
-   - Fall back to existing neighbor expansion when section metadata is absent.
+Commit a stable Markdown evaluation report with the Slice 6 results and verdicts. If the data supports a config adjustment, tune only existing settings in `src/config.py` and record before/after values in the report. Do not implement a verifier or `_doc_pack_*` indexing in this slice; the report should say whether the data justifies either as follow-up work.
 
 ## Affected Files
 
-- `RAG_pipeline/backend/src/retrieval/entity_matcher.py` (new)
-- `RAG_pipeline/backend/src/retrieval/search.py`
-- `RAG_pipeline/backend/src/retrieval/query_expander.py`
-- `RAG_pipeline/backend/src/retrieval/vector_store.py`
-- `RAG_pipeline/backend/src/generation/conversational_rag.py`
-- `RAG_pipeline/backend/src/config.py`
-- `RAG_pipeline/backend/tests/test_retrieval/test_entity_matcher.py` (new)
-- `RAG_pipeline/backend/tests/test_retrieval/test_search.py`
-- `RAG_pipeline/backend/tests/test_retrieval/test_query_expander.py`
-- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag.py`
-- `RAG_pipeline/backend/tests/test_retrieval/test_vector_store.py` or nearest existing vector-store coverage
+- `RAG_pipeline/backend/scripts/retrieval_eval.py`
+- `RAG_pipeline/backend/scripts/eval_fixtures/koopmans.json` or a new `RAG_pipeline/backend/scripts/eval_fixtures/layered_rag_koopmans.json`
+- `RAG_pipeline/backend/scripts/eval_reports/layered_rag_slice6.md` (new committed result)
+- `RAG_pipeline/backend/scripts/eval_reports/layered_rag_slice6.json` (optional machine-readable summary, if useful and small)
+- `RAG_pipeline/backend/src/config.py` (only if the evaluation justifies threshold or recall tuning)
+- `RAG_pipeline/backend/tests/test_scripts/test_retrieval_eval.py` (new)
 
 ## Architecture Contracts
 
-- Rung 2 must always pass explicit `source_layers`; never use `source_layers=None`.
-- Every entity payload fetch and section expansion must reuse the same RBAC/project filter contract as semantic search.
-- Default retrieval, metadata enrichment, map-reduce summary resolution, and `/query` must keep current recall settings and global query-expansion behavior.
-- No new answer metadata fields; Slice 4's `primary_source_layer`, `fallback_used`, `doc_gap`, and `DocGapEvent` semantics remain the contract.
-- No hardcoded entity, group, project, table, or job names.
-- Do not add a new relational table; Slice 3's `entity_aliases` table is the source of truth.
-- Any new generation call in `_prepare_rag_context()` must thread `images`, but this slice should not need additional LLM generation calls.
+- This slice is evaluation-first. Do not change `src/retrieval/`, `src/generation/conversational_rag.py`, API routes, auth, or RBAC in the Slice 6 implementation unless a new active plan is written or this plan is explicitly amended and re-approved.
+- Every live Qdrant query in the eval runner must still pass `user_groups` and project scope. Admin-level evaluation may use `["admin"]`, but the script must make that visible in the report.
+- `source_layers=None` keeps the established default contract: `canonical_docs` plus legacy chunks with empty source layer. Internal-layer checks must pass explicit source layers through `search_layered()`.
+- Fixture data may include questions, expected filenames, sections, units, layers, and expected answer snippets. It must not include credentials, raw source-code dumps, generated prompt traces, or large copied document bodies.
+- The committed report is the durable artifact. Do not commit temporary traces, raw LLM prompts, full retrieved chunks, or local stack logs.
+- Doc-gap semantics remain unchanged: a gap is valid only when rung 2 answers what final docs could not. Unsupported refusals are not doc gaps.
+- Alias lookup scaling is measured in the eval report through project alias-row counts and matcher elapsed time. Do not optimize the matcher in this slice unless the plan is amended, because that would touch critical retrieval code.
+- Fallback-path latency is measured and reported by category. The report should flag p95 or worst-case timings that make Slice 5's deep-rung path operationally risky.
 
 ## Implementation Steps
 
-1. Add `entity_matcher.py`.
-   - Define a small typed result model/dataclass for matched entities.
-   - Normalize query text and aliases with casefolding, punctuation-tolerant word boundaries, and whitespace collapse.
-   - Query `EntityAlias` rows scoped to `project_ids`; if `project_ids is None`, allow admin-wide rows but keep match results project-tagged.
-   - Dedupe matches by `(project_id, unit_name, canonical_name, alias_normalized)`, preferring higher confidence and longer alias text.
-   - Add unit tests for exact alias, case-insensitive alias, unit-name alias, longest-match wins, per-project scoping, and no-match behavior.
+1. Define the expanded fixture schema.
+   - Support fields such as `id`, `category`, `question`, `project_id`, `expected_behavior`, `expected_filename`, `expected_section`, `expected_unit`, `expected_source_layers`, `expected_primary_source_layer`, `expected_answer_contains`, `forbidden_answer_contains`, `must_pass`, and `notes`.
+   - Keep backward compatibility with the current starter fixture so existing `{question, expected_filename}` items still evaluate as canonical retrieval cases.
+   - Add validation that required fields are present for each category and that unsupported cases cannot require an expected source.
 
-2. Add Qdrant payload indexes.
-   - Extend `ensure_collection()` to create `unit` and `section` keyword indexes idempotently.
-   - Add/update a vector-store test proving the new indexes are requested without removing existing `allowed_groups`, `document_id`, and `source_layer` indexes.
+2. Refactor `retrieval_eval.py` around small typed helpers.
+   - Add dataclasses or Pydantic models for fixture cases, per-case result rows, aggregate metrics, and report output.
+   - Split loading, search execution, ladder execution, scoring, and report rendering into separately testable functions.
+   - Keep the script runnable from either repo root or `RAG_pipeline/backend/`, matching the existing utility.
 
-3. Extend search helpers for rung-2 recall.
-   - Add optional `prefetch_limit` to `search_and_rerank()` and pass it to `search_similar_hybrid()`.
-   - Add optional `rerank_candidates` and entity/unit parameters to `search_layered()`.
-   - Preserve reranker failure fallback; if reranking fails, return boosted entity hits plus semantic candidates in deterministic order.
-   - Add tests that rung-2 calls use `rung2_prefetch_limit`/`rung2_rerank_top_n` while default `search_and_rerank()` still uses existing settings.
+3. Add retrieval metric execution.
+   - Keep recall@30 pre-rerank using `search_similar_hybrid(..., top_k=30, threshold=0.0)`.
+   - Keep recall@8 post-rerank using `search_and_rerank(..., top_k=8)`.
+   - Add source-layer scoring from returned `Source.source_layer`.
+   - For internal-layer cases, call `search_layered()` with explicit route layers and expected matched units when the fixture defines entity expectations.
+   - Score matches by filename first, then optional section/unit/layer expectations when supplied.
 
-4. Add unit payload match retrieval.
-   - Build a `_build_unit_filter()` helper from `_build_search_filter()` plus `unit MatchAny`.
-   - Fetch matching chunks with `client.scroll(...)`, `with_payload=True`, `with_vectors=False`, and `limit=settings.rung2_entity_match_limit`.
-   - Convert payloads via `_source_from_payload()` so friendly display and metadata stay centralized.
-   - Merge entity hits into layered results and test that a unit hit is returned even when semantic search returns nothing.
+4. Add conversational ladder execution.
+   - Build a transient `Conversation` object with no prior messages for each case.
+   - Call `_prepare_rag_context()` with the real Qdrant client, async DB session, project scope, `precompute=True`, and admin evaluation groups.
+   - Capture `precomputed_answer`, `document_sources`, `primary_source_layer`, `fallback_used`, `doc_gap`, and elapsed time.
+   - For answerable cases, check expected source metadata and optional answer substrings.
+   - For unsupported cases, require no factual answer according to the fixture's forbidden snippets and require no doc-gap event semantics.
 
-5. Add rung-2 query expansion.
-   - Add an explicit enable override to `expand_query()` or a small `expand_query_for_layered_search()` wrapper.
-   - In `search_layered()`, when rung-2 expansion is enabled, search original plus expansions and dedupe by `(document_id, chunk_index)`.
-   - Keep global `settings.query_expansion_enabled=False` behavior unchanged for rung 1.
-   - Add tests proving rung-2 expansion can run while global expansion remains disabled.
+5. Surface Slice 5 inspection metrics.
+   - Count `EntityAlias` rows for the evaluated project before the run.
+   - Time `match_query_entities()` for entity cases and include per-case and aggregate timings.
+   - Track ladder elapsed time for rung-1 successes, rung-2 answers, and unsupported rung-2 refusals separately.
+   - Add report warnings when alias rows or fallback latency exceed configured reporting thresholds.
 
-6. Add section-parent expansion.
-   - Add `_build_section_filter()` and `expand_section_chunks()` in `search.py`.
-   - Fetch all same-document chunks with the same `section` under the same RBAC/project/layer constraints.
-   - Sort by `chunk_index`; cap to `rung2_section_expansion_limit`; dedupe across matched sections.
-   - Wire section expansion into `search_layered()` after semantic/entity merge and final ranking.
-   - Add tests for complete section fetch, order preservation, fallback to neighbor expansion when `section` is missing, and RBAC/source-layer preservation.
+6. Add the golden Koopmans fixture.
+   - Preserve the existing final-doc questions from `koopmans.json`.
+   - Add Phase-2-only, entity-lookup, unsupported, and risk/config/dependency questions against the real generated project currently used for local validation.
+   - Mark the minimum operator smoke set with `must_pass: true`.
+   - Keep the fixture compact and curated rather than trying to exhaustively encode every generated document.
 
-7. Wire entity matching into the ladder.
-   - In `_prepare_rag_context()`, call the matcher before the rung-1 entity-presence check when `db` is available.
-   - Replace `_extract_query_identifiers()` as the primary path; keep the old heuristic as a fallback only for no-alias/legacy cases.
-   - Pass matched unit names into `search_layered()`.
-   - Store structured alias match names in doc-gap `detected_entities`.
-   - Add regression tests for:
-     - alias match descends when canonical sources omit the entity;
-     - alias unit hit makes rung 2 answerable when semantic search misses;
-     - generic PascalCase without alias does not force rung 2;
-     - `images` still reaches ladder generation calls.
+7. Add report generation.
+   - Write a Markdown report with environment metadata, timestamp, git commit, config values, fixture path, project id, category tables, aggregate pass/fail gates, latency summary, and notes.
+   - Include data-backed decisions for:
+     - whether current thresholds/recall settings should change;
+     - whether an LLM verifier is warranted;
+     - whether `_doc_pack_*` questions justify indexing additional artifacts.
+   - Optionally write a small JSON summary for later CI consumption.
+
+8. Tune config only if the report justifies it.
+   - Candidate fields are existing retrieval settings such as `default_threshold`, `reranker_min_score`, `rung2_prefetch_limit`, `rung2_rerank_top_n`, `rung2_entity_match_limit`, and `rung2_section_expansion_limit`.
+   - Make one minimal tuning pass, rerun the eval, and record before/after metrics.
+   - If no tuning is justified, leave `src/config.py` untouched and state that in the report.
+
+9. Add focused unit tests for the harness.
+   - Fixture parsing and backward compatibility.
+   - Category validation.
+   - Filename/section/unit/layer scoring.
+   - Unsupported/refusal scoring.
+   - Aggregate threshold verdict calculation.
+   - Markdown report rendering without large raw context leakage.
 
 ## Verification Strategy
 
-Targeted backend tests:
+Targeted unit tests:
 
 ```bash
 cd RAG_pipeline/backend
-uv run pytest \
-  tests/test_retrieval/test_entity_matcher.py \
-  tests/test_retrieval/test_search.py \
-  tests/test_retrieval/test_query_expander.py \
-  tests/test_generation/test_conversational_rag.py \
-  tests/test_api/test_conversations.py
+uv run pytest tests/test_scripts/test_retrieval_eval.py
 ```
 
 Syntax checks:
 
 ```bash
-python3 -m py_compile \
-  src/retrieval/entity_matcher.py \
-  src/retrieval/search.py \
-  src/retrieval/query_expander.py \
-  src/retrieval/vector_store.py \
-  src/generation/conversational_rag.py \
-  src/config.py
+cd RAG_pipeline/backend
+python3 -m py_compile scripts/retrieval_eval.py
+python3 -m py_compile src/config.py
 ```
 
-Full validation before commit:
+Live evaluation run against the local stack:
 
 ```bash
-cd RAG_pipeline/backend && uv run pytest
+cd RAG_pipeline/backend
+uv run python scripts/retrieval_eval.py \
+  --fixture scripts/eval_fixtures/layered_rag_koopmans.json \
+  --project-id LobsterProfileExportKoopmansTest \
+  --mode both \
+  --output-md scripts/eval_reports/layered_rag_slice6.md \
+  --output-json scripts/eval_reports/layered_rag_slice6.json
 ```
 
-Required gates after implementation:
+Backend regression validation:
 
-```text
-/inspect
-/validate
+```bash
+cd RAG_pipeline/backend
+uv run pytest
 ```
+
+Workflow gates:
+
+- `/inspect` is not required if implementation stays within the planned non-critical files.
+- If implementation touches `RAG_pipeline/backend/src/retrieval/`, `RAG_pipeline/backend/src/generation/conversational_rag.py`, API routes, auth, or RBAC, stop and run `/inspect` before `/validate`.
+- Run `/validate` before commit.
 
 ## Acceptance Criteria
 
-- A query naming an alias from `entity_aliases` detects the entity for the correct project.
-- Rung 1 does not descend solely because of generic PascalCase terms when no alias match exists.
-- Rung 2 returns a matching `unit` chunk even when semantic retrieval returns no candidates.
-- Rung 2 uses widened recall settings; rung 1 and `/query` keep existing settings.
-- Query expansion runs for rung 2 only and remains disabled elsewhere unless the global setting is explicitly enabled.
-- Section expansion returns complete owning sections in `chunk_index` order under the same RBAC/project/source-layer filter.
-- Reranker failures degrade to deterministic entity-hit-plus-semantic ordering rather than dropping exact unit hits.
-- Doc-gap events continue to log only when rung 2 answers; their `detected_entities` come from alias matches when available.
-- No answer contract, citation display, or default canonical retrieval regression.
+- The fixture contains at least one real generated project and covers final-doc-answerable, Phase-2-only, unsupported, entity-lookup, and risk/config/dependency cases.
+- The eval reports recall@30 pre-rerank and recall@8 post-rerank.
+- The eval reports source-layer selection accuracy and refusal correctness.
+- The operator must-pass smoke set passes 100%.
+- Indexed answer cases reach at least 90% recall@8, or the report identifies the specific misses and the config tuning attempted.
+- Source-layer selection accuracy is at least 90%, or the report identifies the specific routing failures.
+- Unsupported questions have zero factual answers according to the fixture's forbidden-claim checks.
+- The report includes alias-row count, alias-match timing, and rung-2/fallback latency metrics from the Slice 5 inspection warnings.
+- The report includes explicit verdicts on LLM verifier need and `_doc_pack_*` indexing need.
+- No raw internal `_internal/` paths are presented as user-facing display names in report excerpts.
 
 ## Out of Scope
 
-- Slice 6 golden evaluation harness and threshold tuning.
-- UI or admin reporting for doc-gap events.
-- Changing the Slice 4 streaming behavior where fresh QA emits a single blob.
-- Reducing the accepted fallback-path LLM-call count.
-- New ingestion/MCP alias schema changes.
-- Raw `source_evidence` ingestion or source-code-level retrieval.
-- Bulk reindex or operational alias backfill beyond existing Slice 3 push/manual sync paths.
+- Implementing an LLM verifier.
+- Indexing `_doc_pack_*`, `_bundle_*`, or raw source artifacts.
+- Changing retrieval ladder semantics, doc-gap persistence, citations, streaming behavior, auth, or RBAC.
+- Building UI dashboards for eval results.
+- Large-scale alias matcher optimization; this slice measures and reports the scaling issue unless the plan is amended.
+- Re-ingesting production projects or modifying MCP generation output.
