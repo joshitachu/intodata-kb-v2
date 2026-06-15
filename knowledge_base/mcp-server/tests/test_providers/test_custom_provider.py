@@ -5825,3 +5825,57 @@ def test_engineering_fact_context_excludes_csv_indexes(tmp_path):
     names_01 = [f.name for f in files_01]
     assert "engineering_facts.md" in names_01
     assert "architecture_map.md" in names_01
+
+
+# --- Observability: cache-hit parsing + always-on per-phase token ledger ---
+
+
+def test_cache_hit_tokens_across_provider_conventions():
+    from mcp_server.providers.custom.providers import _cache_hit_tokens
+    assert _cache_hit_tokens({"prompt_cache_hit_tokens": 2945024}) == 2945024  # deepseek
+    assert _cache_hit_tokens({"cache_read_input_tokens": 6656}) == 6656        # anthropic
+    assert _cache_hit_tokens({"prompt_tokens_details": {"cached_tokens": 1800}}) == 1800  # openai
+    assert _cache_hit_tokens({"prompt_tokens": 5000}) == 0                     # no cache reported
+
+
+def test_phase_costs_written_always_on_with_cache_split(tmp_path):
+    from mcp_server.providers.custom.models import ProviderCallLog
+    from mcp_server.providers.custom.providers import OpenAICompatibleProvider
+
+    provider = CustomHarnessProvider(
+        OpenAICompatibleProvider("deepseek", api_key="x", base_url="http://e/v1")
+    )
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    state = HarnessRunState(project_id="proj", facts_manifest=facts)
+    state.calls.extend([
+        ProviderCallLog(phase="phase2", target="A", result=ModelResult(
+            success=True, input_tokens=100_000, cache_read_tokens=40_000,
+            output_tokens=5_000, latency_ms=12_000)),
+        ProviderCallLog(phase="phase3", target="01_DOC", result=ModelResult(
+            success=True, input_tokens=1_200_000, cache_read_tokens=900_000,
+            output_tokens=8_000, latency_ms=600_000)),
+    ])
+
+    provider._write_phase_costs(tmp_path, state, log_cb=MagicMock())
+
+    report = json.loads((tmp_path / "_assessment" / "phase_costs.json").read_text())
+    # Always-on (no MCP_PIPELINE_DEBUG), with by_phase + totals.
+    assert (tmp_path / "_assessment" / "phase_costs.json").exists()
+    p3 = report["by_phase"]["phase3"]
+    assert p3["input_tokens"] == 1_200_000
+    assert p3["input_cache_read_tokens"] == 900_000
+    assert p3["input_cache_miss_tokens"] == 300_000  # input - cache_read = the full-price part
+    assert report["totals"]["input_tokens"] == 1_300_000
+    assert report["totals"]["input_cache_miss_tokens"] == 360_000
+
+
+def test_response_snapshot_writes_usage_always_on(tmp_path):
+    CustomHarnessProvider._write_model_response_snapshot(
+        tmp_path,
+        ModelResult(success=True, input_tokens=80_000, cache_read_tokens=30_000,
+                    output_tokens=4_000, latency_ms=9_000),
+    )
+    usage = json.loads((tmp_path / "usage.json").read_text())
+    assert usage["input_tokens"] == 80_000
+    assert usage["input_cache_read_tokens"] == 30_000
+    assert usage["input_cache_miss_tokens"] == 50_000

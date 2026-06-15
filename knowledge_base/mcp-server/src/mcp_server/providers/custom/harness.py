@@ -1348,20 +1348,39 @@ Fallback plan example:
         state: HarnessRunState,
         log_cb: LogCallback,
     ) -> None:
-        """Aggregate token costs by phase and write _assessment/phase_costs.json."""
+        """Aggregate real per-phase token costs and write _assessment/phase_costs.json.
+
+        Always-on (not debug-gated): this is the per-phase token ledger used to
+        see where a run's cost actually goes. Tokens are the provider-reported
+        real counts from each call (the tool-loop sum, not the pre-call
+        estimate). ``cache_read_tokens`` is the cache-hit portion of input
+        (cheap); ``input_cache_miss = input_tokens - cache_read_tokens`` is the
+        full-price portion — the lever that matters on non-caching providers.
+        """
         phase_costs: dict[str, dict] = {}
         for call in state.calls:
             entry = phase_costs.setdefault(call.phase, {
-                "input_tokens": 0, "output_tokens": 0, "calls": 0, "latency_ms": 0,
+                "input_tokens": 0, "input_cache_read_tokens": 0,
+                "input_cache_miss_tokens": 0, "output_tokens": 0,
+                "calls": 0, "latency_ms": 0,
             })
-            entry["input_tokens"] += call.result.input_tokens or 0
+            inp = call.result.input_tokens or 0
+            cache_read = call.result.cache_read_tokens or 0
+            entry["input_tokens"] += inp
+            entry["input_cache_read_tokens"] += cache_read
+            entry["input_cache_miss_tokens"] += max(0, inp - cache_read)
             entry["output_tokens"] += call.result.output_tokens or 0
             entry["calls"] += 1
             entry["latency_ms"] += call.result.latency_ms or 0
-        debug_write(
-            debug_dir(staging_dir, "_assessment", "phase_costs.json"),
-            json.dumps(phase_costs, indent=2),
-        )
+        totals = {
+            k: sum(p[k] for p in phase_costs.values())
+            for k in ("input_tokens", "input_cache_read_tokens",
+                      "input_cache_miss_tokens", "output_tokens", "calls", "latency_ms")
+        } if phase_costs else {}
+        report = {"by_phase": phase_costs, "totals": totals}
+        out_path = staging_dir / "_assessment" / "phase_costs.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         # Warn operator if any phase exceeds configured threshold.
         for phase, costs in phase_costs.items():
             if costs["input_tokens"] > config.phase_cost_warning_input_tokens:
@@ -3341,13 +3360,29 @@ Fallback plan example:
 
     @staticmethod
     def _write_model_response_snapshot(snapshot_dir: Path, result: ModelResult) -> None:
-        response = {
+        # Always-on: the REAL provider-reported tokens for this call (the
+        # tool-loop sum, not the pre-call estimate in manifest.json). This is
+        # what reconciles to the bill; cache_read is the cheap cache-hit
+        # portion of input.
+        usage = {
             "success": result.success,
-            "model_name": result.model_name,
             "input_tokens": result.input_tokens,
+            "input_cache_read_tokens": result.cache_read_tokens,
+            "input_cache_miss_tokens": max(0, result.input_tokens - result.cache_read_tokens),
             "output_tokens": result.output_tokens,
             "latency_ms": result.latency_ms,
             "retries": result.retries,
+        }
+        try:
+            (snapshot_dir / "usage.json").write_text(
+                json.dumps(usage, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.warning("failed to write usage.json to %s: %s", snapshot_dir, exc, exc_info=True)
+        # Full response payload remains debug-only forensics.
+        response = {
+            **usage,
+            "model_name": result.model_name,
             "raw_error": result.raw_error,
             "metadata": result.metadata,
             "text_preview": result.text[:1000],

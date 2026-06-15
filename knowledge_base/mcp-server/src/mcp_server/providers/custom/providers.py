@@ -553,6 +553,21 @@ def _chat_completion_usage(data: Any) -> dict[str, Any]:
     return _as_dict(_as_dict(data).get("usage"))
 
 
+def _cache_hit_tokens(usage: dict[str, Any]) -> int:
+    """Cache-hit (cached) input tokens, across provider conventions.
+
+    deepseek exposes ``prompt_cache_hit_tokens``; Anthropic
+    ``cache_read_input_tokens``; OpenAI nests it under
+    ``prompt_tokens_details.cached_tokens``. Returns 0 when the provider does
+    not report caching (e.g. local Ollama) — which is the correct value there.
+    """
+    direct = usage.get("prompt_cache_hit_tokens") or usage.get("cache_read_input_tokens")
+    if direct:
+        return int(direct)
+    details = _as_dict(usage.get("prompt_tokens_details"))
+    return int(details.get("cached_tokens") or 0)
+
+
 def _normalize_openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in _as_list(tool_calls):
@@ -947,6 +962,7 @@ class OpenAICompatibleProvider:
                     model_name=self.model_name,
                     input_tokens=int(usage.get("prompt_tokens") or _estimate_tokens(full_prompt)),
                     output_tokens=int(usage.get("completion_tokens") or _estimate_tokens(text)),
+                    cache_read_tokens=_cache_hit_tokens(usage),
                     latency_ms=int((time.monotonic() - start) * 1000),
                     retries=attempt,
                     metadata=metadata,
@@ -996,6 +1012,7 @@ class OpenAICompatibleProvider:
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
         total_in = total_out = 0
+        total_cache_hit = 0
         tool_call_count = 0
         tool_result_bytes = 0
         finish_reasons: list[str] = []
@@ -1034,6 +1051,7 @@ class OpenAICompatibleProvider:
                 usage = _chat_completion_usage(data)
                 total_in += int(usage.get("prompt_tokens") or 0)
                 total_out += int(usage.get("completion_tokens") or 0)
+                total_cache_hit += _cache_hit_tokens(usage)
 
                 choice = _first_dict(data.get("choices"))
                 message = _as_dict(choice.get("message"))
@@ -1081,6 +1099,7 @@ class OpenAICompatibleProvider:
                         model_name=self.model_name,
                         input_tokens=total_in or _estimate_tokens(prompt),
                         output_tokens=total_out or _estimate_tokens(text),
+                        cache_read_tokens=total_cache_hit,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         retries=turn,
                         raw_error="incomplete: provider stopped because max tokens were reached",
@@ -1106,6 +1125,7 @@ class OpenAICompatibleProvider:
                         model_name=self.model_name,
                         input_tokens=total_in or _estimate_tokens(prompt),
                         output_tokens=total_out or _estimate_tokens(text),
+                        cache_read_tokens=total_cache_hit,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         retries=turn,
                         metadata={
@@ -1189,6 +1209,7 @@ class OpenAICompatibleProvider:
             model_name=self.model_name,
             input_tokens=total_in,
             output_tokens=total_out,
+            cache_read_tokens=total_cache_hit,
             latency_ms=int((time.monotonic() - start) * 1000),
             retries=max_turns,
             raw_error=last_error or "max_turns exceeded",
