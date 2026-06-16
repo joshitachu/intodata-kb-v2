@@ -106,9 +106,10 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
       # Live runtime provider (EP-004). Empty RUNTIME_PROVIDER_KEY keeps runtime
-      # disabled. Set to "mock" for local validation, or "talend_tmc" with the
-      # Talend vars below to use the real adapter. The Talend token is supplied
-      # via a mounted secret file (TALEND_TMC_API_TOKEN_FILE), never inline here.
+      # disabled. Set to "mock" for local validation, "stored" for DB-backed held
+      # runtime data (seed via python -m src.runtime.store.seed), or "talend_tmc"
+      # with the Talend vars below to use the real adapter. The Talend token is
+      # supplied via a mounted secret file (TALEND_TMC_API_TOKEN_FILE), never inline.
       RUNTIME_PROVIDER_KEY: ${RUNTIME_PROVIDER_KEY:-}
       RUNTIME_PROVIDER_LABEL: ${RUNTIME_PROVIDER_LABEL:-Live runtime}
       RUNTIME_PROVIDER_HEALTH_URL: ${RUNTIME_PROVIDER_HEALTH_URL:-}
