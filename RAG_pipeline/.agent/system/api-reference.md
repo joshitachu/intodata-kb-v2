@@ -133,6 +133,18 @@ All admin endpoints require the relevant permission (see `system/subsystems.md` 
 
 ---
 
+## Runtime (EP-004 slice 1)
+
+| Method | Path                     | Auth | Description                                          |
+|--------|--------------------------|------|-------------------------------------------------------|
+| GET    | /api/v1/runtime/status   | Yes  | Live runtime provider status: disabled/connected/unavailable |
+
+Provider-agnostic contract. `runtime_provider_key` empty means `disabled`. A
+configured key without `runtime_provider_health_url` means `unavailable`. No
+Talend API details, task IDs, secrets, or logs are exposed by this endpoint.
+
+---
+
 ## Usage (external recording)
 
 | Method | Path                   | Auth (Bearer) | Description                        |

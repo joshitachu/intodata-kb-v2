@@ -1,62 +1,34 @@
 ---
-inspected_at: 2026-06-13
-verdict: WARN
-slice: 5 — Deep-rung retrieval quality
+inspected_at: 2026-06-16
+verdict: PASS
 ---
 
 ## Verdict Summary
-Implementation matches the approved Slice 5 plan, preserves every RBAC/layer
-contract on the two new Qdrant access paths, and replaces the noisy heuristic
-as required; warnings are performance-scaling concerns, not correctness
-defects.
+
+Implementation matches the approved plan exactly (files, contract shape, status
+semantics, and out-of-scope boundaries); all backend/frontend tests pass with no
+regressions, with two minor non-blocking notes worth recording.
 
 ## Check Results
+
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | All 7 steps: entity_matcher, unit/section payload indexes, widened rung-2 settings, prefetch threading, unit payload fetch, forced rung-2 expansion, section expansion, ladder wiring with guarded heuristic fallback. |
-| Root cause         | PASS   | Addresses the actual failure (embeddings can't do exact-name lookup) with a deterministic alias→unit-payload path instead of tuning thresholds. |
-| Generalized        | PASS   | Unit and section filters both derive from `_build_search_filter` (one RBAC contract); `_source_from_payload` remains the single payload→Source mapping; expansion reuses the established neighbor-expansion pattern. |
-| Design patterns    | PASS   | Matcher is a pure service over the alias table returning a typed result; `EntityMatchResult.alias_rows_present` cleanly separates "legacy project" from "no match". |
-| Contract respect   | PASS   | Rung 2 still requires explicit `source_layers`; rung 1, `/query`, metadata enrichment, and summary resolution keep default recall and global expansion behavior (tested); no new answer metadata; `entity_aliases` remains the only table. |
-| No special-casing  | PASS   | Rung-2 widening lives in settings, not branches; the heuristic fallback is a documented degradation path for unsynced projects, not a per-project shim. |
-| Edge cases         | WARN   | Findings 1–2. Covered well otherwise: boundary matching rejects `tDBOutput_12` for alias `tDBOutput_1`, longest-match-first, per-project scoping, no-alias legacy fallback, unit hit surviving semantic miss, section order/cap, forced expansion with global off, images regression test still present. |
-| RBAC               | PASS   | `fetch_unit_chunks` and `expand_section_chunks` build on `_build_search_filter` (groups + projects + layers); alias matching is project-scoped; admin-wide matching with `project_ids=None` is plan-authorized and chunk retrieval stays group-filtered. |
-| Credential safety  | PASS   | No credentials; alias rows carry names/paths only. |
+| Plan conformance   | PASS   | All 16 files in the plan's "Affected Files" list are touched, no extras, no omissions. All 8 implementation steps present. |
+| Root cause         | PASS (N/A) | Greenfield contract, not a bug fix. |
+| Generalized        | PASS (N/A) | New module; no existing defect pattern being replicated. |
+| Design patterns    | PASS   | Thin-controller route delegates to a service function (`get_runtime_status`), mirroring the existing `health.py` `_check_*` helper pattern. No over-engineering for a single-provider check. |
+| Contract respect   | PASS   | Response model exposes only `status`/`provider_key`/`provider_label`/`message`/`checked_at` — no Talend-specific fields, task IDs, secrets, or logs. Empty key -> disabled, key without health URL -> unavailable, 2xx -> connected, all per contract. No RBAC gate added, matching the explicit "no extra RBAC gate in this slice" contract line. No runtime tools, tool-use loop, or SSE changes were introduced. |
+| No special-casing  | PASS   | No one-off branches or compat shims. |
+| Edge cases         | PASS   | All 5 plan-specified backend test cases implemented and passing (disabled, unavailable/no-health-url, connected/2xx, unavailable/failure, auth-required). Frontend hook tests cover loading/success/error/malformed-payload (4 tests); indicator tests cover loading/disabled/unavailable/connected/error (5 tests). Backend `tests/test_api/` full suite: 87 passed. Frontend targeted + broader smoke suite: 14 passed. `tsc --noEmit` clean. |
+| RBAC               | PASS (documented exception) | Plan explicitly specifies "Authenticated via CurrentUser, but no additional role/permission gate" — endpoint correctly implements only `CurrentUser`, consistent with the documented architecture contract, not an oversight. |
+| Credential safety  | PASS   | No credentials hardcoded. `runtime_provider_health_url`/`runtime_provider_key` are plain config values; this slice defines no token/secret field for the health check (explicitly out of scope: "Docker secret handling for the Talend token"). |
 
 ## Findings
 
-1. **WARN — matcher loads every project alias row per QA query**
-   `entity_matcher.py::match_query_entities` does `select(EntityAlias)` scoped
-   only by project and matches in Python. Fine at current scale (phase2 = 567
-   rows); a 50-group enterprise project could hold tens of thousands of rows,
-   making this a per-question full fetch. Follow-up options: SQL-side reverse
-   `LIKE` prefilter or a per-project in-memory cache with invalidation on
-   alias replace. Not blocking at current deployment scale.
+1. (WARN, non-blocking) `RAG_pipeline/frontend/app/api/runtime/status/route.ts` forwards the JSON body as-is and does not run Zod validation itself; validation happens one layer up, in `hooks/useRuntimeStatus.ts:11` (`RuntimeStatusResponseSchema.parse(...)`). The plan's step 5 bullet ("validate successful payloads") reads as if validation belongs in the BFF route. This placement matches the codebase's existing convention for the same shape of contract (`hooks/useTenant.ts:14`, `hooks/useNotifications.ts:16` both validate client-side, not in their `route.ts`), and the higher-level requirement — "Zod validates the response before React sees it" — is still satisfied, since `useQuery`'s `queryFn` resolves before the component reads `data`. No action needed; noting it so the plan-vs-implementation layering choice is traceable.
 
-2. **WARN — rung-2 worst-case latency budget grew**
-   Deep rung now: 1 expansion LLM call + up to 3 hybrid searches at
-   prefetch=150 + 3 Voyage reranks at 75 candidates + unit/section scrolls.
-   Only paid on descent (the rare path by design), but worth watching the
-   `latency_ms` of fallback answers once real usage accumulates.
-
-3. **Note — metadata bleed with no project selected**
-   With `project_ids=None`, alias matching is admin-wide (plan-authorized);
-   `detected_entities` on a gap event could name entities from another
-   project. Chunk retrieval itself remains RBAC-filtered, so no content leaks.
-
-4. **Note — unit hits depend on the `unit` payload being populated**
-   Chunks without `unit` metadata simply never match the payload fetch;
-   degradation is to semantic-only behavior (Slice 4 level), never worse.
-
-5. **Note — common-word aliases can cause spurious descent**
-   `MIN_ALIAS_LENGTH = 4` filters the worst offenders, but aliases like
-   `master` (a DB name) can match prose. Cost is one wasted descent; gap
-   events only log when rung 2 actually answers.
+2. (WARN, non-blocking) `RAG_pipeline/backend/src/runtime/status.py:64` catches `httpx.HTTPError` and logs with `logger.warning(f"...: {e}")` — no `exc_info=True`, and the exception is swallowed (not re-raised). This is a literal deviation from the global Python rule ("log with exc_info=True, re-raise"), but re-raising would crash the status endpoint on every transient health-check failure, directly contradicting the plan's explicit contract ("all other statuses/exceptions as unavailable") and the pre-existing graceful-degradation pattern already used four times in `RAG_pipeline/backend/src/api/routes/health.py` (`_check_database`, `_check_qdrant`, `_check_ollama`, `_check_hindsight`), none of which re-raise or pass `exc_info=True` either. This is a pre-existing, intentional codebase pattern for health-style endpoints, not a new defect introduced by this slice — flagging for traceability, not requesting a fix here (fixing it project-wide would be out of scope for this slice).
 
 ## Required Actions
 
-No blocking changes.
-
-WARN (follow-ups, log for Slice 6 / ops):
-- Finding 1: alias lookup scaling strategy before onboarding large projects.
-- Finding 2: monitor fallback-path latency in usage metrics.
+PASS — None required. Ready to run /validate and commit.

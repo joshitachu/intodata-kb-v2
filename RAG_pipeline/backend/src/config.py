@@ -150,6 +150,15 @@ class Settings(BaseSettings):
     tenant_slug: str = "intodata"
     tenant_environment: str = "development"  # development | staging | production
 
+    # Live runtime status (EP-004 slice 1) — provider-agnostic contract surfaced by
+    # GET /api/v1/runtime/status. Empty runtime_provider_key means disabled. A
+    # configured key without runtime_provider_health_url means unavailable (the
+    # provider integration exists but has no health check wired up yet).
+    runtime_provider_key: str = ""
+    runtime_provider_label: str = "Live runtime"
+    runtime_provider_health_url: str = ""
+    runtime_status_timeout: float = 5.0
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"

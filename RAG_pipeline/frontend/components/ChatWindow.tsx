@@ -6,6 +6,7 @@ import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
 import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
+import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { SUGGESTIONS } from "@/lib/constants";
 import type { ChatMode } from "./ModeToggle";
@@ -74,6 +75,7 @@ export function ChatWindow({
     <>
       <ModeToggle mode={mode} onModeChange={onModeChange} />
       {isDeepDive ? <ProjectSelector /> : <RagProjectSelector />}
+      <RuntimeStatusIndicator />
     </>
   );
 

@@ -314,3 +314,15 @@ export const AuthUserSchema = z.object({
   has_password: z.boolean(),
   sso_provider: z.string().nullable(),
 });
+
+// --- Runtime status (EP-004 slice 1) ---
+
+export const RuntimeStatusResponseSchema = z.object({
+  status: z.enum(["disabled", "connected", "unavailable"]),
+  provider_key: z.string().nullable(),
+  provider_label: z.string(),
+  message: z.string(),
+  checked_at: z.string(),
+});
+
+export type RuntimeStatusResponse = z.infer<typeof RuntimeStatusResponseSchema>;

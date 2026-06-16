@@ -1,111 +1,163 @@
 ---
-feature: Layered RAG Over Final Docs and Phase 2 Analysis
+feature: EP-004 TMC Live Integration
 pipeline_step: 3_slices
 total_slices: 6
-current_slice: 1
+current_slice: 0
 ---
 
-# Slice ordering notes
+## Slice 1: Runtime Status Contract and Chat Indicator
 
-- Slice 1 must ship before Slice 3 (the PRD ordering hazard: the layer-aware
-  default filter must be live before any internal artifact enters the corpus).
-- Slice 2 is independent of Slices 1/3 and can be built in parallel; Slice 3
-  needs both.
-- Slices 1, 2, 3, 4, 5 all touch critical areas — each requires `/inspect`
-  before commit.
-- Re-ingestion of existing projects' canonical docs is an operational step at
-  the end of Slice 1 (delete-by-project + re-push via existing endpoints).
+**Delivers**: Users can see whether live runtime data is connected, unavailable, or disabled, with provider label, and normal chat remains usable when no runtime provider is configured.
 
-## Slice 1: Structure-aware chunking, chunk metadata, and layer-aware filtering
-**Delivers**: Canonical docs are re-ingested as heading-path-prefixed structured
-chunks carrying full metadata (`source_layer`, `group`, `unit`, `section`, ...),
-and default retrieval filters to canonical-only with is-empty tolerance for
-legacy chunks — retrieval quality improves on the existing corpus immediately,
-and the corpus is partition-ready before any internal layer exists.
 **Expected files**:
-- `RAG_pipeline/backend/src/ingestion/markdown_chunker.py` (new)
-- `RAG_pipeline/backend/src/ingestion/pipeline.py` (metadata passthrough in `ingest_text`)
-- `RAG_pipeline/backend/src/retrieval/vector_store.py` (`upsert_chunks` payload)
-- `RAG_pipeline/backend/src/retrieval/search.py` (`_build_search_filter` layer condition)
-- `RAG_pipeline/backend/src/schemas.py` (`Source`/`DocumentSource` layer + display fields)
-- `RAG_pipeline/backend/src/config.py` (layer filter settings)
-- tests: chunker structure, metadata assignment, filter legacy tolerance
-- small retrieval-eval utility (recall@k baseline on canonical corpus, reused in Slice 6)
-**Critical area**: yes — RAG retrieval chain (`/inspect` required)
+- `RAG_pipeline/backend/src/config.py`
+- `RAG_pipeline/backend/src/api/main.py`
+- `RAG_pipeline/backend/src/api/routes/runtime.py` (new)
+- `RAG_pipeline/backend/src/runtime/__init__.py` (new)
+- `RAG_pipeline/backend/src/runtime/status.py` (new)
+- `RAG_pipeline/backend/src/runtime/models.py` (new or started)
+- `RAG_pipeline/backend/tests/test_api/test_runtime_status.py` (new)
+- `RAG_pipeline/frontend/app/api/runtime/status/route.ts` (new)
+- `RAG_pipeline/frontend/types/index.ts` or focused runtime schema file
+- `RAG_pipeline/frontend/hooks/useRuntimeStatus.ts` (new)
+- chat shell/header/sidebar component that will render the status
+- `RAG_pipeline/frontend/tests/...` for status fetch/rendering
+
+**Critical area**: no - RAG API/UI work only; does not touch RAG retrieval, auth/RBAC, MCP API routes, or harness pipeline.
+
 **Depends on**: none
 
-## Slice 2: Harness `_rag_support/` persistence and analysis_cache restore
-**Delivers**: A successful generation leaves `docs/_rag_support/` containing the
-manifest-driven Phase 2 group analyses plus manifest.json, visible docs are
-byte-identical, and `analysis_cache/` is populated again so incremental webhook
-regeneration stops silently falling back to full regen.
-**Expected files**:
-- `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase4_cleanup.py`
-- `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/helpers.py` (if selection helper lands there)
-- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` (repoint `analysis_cache` copy to the persisted package)
-- tests: package allowlist (manifest-driven groups only, no `_doc_pack_*`/`_bundle_*`), manifest contents, swap unaffected
-**Critical area**: yes — harness pipeline (`/inspect` required)
-**Depends on**: none (parallel to Slice 1)
+**Notes**:
+- This slice must not require the external TMC server to exist.
+- Status should report `disabled` or `unavailable` when no runtime provider endpoint is configured.
+- The UI label should be generic, such as "Live runtime unavailable", with provider sublabel when configured, initially `Talend TMC`.
+- This slice covers the user-visible base of `US-027` and gives later slices a stable platform-agnostic status contract.
 
-## Slice 3: Layered ingestion push with entity index
-**Delivers**: After generation, internal layers (`technical_analysis` from
-`_rag_support/`, all `_facts/*.md` as `support_maps`, scorecard, doc slices)
-are pushed to RAG with full metadata and sanitized layer-prefixed filenames,
-internal layers are delete+re-pushed per generation (no stale groups), the
-entity index is ingested as a per-project alias lookup, and default user
-retrieval still returns canonical-only.
-**Expected files**:
-- `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py` (metadata-carrying push, internal-layer delete, filename sanitization)
-- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` (`_run_generate_background` internal push step)
-- `RAG_pipeline/backend/src/api/routes/ingest.py` (accept layer metadata; internal-layer delete; entity-alias ingest)
-- `RAG_pipeline/backend/src/db/models/` (entity alias storage, if Postgres-backed)
-- tests both sides: payload correctness, sanitization (`Training|Jasmijn.md`), idempotent re-push, stale-group removal, default retrieval unchanged
-**Critical area**: yes — MCP API routes (`/inspect` required)
-**Depends on**: Slice 1, Slice 2
+## Slice 2: Runtime Provider Contract and Safe Mock Adapter
 
-## Slice 4: Retrieval ladder and doc-gap logging
-**Delivers**: A question final docs cannot answer descends to rung 2
-(technical_analysis + query-type-routed support layers), answers with internal
-support and friendly citations, records
-`primary_source_layer`/`fallback_used`/`doc_gap`, logs a doc-gap event, and the
-reuse path (`get_previous_sources`) preserves layer metadata; unsupported
-questions still refuse cleanly and the happy path pays nothing extra.
+**Delivers**: The platform has normalized runtime models, an allowlisted execution-monitoring tool registry, and a mock provider that can execute or reject calls safely.
+
 **Expected files**:
-- `RAG_pipeline/backend/src/generation/conversational_rag.py` (ladder in `_prepare_rag_context` QA path; insufficiency detection extending `[NEED_SEARCH]`/`needs_new_search` + entity-presence check)
-- `RAG_pipeline/backend/src/generation/prompt_builder.py` (rung-2 prompt, display names)
-- `RAG_pipeline/backend/src/retrieval/search.py` (layer-scoped search helpers)
-- `RAG_pipeline/backend/src/schemas.py` (answer metadata)
-- doc-gap event storage (query-log metadata field or one new model + migration — decide in `/plan`)
-- tests: rung-1-sufficient, rung-2-answerable, unsupported, reuse-path metadata, doc-gap event shape, RBAC on rung 2
-**Critical area**: yes — RAG retrieval chain (`/inspect` required)
+- `RAG_pipeline/backend/src/runtime/__init__.py`
+- `RAG_pipeline/backend/src/runtime/models.py`
+- `RAG_pipeline/backend/src/runtime/registry.py`
+- `RAG_pipeline/backend/src/runtime/client.py`
+- `RAG_pipeline/backend/src/runtime/providers/__init__.py`
+- `RAG_pipeline/backend/src/runtime/providers/mock.py`
+- `RAG_pipeline/backend/src/config.py`
+- `RAG_pipeline/backend/tests/test_runtime/test_registry.py` (new)
+- `RAG_pipeline/backend/tests/test_runtime/test_client.py` (new)
+- `RAG_pipeline/backend/tests/test_runtime/test_mock_provider.py` (new)
+
+**Critical area**: no - new RAG backend runtime integration boundary; no listed critical path.
+
+**Depends on**: Slice 1
+
+**Notes**:
+- The generic runtime tools are:
+  - `list_executions`
+  - `get_execution_details`
+  - `detect_failures`
+  - `get_execution_logs`
+- Normalized models should include provider status, executions, failures, log events, and structured tool errors.
+- Unsupported tools must return structured not-available results without calling any provider.
+- The router must enforce timeouts, result caps, schema validation, and sanitization before any result is eligible for LLM context.
+- This slice covers `US-025` in a platform-agnostic, mockable, independently testable form.
+
+## Slice 3: Backend Runtime Tool-Use Loop with Mocked Answers
+
+**Delivers**: A conversational RAG request can call a mocked runtime tool through a bounded provider-agnostic loop and produce an answer grounded in the normalized tool result.
+
+**Expected files**:
+- `RAG_pipeline/backend/src/generation/agent_loop.py` (new)
+- `RAG_pipeline/backend/src/generation/llm_client.py`
+- `RAG_pipeline/backend/src/generation/conversational_rag.py`
+- `RAG_pipeline/backend/src/generation/agent_orchestrator.py`
+- `RAG_pipeline/backend/src/api/routes/conversations.py`
+- `RAG_pipeline/backend/src/runtime/...` files from Slice 2 as needed
+- `RAG_pipeline/backend/tests/test_generation/test_agent_loop.py` (new)
+- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag_runtime_tools.py` (new)
+- `RAG_pipeline/backend/tests/test_api/test_conversations.py` or focused stream test
+
+**Critical area**: no - RAG generation/chat path; does not touch retrieval, auth/RBAC, MCP API routes, or harness pipeline.
+
+**Depends on**: Slice 2
+
+**Notes**:
+- This is the high-risk `US-024` slice.
+- The loop must be bounded: generate -> runtime tool call -> execute -> append result -> continue.
+- Providers without structured tool support must degrade cleanly and must not claim live runtime data.
+- Existing conversation ownership, persistence, citations, memory, usage accounting, and doc-gap behavior must stay compatible.
+- Backend streaming should emit typed runtime progress events without breaking existing `step`, `sources`, `token`, `usage`, and `done` events.
+
+## Slice 4: Frontend Runtime Progress and Result Visibility
+
+**Delivers**: Users can see when chat is calling a runtime tool and whether the tool result succeeded or failed while the answer is streaming.
+
+**Expected files**:
+- `RAG_pipeline/frontend/hooks/useStreamMessage.ts`
+- `RAG_pipeline/frontend/types/index.ts` or focused stream schema file
+- chat message/rendering components for streamed assistant state
+- optional reusable `RuntimeToolStatus` component
+- `RAG_pipeline/frontend/tests/hooks/useStreamMessage.test.ts`
+- `RAG_pipeline/frontend/tests/components/...` for rendering runtime tool progress
+
+**Critical area**: no - RAG frontend only.
+
 **Depends on**: Slice 3
 
-## Slice 5: Deep-rung retrieval quality
-**Delivers**: Rung 2 reliably finds what exists — entity-aware retrieval
-(query-time alias detection → guaranteed `unit` payload match alongside
-semantic search), widened recall (`prefetch_limit` ~150 / `rerank_top_n` ~75 on
-rung 2), query expansion enabled on rung 2 only, and section-parent expansion
-returning complete owning sections.
-**Expected files**:
-- `RAG_pipeline/backend/src/retrieval/search.py` (entity match path, section-parent expansion generalizing `expand_neighbor_chunks`)
-- `RAG_pipeline/backend/src/retrieval/entity_matcher.py` (new)
-- `RAG_pipeline/backend/src/retrieval/query_expander.py` (rung-scoped enablement)
-- `RAG_pipeline/backend/src/config.py` (rung-2 recall settings)
-- tests: entity hit when embeddings miss, section-parent completeness, rung-1 latency unchanged, Voyage rate-limit degradation
-**Critical area**: yes — RAG retrieval chain (`/inspect` required)
-**Depends on**: Slice 4
+**Notes**:
+- Zod schemas must validate the new event payloads.
+- Existing stream tests for `step`, `sources`, `token`, `usage`, and `done` should remain green.
+- Tool result display should avoid rendering raw sensitive log payloads. Summaries/status are enough for the UI.
 
-## Slice 6: Evaluation harness and tuning
-**Delivers**: A golden evaluation set from at least one real generated project
-(final-doc-answerable, Phase-2-only, unsupported, entity-lookup,
-risk/config/dependency questions) with measured recall@30 pre-rerank, recall@8
-post-rerank, source-layer selection accuracy, and refusal correctness — plus
-threshold/recall tuning and the data-driven verdicts on the LLM verifier and
-`_doc_pack_*` questions.
+## Slice 5: Talend TMC Provider Adapter and Compose Secrets
+
+**Delivers**: The generic runtime layer can run against the real external Talend TMC provider service in Docker Compose using Docker-secret token handling.
+
 **Expected files**:
-- `RAG_pipeline/backend/scripts/retrieval_eval.py` (extends Slice 1 utility)
-- golden set fixtures (per test project, operator-curated)
-- `RAG_pipeline/backend/src/config.py` (tuned values)
-- eval report committed alongside (results, not intermediate artifacts)
-**Critical area**: no
-**Depends on**: Slice 4 (Slice 5 improves results; run final numbers after it)
+- external TMC server repo/image source once provided (outside this repo if required)
+- `docker-compose.yml`
+- `.env.production.template`
+- deployment docs such as `deploy/RUNBOOK.md` and/or `deploy/SMOKE-TEST.md`
+- `RAG_pipeline/backend/src/runtime/providers/talend_tmc.py`
+- `RAG_pipeline/backend/src/runtime/client.py`
+- `RAG_pipeline/backend/src/config.py`
+- focused backend integration tests with mocked HTTP/MCP transport
+
+**Critical area**: no - deployment/config and RAG runtime provider work unless the final TMC protocol requires MCP API route changes.
+
+**Depends on**: Slice 4 and availability of the external TMC server source, image, or API contract
+
+**Notes**:
+- This slice is blocked until the external TMC server source/image/protocol is available.
+- The Talend adapter maps:
+  - `list_executions` -> `get_task_executions`
+  - `get_execution_details` -> `get_execution_details`
+  - `detect_failures` -> `detect_execution_failures`
+  - `get_execution_logs` -> `get_execution_logs`
+- The Talend API token must be mounted as a Docker secret, not passed as a plaintext env var.
+- No public TMC port should be exposed unless explicitly needed for operations.
+- If the real server protocol differs from Slice 2 assumptions, update only the Talend adapter/client while preserving the generic runtime registry/loop contracts.
+
+## Slice 6: PoC Validation with Real Talend TMC Data
+
+**Delivers**: EP-004 is accepted against real Talend TMC data through the generic runtime contract for the Lobster PoC scenarios.
+
+**Expected files**:
+- `.plans/05_inspection_report.md` after inspection
+- validation notes or a committed smoke-test artifact, if the project convention accepts one
+- possible updates to `deploy/SMOKE-TEST.md`
+- possible small fixes in files from Slices 1-5 based on real validation findings
+
+**Critical area**: no by default; reclassify if validation fixes touch listed critical areas.
+
+**Depends on**: Slice 5, real Talend API token, region/configuration, and a known job name for latest-execution validation
+
+**Notes**:
+- Required real-data prompts:
+  - "what jobs failed in the last 24 hours?"
+  - "when did job X last run and what was the result?"
+- Mock tests are not enough to close this slice.
+- The validation must prove the chat path used the generic runtime tools and the `talend_tmc` provider adapter, not a Talend-specific shortcut.
+- Any failures found here should be fed back into the smallest affected earlier slice rather than patched ad hoc.
