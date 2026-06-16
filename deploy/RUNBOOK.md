@@ -356,6 +356,59 @@ https://<client>.<base-domain>
 
 Create the first admin user if the bootstrap screen appears, then run [SMOKE-TEST.md](./SMOKE-TEST.md).
 
+## 13. Enable Talend TMC Runtime (Optional, EP-004)
+
+Skip this section unless the client requires live Talend TMC execution data in
+chat. The default stack runs with runtime disabled.
+
+The Talend API token must never be placed in `.env`, the Compose `environment`
+block, logs, or the repo. It is read from a mounted file.
+
+1. Create the token file on the host with restrictive permissions:
+
+   ```bash
+   sudo install -d -m 700 /opt/intodata/secrets
+   sudo install -m 600 /dev/null /opt/intodata/secrets/talend_tmc_api_token
+   sudo tee /opt/intodata/secrets/talend_tmc_api_token >/dev/null   # paste token, then Ctrl-D
+   ```
+
+2. Bind-mount the secret into the backend container. Add to the `backend`
+   service in `docker-compose.yml` (or a `docker-compose.override.yml`):
+
+   ```yaml
+   backend:
+     volumes:
+       - /opt/intodata/secrets/talend_tmc_api_token:/run/secrets/talend_tmc_api_token:ro
+   ```
+
+3. Set the runtime variables in `.env`:
+
+   ```bash
+   RUNTIME_PROVIDER_KEY=talend_tmc
+   RUNTIME_PROVIDER_LABEL=Talend TMC
+   RUNTIME_PROVIDER_HEALTH_URL=http://talend-tmc-runtime:9000/health
+   TALEND_TMC_BASE_URL=http://talend-tmc-runtime:9000
+   TALEND_TMC_API_TOKEN_FILE=/run/secrets/talend_tmc_api_token
+   ```
+
+   `TALEND_TMC_BASE_URL` must point at the internal TMC runtime service on the
+   Compose network. Do not publish that service on a public host port.
+
+4. Restart the backend:
+
+   ```bash
+   docker compose up -d backend
+   ```
+
+5. Confirm status and that the token never leaks (see SMOKE-TEST section 8):
+
+   ```bash
+   curl -fsS http://127.0.0.1:${BACKEND_PORT:-8000}/api/v1/runtime/status   # needs auth cookie
+   docker compose logs backend | grep -i "$(sudo cat /opt/intodata/secrets/talend_tmc_api_token)" && echo "LEAK" || echo "no token in logs"
+   ```
+
+To disable again, set `RUNTIME_PROVIDER_KEY=` (empty) and restart the backend.
+
 ## Gap Capture
 
 If a deployment step fails:

@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     # trips per conversational turn, regardless of provider.
     runtime_tool_loop_max_iterations: int = 2
 
+    # Talend TMC runtime provider (EP-004 slice 5) — opt-in adapter behind the
+    # generic runtime contract. Default empty keeps Talend disabled. The API token
+    # is read from a mounted secret file, never a plaintext env var. Enable by
+    # setting runtime_provider_key="talend_tmc" plus these two values.
+    talend_tmc_base_url: str = ""
+    talend_tmc_api_token_file: str = ""
+    talend_tmc_request_timeout: float = 10.0
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"

@@ -156,6 +156,38 @@ Pass criteria:
 - Unapproved IPs cannot establish a connection.
 - `sudo ufw status verbose` shows only approved CIDRs for ports `22`, `80`, and `443`.
 
+## 8. Talend TMC Runtime (Optional, EP-004)
+
+Run only when `RUNTIME_PROVIDER_KEY=talend_tmc` (see RUNBOOK section 13). Skip
+otherwise.
+
+After logging in (reuse the cookie jar from section 3):
+
+```bash
+# Runtime status should report connected when the health URL is reachable
+curl -fsS -b cookies.txt "https://${FQDN}/api/v1/runtime/status"
+```
+
+Then, in the chat UI, ask a runtime question (e.g. "did the latest nightly_sync
+run fail?") and watch for the runtime tool progress row in the streaming answer.
+
+```bash
+# Token must NEVER appear in backend logs or response payloads
+docker compose logs backend | grep -i "$(sudo cat /opt/intodata/secrets/talend_tmc_api_token)" && echo "LEAK" || echo "OK: no token in logs"
+
+# The Talend runtime service must not be publicly exposed
+curl --connect-timeout 5 -I "http://${FQDN}:9000/" && echo "EXPOSED" || echo "OK: not public"
+```
+
+Pass criteria:
+
+- `runtime/status` returns `"status":"connected"` (or `"unavailable"` if the
+  health URL is intentionally not wired), never a 500.
+- A runtime chat prompt shows tool progress and a final answer; failures show a
+  "Runtime check unavailable" hint rather than crashing the stream.
+- No token value appears in `docker compose logs backend`.
+- The internal Talend runtime service is not reachable on a public host port.
+
 ## Sign-Off
 
 ```text
@@ -172,5 +204,6 @@ Document ingest: PASS/FAIL
 Streaming answer: PASS/FAIL
 Developer surface locked down: PASS/FAIL
 IP allowlist: PASS/FAIL
+Talend TMC runtime (if enabled): PASS/FAIL/N-A
 Notes:
 ```

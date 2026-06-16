@@ -47,6 +47,7 @@ _SENSITIVE_KEY_MARKERS = (
 
 _PROVIDER_MODULE_PATHS: dict[str, str] = {
     "mock": "src.runtime.providers.mock",
+    "talend_tmc": "src.runtime.providers.talend_tmc",
 }
 
 

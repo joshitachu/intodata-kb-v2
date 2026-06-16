@@ -105,6 +105,18 @@ services:
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      # Live runtime provider (EP-004). Empty RUNTIME_PROVIDER_KEY keeps runtime
+      # disabled. Set to "mock" for local validation, or "talend_tmc" with the
+      # Talend vars below to use the real adapter. The Talend token is supplied
+      # via a mounted secret file (TALEND_TMC_API_TOKEN_FILE), never inline here.
+      RUNTIME_PROVIDER_KEY: ${RUNTIME_PROVIDER_KEY:-}
+      RUNTIME_PROVIDER_LABEL: ${RUNTIME_PROVIDER_LABEL:-Live runtime}
+      RUNTIME_PROVIDER_HEALTH_URL: ${RUNTIME_PROVIDER_HEALTH_URL:-}
+      RUNTIME_STATUS_TIMEOUT: ${RUNTIME_STATUS_TIMEOUT:-5.0}
+      RUNTIME_TOOL_TIMEOUT: ${RUNTIME_TOOL_TIMEOUT:-10.0}
+      RUNTIME_TOOL_RESULT_MAX_CHARS: ${RUNTIME_TOOL_RESULT_MAX_CHARS:-12000}
+      TALEND_TMC_BASE_URL: ${TALEND_TMC_BASE_URL:-}
+      TALEND_TMC_API_TOKEN_FILE: ${TALEND_TMC_API_TOKEN_FILE:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

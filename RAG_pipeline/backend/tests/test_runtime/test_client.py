@@ -1,10 +1,17 @@
 """Tests for the generic runtime tool router (src/runtime/client.py)."""
 
 import asyncio
-from unittest.mock import patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 from src.runtime.client import _redact, _sanitize_and_bound, execute_runtime_tool
-from src.runtime.models import RuntimeToolCall, RuntimeToolErrorCode
+from src.runtime.models import (
+    RuntimeExecution,
+    RuntimeExecutionState,
+    RuntimeToolCall,
+    RuntimeToolErrorCode,
+)
+from src.runtime.providers import RuntimeProviderError
 
 
 class TestExecuteRuntimeToolDisabled:
@@ -19,7 +26,7 @@ class TestExecuteRuntimeToolDisabled:
 class TestExecuteRuntimeToolUnknownProvider:
     async def test_unknown_provider_key_returns_unavailable(self):
         with patch("src.runtime.client.settings") as mock_settings:
-            mock_settings.runtime_provider_key = "talend_tmc"
+            mock_settings.runtime_provider_key = "not_configured"
             result = await execute_runtime_tool(RuntimeToolCall(tool_name="list_executions", arguments={}))
         assert result.success is False
         assert result.error.code == RuntimeToolErrorCode.UNAVAILABLE
@@ -94,6 +101,44 @@ class TestExecuteRuntimeToolResultSizeLimiting:
             result = await execute_runtime_tool(RuntimeToolCall(tool_name="list_executions", arguments={}))
         assert result.success is True
         assert result.truncated is True
+
+
+class TestExecuteRuntimeToolTalendProvider:
+    """The Talend TMC provider key resolves to the real adapter module. Its
+    HTTP behavior is unit-tested separately; here we only prove the client
+    routes to it and maps its outcomes to the structured envelope."""
+
+    async def test_talend_provider_resolves_and_succeeds(self):
+        execution = RuntimeExecution(
+            execution_id="exec-1",
+            job_name="nightly_sync",
+            project_name="demo",
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        with patch("src.runtime.client.settings") as mock_settings, patch(
+            "src.runtime.providers.talend_tmc.provider.list_executions",
+            new=AsyncMock(return_value=[execution]),
+        ):
+            mock_settings.runtime_provider_key = "talend_tmc"
+            mock_settings.runtime_tool_timeout = 10.0
+            mock_settings.runtime_tool_result_max_chars = 12000
+            result = await execute_runtime_tool(RuntimeToolCall(tool_name="list_executions", arguments={}))
+        assert result.success is True
+        assert result.error is None
+        assert isinstance(result.data, list)
+
+    async def test_talend_provider_error_maps_to_provider_error(self):
+        with patch("src.runtime.client.settings") as mock_settings, patch(
+            "src.runtime.providers.talend_tmc.provider.list_executions",
+            new=AsyncMock(side_effect=RuntimeProviderError("upstream HTTP 500")),
+        ):
+            mock_settings.runtime_provider_key = "talend_tmc"
+            mock_settings.runtime_tool_timeout = 10.0
+            mock_settings.runtime_tool_result_max_chars = 12000
+            result = await execute_runtime_tool(RuntimeToolCall(tool_name="list_executions", arguments={}))
+        assert result.success is False
+        assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
 
 
 class TestSanitizeAndBound:
