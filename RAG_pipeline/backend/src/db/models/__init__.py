@@ -21,6 +21,12 @@ from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
 from src.db.models.entity_alias import EntityAlias
 from src.db.models.doc_gap_event import DocGapEvent
+from src.db.models.runtime_data import (
+    RuntimeExecutionRow,
+    RuntimeFailureRow,
+    RuntimeLogEventRow,
+    RuntimeSyncStateRow,
+)
 
 __all__ = [
     "User",
@@ -48,4 +54,8 @@ __all__ = [
     "UserInvite",
     "EntityAlias",
     "DocGapEvent",
+    "RuntimeExecutionRow",
+    "RuntimeFailureRow",
+    "RuntimeLogEventRow",
+    "RuntimeSyncStateRow",
 ]

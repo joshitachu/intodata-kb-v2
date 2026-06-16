@@ -1,44 +1,60 @@
 ---
 inspected_at: 2026-06-16
-verdict: WARN
+verdict: PASS
 ---
 
 ## Verdict Summary
-The Talend TMC adapter conforms to the approved mocked-transport scope and all runtime/credential contracts; findings are limited to commit hygiene and an operational token-cache note.
+Slice 1 implements a source-agnostic, project-scoped held-runtime store with correct RBAC filter semantics and idempotent writes, fully within the approved boundary; findings are minor/commit-hygiene only.
 
 ## Check Results
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | Adapter, registry entry, settings, tests, Compose env hooks, env template, RUNBOOK/SMOKE-TEST sections all implemented. No real TMC service added (image unavailable) — matches the plan's "env/secret hooks only" branch. |
-| Root cause         | PASS   | `talend_tmc` previously resolved as unknown; now a real adapter behind the generic protocol. No symptom-patching. |
-| Generalized        | PASS   | Provider keys exist only in the single `_PROVIDER_MODULE_PATHS` registry + doc comments; status route is fully provider-agnostic (reads settings, never the registry). Adding a provider is one-line and consistent with `mock`. |
-| Design patterns    | PASS   | Adapter (TMC ops behind generic `RuntimeProvider`) + Strategy/registry + module-singleton, mirroring `mock.py`. Transport injected for testability. |
-| Contract respect   | PASS   | Returns normalized models only; client.py remains the sanitize/timeout/size/error boundary; status response shape unchanged; no changes to retrieval/auth/RBAC/MCP/harness/LLM loop/frontend. |
-| No special-casing  | PASS   | No flags or shims. Talend op names confined to the adapter. |
-| Edge cases         | PASS   | Tests cover all four mappings, normalization x4, unknown-state fallback, missing/empty token, missing base URL, HTTP 401/403/500, timeout, malformed + missing-list payloads, no-token-in-errors, and client integration (success + provider_error). Verification run: 29 focused, 61 runtime/gen, 475 full suite, `docker compose config` exit 0, secret-hygiene grep clean. |
-| RBAC               | N/A    | Outbound HTTP adapter, not a DB/vector query. The chat route that triggers runtime already enforces conversation ownership upstream; no new route added. |
-| Credential safety  | PASS   | Token read from mounted file, never env; not logged (logs carry op name + "2xx" only); never in exception messages (status code / exception type only); test asserts the fixture token never appears in errors. Bearer header not logged. |
+| Plan conformance   | PASS   | Models, registration, migration `030`, repository (scoped reads + write-port + watermark), and focused tests all match the plan. Slice boundary held: no provider registration, no tool-loop threading, no seed, no frontend/SSE. |
+| Root cause         | PASS   | SQLite/Postgres tz mismatch fixed at the read-conversion boundary (`_as_utc`), giving a uniform tz-aware-UTC contract — not a test-only patch. |
+| Generalized        | PASS   | `_as_utc` applied to all four conversions + freshness, not just the one failing read. Scope guard centralized in `_denies_all`/`_apply_scope`. |
+| Design patterns    | PASS   | Repository pattern over `AsyncSession`, mirroring existing model/repo conventions; dialect-portable select-then-upsert; explicit `ProjectScope` alias. |
+| Contract respect   | PASS   | Source-agnostic (no Talend names); rows carry `project_id` + `ingested_at`; watermark table present; scope follows the `get_user_project_ids` None/list/[] contract; additive reversible migration (verified offline both directions). |
+| No special-casing  | PASS   | No flags/shims. Empty-scope handling is a single uniform rule, not per-method special cases. |
+| Edge cases         | PASS   | Tests: round trips, None/list/[] scope incl. cross-project denial for lists, point lookups, and logs; idempotent upserts; job/project/since-until/limit/min_severity filters; not-found. 20 repo tests + 76 nearby + 495 full suite green. |
+| RBAC               | PASS   | Authorization derives only from the explicit `scope` argument, never from `params` (LLM-controlled `project_name` only narrows within the allowed set; it cannot widen). `[]` denies all; point lookups out-of-scope raise not-found. Cross-project denial is explicitly tested. |
+| Credential safety  | PASS   | Pure data layer; no credentials, secrets, tokens, or logging of sensitive values. |
 
 ## Findings
 
-1. WARN — Token cache lifetime: `TalendTmcRuntimeProvider._token` caches the token on the process-lifetime module singleton (`talend_tmc.py`). A rotated token requires a backend restart to take effect. This is documented implicitly (RUNBOOK says restart backend to apply), but operators should be aware. Acceptable for this slice; revisit if hot rotation is ever required.
+1. INFO — `get_execution_logs` raises `RuntimeRecordNotFoundError` when an in-scope
+   execution has zero matching log rows; it cannot distinguish "unknown execution"
+   from "exists but no logs" (the store holds no execution↔log join). This is
+   plan-conformant ("log lookups should raise the not-found style") and matches mock
+   semantics. Note for Slice 2: the provider will map this to `RuntimeProviderError`,
+   which is acceptable; revisit only if "exists, no logs" must read as an empty list.
 
-2. WARN — Commit hygiene (carried over): `RAG_pipeline/frontend/tsconfig.tsbuildinfo` (build artifact), the `knowledge_base/pack-repos/table-inventory-pack` `-dirty` submodule pointer, and untracked root junk (`.mavis/`, `=`, stray `.txt`) are unrelated to this slice and must be excluded from the commit.
+2. INFO — `src/runtime/store/__init__.py` defines `ProjectScope` and
+   `RuntimeRecordNotFoundError` and then imports `repository` at the bottom (with
+   `# noqa: E402`); `repository` imports those names back. It works (definitions
+   precede the import; tests pass) but is slightly circular. Optional tidy: move the
+   alias/exception to a small `types.py`.
 
-3. INFO — Assumed wire format: the adapter's upstream operation names and request/response shapes are the plan's documented assumptions, not a confirmed contract (external TMC service unavailable). This was an explicit, approved downscope to a mocked-transport scaffold; the module docstring marks it and defers real-data reconciliation to Slice 6. Not a defect.
+3. INFO — End-to-end RBAC enforcement is not yet active: the repository filters by
+   whatever `scope` it is handed, but threading the real authenticated scope is
+   Slice 2. Correct for this slice's boundary; called out so it is not mistaken for
+   complete enforcement.
 
-4. INFO — Plan listed `tests/test_api/test_runtime_status.py` and `deploy/deploy-client.sh` as affected files; both were intentionally left unchanged. The status route is provider-agnostic so its tests stay valid (61 pass), and the deploy script change was conditional in the plan — secret creation is documented in RUNBOOK section 13 instead. Defensible reduction in scope; contracts intact.
-
-5. INFO — The production `httpx.AsyncClient(transport=None, ...)` construction line is not directly exercised (unit tests inject `MockTransport`; the client integration test patches the method). The same code path runs under MockTransport, so coverage is effectively equivalent; real-network construction is standard httpx. Slice 6 exercises it for real.
+4. WARN — Commit hygiene (recurring): exclude `RAG_pipeline/frontend/tsconfig.tsbuildinfo`
+   and the `knowledge_base/pack-repos/table-inventory-pack` `-dirty` submodule pointer.
+   Do include the new-epic planning docs (`.plans/01_grill.md`, `02_prd.md`,
+   `03_slices.md`, `04_active_plan.md`, `05_inspection_report.md`) and the archived
+   EP-004 docs under `.plans/archive/ep004-runtime/`.
 
 ## Required Actions
 
 - BLOCK: None.
-- WARN: When committing, stage only the slice files:
-  `RAG_pipeline/backend/src/config.py`, `RAG_pipeline/backend/src/runtime/client.py`,
-  `RAG_pipeline/backend/src/runtime/providers/talend_tmc.py`,
-  `RAG_pipeline/backend/tests/test_runtime/test_client.py`,
-  `RAG_pipeline/backend/tests/test_runtime/test_talend_tmc_provider.py`,
-  `docker-compose.yml`, `.env.production.template`, `deploy/RUNBOOK.md`, `deploy/SMOKE-TEST.md`, and `.plans/`.
-  Do not stage `tsconfig.tsbuildinfo`, the submodule pointer, or untracked root junk.
-- WARN: Carry findings 1, 3, 4, 5 forward as known context for Slice 6 (confirm real wire format; verify token rotation/restart expectation; exercise the live transport).
+- WARN: Stage only this slice's files when committing:
+  `RAG_pipeline/backend/src/db/models/runtime_data.py`,
+  `RAG_pipeline/backend/src/db/models/__init__.py`,
+  `RAG_pipeline/backend/alembic/versions/030_add_runtime_data.py`,
+  `RAG_pipeline/backend/src/runtime/store/` (both files),
+  `RAG_pipeline/backend/tests/test_runtime/test_store_repository.py`, and the `.plans/`
+  docs (incl. `archive/ep004-runtime/`). Exclude `tsconfig.tsbuildinfo` and the
+  submodule pointer.
+- INFO: Carry findings 1–3 into Slice 2 (scope threading + provider mapping of
+  not-found → `RuntimeProviderError`).
