@@ -453,6 +453,49 @@ class TestSendMessageStream:
         assert failed_msg.status == "failed"
         assert failed_msg.error_message == "Chat response failed. Please try again."
 
+    async def test_stream_relays_runtime_tool_events_in_order(self, mock_deps):
+        """Backend runtime tool-use loop events (EP-004 slice 3) are relayed
+        as additive SSE events, ending with the existing usage/done pair."""
+        mock_db = mock_deps["db"]
+        mock_db.add = MagicMock()
+        mock_db.commit = AsyncMock()
+        mock_db.flush = AsyncMock()
+
+        conv = _mock_conversation(id=1, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        async def fake_stream(**_kwargs):
+            yield ("sources", "[]")
+            yield ("runtime_tool_call", '{"tool_name": "detect_failures", "arguments": {}}')
+            yield ("runtime_tool_result", '{"tool_name": "detect_failures", "success": true}')
+            yield ("token", '"The nightly_sync job failed."')
+            yield ("usage", '{"input_tokens": 10, "output_tokens": 5}')
+            yield ("done", '{"message_id": 99, "latency_ms": 120}')
+
+        with patch(
+            "src.api.routes.conversations.run_conversational_rag_stream",
+            side_effect=fake_stream,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/conversations/1/messages/stream",
+                    json={"query": "Did the nightly sync fail?"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert resp.status_code == 200
+        events_in_order = [
+            line.removeprefix("event: ")
+            for line in resp.text.splitlines()
+            if line.startswith("event: ")
+        ]
+        assert events_in_order == [
+            "sources", "runtime_tool_call", "runtime_tool_result", "token", "usage", "done",
+        ]
+
 
 # --- Soft delete tests (real SQLite DB via db_session) ---
 

@@ -13,6 +13,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, DocGapEvent, QueryUsage
+from src.generation.agent_loop import run_runtime_tool_loop
 from src.generation.agent_orchestrator import AgentStep, AgentTool, AgentTrace
 from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
 from src.generation.prompt_builder import build_conversation_summary_messages
@@ -1066,13 +1067,24 @@ async def run_conversational_rag(
 
     if ctx.precomputed_answer is not None:
         answer = ctx.precomputed_answer
+        usage = get_last_usage()
     else:
-        answer = await generate_answer(ctx.llm_messages, images=images)
+        loop_outcome = await run_runtime_tool_loop(ctx.llm_messages, images=images)
+        if loop_outcome.final_answer is not None:
+            answer = loop_outcome.final_answer
+            usage = loop_outcome.usage or get_last_usage()
+            if loop_outcome.used_runtime_data:
+                logger.info(
+                    "Runtime tool loop answered conversation %s with %d step(s)",
+                    conversation.id, len(loop_outcome.progress_events),
+                )
+        else:
+            answer = await generate_answer(ctx.llm_messages, images=images)
+            usage = get_last_usage()
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
     # Persist token usage
-    usage = get_last_usage()
     if usage:
         try:
             entry = QueryUsage(
@@ -1188,9 +1200,13 @@ async def run_conversational_rag_stream(
     """Streaming version of conversational RAG.
 
     Yields (event_type, data_json) tuples for SSE:
-    - ("sources", json_array) — document sources
-    - ("token", json_string)  — individual LLM tokens
-    - ("done", json_object)   — {message_id, latency_ms}
+    - ("step", json_object)            — bounded read-only agent trace step
+    - ("sources", json_array)          — document sources
+    - ("runtime_tool_call", json_object)   — backend runtime tool-use loop requested a tool (EP-004 slice 3)
+    - ("runtime_tool_result", json_object) — sanitized result of that tool call (EP-004 slice 3)
+    - ("token", json_string)           — individual LLM tokens, or the runtime loop's final answer as one token
+    - ("usage", json_object)           — token counts + cost
+    - ("done", json_object)            — {message_id, latency_ms}
 
     Saves user + assistant messages to DB after streaming completes.
     """
@@ -1232,14 +1248,24 @@ async def run_conversational_rag_stream(
 
     # Stream LLM tokens (or emit precomputed answer as single token)
     accumulated = ""
+    loop_usage = None
     if ctx.precomputed_answer is not None:
         token = ctx.precomputed_answer.replace("[NEED_SEARCH]", "").strip()
         accumulated = token
         yield ("token", json.dumps(token))
     else:
-        async for token in generate_answer_stream(ctx.llm_messages, images=images):
-            accumulated += token
+        loop_outcome = await run_runtime_tool_loop(ctx.llm_messages, images=images)
+        if loop_outcome.final_answer is not None:
+            for event in loop_outcome.progress_events:
+                yield (event.event_type, json.dumps(event.payload))
+            token = loop_outcome.final_answer.replace("[NEED_SEARCH]", "").strip()
+            accumulated = token
+            loop_usage = loop_outcome.usage
             yield ("token", json.dumps(token))
+        else:
+            async for token in generate_answer_stream(ctx.llm_messages, images=images):
+                accumulated += token
+                yield ("token", json.dumps(token))
 
     # Safety: strip any [NEED_SEARCH] marker
     accumulated = accumulated.replace("[NEED_SEARCH]", "").strip()
@@ -1247,7 +1273,7 @@ async def run_conversational_rag_stream(
     latency_ms = int((time.perf_counter() - start) * 1000)
 
     # Emit usage event (token counts + cost)
-    usage = get_last_usage()
+    usage = loop_usage or get_last_usage()
     usage_data = {
         "input_tokens": usage.input_tokens if usage else 0,
         "output_tokens": usage.output_tokens if usage else 0,

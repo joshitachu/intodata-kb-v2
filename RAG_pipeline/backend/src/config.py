@@ -164,6 +164,10 @@ class Settings(BaseSettings):
     runtime_tool_timeout: float = 10.0
     runtime_tool_result_max_chars: int = 12000
 
+    # Backend tool-use loop (EP-004 slice 3) — hard cap on LLM<->tool round
+    # trips per conversational turn, regardless of provider.
+    runtime_tool_loop_max_iterations: int = 2
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"

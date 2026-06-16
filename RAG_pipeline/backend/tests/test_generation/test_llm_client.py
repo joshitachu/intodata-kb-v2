@@ -2,8 +2,15 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.generation.llm_client import generate_answer, generate_answer_stream
+from src.generation.llm_client import (
+    RuntimeToolCallRequest,
+    ToolAwareLLMResponse,
+    generate_answer,
+    generate_answer_stream,
+    generate_answer_with_runtime_tools,
+)
 from src.generation.usage import UsageStats
+from src.runtime.models import RuntimeToolDefinition
 
 
 MESSAGES = [
@@ -153,3 +160,77 @@ async def test_stream_all_fail():
         with pytest.raises(RuntimeError, match="All LLM providers failed"):
             async for _ in generate_answer_stream(MESSAGES):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# generate_answer_with_runtime_tools tests (EP-004 slice 3)
+# ---------------------------------------------------------------------------
+
+RUNTIME_TOOLS = [
+    RuntimeToolDefinition(name="list_executions", description="List executions", input_schema={"type": "object"}),
+]
+
+
+async def test_tool_aware_returns_tool_call():
+    """Kimi requests a tool → tool_call is populated, no text."""
+    with (
+        patch("src.generation.llm_client.settings") as mock_settings,
+        patch("src.generation.llm_client._kimi_generate_with_tools", new_callable=AsyncMock) as mock_kimi,
+    ):
+        mock_settings.llm_providers = ["kimi", "ollama"]
+        mock_kimi.return_value = ToolAwareLLMResponse(
+            provider="kimi",
+            tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="list_executions", arguments={}),
+            assistant_message={"role": "assistant", "content": "", "tool_calls": []},
+            usage=UsageStats(provider="kimi", model="kimi-k2.5"),
+        )
+
+        response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
+
+        assert response.tool_call.tool_name == "list_executions"
+        assert response.no_tool_support is False
+        mock_kimi.assert_awaited_once_with(MESSAGES, RUNTIME_TOOLS, images=None)
+
+
+async def test_tool_aware_returns_text():
+    """Kimi answers directly → text is populated, no tool_call."""
+    with (
+        patch("src.generation.llm_client.settings") as mock_settings,
+        patch("src.generation.llm_client._kimi_generate_with_tools", new_callable=AsyncMock) as mock_kimi,
+    ):
+        mock_settings.llm_providers = ["kimi", "ollama"]
+        mock_kimi.return_value = ToolAwareLLMResponse(
+            provider="kimi", text="Plain answer", usage=UsageStats(provider="kimi", model="kimi-k2.5")
+        )
+
+        response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
+
+        assert response.text == "Plain answer"
+        assert response.tool_call is None
+
+
+async def test_tool_aware_no_provider_supports_tools():
+    """Only ollama configured (no tool-aware function) → no_tool_support."""
+    with patch("src.generation.llm_client.settings") as mock_settings:
+        mock_settings.llm_providers = ["ollama"]
+
+        response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
+
+        assert response.no_tool_support is True
+        assert response.tool_call is None
+        assert response.text is None
+
+
+async def test_tool_aware_provider_error_falls_through_to_no_tool_support():
+    """Kimi raises → chain exhausted (ollama has no tool support) → no_tool_support."""
+    with (
+        patch("src.generation.llm_client.settings") as mock_settings,
+        patch("src.generation.llm_client._kimi_generate_with_tools", new_callable=AsyncMock) as mock_kimi,
+    ):
+        mock_settings.llm_providers = ["kimi", "ollama"]
+        mock_kimi.side_effect = Exception("Kimi rate limited")
+
+        response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
+
+        assert response.no_tool_support is True
+        mock_kimi.assert_awaited_once()

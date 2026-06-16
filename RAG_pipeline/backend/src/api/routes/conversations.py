@@ -294,10 +294,14 @@ async def send_message_stream(
     """Send a message and stream the RAG-powered response via SSE.
 
     Returns Server-Sent Events with:
-    - event: step    → optional read-only agent tool progress
-    - event: sources → JSON array of DocumentSource objects
-    - event: token   → individual LLM tokens (JSON-encoded string)
-    - event: done    → {message_id, latency_ms}
+    - event: step               → optional read-only agent tool progress
+    - event: sources             → JSON array of DocumentSource objects
+    - event: runtime_tool_call   → backend runtime tool-use loop requested a tool (EP-004 slice 3)
+    - event: runtime_tool_result → sanitized result of that tool call (EP-004 slice 3)
+    - event: token               → individual LLM tokens (JSON-encoded string), or the runtime loop's
+                                    final answer as a single token
+    - event: usage               → token counts + cost
+    - event: done                → {message_id, latency_ms}
     """
     # Load conversation with messages
     result = await db.execute(

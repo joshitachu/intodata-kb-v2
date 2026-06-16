@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 import httpx
 import ollama as ollama_lib
 
 from src.config import settings
 from src.generation.usage import UsageStats, StreamUsageStats
+from src.runtime.models import RuntimeToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +195,141 @@ async def _ollama_stream(messages: list[dict], images: list[str] | None = None) 
             acc.output_tokens = chunk.get("eval_count", 0) or 0
     acc.latency_ms = int((time.perf_counter() - t0) * 1000)
     yield acc.finalize()
+
+
+# ---------------------------------------------------------------------------
+# Tool-aware generation (EP-004 slice 3) — lets the backend runtime tool-use
+# loop ask a provider to either answer directly or request one runtime tool.
+# Kept separate from generate_answer()/generate_answer_stream() so the plain
+# RAG path is unaffected.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RuntimeToolCallRequest:
+    call_id: str
+    tool_name: str
+    arguments: dict
+
+
+@dataclass
+class ToolAwareLLMResponse:
+    provider: str
+    text: str | None = None
+    tool_call: RuntimeToolCallRequest | None = None
+    assistant_message: dict | None = None
+    """Assistant message shaped for the provider's own tool-call wire format
+    (e.g. OpenAI tool_calls), to append to history when tool_call is set."""
+    no_tool_support: bool = False
+    usage: UsageStats | None = None
+
+
+def _to_openai_tool_schema(tool: RuntimeToolDefinition) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema,
+        },
+    }
+
+
+async def _kimi_generate_with_tools(
+    messages: list[dict],
+    runtime_tools: list[RuntimeToolDefinition],
+    images: list[str] | None = None,
+) -> ToolAwareLLMResponse:
+    client = await _get_kimi_client()
+    t0 = time.perf_counter()
+    tools_schema = [_to_openai_tool_schema(t) for t in runtime_tools] if runtime_tools else None
+    response = await client.chat.completions.create(
+        model=settings.kimi_llm_model,
+        messages=_apply_images_kimi(messages, images),
+        temperature=settings.kimi_temperature,
+        max_tokens=2048,
+        tools=tools_schema,
+        tool_choice="auto" if tools_schema else "none",
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    usage = UsageStats(provider="kimi", model=settings.kimi_llm_model, latency_ms=elapsed)
+    if response.usage:
+        usage.input_tokens = response.usage.prompt_tokens or 0
+        usage.output_tokens = response.usage.completion_tokens or 0
+        usage.calculate_cost()
+
+    message = response.choices[0].message
+    if message.tool_calls:
+        call = message.tool_calls[0]
+        try:
+            arguments = json.loads(call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        return ToolAwareLLMResponse(
+            provider="kimi",
+            tool_call=RuntimeToolCallRequest(call_id=call.id, tool_name=call.function.name, arguments=arguments),
+            assistant_message={
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in message.tool_calls
+                ],
+            },
+            usage=usage,
+        )
+
+    return ToolAwareLLMResponse(provider="kimi", text=message.content, usage=usage)
+
+
+# Providers without a safe, testable structured tool-call path (e.g. Ollama in
+# this slice) are intentionally absent — _resolve_tool_aware treats a missing
+# entry as "no tool support" rather than as an error.
+_TOOL_AWARE_FUNCS: dict[str, str] = {
+    "kimi": "_kimi_generate_with_tools",
+}
+
+
+def _resolve_tool_aware(name: str):
+    """Resolve a provider's tool-aware function by name at call time, or None
+    if that provider has no structured tool-call support."""
+    func_name = _TOOL_AWARE_FUNCS.get(name)
+    if func_name is None:
+        return None
+    return getattr(_sys.modules[__name__], func_name)
+
+
+async def generate_answer_with_runtime_tools(
+    messages: list[dict],
+    runtime_tools: list[RuntimeToolDefinition],
+    images: list[str] | None = None,
+) -> ToolAwareLLMResponse:
+    """Tool-aware variant of generate_answer() for the runtime tool-use loop.
+
+    Tries each provider in chain order. A provider with no tool-aware function,
+    or whose call fails, is skipped rather than raised — exhausting the chain
+    without a usable decision yields no_tool_support=True so the caller can
+    fall back to generate_answer() without claiming live data.
+    """
+    global _last_usage
+    for name in settings.llm_providers:
+        tool_fn = _resolve_tool_aware(name)
+        if tool_fn is None:
+            continue
+        try:
+            response = await tool_fn(messages, runtime_tools, images=images)
+        except Exception as e:
+            logger.warning("%s tool-aware call failed: [%s] %s", name, type(e).__name__, e)
+            continue
+        if response.usage:
+            _last_usage = response.usage
+        return response
+    return ToolAwareLLMResponse(provider="", no_tool_support=True)
 
 
 # ---------------------------------------------------------------------------
