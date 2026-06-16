@@ -120,6 +120,14 @@ class TestRuntimeToolGuide:
         assert "list_executions" in out[0]["content"]
         assert out[1]["role"] == "user"
 
+    def test_guide_includes_per_source_label_instruction(self):
+        """Combined turns must tell the model to label each claim by origin so it
+        never presents document content as live logs or vice versa."""
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        content = out[0]["content"]
+        assert "(from logs)" in content
+        assert "(from <doc name>)" in content
+
     def test_guide_includes_prior_runtime_summary_when_provided(self):
         summary = [{"tool_name": "detect_failures", "execution_id": "exec-7841", "job_name": "esb_order_sync_route", "state": "failed"}]
         out = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=summary)

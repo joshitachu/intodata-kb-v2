@@ -39,7 +39,12 @@ _RUNTIME_TOOL_GUIDE = (
     "get_execution_details and get_execution_logs REQUIRE an execution_id. If the user "
     "refers to 'that execution', 'the failed job', or a job by name without giving an id, "
     "FIRST call list_executions or detect_failures to obtain the execution_id, THEN call "
-    "the details/logs tool. Never ask the user for an execution_id you can look up yourself."
+    "the details/logs tool. Never ask the user for an execution_id you can look up yourself.\n"
+    "Source labelling: when an answer mixes live tool results with the retrieved "
+    "documents, label each claim by its origin — append '(from logs)' to a claim grounded "
+    "in a runtime tool result, and '(from <doc name>)' to a claim grounded in a retrieved "
+    "document. Never present document content as live log data, or log data as document "
+    "content."
 )
 
 

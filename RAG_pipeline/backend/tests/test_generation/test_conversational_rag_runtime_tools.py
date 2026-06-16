@@ -132,15 +132,16 @@ class TestNonStreamingRuntimeLoop:
                 db=db,
             )
 
-        assert response.content == "Fallback answer"
+        assert response.content.startswith("Fallback answer")
+        assert "runtime tools are unavailable" in response.content
         assert response.doc_gap is True
         assert response.primary_source_layer == "internal_layers"
         assert len(response.sources) == 1
         assert response.sources[0].filename == "runbook.pdf"
 
-    async def test_precomputed_answer_skips_runtime_loop(self):
-        """When _prepare_rag_context already produced an answer, the runtime
-        loop must not run at all."""
+    async def test_terminal_precomputed_answer_skips_runtime_loop(self):
+        """A terminal precomputed answer (chitchat/metadata/summary/no-results,
+        allow_runtime_tools=False) must short-circuit without running the loop."""
         with (
             patch("src.generation.conversational_rag._prepare_rag_context", new_callable=AsyncMock) as mock_ctx,
             patch("src.generation.conversational_rag.run_runtime_tool_loop", new_callable=AsyncMock) as mock_loop,
@@ -157,6 +158,39 @@ class TestNonStreamingRuntimeLoop:
 
         assert response.content == "Greetings!"
         mock_loop.assert_not_called()
+
+    async def test_qa_precomputed_answer_still_runs_runtime_loop(self):
+        """A QA document-backed answer (allow_runtime_tools=True) must invoke the
+        runtime loop even though a precomputed answer exists, and prefer the loop's
+        combined answer."""
+        from src.generation.agent_loop import RuntimeLoopOutcome
+
+        loop_mock = AsyncMock(
+            return_value=RuntimeLoopOutcome(
+                final_answer="Combined: job failed (from logs); doc says retry (from runbook.pdf).",
+                used_runtime_data=True,
+                progress_events=[],
+                usage=None,
+            )
+        )
+        with (
+            patch("src.generation.conversational_rag._prepare_rag_context", new_callable=AsyncMock) as mock_ctx,
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", loop_mock),
+        ):
+            ctx = _precomputed_context("Doc-only answer.")
+            ctx.allow_runtime_tools = True
+            mock_ctx.return_value = ctx
+
+            response = await run_conversational_rag(
+                conversation=_mock_conversation(),
+                query="the job failed — what does the runbook say?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                db=_mock_db(),
+            )
+
+        loop_mock.assert_awaited_once()
+        assert response.content.startswith("Combined:")
 
     async def test_request_project_ids_forwarded_as_scope(self):
         """The request principal's project_ids must reach the runtime loop as
@@ -326,7 +360,8 @@ class TestRuntimeToolSummaryReplay:
             )
 
         mock_gen.assert_awaited_once()
-        assert response.content == "I don't have access to live runtime data."
+        assert response.content.startswith("I don't have access to live runtime data.")
+        assert "runtime tools are unavailable" in response.content
 
 
 class TestStreamingRuntimeLoop:

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.db.models import Conversation, ConversationMessage
+from src.generation.agent_loop import RuntimeLoopOutcome
 from src.generation.intent_classifier import Action, QueryAnalysis, QueryType
 from src.generation.conversational_rag import (
     build_context,
@@ -16,6 +17,17 @@ from src.generation.conversational_rag import (
     truncate_history,
 )
 from src.schemas import DocumentSource, Source
+
+
+def _no_tool_support_loop() -> AsyncMock:
+    """Patch target for run_runtime_tool_loop in pure RAG-routing tests: simulates a
+    provider with no structured tool support, so QA turns deterministically fall back
+    to the prepared document answer (with the unavailable note appended)."""
+    return AsyncMock(
+        return_value=RuntimeLoopOutcome(
+            final_answer=None, used_runtime_data=False, progress_events=[], usage=None
+        )
+    )
 
 
 def _mock_message(role: str, content: str, sources: list | None = None) -> ConversationMessage:
@@ -458,6 +470,7 @@ class TestContextFirstFlow:
         with (
             patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", _no_tool_support_loop()),
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             mock_gen.return_value = "Yes, you get 20 vacation days per year [1]."
@@ -471,7 +484,7 @@ class TestContextFirstFlow:
             )
 
         mock_search.assert_not_called()
-        assert response.content == "Yes, you get 20 vacation days per year [1]."
+        assert response.content.startswith("Yes, you get 20 vacation days per year [1].")
         assert response.sources is not None
         assert len(response.sources) == 1
         assert response.sources[0].filename == "hr_policy.pdf"
@@ -485,6 +498,7 @@ class TestContextFirstFlow:
         ]
         with (
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", _no_tool_support_loop()),
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             # First call: context-first attempt returns NEED_SEARCH
@@ -502,7 +516,7 @@ class TestContextFirstFlow:
 
         mock_search.assert_called_once()
         assert mock_gen.call_count == 2
-        assert response.content == "The salary range is $50k-$100k [1]."
+        assert response.content.startswith("The salary range is $50k-$100k [1].")
         assert response.sources is not None
         assert response.sources[0].filename == "salary.pdf"
 
@@ -520,6 +534,7 @@ class TestContextFirstFlow:
         with (
             patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", _no_tool_support_loop()),
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             mock_search.return_value = search_sources
@@ -534,9 +549,10 @@ class TestContextFirstFlow:
             )
 
         mock_search.assert_called_once()
-        # Only 1 generate call (no context-first attempt since no previous sources)
+        # Only 1 generate_answer call (the rung-1 precompute); the runtime loop uses
+        # generate_answer_with_runtime_tools, which is separate and patched out here.
         mock_gen.assert_called_once()
-        assert response.content == "Here is the HR info [1]."
+        assert response.content.startswith("Here is the HR info [1].")
 
     async def test_need_search_marker_stripped_from_final_response(
         self, mock_conversation_no_sources, mock_qdrant, mock_db

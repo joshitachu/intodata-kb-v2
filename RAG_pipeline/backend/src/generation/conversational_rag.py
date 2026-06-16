@@ -52,6 +52,7 @@ from src.retrieval.search import (
     search_similar,
     search_similar_hybrid,
 )
+from src.runtime.scope import RequestScope
 from src.schemas import DocumentSource, MessageResponse, Source
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,14 @@ ENCODING_NAME = "cl100k_base"
 MAX_HISTORY_TOKENS = 24000
 MAX_CONTEXT_TOKENS = 16000
 MAX_HISTORY_MESSAGES = 40
+
+# Appended to (or streamed after) an answer when the active LLM provider has no
+# structured tool-call support, so a runtime-relevant turn degrades visibly to a
+# documents-only answer instead of silently dropping the runtime dimension.
+_RUNTIME_UNAVAILABLE_NOTE = (
+    "_Note: live runtime tools are unavailable for the active model, so this "
+    "answer is based on indexed documents only._"
+)
 
 
 def build_context(
@@ -514,6 +523,11 @@ class RAGContext:
     document_sources: list[DocumentSource]
     precomputed_answer: str | None
     """Non-None when the answer was already computed (RESPOND / SUMMARY / context-first hit)."""
+    allow_runtime_tools: bool = False
+    """True for QA document-backed answers that may be augmented with live runtime
+    tools in the same turn. Terminal precomputed answers (chitchat, metadata,
+    conversation/document summary, no-results) leave this False so they short-circuit
+    without invoking the runtime tool loop."""
     analysis: QueryAnalysis | None = None
     """Intent classifier output, passed through to retention for gating decisions."""
     agent_steps: list[AgentStep] | None = None
@@ -790,6 +804,7 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
+                allow_runtime_tools=True,
                 analysis=analysis,
                 agent_steps=trace.steps,
             )
@@ -814,6 +829,7 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
+                allow_runtime_tools=True,
                 analysis=analysis,
                 agent_steps=trace.steps,
             )
@@ -927,6 +943,7 @@ async def _prepare_rag_context(
                 llm_messages=rung1_messages,
                 document_sources=document_sources,
                 precomputed_answer=rung1_answer,
+                allow_runtime_tools=True,
                 analysis=analysis,
                 agent_steps=trace.steps,
                 primary_source_layer=document_sources[0].source_layer or "canonical_docs",
@@ -968,6 +985,7 @@ async def _prepare_rag_context(
                     llm_messages=llm_messages,
                     document_sources=internal_docs,
                     precomputed_answer=answer,
+                    allow_runtime_tools=True,
                     analysis=analysis,
                     agent_steps=trace.steps,
                     primary_source_layer=internal_docs[0].source_layer or rung2_layers[0],
@@ -1073,19 +1091,24 @@ async def run_conversational_rag(
     Returns the assistant's response as a MessageResponse.
     """
     start = time.perf_counter()
+    scope = RequestScope.from_project_ids(project_ids)
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id, project_ids=project_ids, db=db, images=images,
+        user_id=user_id, project_ids=scope.project_ids, db=db, images=images,
     )
 
     runtime_progress: list = []
-    if ctx.precomputed_answer is not None:
+    # Terminal precomputed answers (chitchat, metadata, summaries, no-results) are
+    # used as-is. QA document-backed answers (allow_runtime_tools) and turns with no
+    # precomputed answer go through the runtime tool loop so live logs and indexed
+    # docs can be combined in one turn.
+    if ctx.precomputed_answer is not None and not ctx.allow_runtime_tools:
         answer = ctx.precomputed_answer
         usage = get_last_usage()
     else:
         loop_outcome = await run_runtime_tool_loop(
-            ctx.llm_messages, images=images, project_scope=project_ids, db=db,
+            ctx.llm_messages, images=images, project_scope=scope.project_scope, db=db,
             prior_runtime_summary=get_latest_runtime_tool_summary(conversation.messages),
         )
         runtime_progress = loop_outcome.progress_events
@@ -1097,8 +1120,14 @@ async def run_conversational_rag(
                     "Runtime tool loop answered conversation %s with %d step(s)",
                     conversation.id, len(loop_outcome.progress_events),
                 )
+        elif ctx.precomputed_answer is not None:
+            # No structured tool support: fall back to the prepared document answer,
+            # but surface the degradation rather than dropping runtime silently.
+            answer = f"{ctx.precomputed_answer}\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
+            usage = get_last_usage()
         else:
-            answer = await generate_answer(ctx.llm_messages, images=images)
+            generated = await generate_answer(ctx.llm_messages, images=images)
+            answer = f"{generated}\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
             usage = get_last_usage()
 
     latency_ms = int((time.perf_counter() - start) * 1000)
@@ -1231,6 +1260,7 @@ async def run_conversational_rag_stream(
     Saves user + assistant messages to DB after streaming completes.
     """
     start = time.perf_counter()
+    scope = RequestScope.from_project_ids(project_ids)
 
     # Save user message before streaming starts
     user_msg = ConversationMessage(
@@ -1251,7 +1281,7 @@ async def run_conversational_rag_stream(
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
-        user_id=user_id, precompute=False, project_ids=project_ids, db=db,
+        user_id=user_id, precompute=False, project_ids=scope.project_ids, db=db,
         images=images,
     )
 
@@ -1270,13 +1300,17 @@ async def run_conversational_rag_stream(
     accumulated = ""
     loop_usage = None
     runtime_progress: list = []
-    if ctx.precomputed_answer is not None:
+    # Terminal precomputed answers stream as-is. QA document-backed answers
+    # (allow_runtime_tools) and no-precompute turns run the runtime tool loop so
+    # logs and docs can combine; on a provider without tool support they degrade
+    # to the documents-only answer with a visible note appended to the stream.
+    if ctx.precomputed_answer is not None and not ctx.allow_runtime_tools:
         token = ctx.precomputed_answer.replace("[NEED_SEARCH]", "").strip()
         accumulated = token
         yield ("token", json.dumps(token))
     else:
         loop_outcome = await run_runtime_tool_loop(
-            ctx.llm_messages, images=images, project_scope=project_ids, db=db,
+            ctx.llm_messages, images=images, project_scope=scope.project_scope, db=db,
             prior_runtime_summary=get_latest_runtime_tool_summary(conversation.messages),
         )
         runtime_progress = loop_outcome.progress_events
@@ -1287,10 +1321,19 @@ async def run_conversational_rag_stream(
             accumulated = token
             loop_usage = loop_outcome.usage
             yield ("token", json.dumps(token))
+        elif ctx.precomputed_answer is not None:
+            token = ctx.precomputed_answer.replace("[NEED_SEARCH]", "").strip()
+            note = f"\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
+            accumulated = token + note
+            yield ("token", json.dumps(token))
+            yield ("token", json.dumps(note))
         else:
             async for token in generate_answer_stream(ctx.llm_messages, images=images):
                 accumulated += token
                 yield ("token", json.dumps(token))
+            note = f"\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
+            accumulated += note
+            yield ("token", json.dumps(note))
 
     # Safety: strip any [NEED_SEARCH] marker
     accumulated = accumulated.replace("[NEED_SEARCH]", "").strip()
