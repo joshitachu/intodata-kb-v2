@@ -5872,6 +5872,7 @@ def test_phase_costs_written_always_on_with_cache_split(tmp_path):
 def test_response_snapshot_writes_usage_always_on(tmp_path):
     CustomHarnessProvider._write_model_response_snapshot(
         tmp_path,
+        tmp_path / "_debug",
         ModelResult(success=True, input_tokens=80_000, cache_read_tokens=30_000,
                     output_tokens=4_000, latency_ms=9_000),
     )
@@ -5879,3 +5880,4 @@ def test_response_snapshot_writes_usage_always_on(tmp_path):
     assert usage["input_tokens"] == 80_000
     assert usage["input_cache_read_tokens"] == 30_000
     assert usage["input_cache_miss_tokens"] == 50_000
+    assert not (tmp_path / "_debug" / "response.json").exists()

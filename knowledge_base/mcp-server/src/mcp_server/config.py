@@ -183,7 +183,7 @@ class MCPServerConfig(BaseSettings):
     agent_max_tool_bytes: int = 600_000      # MCP_AGENT_MAX_TOOL_BYTES
     agent_max_tool_result_bytes: int = 50_000  # MCP_AGENT_MAX_TOOL_RESULT_BYTES
     agent_phase2_tool_input_token_cap: int = 180_000  # MCP_AGENT_PHASE2_TOOL_INPUT_TOKEN_CAP
-    agent_phase3_tool_input_token_cap: int = 320_000  # MCP_AGENT_PHASE3_TOOL_INPUT_TOKEN_CAP
+    agent_phase3_tool_input_token_cap: int = 600_000  # MCP_AGENT_PHASE3_TOOL_INPUT_TOKEN_CAP
     agent_max_task_attempts: int = 2         # MCP_AGENT_MAX_TASK_ATTEMPTS
     agent_max_repair_attempts: int = 3       # MCP_AGENT_MAX_REPAIR_ATTEMPTS
     agent_max_split_depth: int = 2           # MCP_AGENT_MAX_SPLIT_DEPTH

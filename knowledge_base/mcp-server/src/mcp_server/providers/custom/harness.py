@@ -3109,7 +3109,7 @@ Fallback plan example:
             f"call_budget={current_calls + 1}/{budget}",
             "info",
         )
-        snapshot_dir = self._write_model_input_snapshot(
+        snapshot_dir, debug_snapshot_dir = self._write_model_input_snapshot(
             ctx,
             provider=provider,
             phase=phase,
@@ -3136,7 +3136,7 @@ Fallback plan example:
             )
         else:
             result = await provider.complete(prompt, context_files, opts)
-        self._write_model_response_snapshot(snapshot_dir, result)
+        self._write_model_response_snapshot(snapshot_dir, debug_snapshot_dir, result)
         failure_kind = self._classify_failure(result)
         if failure_kind is not None:
             raw_error = result.raw_error or (
@@ -3272,7 +3272,7 @@ Fallback plan example:
         estimated_tokens: int,
         total_bytes: int,
         call_index: int,
-    ) -> Path:
+    ) -> tuple[Path, Path]:
         """Persist the per-call input manifest; full snapshots only in debug mode.
 
         The manifest (file list, sizes, options) is always written — it is the
@@ -3356,10 +3356,12 @@ Fallback plan example:
             "provider_options": opts.provider_options,
         }
         debug_write(debug_snapshot_dir / "request.json", json.dumps(request, indent=2))
-        return debug_snapshot_dir
+        return snapshot_dir, debug_snapshot_dir
 
     @staticmethod
-    def _write_model_response_snapshot(snapshot_dir: Path, result: ModelResult) -> None:
+    def _write_model_response_snapshot(
+        snapshot_dir: Path, debug_snapshot_dir: Path, result: ModelResult
+    ) -> None:
         # Always-on: the REAL provider-reported tokens for this call (the
         # tool-loop sum, not the pre-call estimate in manifest.json). This is
         # what reconciles to the bill; cache_read is the cheap cache-hit
@@ -3379,7 +3381,8 @@ Fallback plan example:
             )
         except OSError as exc:
             logger.warning("failed to write usage.json to %s: %s", snapshot_dir, exc, exc_info=True)
-        # Full response payload remains debug-only forensics.
+        # Full response payload remains debug-only forensics, so it goes under
+        # _debug/ rather than alongside the always-on manifest/usage files.
         response = {
             **usage,
             "model_name": result.model_name,
@@ -3387,7 +3390,7 @@ Fallback plan example:
             "metadata": result.metadata,
             "text_preview": result.text[:1000],
         }
-        debug_write(snapshot_dir / "response.json", json.dumps(response, indent=2, default=str))
+        debug_write(debug_snapshot_dir / "response.json", json.dumps(response, indent=2, default=str))
 
     @staticmethod
     def _bounded_context_files(context_files: list[Path]) -> list[Path]:
