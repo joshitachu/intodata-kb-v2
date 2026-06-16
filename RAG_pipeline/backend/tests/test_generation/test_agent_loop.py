@@ -52,6 +52,28 @@ class TestRuntimeToolLoopHappyPath:
         assert outcome.progress_events[1].payload["success"] is True
         assert outcome.usage.input_tokens == 20  # two decisions, 10 each
 
+    async def test_project_scope_and_db_are_forwarded_to_execute(self):
+        """The loop must forward the authenticated project_scope and db into every
+        execute_runtime_tool call — the RBAC channel for the stored provider."""
+        decisions = [
+            _decision(tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={})),
+            _decision(text="done"),
+        ]
+        tool_result = RuntimeToolResult(tool_name="detect_failures", success=True, data=[], latency_ms=5)
+        exec_mock = AsyncMock(return_value=tool_result)
+        sentinel_db = object()
+
+        with (
+            patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
+            patch("src.generation.agent_loop.execute_runtime_tool", exec_mock),
+        ):
+            await run_runtime_tool_loop(MESSAGES, project_scope=["project-a"], db=sentinel_db)
+
+        _, kwargs = exec_mock.call_args
+        assert kwargs["project_scope"] == ["project-a"]
+        assert kwargs["db"] is sentinel_db
+
     async def test_unknown_tool_call_produces_structured_failure_and_continues(self):
         """Model hallucinates a tool name → execute_runtime_tool's own validation
         rejects it (no patching needed) and the loop still reaches a final answer."""

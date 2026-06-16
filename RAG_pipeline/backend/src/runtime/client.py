@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.runtime.models import (
@@ -25,7 +26,8 @@ from src.runtime.models import (
     RuntimeToolErrorCode,
     RuntimeToolResult,
 )
-from src.runtime.providers import RuntimeProvider, RuntimeProviderError
+from src.runtime.providers import RuntimeProvider, RuntimeProviderContext, RuntimeProviderError
+from src.runtime.store import ProjectScope
 from src.runtime.registry import (
     RuntimeToolValidationError,
     UnknownRuntimeToolError,
@@ -48,6 +50,7 @@ _SENSITIVE_KEY_MARKERS = (
 _PROVIDER_MODULE_PATHS: dict[str, str] = {
     "mock": "src.runtime.providers.mock",
     "talend_tmc": "src.runtime.providers.talend_tmc",
+    "stored": "src.runtime.providers.stored",
 }
 
 
@@ -55,7 +58,19 @@ def list_runtime_tools() -> list[RuntimeToolDefinition]:
     return list_runtime_tool_definitions()
 
 
-async def execute_runtime_tool(call: RuntimeToolCall) -> RuntimeToolResult:
+async def execute_runtime_tool(
+    call: RuntimeToolCall,
+    *,
+    project_scope: ProjectScope,
+    db: AsyncSession | None = None,
+) -> RuntimeToolResult:
+    """Execute one generic runtime tool call.
+
+    `project_scope` is keyword-only and required so no call site can accidentally
+    omit it and grant unrestricted reads to the DB-backed `stored` provider. It is
+    the authenticated request's RBAC allow-list and must never be derived from the
+    LLM-supplied `call.arguments`.
+    """
     t0 = time.perf_counter()
 
     provider_key = settings.runtime_provider_key or None
@@ -78,9 +93,10 @@ async def execute_runtime_tool(call: RuntimeToolCall) -> RuntimeToolResult:
         )
 
     method = getattr(provider, call.tool_name)
+    context = RuntimeProviderContext(project_scope=project_scope, db=db)
 
     try:
-        raw_result = await asyncio.wait_for(method(params), timeout=settings.runtime_tool_timeout)
+        raw_result = await asyncio.wait_for(method(params, context), timeout=settings.runtime_tool_timeout)
     except TimeoutError:
         logger.warning("Runtime tool %s timed out (provider=%s)", call.tool_name, provider_key)
         return _error_result(call.tool_name, RuntimeToolErrorCode.TIMEOUT, f"{call.tool_name} timed out", t0)

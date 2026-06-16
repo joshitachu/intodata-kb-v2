@@ -43,7 +43,7 @@ from src.runtime.models import (
     RuntimeLogEvent,
     RuntimeLogSeverity,
 )
-from src.runtime.providers import RuntimeProviderError
+from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,9 @@ class TalendTmcRuntimeProvider:
 
     # --- generic provider methods ---
 
-    async def list_executions(self, params: ListExecutionsInput) -> list[RuntimeExecution]:
+    async def list_executions(
+        self, params: ListExecutionsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeExecution]:
         payload = {
             "project_name": params.project_name,
             "job_name": params.job_name,
@@ -189,14 +191,18 @@ class TalendTmcRuntimeProvider:
         data = await self._post(_OP_LIST_EXECUTIONS, payload)
         return [_to_execution(item) for item in _require_list(data, "executions")]
 
-    async def get_execution_details(self, params: GetExecutionDetailsInput) -> RuntimeExecution:
+    async def get_execution_details(
+        self, params: GetExecutionDetailsInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeExecution:
         data = await self._post(_OP_GET_EXECUTION_DETAILS, {"execution_id": params.execution_id})
         execution = data.get("execution")
         if not isinstance(execution, dict):
             raise RuntimeProviderError("Talend TMC execution details payload missing 'execution' object")
         return _to_execution(execution)
 
-    async def detect_failures(self, params: DetectFailuresInput) -> list[RuntimeFailure]:
+    async def detect_failures(
+        self, params: DetectFailuresInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeFailure]:
         payload = {
             "since": params.since.isoformat() if params.since else None,
             "until": params.until.isoformat() if params.until else None,
@@ -205,7 +211,9 @@ class TalendTmcRuntimeProvider:
         data = await self._post(_OP_DETECT_FAILURES, payload)
         return [_to_failure(item) for item in _require_list(data, "failures")]
 
-    async def get_execution_logs(self, params: GetExecutionLogsInput) -> list[RuntimeLogEvent]:
+    async def get_execution_logs(
+        self, params: GetExecutionLogsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeLogEvent]:
         payload = {
             "execution_id": params.execution_id,
             "limit": params.limit,

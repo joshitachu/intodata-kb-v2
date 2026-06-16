@@ -19,7 +19,7 @@ from src.runtime.models import (
     RuntimeLogEvent,
     RuntimeLogSeverity,
 )
-from src.runtime.providers import RuntimeProviderError
+from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 
 _FIXED_NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -90,7 +90,9 @@ _SEVERITY_RANK = list(RuntimeLogSeverity)
 class MockRuntimeProvider:
     """Deterministic fixture-backed provider. No network, no secrets."""
 
-    async def list_executions(self, params: ListExecutionsInput) -> list[RuntimeExecution]:
+    async def list_executions(
+        self, params: ListExecutionsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeExecution]:
         results = _EXECUTIONS
         if params.project_name:
             results = [e for e in results if e.project_name == params.project_name]
@@ -98,16 +100,22 @@ class MockRuntimeProvider:
             results = [e for e in results if e.job_name == params.job_name]
         return results[: params.limit]
 
-    async def get_execution_details(self, params: GetExecutionDetailsInput) -> RuntimeExecution:
+    async def get_execution_details(
+        self, params: GetExecutionDetailsInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeExecution:
         for execution in _EXECUTIONS:
             if execution.execution_id == params.execution_id:
                 return execution
         raise RuntimeProviderError(f"Unknown execution_id: {params.execution_id}")
 
-    async def detect_failures(self, params: DetectFailuresInput) -> list[RuntimeFailure]:
+    async def detect_failures(
+        self, params: DetectFailuresInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeFailure]:
         return _FAILURES[: params.limit]
 
-    async def get_execution_logs(self, params: GetExecutionLogsInput) -> list[RuntimeLogEvent]:
+    async def get_execution_logs(
+        self, params: GetExecutionLogsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeLogEvent]:
         logs = _LOGS.get(params.execution_id)
         if logs is None:
             raise RuntimeProviderError(f"Unknown execution_id: {params.execution_id}")

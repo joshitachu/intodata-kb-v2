@@ -15,11 +15,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.config import settings
 from src.generation.llm_client import generate_answer, generate_answer_with_runtime_tools, get_last_usage
 from src.generation.usage import UsageStats
 from src.runtime.client import execute_runtime_tool, list_runtime_tools
 from src.runtime.models import RuntimeToolCall
+from src.runtime.store import ProjectScope
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +71,15 @@ def _accumulate_usage(total: UsageStats | None, usage: UsageStats | None) -> Usa
 async def run_runtime_tool_loop(
     messages: list[dict],
     images: list[str] | None = None,
+    *,
+    project_scope: ProjectScope = None,
+    db: AsyncSession | None = None,
 ) -> RuntimeLoopOutcome:
     """Run a bounded generate -> tool-call -> execute -> continue loop.
+
+    `project_scope` and `db` are threaded into every runtime tool execution so the
+    DB-backed `stored` provider can enforce RBAC and read the held store. They are
+    keyword-only and supplied by authenticated chat code — never from tool arguments.
 
     Returns final_answer=None when the active provider chain has no
     structured tool-call support and no tool was ever called, so the caller
@@ -90,7 +100,7 @@ async def run_runtime_tool_loop(
             call = RuntimeToolCall(tool_name=decision.tool_call.tool_name, arguments=decision.tool_call.arguments)
             progress.append(RuntimeProgressEvent("runtime_tool_call", call.model_dump()))
 
-            result = await execute_runtime_tool(call)
+            result = await execute_runtime_tool(call, project_scope=project_scope, db=db)
             result_payload = result.model_dump(mode="json")
             progress.append(RuntimeProgressEvent("runtime_tool_result", result_payload))
 

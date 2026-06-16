@@ -4,57 +4,42 @@ verdict: PASS
 ---
 
 ## Verdict Summary
-Slice 1 implements a source-agnostic, project-scoped held-runtime store with correct RBAC filter semantics and idempotent writes, fully within the approved boundary; findings are minor/commit-hygiene only.
+Slice 2 threads authenticated project scope through the runtime boundary into a new DB-backed `stored` provider with RBAC enforced end-to-end and proven un-widenable by tool arguments; findings are one defense-in-depth WARN and commit hygiene.
 
 ## Check Results
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | Models, registration, migration `030`, repository (scoped reads + write-port + watermark), and focused tests all match the plan. Slice boundary held: no provider registration, no tool-loop threading, no seed, no frontend/SSE. |
-| Root cause         | PASS   | SQLite/Postgres tz mismatch fixed at the read-conversion boundary (`_as_utc`), giving a uniform tz-aware-UTC contract — not a test-only patch. |
-| Generalized        | PASS   | `_as_utc` applied to all four conversions + freshness, not just the one failing read. Scope guard centralized in `_denies_all`/`_apply_scope`. |
-| Design patterns    | PASS   | Repository pattern over `AsyncSession`, mirroring existing model/repo conventions; dialect-portable select-then-upsert; explicit `ProjectScope` alias. |
-| Contract respect   | PASS   | Source-agnostic (no Talend names); rows carry `project_id` + `ingested_at`; watermark table present; scope follows the `get_user_project_ids` None/list/[] contract; additive reversible migration (verified offline both directions). |
-| No special-casing  | PASS   | No flags/shims. Empty-scope handling is a single uniform rule, not per-method special cases. |
-| Edge cases         | PASS   | Tests: round trips, None/list/[] scope incl. cross-project denial for lists, point lookups, and logs; idempotent upserts; job/project/since-until/limit/min_severity filters; not-found. 20 repo tests + 76 nearby + 495 full suite green. |
-| RBAC               | PASS   | Authorization derives only from the explicit `scope` argument, never from `params` (LLM-controlled `project_name` only narrows within the allowed set; it cannot widen). `[]` denies all; point lookups out-of-scope raise not-found. Cross-project denial is explicitly tested. |
-| Credential safety  | PASS   | Pure data layer; no credentials, secrets, tokens, or logging of sensitive values. |
+| Plan conformance   | PASS   | Changed files match the plan's affected-files list exactly: provider seam (`RuntimeProviderContext` + `(params, context)` protocol), `mock`/`talend_tmc` accept-and-ignore, `stored` provider, client registration + required scope, loop + both `conversational_rag` call sites. No forbidden files touched (registry, API routes, frontend, alembic, db/models). Decision A (explicit params) used as specified. |
+| Root cause         | PASS   | Scope is threaded explicitly through the call chain rather than via implicit globals/contextvar; addresses the actual gap (no scope reached providers). |
+| Generalized        | PASS   | All three providers updated consistently to the new signature; the single `execute_runtime_tool` entry point is the one enforcement site. |
+| Design patterns    | PASS   | Strategy/registry preserved; per-call context object (`RuntimeProviderContext`); repository delegation in `stored`. |
+| Contract respect   | PASS   | LLM tool names/schemas, SSE event names, and progress payloads unchanged; `mock`/`talend_tmc` behavior unchanged; no Talend names in `stored`; runtime data stays in Postgres. |
+| No special-casing  | PASS   | No flags/shims. `stored` failing closed on missing db is a uniform guard, not a per-case branch. |
+| Edge cases         | PASS   | Tests: cross-project denial, **tool args cannot widen scope**, `[]` empty, `None` all, missing-db → `provider_error`, not-found → `RuntimeProviderError`, and forwarding assertions at loop + conversational levels. Focused 109 + full suite 508 green; import-cycle smoke clean. |
+| RBAC               | PASS   | `execute_runtime_tool(call, *, project_scope, db=None)` — `project_scope` is keyword-only with NO default, so a call site cannot silently omit it. Scope originates from `project_ids` (request principal) and is threaded out-of-band from `call.arguments`; arguments feed only `resolve_tool_call(params)`. A dedicated test proves naming another project's `project_name` in arguments cannot widen access. |
+| Credential safety  | PASS   | Pure data path; no credentials, tokens, or secret logging introduced. |
 
 ## Findings
 
-1. INFO — `get_execution_logs` raises `RuntimeRecordNotFoundError` when an in-scope
-   execution has zero matching log rows; it cannot distinguish "unknown execution"
-   from "exists but no logs" (the store holds no execution↔log join). This is
-   plan-conformant ("log lookups should raise the not-found style") and matches mock
-   semantics. Note for Slice 2: the provider will map this to `RuntimeProviderError`,
-   which is acceptable; revisit only if "exists, no logs" must read as an empty list.
+1. RESOLVED (was WARN, defense-in-depth) — `RuntimeProviderContext.project_scope`
+   previously defaulted to `None` (= unrestricted). Tightened: the field now has no
+   default, so an unscoped context cannot be constructed by accident. All constructors
+   pass `project_scope` explicitly; full suite still green (508).
 
-2. INFO — `src/runtime/store/__init__.py` defines `ProjectScope` and
-   `RuntimeRecordNotFoundError` and then imports `repository` at the bottom (with
-   `# noqa: E402`); `repository` imports those names back. It works (definitions
-   precede the import; tests pass) but is slightly circular. Optional tidy: move the
-   alias/exception to a small `types.py`.
+2. INFO — `stored.get_execution_logs` raises `RuntimeProviderError` when an in-scope
+   execution has zero matching logs (inherited Slice 1 not-found semantics, mapped at
+   the provider). Consistent with the `mock` provider; acceptable.
 
-3. INFO — End-to-end RBAC enforcement is not yet active: the repository filters by
-   whatever `scope` it is handed, but threading the real authenticated scope is
-   Slice 2. Correct for this slice's boundary; called out so it is not mistaken for
-   complete enforcement.
-
-4. WARN — Commit hygiene (recurring): exclude `RAG_pipeline/frontend/tsconfig.tsbuildinfo`
-   and the `knowledge_base/pack-repos/table-inventory-pack` `-dirty` submodule pointer.
-   Do include the new-epic planning docs (`.plans/01_grill.md`, `02_prd.md`,
-   `03_slices.md`, `04_active_plan.md`, `05_inspection_report.md`) and the archived
-   EP-004 docs under `.plans/archive/ep004-runtime/`.
+3. WARN (commit hygiene) — Exclude `RAG_pipeline/frontend/tsconfig.tsbuildinfo` and the
+   `knowledge_base/pack-repos/table-inventory-pack` `-dirty` submodule. Note:
+   `.plans/04_active_plan.md` has already rolled forward to Slice 3, so committing it
+   with this slice records the Slice 3 plan (the rolling active file); acceptable, but
+   be aware the as-approved Slice 2 plan is not separately archived.
 
 ## Required Actions
 
 - BLOCK: None.
-- WARN: Stage only this slice's files when committing:
-  `RAG_pipeline/backend/src/db/models/runtime_data.py`,
-  `RAG_pipeline/backend/src/db/models/__init__.py`,
-  `RAG_pipeline/backend/alembic/versions/030_add_runtime_data.py`,
-  `RAG_pipeline/backend/src/runtime/store/` (both files),
-  `RAG_pipeline/backend/tests/test_runtime/test_store_repository.py`, and the `.plans/`
-  docs (incl. `archive/ep004-runtime/`). Exclude `tsconfig.tsbuildinfo` and the
-  submodule pointer.
-- INFO: Carry findings 1–3 into Slice 2 (scope threading + provider mapping of
-  not-found → `RuntimeProviderError`).
+- WARN: Consider tightening the `RuntimeProviderContext` scope default (finding 1) now
+  or as a tracked follow-up. Stage only this slice's source + test files plus the
+  `.plans/` docs when committing; exclude the build artifact and submodule pointer.
+- INFO: Carry finding 2 forward; relevant to Slice 3 end-to-end seeding behavior.

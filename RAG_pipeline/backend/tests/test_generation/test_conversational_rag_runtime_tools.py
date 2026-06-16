@@ -157,6 +157,36 @@ class TestNonStreamingRuntimeLoop:
         assert response.content == "Greetings!"
         mock_loop.assert_not_called()
 
+    async def test_request_project_ids_forwarded_as_scope(self):
+        """The request principal's project_ids must reach the runtime loop as
+        project_scope (and the db session must be forwarded) — the RBAC channel."""
+        from src.generation.agent_loop import RuntimeLoopOutcome
+
+        db = _mock_db()
+        loop_mock = AsyncMock(
+            return_value=RuntimeLoopOutcome(
+                final_answer="ok", used_runtime_data=True, progress_events=[], usage=None
+            )
+        )
+        with (
+            patch("src.generation.conversational_rag._prepare_rag_context", new_callable=AsyncMock) as mock_ctx,
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", loop_mock),
+        ):
+            mock_ctx.return_value = _no_precompute_context()
+
+            await run_conversational_rag(
+                conversation=_mock_conversation(),
+                query="did it fail?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                db=db,
+                project_ids=["project-a"],
+            )
+
+        _, kwargs = loop_mock.call_args
+        assert kwargs["project_scope"] == ["project-a"]
+        assert kwargs["db"] is db
+
     async def test_no_tool_support_falls_back_to_plain_generate_answer(self):
         """Provider chain offers no tool support → existing generate_answer()
         path is used, never claiming live runtime data."""

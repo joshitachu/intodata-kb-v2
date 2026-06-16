@@ -1069,7 +1069,9 @@ async def run_conversational_rag(
         answer = ctx.precomputed_answer
         usage = get_last_usage()
     else:
-        loop_outcome = await run_runtime_tool_loop(ctx.llm_messages, images=images)
+        loop_outcome = await run_runtime_tool_loop(
+            ctx.llm_messages, images=images, project_scope=project_ids, db=db
+        )
         if loop_outcome.final_answer is not None:
             answer = loop_outcome.final_answer
             usage = loop_outcome.usage or get_last_usage()
@@ -1254,7 +1256,9 @@ async def run_conversational_rag_stream(
         accumulated = token
         yield ("token", json.dumps(token))
     else:
-        loop_outcome = await run_runtime_tool_loop(ctx.llm_messages, images=images)
+        loop_outcome = await run_runtime_tool_loop(
+            ctx.llm_messages, images=images, project_scope=project_ids, db=db
+        )
         if loop_outcome.final_answer is not None:
             for event in loop_outcome.progress_events:
                 yield (event.event_type, json.dumps(event.payload))
