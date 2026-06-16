@@ -159,6 +159,11 @@ class Settings(BaseSettings):
     runtime_provider_health_url: str = ""
     runtime_status_timeout: float = 5.0
 
+    # Generic runtime tool boundary (EP-004 slice 2) — bounds applied uniformly
+    # to every tool call in runtime/client.py, regardless of provider.
+    runtime_tool_timeout: float = 10.0
+    runtime_tool_result_max_chars: int = 12000
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"

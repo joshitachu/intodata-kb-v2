@@ -1,6 +1,6 @@
 ---
 feature: EP-004 TMC Live Integration
-slice: Runtime Status Contract and Chat Indicator
+slice: Runtime Provider Contract and Safe Mock Adapter
 sub_project: rag_pipeline
 critical_area: no
 verdict: PASS
@@ -9,173 +9,184 @@ approved_at: 2026-06-16
 
 ## Problem Statement
 
-IntoData KB has no platform-level contract for reporting whether live runtime
-data is available. The chat UI therefore cannot tell users whether live
-execution/log data is connected, unavailable, or disabled before later slices add
-runtime tool calls.
+Slice 1 established a provider-agnostic runtime status surface. The platform
+still lacks the backend contract that later chat tooling can call safely: there
+is no normalized execution/log model, no allowlisted runtime tool registry, no
+provider adapter protocol, and no safe mock provider for tests.
 
-Slice 1 must establish that contract without depending on the external Talend
-TMC server. The result should be provider-agnostic: Talend TMC is the initial
-provider label, but the backend/frontend contract must not encode TMC-only
-status semantics.
+Slice 2 must create that backend runtime boundary without calling Talend TMC and
+without modifying chat generation. The purpose is to make the future tool-use
+loop call one generic runtime client, while each platform adapter handles its
+own provider-specific mapping.
 
 ## Proposed Solution
 
-Add a small RAG backend runtime status module and route:
+Extend `RAG_pipeline/backend/src/runtime/` with a small Strategy-style provider
+interface plus an allowlisted registry/router:
 
-- `GET /api/v1/runtime/status`
-- Authenticated via `CurrentUser`, but no additional role/permission gate.
-- Returns a normalized status payload with:
-  - `status`: `disabled | connected | unavailable`
-  - `provider_key`: optional string, for example `talend_tmc`
-  - `provider_label`: user-facing label, for example `Talend TMC`
-  - `message`: short safe status text
-  - `checked_at`: ISO timestamp
+- Generic runtime tools:
+  - `list_executions`
+  - `get_execution_details`
+  - `detect_failures`
+  - `get_execution_logs`
+- Normalized Pydantic models:
+  - `RuntimeExecution`
+  - `RuntimeFailure`
+  - `RuntimeLogEvent`
+  - `RuntimeToolDefinition`
+  - `RuntimeToolCall`
+  - `RuntimeToolResult`
+  - structured runtime error payloads
+- Provider protocol:
+  - async methods for the four generic capabilities;
+  - no Talend-specific names in the caller-facing client.
+- Runtime registry:
+  - fixed allowlist of tool definitions and input model schemas;
+  - rejects unknown tools before reaching any provider.
+- Runtime client/router:
+  - validates tool arguments with Pydantic;
+  - selects the configured provider adapter;
+  - enforces per-call timeout and result size limits;
+  - sanitizes bounded output before the result is eligible for LLM context;
+  - returns controlled `RuntimeToolResult` failures for disabled/unavailable
+    providers, unsupported tools, validation errors, provider errors, and
+    timeouts.
+- Mock provider:
+  - deterministic, credential-free sample execution/failure/log data;
+  - can be enabled with `runtime_provider_key="mock"`;
+  - exists only for tests/local validation and does not call external systems.
 
-Add runtime config settings:
-
-- `runtime_provider_key`: empty means disabled
-- `runtime_provider_label`: default `Live runtime`
-- `runtime_provider_health_url`: empty means provider is configured but not
-  reachable yet, so status is `unavailable`
-- `runtime_status_timeout`: short timeout for optional health checks
-
-Implement `src/runtime/status.py` so Slice 1 can return:
-
-- `disabled` when no provider key is configured
-- `unavailable` when a provider key exists but no health URL exists or health
-  fails
-- `connected` when a configured health URL returns 2xx
-
-Add a Next.js BFF proxy route and frontend state:
-
-- Browser calls `/api/runtime/status`, not FastAPI directly.
-- BFF forwards cookies/CSRF with existing proxy helpers.
-- Zod validates the response before React sees it.
-- `useRuntimeStatus()` uses React Query, handles loading/error/data, and falls
-  back to an unknown/unavailable UI state rather than blocking chat.
-
-Add a compact `RuntimeStatusIndicator` in the chat toolbar next to chat mode and
-project selection. It should render a small status dot plus concise text:
-
-- `Live runtime disabled`
-- `Talend TMC unavailable`
-- `Talend TMC connected`
-
-The indicator must not disable message submission or change the existing RAG
-conversation flow.
+This slice should extend the existing Slice 1 runtime status models instead of
+replacing them. It should not touch `conversational_rag.py`, `llm_client.py`,
+streaming SSE, frontend code, Docker Compose, or Talend provider code.
 
 ## Affected Files
 
 - `RAG_pipeline/backend/src/config.py`
-- `RAG_pipeline/backend/src/api/main.py`
-- `RAG_pipeline/backend/src/api/routes/runtime.py` (new)
-- `RAG_pipeline/backend/src/runtime/__init__.py` (new)
-- `RAG_pipeline/backend/src/runtime/models.py` (new)
-- `RAG_pipeline/backend/src/runtime/status.py` (new)
-- `RAG_pipeline/backend/tests/test_api/test_runtime_status.py` (new)
-- `RAG_pipeline/frontend/app/api/runtime/status/route.ts` (new)
-- `RAG_pipeline/frontend/types/index.ts`
-- `RAG_pipeline/frontend/hooks/useRuntimeStatus.ts` (new)
-- `RAG_pipeline/frontend/components/RuntimeStatusIndicator.tsx` (new)
-- `RAG_pipeline/frontend/components/ChatWindow.tsx`
-- `RAG_pipeline/frontend/tests/hooks/useRuntimeStatus.test.ts` (new)
-- `RAG_pipeline/frontend/tests/components/RuntimeStatusIndicator.test.tsx` (new)
-- `RAG_pipeline/.agent/system/api-reference.md`
-- `.env.production.template`
+- `RAG_pipeline/backend/src/runtime/__init__.py`
+- `RAG_pipeline/backend/src/runtime/models.py`
+- `RAG_pipeline/backend/src/runtime/registry.py` (new)
+- `RAG_pipeline/backend/src/runtime/client.py` (new)
+- `RAG_pipeline/backend/src/runtime/providers/__init__.py` (new)
+- `RAG_pipeline/backend/src/runtime/providers/mock.py` (new)
+- `RAG_pipeline/backend/tests/test_runtime/test_registry.py` (new)
+- `RAG_pipeline/backend/tests/test_runtime/test_client.py` (new)
+- `RAG_pipeline/backend/tests/test_runtime/test_mock_provider.py` (new)
 
 ## Architecture Contracts
 
-- The runtime status contract is generic. It must not expose Talend API details,
-  task IDs, secrets, logs, or tool schemas.
-- `runtime_provider_key` is the stable integration key. `provider_label` is
-  display-only and safe for UI.
-- Empty `runtime_provider_key` means disabled, not an error.
-- Provider configured but not reachable means unavailable, not a chat failure.
-- Runtime status is available to every authenticated user, with no extra RBAC
-  gate in this slice.
-- The frontend preserves the BFF pattern: client components call Next.js route
-  handlers, and route handlers call FastAPI with server-side `FASTAPI_URL`.
-- The status hook must implement loading, error, and data states. Errors degrade
-  the indicator only; they do not block normal chat.
-- Slice 1 does not register runtime tools, add a tool-use loop, call the TMC API,
-  or modify streaming SSE events.
+- Runtime callers use generic tool names only. Provider-specific operation names
+  are adapter internals.
+- The allowlist is closed over the four PoC tools. Unknown tools return a
+  structured not-available result and must not call any provider.
+- Provider selection is driven by `settings.runtime_provider_key`. Empty means
+  disabled. `mock` resolves to the mock adapter.
+- Tool argument validation happens before provider execution.
+- Tool execution is async and timeout-bounded with `settings.runtime_tool_timeout`.
+- Tool results are size-bounded with `settings.runtime_tool_result_max_chars`
+  before they can be inserted into prompts, logs, or future SSE events.
+- Sanitization/redaction must remove obvious credential-bearing keys and values
+  such as tokens, passwords, secrets, API keys, and authorization headers from
+  nested dict/list payloads.
+- Logs may include provider key, tool name, status, and latency. Logs must not
+  include raw arguments, raw logs, credentials, or full tool result payloads.
+- The mock provider must be deterministic and safe for unit tests.
+- This slice does not change chat auth, conversation ownership, persistence,
+  usage accounting, retrieval, or frontend behavior.
 
 ## Implementation Steps
 
-1. Add backend runtime models:
-   - Define `RuntimeConnectionStatus` as a string enum or literal-compatible
-     type with `disabled`, `connected`, and `unavailable`.
-   - Define `RuntimeStatusResponse` as a Pydantic v2 model.
+1. Extend runtime settings:
+   - Add `runtime_tool_timeout: float = 10.0`.
+   - Add `runtime_tool_result_max_chars: int = 12000`.
+   - Keep existing Slice 1 status settings intact.
 
-2. Add backend runtime status service:
-   - Read runtime settings from `settings`.
-   - If no provider key is configured, return disabled.
-   - If provider key exists and no health URL exists, return unavailable.
-   - If health URL exists, perform an async `httpx` GET with timeout.
-   - Treat 2xx as connected; all other statuses/exceptions as unavailable.
-   - Log failures without including request bodies, secrets, or raw provider
-     payloads.
+2. Extend `runtime/models.py`:
+   - Preserve `RuntimeConnectionStatus` and `RuntimeStatusResponse`.
+   - Add runtime status enums for execution state and log severity.
+   - Add normalized execution/failure/log-event models.
+   - Add request/input models for the four generic tools:
+     - list executions: optional project/job name, time window, limit;
+     - execution details: execution ID;
+     - failure detection: optional time window and limit;
+     - execution logs: execution ID, optional limit/severity.
+   - Add `RuntimeToolDefinition`, `RuntimeToolCall`, `RuntimeToolError`, and
+     `RuntimeToolResult` models.
 
-3. Add backend API route:
-   - Create `src/api/routes/runtime.py` with `router = APIRouter(prefix="/runtime", tags=["runtime"])`.
-   - Add `GET /status`, require `CurrentUser`, and return `RuntimeStatusResponse`.
-   - Register the router in `src/api/main.py` with prefix `/api/v1`.
+3. Add `runtime/registry.py`:
+   - Define a fixed registry mapping tool names to descriptions, input model
+     classes, timeouts, and result caps.
+   - Add helpers to list definitions and resolve/validate a tool call.
+   - Ensure unknown tool names return a controlled error path.
 
-4. Add backend tests:
-   - No provider configured returns `disabled`.
-   - Provider configured without health URL returns `unavailable`.
-   - Health URL 2xx returns `connected`.
-   - Health URL failure/timeout returns `unavailable`.
-   - Endpoint requires authentication but no role-specific permission.
+4. Add provider interface and resolution:
+   - Define a typed provider `Protocol` or abstract base in `runtime/client.py`
+     or `runtime/providers/__init__.py`.
+   - Resolve providers by key in a string/function registry, following the
+     existing LLM/embedder pattern that resolves at call time for patchability.
+   - Support `mock` only in this slice.
+   - Return provider-unavailable errors when no provider is configured or an
+     unknown provider key is configured.
 
-5. Add frontend schemas and BFF:
-   - Add runtime status Zod schema and exported type in `frontend/types/index.ts`.
-   - Add `frontend/app/api/runtime/status/route.ts`.
-   - Forward cookies using existing proxy/header helpers.
-   - Return backend status codes for auth failures; validate successful payloads.
+5. Add `runtime/providers/mock.py`:
+   - Implement the four async generic methods.
+   - Use small deterministic fixtures with at least:
+     - one successful execution,
+     - one failed execution,
+     - failure summary data,
+     - log events with timestamps/severity/message.
+   - Never read env secrets or call the network.
 
-6. Add frontend hook:
-   - Create `useRuntimeStatus()` using React Query.
-   - Fetch `/api/runtime/status` with `cache: "no-store"`.
-   - Use a short stale time/refetch interval suitable for status, for example
-     15-30 seconds.
-   - On fetch/parse failure, expose error state without throwing in the UI.
+6. Add `runtime/client.py` router:
+   - Public API should be small, for example:
+     - `list_runtime_tools() -> list[RuntimeToolDefinition]`
+     - `execute_runtime_tool(call: RuntimeToolCall) -> RuntimeToolResult`
+   - Validate the tool against the registry.
+   - Resolve the provider.
+   - Execute the provider method with `asyncio.wait_for` or equivalent timeout.
+   - Catch specific validation/provider/timeout exceptions and return structured
+     failure results.
+   - Sanitize and size-bound output in one place.
+   - Record latency on every result.
 
-7. Add chat indicator UI:
-   - Create `RuntimeStatusIndicator`.
-   - Render compact loading, disabled, unavailable, connected, and error states.
-   - Use lucide icons or small semantic dots; avoid a large card.
-   - Add the indicator to `ChatWindow` `toolbarContent` beside mode/project
-     controls for both welcome and active conversation states.
+7. Add backend tests:
+   - Registry lists exactly the four generic tools.
+   - Registry rejects unsupported tools without provider calls.
+   - Argument validation rejects malformed inputs.
+   - Mock provider returns normalized execution, failure, and log models.
+   - Client returns success for supported mock calls.
+   - Client returns disabled/unavailable for empty provider config.
+   - Client returns unavailable for unknown provider key.
+   - Client handles provider exceptions and timeouts as structured failures.
+   - Result-size limiting truncates oversized provider output.
+   - Sanitization removes credential-looking fields from nested results.
 
-8. Update docs/config examples:
-   - Document `/api/v1/runtime/status` in `RAG_pipeline/.agent/system/api-reference.md`.
-   - Add commented runtime env vars to `.env.production.template`.
+8. Keep Slice 1 status compatible:
+   - Do not change `/api/v1/runtime/status` response shape.
+   - If `runtime_provider_key="mock"`, status may still depend on the Slice 1
+     health URL behavior until a later slice chooses tighter integration.
 
 ## Verification Strategy
 
 - Backend syntax:
-  - `cd RAG_pipeline/backend && python3 -m py_compile src/config.py src/api/main.py src/api/routes/runtime.py src/runtime/models.py src/runtime/status.py`
+  - `cd RAG_pipeline/backend && python3 -m py_compile src/config.py src/runtime/models.py src/runtime/registry.py src/runtime/client.py src/runtime/providers/__init__.py src/runtime/providers/mock.py`
 
 - Backend targeted tests:
+  - `cd RAG_pipeline/backend && uv run pytest tests/test_runtime/test_registry.py tests/test_runtime/test_client.py tests/test_runtime/test_mock_provider.py`
+
+- Compatibility smoke:
   - `cd RAG_pipeline/backend && uv run pytest tests/test_api/test_runtime_status.py`
 
-- Frontend typecheck/tests:
-  - `cd RAG_pipeline/frontend && npx tsc --noEmit`
-  - `cd RAG_pipeline/frontend && npm test -- useRuntimeStatus RuntimeStatusIndicator`
-
-- Optional broader smoke after implementation:
-  - `cd RAG_pipeline/backend && uv run pytest tests/test_api/test_runtime_status.py tests/test_api/test_conversations.py`
-  - `cd RAG_pipeline/frontend && npm test -- useStreamMessage MessageList useRuntimeStatus RuntimeStatusIndicator`
+- Broader optional smoke before moving to Slice 3:
+  - `cd RAG_pipeline/backend && uv run pytest tests/test_runtime tests/test_api/test_runtime_status.py tests/test_generation/test_llm_client.py`
 
 ## Out of Scope
 
-- Dockerizing or composing the external Talend TMC server.
-- Docker secret handling for the Talend token.
-- Registering runtime tools.
-- Calling `get_task_executions`, `get_execution_details`,
-  `detect_execution_failures`, or `get_execution_logs`.
-- Adding an LLM tool-use loop.
-- Adding runtime SSE events.
+- LLM tool-call parsing or agent-loop behavior.
+- Any changes to `RAG_pipeline/backend/src/generation/conversational_rag.py`.
+- Any changes to `RAG_pipeline/backend/src/generation/llm_client.py`.
+- SSE runtime tool events.
+- Frontend runtime progress rendering.
+- Talend TMC provider implementation.
+- Docker Compose changes and Docker secrets.
 - Real Talend TMC validation.
