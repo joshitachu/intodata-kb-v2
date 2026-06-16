@@ -1,106 +1,110 @@
 ---
-feature: Persist runtime tool results into conversation context (runtime tool memory)
+feature: Logs Dashboard + RAG×Runtime Cross-Reference
 pipeline_step: 1_grill
 date: 2026-06-16
 ---
 
 ## Feature
-
-After a runtime tool-use turn, persist a compact, sanitized summary of the runtime
-tool results (tool name + `execution_id` + job name + state/short headline — never raw
-logs or secrets) on the conversation, and replay it into the next turn's LLM context
-so follow-up questions like "show me the logs for that execution" / "the failed job"
-resolve the `execution_id` from memory instead of re-discovering it or asking the user.
-
-Builds on the committed Held Runtime-Data epic (`stored` provider + RBAC scope
-threading) and the just-made tool-use guidance change (registry descriptions +
-`agent_loop` runtime guide + iteration cap, currently uncommitted). Predecessor epic
-docs archived in `.plans/archive/held-runtime/`.
+A logs dashboard page in the existing RAG frontend where users can browse live
+execution data, and an LLM that cross-references that live log data with indexed
+documentation in the same answer turn — so a user can ask "I see this error in the
+logs, what should I look at?" and get an answer grounded in both.
 
 ## Problem Statement
+Two gaps today:
 
-Each chat message runs its own runtime tool-use loop (`run_runtime_tool_loop`), and
-only the final assistant *text* is persisted to `conversation_messages`. The
-structured tool results — including the `execution_id` returned by `detect_failures` /
-`list_executions` — are discarded at end of turn. So on a follow-up like "show me the
-logs for that execution", the model has no `execution_id` in context. The just-shipped
-tool-use guidance helps the model re-discover the id via a tool call, but that depends
-on model behaviour every turn. There is no durable memory of "the execution we were
-just talking about."
+1. **No UI for logs.** The only way to see runtime data is to ask the chat. There
+   is no page where a user can browse executions, see failure summaries, or drill
+   into log lines. The data is in Postgres but invisible.
+
+2. **RAG and runtime tool calls never happen in the same turn.** The chat either
+   does document search (Qdrant) OR runtime tool calls (Postgres). When the LLM
+   produces a precomputed answer from the RAG path, it short-circuits before the
+   runtime loop ever runs. A question like "I see ORA-12170 in the logs — what
+   does our ESB architecture doc say I should check?" cannot be answered today.
 
 ## Definition of Done
-
-- After a runtime turn, the assistant message persists a bounded, sanitized
-  `runtime_tool_summary` (e.g. list of `{tool_name, execution_id?, job_name?, state?,
-  headline?}`) — derived from the turn's `RuntimeToolResult`s, never raw log text.
-- On the next turn, the most recent persisted summary is injected into the LLM context
-  (as a system/context note) so the model can resolve "that execution" without asking.
-- Replaying is RBAC/project-safe: a summary is only injected for the same conversation
-  (already user-owned) and carries no cross-project data beyond what that turn's
-  scope already returned.
-- No raw logs, secrets, or full payloads are persisted (reuse the runtime client's
-  redaction + a hard size/element cap).
-- SSE event contract, LLM tool vocabulary, and frontend are unchanged.
-- Verification: a follow-up "show me the logs for that execution" resolves the id from
-  the persisted summary (backend test drives two sequential turns); migration up/down
-  clean; existing runtime + chat tests stay green.
+- A `/admin/logs` page exists in the frontend. It shows a table of executions
+  (filterable by project/job/state), a failures panel, and a drilldown to log
+  lines for a selected execution.
+- The AI correctly answers questions that require both live log context AND
+  indexed documentation in the same response — verified with at least two
+  representative test questions against seeded data.
+- Cross-project data cannot leak: a user scoped to project A cannot receive log
+  data from project B in any response, even when asking a combined question.
 
 ## Out of Scope
-
-- Persisting or rendering full runtime logs in history (only the compact summary).
-- Frontend display of the summary (it is context-only, invisible to the UI).
-- Changing the SSE events, tool names, or input schemas.
-- Cross-conversation memory or a global runtime cache.
-- Re-fetching/refreshing the underlying data (the summary stores the pointer/headline;
-  live data is still fetched on demand by the tools).
-- Vectorizing runtime data into Qdrant.
+- Building a real polling/sync worker against Talend TMC or any live source.
+  Data continues to be seeded manually. Poller is a separate future epic.
+- Modifying the ingest, chunking, or embedding pipeline.
+- New LLM providers or model changes.
+- Write actions on the logs page (retry a job, acknowledge a failure).
+- Trend/analytics aggregation (execution success rates over time) — useful but
+  separate from the cross-reference story.
 
 ## Solution Rationale
+**Cross-reference (LLM path):**
+The agent audit found that Qdrant context is already injected into `llm_messages`
+before the runtime loop fires in `conversational_rag.py`. The only thing blocking
+combined answers is the `precomputed_answer` early-return in the QA branches
+(lines ~1082–1102 non-streaming, ~1278–1293 streaming). Removing that early-return
+and returning `llm_messages` instead is ~30–50 lines — the architecture already
+supports it. This is the correct minimal change.
 
-Persisting a structured summary makes the `execution_id` *present* next turn, so
-resolution no longer depends on the model choosing to re-look-it-up (the limitation of
-the prompt-only fix). Storing it as a JSON column on `conversation_messages` matches
-the existing per-message metadata pattern (`sources`, `primary_source_layer`,
-`fallback_used`, `doc_gap` are already columns there) — no new table, no new lifecycle.
-Building the summary from the loop's `RuntimeToolResult`s (already sanitized/bounded by
-`runtime/client.py`) keeps it safe by construction. Replay is a context-build concern
-in `conversational_rag`, mirroring how previous sources are already threaded.
+**Logs page:**
+The frontend audit found exactly 4 missing REST endpoints on the backend
+(list executions, get execution details, get execution logs, list failures). The
+repository methods and DB models exist already. The admin section of the frontend
+has an established table/card/hook pattern (modelled on the usage page). No new
+dependencies needed.
+
+**TMC MCP repo patterns to adopt:**
+- Pre-aggregate where possible — a `detect_failures` call with a time window
+  should return a grouped summary, not raw rows, to avoid filling the LLM context
+  window with records it then has to count itself.
+- Component-level fields (job_name, component) are the natural join key between
+  log data and RAG-indexed documentation — queries like "which component failed
+  and what does the doc say it does?" are feasible if RAG chunks carry job/component
+  metadata.
+- Consider gap-detection tools as a future category: "jobs with no documentation",
+  "jobs that failed but have no matching doc" — these combine both data sources
+  server-side and are more useful than raw retrieval for diagnosis.
 
 ## Assumptions and Risk
-
-- **Open decision (resolve at /plan): replay window.** Default = inject only the most
-  recent runtime summary found in conversation history (simplest, bounded, covers the
-  "that execution" case). Alternative = accumulate the last N runtime turns. Recommend
-  most-recent-only first.
-- `conversation_messages` is the right home (consistent with existing metadata columns)
-  — assume a nullable JSON column is acceptable (additive migration, like 029's
-  `doc_gap`).
-- The summary fields (`execution_id`, `job_name`, `state`, short `headline`) are enough
-  for reference resolution; raw data is never needed in memory.
-- Assumes the persisted id stays a valid pointer; live data is always re-fetched by the
-  tools, so staleness of the *summary* only affects phrasing, not correctness.
+- The `precomputed_answer` short-circuit is the only fork — confirmed by the audit.
+  If there are other early-returns in the non-streaming and streaming paths that
+  were missed, the combined-answer feature may only partially work.
+- Ollama does not support structured tool calls (`_TOOL_AWARE_FUNCS` only lists
+  `kimi` today). On Ollama deployments the LLM will silently fall back to RAG-only
+  even after the fix. This must be documented as a known limitation, not left silent.
+- The RBAC coupling between Qdrant scope and Postgres scope is currently implicit
+  (both derive from the same `project_ids` but are passed separately). If that
+  coupling breaks in a future change, cross-project leakage becomes possible. The
+  fix is to introduce a single `RequestScope` object that carries both, enforced
+  by type — this should be done as part of this epic, not deferred.
+- Seeded data is the only source right now. Test questions must work against the
+  existing `esbmain` seeded data (ORA-12170 failure scenario + ESB docs if indexed).
 
 ## Critical Areas Touched
-
-- **Auth / RBAC — yes (replay safety).** Must ensure the injected summary cannot leak
-  data outside the turn's scope; since it is per-conversation (already owned by the
-  user) and built from already-scoped results, risk is low but must be verified.
-  `/inspect` warranted.
-- Chat path (`generation/conversational_rag.py`, `generation/agent_loop.py`) — message
-  persistence + context build.
-- Schema — additive migration + a column on `conversation_messages`; `MessageResponse`
-  may gain an optional field (backend only; not required to surface in frontend).
-- NOT touched: retrieval chain, MCP API routes, harness pipeline, SSE contract,
-  frontend, runtime tool vocabulary.
+- **RAG retrieval chain** (`RAG_pipeline/backend/src/retrieval/`,
+  `src/generation/conversational_rag.py`) — removing the early-return changes
+  when and how Qdrant results are used. `/inspect` required.
+- **Auth/RBAC** — new REST endpoints must enforce project-scope; the implicit
+  RBAC coupling between RAG and runtime should be made explicit. `/inspect` required.
+- **Frontend** — new admin page and 4 proxy routes. Not a critical area per
+  the CLAUDE.md definition, but RBAC must be respected at the API boundary.
 
 ## Risk if Wrong
-
-- **Leak**: injecting a summary built from a broader scope than the current request
-  could surface another project's execution reference — mitigated by building only from
-  the same-conversation, same-turn scoped results and adding an RBAC replay test.
-- **Bloat / drift**: an unbounded or growing summary could inflate context — mitigated
-  by a hard element/char cap and most-recent-only replay.
-- **Sensitive data**: persisting raw logs would store secrets — mitigated by storing
-  only the compact summary fields, never `data`/log text, reusing client redaction.
-- **Migration**: must be additive + reversible; a bad migration risks the
-  `conversation_messages` table — mitigated by a nullable column only (no backfill).
+- **Wrong project data in answers**: if RBAC is not correctly threaded into the
+  combined path, a user could receive log data from a project they don't have
+  access to, surfaced alongside docs they do have access to. This is a data
+  isolation failure.
+- **Incorrect answers that cite logs as facts**: the LLM may hallucinate a
+  connection between a log error and a doc section that doesn't exist. Mitigation:
+  the system prompt should tell the LLM to cite which source (log vs doc) each
+  claim comes from.
+- **Silent RAG-only fallback on Ollama**: users on Ollama get no runtime data and
+  no error — they just get an incomplete answer. Must be surfaced, not silent.
+- **Streaming path inconsistency**: if only the non-streaming path is fixed and
+  the streaming path is not updated symmetrically, behaviour differs between
+  streaming and non-streaming clients. Both must change together.
