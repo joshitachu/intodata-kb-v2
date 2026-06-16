@@ -120,6 +120,38 @@ class TestRuntimeToolGuide:
         assert "list_executions" in out[0]["content"]
         assert out[1]["role"] == "user"
 
+    def test_guide_includes_prior_runtime_summary_when_provided(self):
+        summary = [{"tool_name": "detect_failures", "execution_id": "exec-7841", "job_name": "esb_order_sync_route", "state": "failed"}]
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=summary)
+        content = out[0]["content"]
+        assert "Recent runtime context" in content
+        assert "exec-7841" in content
+        assert "esb_order_sync_route" in content
+
+    def test_guide_omits_memory_note_when_no_summary(self):
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=None)
+        assert "Recent runtime context" not in out[0]["content"]
+        # empty list also yields no note
+        out_empty = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=[])
+        assert "Recent runtime context" not in out_empty[0]["content"]
+
+    async def test_loop_forwards_prior_summary_into_system_message(self):
+        summary = [{"tool_name": "detect_failures", "execution_id": "exec-7841"}]
+        captured = {}
+
+        async def _capture(messages, tools, images=None):
+            captured["messages"] = messages
+            return _decision(text="ok")
+
+        with (
+            patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", _capture),
+        ):
+            await run_runtime_tool_loop(MESSAGES, prior_runtime_summary=summary)
+
+        system = next(m for m in captured["messages"] if m["role"] == "system")
+        assert "exec-7841" in system["content"]
+
 
 def _result(tool_name, data):
     return RuntimeProgressEvent("runtime_tool_result", {"tool_name": tool_name, "success": True, "data": data})

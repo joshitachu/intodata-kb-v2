@@ -99,14 +99,44 @@ def build_runtime_tool_summary(
     return entries or None
 
 
-def _with_runtime_guide(messages: list[dict]) -> list[dict]:
-    """Merge the runtime tool-use guidance into the leading system message (or prepend
-    one), so it travels with the prompt regardless of LLM provider."""
+def _render_runtime_memory(summary: list[dict]) -> str:
+    """Render a prior-turn runtime_tool_summary as compact reference lines. Reference
+    fields only (the summary never holds raw logs); data is still re-fetched via tools."""
+    lines: list[str] = []
+    for entry in summary:
+        parts: list[str] = []
+        if entry.get("execution_id"):
+            parts.append(f"execution_id={entry['execution_id']}")
+        if entry.get("job_name"):
+            parts.append(f"job={entry['job_name']}")
+        if entry.get("state"):
+            parts.append(f"state={entry['state']}")
+        if entry.get("headline"):
+            parts.append(f"note={entry['headline']}")
+        if parts:
+            lines.append("- " + ", ".join(parts))
+    return "\n".join(lines)
+
+
+def _with_runtime_guide(
+    messages: list[dict], prior_runtime_summary: list[dict] | None = None
+) -> list[dict]:
+    """Merge the runtime tool-use guidance (and, when present, a compact note of the
+    executions this conversation already referenced) into the leading system message
+    (or prepend one), so it travels with the prompt regardless of LLM provider."""
+    guide = _RUNTIME_TOOL_GUIDE
+    if prior_runtime_summary:
+        rendered = _render_runtime_memory(prior_runtime_summary)
+        if rendered:
+            guide = (
+                f"{guide}\n\nRecent runtime context from this conversation you may "
+                f"reference (re-fetch live data with the tools as needed):\n{rendered}"
+            )
     if messages and messages[0].get("role") == "system":
         head = {**messages[0]}
-        head["content"] = f"{head.get('content', '')}\n\n{_RUNTIME_TOOL_GUIDE}".strip()
+        head["content"] = f"{head.get('content', '')}\n\n{guide}".strip()
         return [head, *messages[1:]]
-    return [{"role": "system", "content": _RUNTIME_TOOL_GUIDE}, *messages]
+    return [{"role": "system", "content": guide}, *messages]
 
 
 @dataclass
@@ -156,6 +186,7 @@ async def run_runtime_tool_loop(
     *,
     project_scope: ProjectScope = None,
     db: AsyncSession | None = None,
+    prior_runtime_summary: list[dict] | None = None,
 ) -> RuntimeLoopOutcome:
     """Run a bounded generate -> tool-call -> execute -> continue loop.
 
@@ -170,7 +201,7 @@ async def run_runtime_tool_loop(
     """
     tools = list_runtime_tools()
     progress: list[RuntimeProgressEvent] = []
-    working_messages = _with_runtime_guide(messages)
+    working_messages = _with_runtime_guide(messages, prior_runtime_summary)
     usage: UsageStats | None = None
     max_iterations = max(1, settings.runtime_tool_loop_max_iterations)
 

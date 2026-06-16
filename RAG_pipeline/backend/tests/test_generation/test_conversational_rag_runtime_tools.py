@@ -2,6 +2,7 @@
 conversational RAG (EP-004 slice 3)."""
 
 import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.db.models import Conversation
@@ -244,6 +245,63 @@ class TestRuntimeToolSummaryPersistence:
                 db=db,
             )
         assert self._assistant_msg(db).runtime_tool_summary is None
+
+
+class TestRuntimeToolSummaryReplay:
+    """Slice 2: the most recent prior summary is injected into the next turn's runtime
+    context, and only from the same conversation (RBAC isolation)."""
+
+    async def _system_prompt_for_turn(self, conversation):
+        captured: dict = {}
+
+        async def _capture(messages, tools, images=None):
+            captured["messages"] = messages
+            return ToolAwareLLMResponse(
+                provider="kimi",
+                text="done",
+                usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=1, output_tokens=1),
+            )
+
+        with (
+            patch("src.generation.conversational_rag._prepare_rag_context", new_callable=AsyncMock) as mock_ctx,
+            patch("src.runtime.client.settings") as mock_rt,
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", _capture),
+        ):
+            mock_ctx.return_value = _no_precompute_context()
+            mock_rt.runtime_provider_key = "mock"
+            mock_rt.runtime_tool_timeout = 10.0
+            mock_rt.runtime_tool_result_max_chars = 12000
+            await run_conversational_rag(
+                conversation=conversation,
+                query="show me the logs for that execution",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                db=_mock_db(),
+            )
+        return next(m["content"] for m in captured["messages"] if m["role"] == "system")
+
+    async def test_prior_summary_injected_for_same_conversation(self):
+        conv = _mock_conversation()
+        conv.messages = [
+            SimpleNamespace(
+                role="assistant",
+                runtime_tool_summary=[
+                    {"tool_name": "detect_failures", "execution_id": "esbmain-route-7841", "job_name": "esb_order_sync_route"}
+                ],
+            )
+        ]
+        content = await self._system_prompt_for_turn(conv)
+        assert "Recent runtime context" in content
+        assert "esbmain-route-7841" in content
+
+    async def test_other_conversation_summary_not_injected(self):
+        # A conversation with no prior summary of its own must not receive another
+        # conversation's runtime memory (the reader only sees this conversation).
+        conv = _mock_conversation()
+        conv.messages = []
+        content = await self._system_prompt_for_turn(conv)
+        assert "Recent runtime context" not in content
+        assert "esbmain-route-7841" not in content
 
     async def test_no_tool_support_falls_back_to_plain_generate_answer(self):
         """Provider chain offers no tool support → existing generate_answer()

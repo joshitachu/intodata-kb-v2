@@ -2,7 +2,7 @@
 feature: Persist runtime tool results into conversation context (runtime tool memory)
 pipeline_step: 3_slices
 total_slices: 2
-current_slice: 1
+current_slice: 2
 ---
 
 ## Slice 1: Persist the runtime tool summary

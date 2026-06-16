@@ -202,6 +202,20 @@ def get_previous_sources(
     return []
 
 
+def get_latest_runtime_tool_summary(
+    messages: list[ConversationMessage],
+) -> list[dict] | None:
+    """Most recent prior runtime_tool_summary in this conversation, for replay.
+
+    Read ONLY from the current conversation's messages (route already enforces user
+    ownership) so replay never crosses conversations. Returns None when no prior turn
+    recorded one."""
+    for msg in reversed(messages):
+        if msg.role == "assistant" and msg.runtime_tool_summary:
+            return msg.runtime_tool_summary
+    return None
+
+
 _CANT_ANSWER_PATTERNS = re.compile(
     r"(?:I (?:could not|couldn't|cannot|can't|don't|do not) find|"
     r"(?:no|not enough) (?:relevant |available )?(?:information|documents?|context|data)|"
@@ -1071,7 +1085,8 @@ async def run_conversational_rag(
         usage = get_last_usage()
     else:
         loop_outcome = await run_runtime_tool_loop(
-            ctx.llm_messages, images=images, project_scope=project_ids, db=db
+            ctx.llm_messages, images=images, project_scope=project_ids, db=db,
+            prior_runtime_summary=get_latest_runtime_tool_summary(conversation.messages),
         )
         runtime_progress = loop_outcome.progress_events
         if loop_outcome.final_answer is not None:
@@ -1261,7 +1276,8 @@ async def run_conversational_rag_stream(
         yield ("token", json.dumps(token))
     else:
         loop_outcome = await run_runtime_tool_loop(
-            ctx.llm_messages, images=images, project_scope=project_ids, db=db
+            ctx.llm_messages, images=images, project_scope=project_ids, db=db,
+            prior_runtime_summary=get_latest_runtime_tool_summary(conversation.messages),
         )
         runtime_progress = loop_outcome.progress_events
         if loop_outcome.final_answer is not None:
