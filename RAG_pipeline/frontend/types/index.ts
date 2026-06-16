@@ -326,3 +326,42 @@ export const RuntimeStatusResponseSchema = z.object({
 });
 
 export type RuntimeStatusResponse = z.infer<typeof RuntimeStatusResponseSchema>;
+
+// --- Runtime tool-use stream events (EP-004 slice 3 backend, slice 4 frontend) ---
+
+export const RuntimeToolCallEventSchema = z.object({
+  tool_name: z.string(),
+  arguments: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+export type RuntimeToolCallEvent = z.infer<typeof RuntimeToolCallEventSchema>;
+
+export const RuntimeToolErrorSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+});
+
+export type RuntimeToolError = z.infer<typeof RuntimeToolErrorSchema>;
+
+export const RuntimeToolResultEventSchema = z.object({
+  tool_name: z.string(),
+  success: z.boolean(),
+  data: z.unknown().optional(),
+  error: RuntimeToolErrorSchema.nullable().optional(),
+  latency_ms: z.number(),
+  truncated: z.boolean().optional().default(false),
+});
+
+export type RuntimeToolResultEvent = z.infer<typeof RuntimeToolResultEventSchema>;
+
+// UI-state projection of a runtime tool-use call. Live-stream state only; never
+// persisted with message history and never carries raw `data` payloads.
+export type RuntimeToolStatusValue = "running" | "completed" | "failed";
+
+export interface RuntimeToolProgress {
+  toolName: string;
+  status: RuntimeToolStatusValue;
+  latencyMs: number | null;
+  truncated: boolean;
+  error: RuntimeToolError | null;
+}

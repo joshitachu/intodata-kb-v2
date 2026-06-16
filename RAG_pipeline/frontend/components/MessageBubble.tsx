@@ -15,8 +15,14 @@ import {
 import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
+import { RuntimeToolStatus } from "./RuntimeToolStatus";
 import { submitFeedback } from "@/lib/feedback";
-import type { AgentStep, MessageResponse, UsageStats } from "@/types";
+import type {
+  AgentStep,
+  MessageResponse,
+  RuntimeToolProgress,
+  UsageStats,
+} from "@/types";
 
 interface MessageBubbleProps {
   message: MessageResponse;
@@ -25,6 +31,7 @@ interface MessageBubbleProps {
   hasSources?: boolean;
   usage?: UsageStats | null;
   steps?: AgentStep[];
+  runtimeTools?: RuntimeToolProgress[];
   onRetry?: () => void;
 }
 
@@ -35,6 +42,7 @@ export function MessageBubble({
   hasSources,
   usage,
   steps,
+  runtimeTools,
   onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
@@ -112,6 +120,9 @@ export function MessageBubble({
           ) : (
             /* Assistant: raw text on page background */
             <div>
+              {runtimeTools && runtimeTools.length > 0 && (
+                <RuntimeToolStatus tools={runtimeTools} />
+              )}
               <div className="chat-prose">
                 {isFailed ? (
                   <div className="flex flex-col items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">

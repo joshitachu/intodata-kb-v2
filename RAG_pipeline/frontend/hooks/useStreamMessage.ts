@@ -7,10 +7,13 @@ import {
   type DocumentSource,
   type AgentStep,
   type UsageStats,
+  type RuntimeToolProgress,
   AgentStepSchema,
   DocumentSourceSchema,
   UsageStatsSchema,
   SseDoneSchema,
+  RuntimeToolCallEventSchema,
+  RuntimeToolResultEventSchema,
 } from "@/types";
 
 export interface StreamState {
@@ -22,6 +25,7 @@ export interface StreamState {
   latencyMs: number | null;
   usage: UsageStats | null;
   steps: AgentStep[];
+  runtimeTools: RuntimeToolProgress[];
 }
 
 const INITIAL_STATE: StreamState = {
@@ -33,6 +37,7 @@ const INITIAL_STATE: StreamState = {
   latencyMs: null,
   usage: null,
   steps: [],
+  runtimeTools: [],
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -68,6 +73,7 @@ export function useStreamMessage(conversationId: number | null) {
         latencyMs: null,
         usage: null,
         steps: [],
+        runtimeTools: [],
       });
 
       try {
@@ -148,6 +154,49 @@ export function useStreamMessage(conversationId: number | null) {
                 const nextSteps = [...prev.steps];
                 nextSteps[existingIndex] = step;
                 return { ...prev, steps: nextSteps };
+              });
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "runtime_tool_call") {
+            try {
+              const call = RuntimeToolCallEventSchema.parse(JSON.parse(data));
+              setStreamState((prev) => ({
+                ...prev,
+                runtimeTools: [
+                  ...prev.runtimeTools,
+                  {
+                    toolName: call.tool_name,
+                    status: "running",
+                    latencyMs: null,
+                    truncated: false,
+                    error: null,
+                  },
+                ],
+              }));
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "runtime_tool_result") {
+            try {
+              const result = RuntimeToolResultEventSchema.parse(JSON.parse(data));
+              setStreamState((prev) => {
+                const next: RuntimeToolProgress = {
+                  toolName: result.tool_name,
+                  status: result.success ? "completed" : "failed",
+                  latencyMs: result.latency_ms,
+                  truncated: result.truncated,
+                  error: result.error ?? null,
+                };
+                const matchIndex = prev.runtimeTools.findIndex(
+                  (t) => t.toolName === result.tool_name && t.status === "running",
+                );
+                if (matchIndex === -1) {
+                  return { ...prev, runtimeTools: [...prev.runtimeTools, next] };
+                }
+                const runtimeTools = [...prev.runtimeTools];
+                runtimeTools[matchIndex] = next;
+                return { ...prev, runtimeTools };
               });
             } catch {
               // ignore parse error

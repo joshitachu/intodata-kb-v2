@@ -13,6 +13,22 @@ function failedStream(error = "Provider timed out"): StreamState {
     latencyMs: null,
     usage: null,
     steps: [],
+    runtimeTools: [],
+  };
+}
+
+function streamingStream(overrides: Partial<StreamState> = {}): StreamState {
+  return {
+    isStreaming: true,
+    content: "",
+    sources: [],
+    error: null,
+    messageId: null,
+    latencyMs: null,
+    usage: null,
+    steps: [],
+    runtimeTools: [],
+    ...overrides,
   };
 }
 
@@ -58,5 +74,102 @@ describe("MessageList", () => {
 
     expect(screen.getByText("Chat response failed")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the runtime running label before answer text arrives", () => {
+    render(
+      <MessageList
+        messages={[]}
+        streamingMessage={streamingStream({
+          runtimeTools: [
+            {
+              toolName: "detect_failures",
+              status: "running",
+              latencyMs: null,
+              truncated: false,
+              error: null,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Checking runtime: Detect failures"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a successful runtime result summary", () => {
+    render(
+      <MessageList
+        messages={[]}
+        streamingMessage={streamingStream({
+          content: "Answer text",
+          runtimeTools: [
+            {
+              toolName: "list_executions",
+              status: "completed",
+              latencyMs: 42,
+              truncated: false,
+              error: null,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Runtime check complete: List executions"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("42ms")).toBeInTheDocument();
+  });
+
+  it("renders a failed runtime result summary with its error code", () => {
+    render(
+      <MessageList
+        messages={[]}
+        streamingMessage={streamingStream({
+          content: "Answer text",
+          runtimeTools: [
+            {
+              toolName: "get_execution_logs",
+              status: "failed",
+              latencyMs: 8,
+              truncated: false,
+              error: { code: "unavailable", message: "Runtime offline" },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Runtime check unavailable: Get execution logs (unavailable)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render raw runtime data payloads", () => {
+    render(
+      <MessageList
+        messages={[]}
+        streamingMessage={streamingStream({
+          content: "Answer text",
+          runtimeTools: [
+            {
+              toolName: "detect_failures",
+              status: "completed",
+              latencyMs: 10,
+              truncated: true,
+              error: null,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("(truncated)")).toBeInTheDocument();
+    expect(screen.queryByText(/secret-payload/)).not.toBeInTheDocument();
   });
 });

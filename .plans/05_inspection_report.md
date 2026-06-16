@@ -1,39 +1,40 @@
 ---
 inspected_at: 2026-06-16
-verdict: PASS
+verdict: WARN
 ---
 
 ## Verdict Summary
-
-The Slice 3 backend runtime tool-use loop matches the approved plan's scope and
-architecture contracts; all listed verification commands pass with zero
-regressions (457/457 full backend suite), with four non-blocking notes worth
-recording.
+The slice code conforms to the approved plan and all architecture contracts; the only findings are commit-hygiene items (out-of-scope tracked/untracked files) that must be kept out of the commit.
 
 ## Check Results
-
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | All 10 Implementation Steps present in the diff: settings flag (config.py:167-169), agent_loop.py module, llm_client.py tool-aware function, non-streaming + streaming integration, route docstring, and all listed test files. |
-| Root cause         | PASS   | N/A — this is new capability, not a bug fix. The gap (chat could not reach Slice 2's runtime tool boundary) is closed at the integration layer the plan specified, not patched around. |
-| Generalized        | PASS   | Tool-aware provider resolution mirrors the existing `_PROVIDER_FUNCS`/`_resolve()` pattern exactly (`_TOOL_AWARE_FUNCS`/`_resolve_tool_aware`), down to omitting a return-type hint on `_resolve_tool_aware`, same as the pre-existing `_resolve()` it mirrors — not a new gap, see Finding 4. Adding a second tool-aware provider later requires only one dict entry + one function, no loop changes. |
-| Design patterns    | PASS (1 WARN) | Strategy (provider resolution), Pipeline (bounded generate→tool→execute→continue loop isolated in its own module), clean separation between wire-format mechanics (llm_client.py) and orchestration (agent_loop.py) as the plan required. One WARN: see Finding 1 (non-functional "field docstring" string literals). |
-| Contract respect   | PASS   | Verified directly against `runtime/client.py`: `execute_runtime_tool()` never raises — every branch (`DISABLED`, `UNKNOWN_TOOL`, `VALIDATION_ERROR`, `UNAVAILABLE`, `TIMEOUT`, `PROVIDER_ERROR`, success) returns a structured `RuntimeToolResult`. `agent_loop.py` calls it without a try/except, which is correct given that contract. Tool results are appended via `result.model_dump(mode="json")` (agent_loop.py), never a raw provider object. Iteration cap uses `max(1, settings.runtime_tool_loop_max_iterations)`. SSE event order verified end-to-end by test: `sources → runtime_tool_call → runtime_tool_result → token → usage → done`. |
-| No special-casing  | PASS   | Ollama's absence from `_TOOL_AWARE_FUNCS` is explicit plan-sanctioned behavior ("providers without structured tool support ... should return a controlled no tool support outcome"), not an undocumented one-off branch — `_resolve_tool_aware` treats any missing entry uniformly as "no tool support," so a third provider needs zero new conditionals. The broad `except Exception` in `generate_answer_with_runtime_tools` (llm_client.py:284) is not a one-off — it is the same catch/log/continue chain-of-responsibility pattern already used by the pre-existing `generate_answer()` (llm_client.py:385). |
-| Edge cases         | PASS   | All 9 plan-listed test scenarios are present and pass: tool-call→final-answer happy path, unknown-tool structured failure, max-iteration cap, no-tool-support fallback, sanitized (not raw) result propagation, source/doc-gap metadata preservation, precomputed-answer skip, and full SSE ordering (verified at both the conversational_rag layer and, additionally, the HTTP route layer). "Malformed argument" rejection (vs. unknown-tool-name) is not re-tested at the agent_loop layer, but it is unchanged, already-covered Slice 2 code (`resolve_tool_call`/`RuntimeToolValidationError` in `runtime/registry.py`, zero diff this slice) reached through the identical `_error_result` → structured `RuntimeToolResult` path the unknown-tool test already exercises — acceptable by equivalence, not a gap. |
-| RBAC               | PASS   | `api/routes/conversations.py` diff is docstring-only; ownership (`conversation.user_id != user.id`) and project-access (`get_user_project_ids`) checks are untouched and sit before any RAG/loop call, exactly as the plan required. |
-| Credential safety  | PASS   | No secrets logged or hardcoded (confirmed by a fresh grep of the full diff for password/secret/api_key/token-literal/authorization patterns — no matches). Tool arguments/results that reach the LLM or logs pass through `runtime/client.py`'s existing `_redact()`/`_sanitize_and_bound()` before `agent_loop.py` ever sees them. New `logger.warning`/`logger.info` calls in `llm_client.py`/`agent_loop.py` log only provider names, tool names, and exception type/message — never message content or tool arguments. |
+| Plan conformance   | PASS   | All 9 implementation steps present; component extracted as the plan preferred. |
+| Root cause         | PASS   | Frontend ignored backend runtime events; fix parses them in the same SSE dispatcher that already handles step/sources/token/usage/done. |
+| Generalized        | PASS   | `useStreamMessage` is the only chat-stream consumer of `runtime_tool_*`; Deep Dive uses a separate hook and is out of scope. No other callsite to fix. |
+| Design patterns    | PASS   | Additive stream-state + dedicated presentation component; mirrors existing `step` handling exactly. |
+| Contract respect   | PASS   | BFF route untouched (pass-through); persisted message schema unchanged; provider-agnostic labels; no `any`. |
+| No special-casing  | PASS   | No flags or compat shims. Result->call matching by `tool_name`+`running` is a single general rule. |
+| Edge cases         | PASS   | Tests cover running->completed, failed-without-stream-error, malformed-ignored (stream not ended early), unknown-label fallback, no-raw-payload. tsc clean, 36/36 tests pass. |
+| RBAC               | N/A    | Display-only frontend state; no queries. Backend already RBAC-filters the stream. |
+| Credential safety  | PASS   | UI-state type omits `data` entirely; component renders only label/latency/truncated/error.code. Raw payloads/logs cannot reach the bubble. |
 
 ## Findings
 
-1. (WARN, non-blocking, style) `llm_client.py:179-180` (`ToolAwareLLMResponse.assistant_message`) and `agent_loop.py:38-39` (`RuntimeLoopOutcome.final_answer`) each place a bare triple-quoted string literal immediately after a dataclass field assignment, apparently intended as a per-field docstring. Plain Python/`dataclasses` does not attach this string to the field at all — it is a no-op expression statement, discarded at class-body-execution time (confirmed harmless: both files import and `py_compile` cleanly). Some doc-generation tools (Sphinx autodoc, some IDEs) parse this convention from source and will render it as attribute documentation, but plain `pydoc`/runtime introspection will not. Not a functional defect, but a reader unfamiliar with that doc-tool convention could be confused. Suggest replacing with a `#` comment above the field for unambiguous clarity in a future touch of these files; not worth a dedicated commit for this slice.
+1. WARN — `RAG_pipeline/frontend/tsconfig.tsbuildinfo` is a tracked build artifact modified by the `tsc --noEmit` run. Incidental to this slice and should not be part of the commit. (Pre-existing repo-hygiene issue: the file is tracked and regenerates on every build; ideally gitignored, but that is out of this slice's scope.)
 
-2. (Non-blocking, informational) Three plan-listed "Affected Files" — `generation/agent_orchestrator.py`, `runtime/client.py`, `runtime/models.py` — have no diff. This is expected: Slice 2's public API (`list_runtime_tools()`, `execute_runtime_tool()`, `RuntimeToolResult`) was already sufficient, and the plan explicitly said runtime progress must use dedicated SSE events rather than the existing `AgentTrace`/`AgentStep` read-only document-search trace. Confirmed via `git status --short` that no other diff touches these files.
+2. WARN — `knowledge_base/pack-repos/table-inventory-pack` shows a `-dirty` submodule pointer. Already dirty at session start and unrelated to slice 4. Exclude from this commit.
 
-3. (Non-blocking, edge-case risk) When the loop hits the iteration cap or stalls with tool data but no final text (`agent_loop.py:125`, the post-loop fallback), it calls the plain `generate_answer(working_messages, ...)`, where `working_messages` contains OpenAI/Kimi-shaped `tool_calls`/`role: "tool"` entries. `generate_answer()`'s own provider chain tries Kimi first by default (`settings.llm_providers = ["kimi", "ollama"]`), which understands this format natively. If Kimi itself fails on that specific call, the chain would fall through to Ollama with tool-shaped messages it doesn't understand for its plain chat API — `generate_answer()` already catches and logs provider exceptions and tries the next provider, eventually raising `RuntimeError("All LLM providers failed")` only if every provider in the chain fails, which is the existing, documented behavior for total provider exhaustion. This is an inherent consequence of mixing tool-shaped history with a non-tool-aware fallback provider, not a new failure mode introduced beyond what the plan anticipated (Ollama was already excluded from structured tool support by design). No action required for this slice; worth a one-line note if a future slice adds a second tool-aware provider or hardens the post-cap synthesis path.
+3. WARN — Untracked junk present at repo root (`.mavis/`, `=`, `2026-06-10-...command-message.txt`). Unrelated to this slice; do not stage.
 
-4. (Non-blocking, dead-code carryover, not introduced by this slice) In `run_conversational_rag()` (non-streaming), `_prepare_rag_context()` is called with its default `precompute=True`, under which every current branch sets a non-None `precomputed_answer`. This means the new `else: loop_outcome = await run_runtime_tool_loop(...)` branch in the non-streaming path is reachable only if a future change to `_prepare_rag_context` leaves `precomputed_answer` unset under `precompute=True`, or if a caller passes `precompute=False` to it (not currently done for the non-streaming entry point). The streaming path's runtime loop is genuinely live today. This pre-existing precompute-gating asymmetry predates Slice 3 and is out of this slice's stated scope to restructure.
+4. INFO — `RuntimeToolError.message` is captured into `RuntimeToolProgress` but not rendered (only `error.code` is shown). Intentional per the "no raw data/logs" contract; the field remains available for a future tooltip. No action.
+
+5. INFO — `RuntimeToolStatus` uses array index in its React `key`. Safe here: the list is append-only and items update in place (running->terminal at the same index); no reordering or removal occurs. No action.
 
 ## Required Actions
 
-None — ready to commit. Findings 1-4 are informational/non-blocking and require no code changes for this slice.
+- BLOCK: None.
+- WARN: When committing, stage **only** the slice files:
+  `RAG_pipeline/frontend/{types/index.ts, hooks/useStreamMessage.ts, components/MessageBubble.tsx, components/MessageList.tsx, components/RuntimeToolStatus.tsx}`,
+  `RAG_pipeline/frontend/tests/{hooks/useStreamMessage.test.ts, components/MessageList.test.tsx, components/RuntimeToolStatus.test.tsx}`,
+  and `.plans/`. Do **not** stage `tsconfig.tsbuildinfo`, the submodule pointer, or the untracked root junk.

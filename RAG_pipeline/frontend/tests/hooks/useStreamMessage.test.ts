@@ -80,4 +80,88 @@ describe("useStreamMessage", () => {
       },
     ]);
   });
+
+  it("tracks a runtime tool call as running then completed", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: runtime_tool_call\ndata: {"tool_name":"detect_failures","arguments":{}}\n\n' +
+          'event: runtime_tool_result\ndata: {"tool_name":"detect_failures","success":true,"data":{"failures":[]},"error":null,"latency_ms":42,"truncated":false}\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":50}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "Any failures?" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.streamState.isStreaming).toBe(false);
+    });
+
+    expect(result.current.streamState.runtimeTools).toEqual([
+      {
+        toolName: "detect_failures",
+        status: "completed",
+        latencyMs: 42,
+        truncated: false,
+        error: null,
+      },
+    ]);
+  });
+
+  it("marks a failed runtime result without setting a stream-level error", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: runtime_tool_call\ndata: {"tool_name":"list_executions","arguments":{}}\n\n' +
+          'event: runtime_tool_result\ndata: {"tool_name":"list_executions","success":false,"data":null,"error":{"code":"unavailable","message":"Runtime offline"},"latency_ms":8,"truncated":false}\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":20}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "List runs" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.streamState.isStreaming).toBe(false);
+    });
+
+    expect(result.current.streamState.runtimeTools).toEqual([
+      {
+        toolName: "list_executions",
+        status: "failed",
+        latencyMs: 8,
+        truncated: false,
+        error: { code: "unavailable", message: "Runtime offline" },
+      },
+    ]);
+    expect(result.current.streamState.error).toBeNull();
+  });
+
+  it("ignores malformed runtime payloads without ending the stream early", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: runtime_tool_call\ndata: {"arguments":{}}\n\n' +
+          'event: runtime_tool_result\ndata: {"tool_name":123}\n\n' +
+          'event: token\ndata: "Answer"\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":10}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "Question" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.streamState.isStreaming).toBe(false);
+    });
+
+    expect(result.current.streamState.runtimeTools).toEqual([]);
+    expect(result.current.streamState.content).toBe("Answer");
+    expect(result.current.streamState.messageId).toBe(7);
+    expect(result.current.streamState.error).toBeNull();
+  });
 });

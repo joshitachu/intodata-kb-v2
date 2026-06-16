@@ -45,6 +45,7 @@ export function MessageList({
   }, [
     messages,
     streamingMessage?.content,
+    streamingMessage?.runtimeTools,
     deepDiveState?.content,
     deepDiveState?.thinking,
     scrollToBottom,
@@ -174,6 +175,7 @@ export function MessageList({
               hasSources={streamingMessage.sources.length > 0}
               usage={streamingMessage.usage}
               steps={streamingMessage.steps}
+              runtimeTools={streamingMessage.runtimeTools}
               onRetry={streamingMessage.error ? onRetryMessage : undefined}
             />
           )}
