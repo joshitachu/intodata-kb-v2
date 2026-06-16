@@ -165,8 +165,10 @@ class Settings(BaseSettings):
     runtime_tool_result_max_chars: int = 12000
 
     # Backend tool-use loop (EP-004 slice 3) — hard cap on LLM<->tool round
-    # trips per conversational turn, regardless of provider.
-    runtime_tool_loop_max_iterations: int = 2
+    # trips per conversational turn, regardless of provider. 4 lets the model
+    # chain a lookup (list_executions/detect_failures) -> fetch (logs/details)
+    # within one turn while staying bounded.
+    runtime_tool_loop_max_iterations: int = 4
 
     # Talend TMC runtime provider (EP-004 slice 5) — opt-in adapter behind the
     # generic runtime contract. Default empty keeps Talend disabled. The API token

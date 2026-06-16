@@ -1,100 +1,67 @@
 ---
-feature: Held Runtime-Data Architecture (Model 2 skeleton, source-agnostic)
+feature: Persist runtime tool results into conversation context (runtime tool memory)
 pipeline_step: 3_slices
-total_slices: 3
-current_slice: 0
+total_slices: 2
+current_slice: 1
 ---
 
-## Slice 1: Held runtime store + repository + migration
+## Slice 1: Persist the runtime tool summary
 
-**Delivers**: A project-scoped Postgres store for runtime executions/failures/logs
-with a freshness watermark, plus a repository exposing RBAC-filtered reads and an
-in-process write-port — fully unit-tested. Foundation only; nothing reads it yet, so
-the running system is unchanged.
+**Delivers**: Every runtime tool-use turn writes a bounded, sanitized
+`runtime_tool_summary` (tool name + `execution_id`/`job_name`/`state`/`headline`, never
+raw logs) onto the assistant message; non-runtime turns leave it null. Foundation —
+nothing reads it yet, so chat behaviour is unchanged.
 
 **Expected files**:
-- `RAG_pipeline/backend/src/db/models/runtime_data.py` (new — SQLAlchemy models:
-  executions, failures, log events, sync state; `project_id` indexed, `ingested_at`)
-- `RAG_pipeline/backend/src/db/models/__init__.py` (register new models)
-- `RAG_pipeline/backend/alembic/versions/<rev>_runtime_data.py` (new additive migration
-  with reversible `downgrade`)
-- `RAG_pipeline/backend/src/runtime/store/__init__.py` (new)
-- `RAG_pipeline/backend/src/runtime/store/repository.py` (new — scope-filtered reads +
-  idempotent upsert write-port + watermark, following the `get_user_project_ids`
-  contract: None / list / empty)
-- `RAG_pipeline/backend/tests/test_runtime/test_store_repository.py` (new — reads,
-  RBAC/project filtering incl. cross-project denial, idempotent upsert, watermark)
+- `RAG_pipeline/backend/src/db/models/conversation.py` (add nullable JSON
+  `runtime_tool_summary` column to `ConversationMessage`)
+- `RAG_pipeline/backend/alembic/versions/031_add_runtime_tool_summary.py` (new, additive,
+  reversible)
+- `RAG_pipeline/backend/src/generation/agent_loop.py` (pure helper
+  `build_runtime_tool_summary(progress_events)` -> capped list of sanitized entries)
+- `RAG_pipeline/backend/src/generation/conversational_rag.py` (set the column on the
+  assistant `ConversationMessage` at both persist sites, using the helper)
+- `RAG_pipeline/backend/src/api/schemas.py` (optional `runtime_tool_summary` field on
+  `MessageResponse`; backend-only, frontend unaffected) — only if it doesn't change SSE
+- `RAG_pipeline/backend/tests/test_generation/test_agent_loop.py` (builder unit tests:
+  field derivation from list vs single-object results, cap, no raw-log leakage)
+- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag_runtime_tools.py`
+  (runtime turn persists the column; non-runtime turn leaves it null)
 
-**Critical area**: yes — Auth/RBAC. The project-scope filter that prevents
-cross-project data leakage lives in the repository; `/inspect` required.
+**Critical area**: no — write-only persistence of already-sanitized data; no RBAC
+decision and no replay yet. (Reclassify if the builder ends up touching scope logic.)
 
 **Depends on**: none
 
-## Slice 2: `stored` provider + registry + request scope threading
+## Slice 2: Replay the summary into the next turn's context
 
-**Delivers**: With `RUNTIME_PROVIDER_KEY=stored`, `execute_runtime_tool` resolves the
-new provider and returns normalized, project-filtered held data. The allowed-project
-scope is threaded from the authenticated request principal into the provider call —
-never from LLM-supplied tool arguments. No change to the LLM tool vocabulary, SSE
-contract, or frontend.
+**Delivers**: On a new turn, the most recent prior `runtime_tool_summary` in the
+conversation is injected into the runtime tool-use context, so a follow-up like "show me
+the logs for that execution" resolves the `execution_id` from memory instead of
+re-discovering it or asking the user.
 
 **Expected files**:
-- `RAG_pipeline/backend/src/runtime/providers/stored.py` (new — delegates the four
-  generic methods to the repository, returns normalized models)
-- `RAG_pipeline/backend/src/runtime/client.py` (register `stored` in
-  `_PROVIDER_MODULE_PATHS`; thread allowed-project scope into `execute_runtime_tool`)
-- `RAG_pipeline/backend/src/runtime/providers/__init__.py` (only if the scope-passing
-  mechanism refines the provider seam — decide at /plan)
-- `RAG_pipeline/backend/src/generation/agent_loop.py` (pass scope through
-  `run_runtime_tool_loop`)
-- `RAG_pipeline/backend/src/generation/conversational_rag.py` (pass the request's
-  project scope into the tool loop)
-- `RAG_pipeline/backend/tests/test_runtime/test_stored_provider.py` (new — method
-  mapping/normalization, registry resolution)
-- `RAG_pipeline/backend/tests/test_runtime/test_client.py` (scope-enforcement test:
-  project-A scope cannot read project-B rows; LLM arguments cannot widen scope)
+- `RAG_pipeline/backend/src/generation/conversational_rag.py` (find the latest prior
+  assistant message with a non-null summary; pass it into the runtime loop)
+- `RAG_pipeline/backend/src/generation/agent_loop.py` (accept `prior_runtime_summary`
+  and fold it into the runtime context note alongside the existing guide)
+- `RAG_pipeline/backend/tests/test_generation/test_agent_loop.py` (context note includes
+  the prior summary when provided; unchanged when absent)
+- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag_runtime_tools.py`
+  (two-turn test: turn 1 detects a failure, turn 2 "show me the logs for that execution"
+  resolves the `execution_id` from the injected summary; RBAC replay test: a summary is
+  only injected within its own conversation — no cross-project reference leaks)
 
-**Critical area**: yes — Auth/RBAC (scope enforcement at the runtime boundary and the
-backend tool loop). `/inspect` required.
+**Critical area**: yes — Auth/RBAC (replay must not surface data beyond the turn's
+scope). `/inspect` required.
 
 **Depends on**: Slice 1
 
-**Open decision (resolve at /plan)**: scope-threading mechanism — (A, recommended)
-explicit additive `project_scope` parameter through `run_runtime_tool_loop` →
-`execute_runtime_tool` → provider; or (B) request-scoped `contextvar` set in the chat
-route. A is explicit and testable; B avoids signature changes but is implicit.
+## Notes
 
-## Slice 3: Mock-fixture seed + end-to-end chat
-
-**Delivers**: A seed loads the existing mock fixtures through the in-process
-write-port (assigning a demo `project_id`) and sets the watermark; running it twice is
-idempotent. With `RUNTIME_PROVIDER_KEY=stored`, chat answers "what failed in the last
-24h?" from seeded, project-filtered held data, and freshness (`last_synced_at`,
-`ingested_at`) is retrievable.
-
-**Expected files**:
-- `RAG_pipeline/backend/src/runtime/store/seed.py` (new — seeds via the write-port;
-  reuses the mock fixtures, no change to `providers/mock.py`)
-- `RAG_pipeline/backend/tests/test_runtime/test_seed.py` (new — idempotency, watermark
-  set, rows project-scoped)
-- `RAG_pipeline/backend/tests/test_runtime/test_stored_end_to_end.py` (new — through
-  `execute_runtime_tool` against the seeded store with a scope)
-- `.env.production.template` (document `RUNTIME_PROVIDER_KEY=stored`, optional)
-- `docker-compose.yml` (only if a seed/runtime toggle env is needed)
-
-**Critical area**: no — seed + integration validation; reuses Slice 2's enforced read
-path. (Reclassify to yes only if a fix here touches the RBAC filter.)
-
-**Depends on**: Slice 2
-
-## Out of scope for this epic (recorded design decisions)
-
-- **Log retrieval is structured, not vectorized.** Runtime logs/executions are served
-  by the four parameterized, RBAC-filtered tools over Postgres — never embedded into
-  Qdrant. See `02_prd.md` "Design Decision — Log/Runtime Retrieval Strategy".
-- **Log display UI** (an expandable, sanitized, bounded structured-log panel reusing
-  the EP-004 runtime-progress surface, not the RAG document/citation system) is a
-  future frontend slice, not part of this store skeleton.
-- **Semantic "similar past failures" search** would be the only justification for a
-  narrow embedding index over failure-summary text. Deferred and explicitly flagged;
-  if never built, runtime data stays Qdrant-free.
+- Replay window decision (resolve at /plan for Slice 2): most-recent summary only
+  (recommended — bounded, covers the "that execution" case) vs accumulate last N.
+- Summaries are built only from `loop_outcome.progress_events`, which are already
+  redacted and size-bounded by `runtime/client.py`; the builder stores reference fields
+  only, never raw `data`/log text.
+- No SSE event, LLM tool vocabulary, or frontend changes in either slice.

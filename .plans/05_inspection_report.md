@@ -4,50 +4,46 @@ verdict: PASS
 ---
 
 ## Verdict Summary
-Slice 3 adds an explicit, idempotent mock-fixture seed through the repository write-port and end-to-end tests proving RUNTIME_PROVIDER_KEY=stored answers from project-scoped held data; findings are one operational WARN and commit hygiene.
+Slice 1 persists a bounded, sanitized runtime-tool summary on the assistant message exactly as planned, with no replay/RBAC surface yet; the only finding is commit-bundling hygiene (the working tree also carries the earlier tool-use fix and session-end doc edits).
 
 ## Check Results
 | Check              | Result | Notes |
 |--------------------|--------|-------|
-| Plan conformance   | PASS   | Seed module, seed tests, end-to-end tests, and `.env`/compose comment updates all present. No do-not-touch files changed (client, stored provider, repository, agent_loop, conversational_rag, rbac/auth, db/models, alembic untouched). Minor deviation: the chat-path test was placed in `test_stored_end_to_end.py` (loop-level) rather than the conversational test file — see finding 2. |
-| Root cause         | PASS   | Seed reads fixtures via the mock provider's generic methods (no fixture-constant copying) and writes via the repository write-port — no direct row inserts. |
-| Generalized        | PASS   | Timestamp shifting centralized in `_shift`; single seed entry point. |
-| Design patterns    | PASS   | Repository write-port for all writes; CLI mirrors existing `scripts/seed_data.py` (argparse, `async_session_factory`, commit/rollback, `sys.exit(1)`). |
-| Contract respect   | PASS   | Writes go through `RuntimeStoreRepository`; rows project-scoped to the provided id; watermark via `update_sync_state`; deterministic shift when `synced_at` is passed; no new API/SSE/tool-schema; not embedded in Qdrant; no startup auto-seed (explicit CLI only). |
-| No special-casing  | PASS   | `except RuntimeProviderError: continue` for an execution with no fixture logs is general defensive handling, not a one-off shim. |
-| Edge cases         | PASS   | Tests: writes/counts, project scoping, idempotency (fixed synced_at), freshness window, end-to-end scope enforcement (other-project blocked, None reads all), missing-db → provider_error, and a chat-loop test pulling seeded scoped data. Ran: 55 focused + 32 regression + `docker compose config` (exit 0) + full suite 519. |
-| RBAC               | PASS   | Seed is an explicit operator WRITE assigning one operator-provided `project_id`; not a user-facing read. The Slice 2 RBAC read path is unchanged, and end-to-end tests confirm reads stay project-scoped (other-project scope returns nothing). |
-| Credential safety  | PASS   | Mock fixtures are credential-free; the seed logs only counts/project/source/timestamp — no secrets. |
+| Plan conformance   | PASS   | Column + migration `031` + pure builder in `agent_loop.py` + capture-and-persist at BOTH persist sites. `MessageResponse`/SSE/frontend deliberately untouched per plan. (registry.py/config.py/seed.py in the diff are the *earlier* tool-use fix, not this plan.) |
+| Root cause         | PASS   | Persists the structured result (the discarded `execution_id`) so Slice 2 replay can resolve references — addresses the actual gap, not a symptom. |
+| Generalized        | PASS   | Both `run_conversational_rag` and `run_conversational_rag_stream` handled symmetrically (init before branch, set in loop branch, write at persist site) — not a one-site fix. |
+| Design patterns    | PASS   | Pure, side-effect-free builder; reuses the existing `conversation_messages` JSON-metadata column pattern (`sources`/`image_data`/`doc_gap`); migration mirrors `029`/`030`. |
+| Contract respect   | PASS   | Only reference fields persisted; built from already-redacted/bounded `progress_events`; additive reversible migration (offline up/down verified); no SSE/tool-vocab/frontend change; provider-agnostic. |
+| No special-casing  | PASS   | The `tool_name != "get_execution_logs"` branch is a justified safety rule (logs carry message text → store only the execution pointer), not a one-off shim. |
+| Edge cases         | PASS   | Builder tests: list/single-object/logs (no message text)/dedup/cap/none/malformed-skip. Persistence tests: runtime turn sets the column, precomputed turn leaves it null. Migration offline up/down. 533 full suite green. |
+| RBAC               | N/A    | Write-only persistence of the turn's own (already-scoped) results onto the turn's own message; no scope decision and no replay. Replay safety is Slice 2 (critical). |
+| Credential safety  | PASS   | No credentials; log `message` text explicitly excluded from the summary; a test asserts a secret-bearing log line never appears in the summary. |
 
 ## Findings
 
-1. WARN (operational) — Seed idempotency holds only for a fixed `synced_at`. Executions
-   and failures key on `(project_id, execution_id)` so they always upsert; log events
-   key on `(project_id, execution_id, event_fingerprint)` where the fingerprint includes
-   the shifted timestamp. An operator re-running the seed WITHOUT `--synced-at` (defaults
-   to now) therefore writes new log rows each run, accumulating duplicates-by-time. The
-   docstring documents the fixed-`synced_at` idempotency contract, and no row-deletion
-   API exists in this slice's scope. Acceptable for a dev/demo seed; flag if repeated
-   operator seeding becomes common (would warrant a delete-by-source/project helper).
+1. WARN (commit hygiene / bundling) — The working tree mixes three independent changes:
+   (a) this Slice 1; (b) the earlier still-uncommitted tool-use-guidance fix
+   (`registry.py`, `config.py`, the `_with_runtime_guide`/iteration changes in
+   `agent_loop.py`, `seed.py` rich-logs + `test_seed.py`); (c) `/session-end` doc edits
+   (`.claude/PROGRESS_LOG.md`, `PROJECT_MEMORY.md`, `context.md`). Because `agent_loop.py`
+   and the two runtime test files carry BOTH (a) and (b), they cannot be split into
+   separate commits in this environment. Recommend one coherent runtime-tool commit
+   covering (a)+(b) with a clear message, the doc edits committed alongside or
+   separately, and exclude `tsconfig.tsbuildinfo` + the `-dirty` submodule pointer.
 
-2. INFO — The chat-path validation test lives in `test_stored_end_to_end.py`
-   (`TestStoredChatLoop`, exercising `run_runtime_tool_loop` over the seeded store with
-   mocked LLM decisions) rather than `test_conversational_rag_runtime_tools.py` as the
-   plan suggested. Defensible: it stays backend-only and deterministic and avoids the
-   conversational file's mock-DB/message-persistence helpers, which would fight a real
-   seeded session. Coverage intent (chat loop pulls scoped held data) is met.
+2. INFO — `runtime_progress: list` (in both functions) is annotated without an element
+   type; `list[RuntimeProgressEvent]` would be marginally clearer. Cosmetic.
 
-3. WARN (commit hygiene) — Exclude `RAG_pipeline/frontend/tsconfig.tsbuildinfo` and the
-   `knowledge_base/pack-repos/table-inventory-pack` `-dirty` submodule pointer.
-   `.plans/04_active_plan.md` (Slice 3) and `05_inspection_report.md` should be included.
+3. INFO — RBAC replay safety is deliberately deferred to Slice 2; this slice only writes
+   data that the same user already saw in the same turn. Carry the leak-prevention test
+   into Slice 2.
 
 ## Required Actions
 
 - BLOCK: None.
-- WARN: When committing, stage only this slice's files: `src/runtime/store/seed.py`,
-  `tests/test_runtime/test_seed.py`, `tests/test_runtime/test_stored_end_to_end.py`,
-  `.env.production.template`, `docker-compose.yml`, and the `.plans/` docs. Exclude the
-  build artifact and submodule pointer.
-- INFO: If repeated operator re-seeding (without `--synced-at`) becomes a workflow,
-  add a repository delete-by-(source_key, project_id) helper in a follow-up so the seed
-  can fully replace prior rows.
+- WARN: When committing, treat the runtime-tool work (Slice 1 + the earlier tool-use
+  fix, which share `agent_loop.py`) as one commit with a message naming both; commit the
+  `.claude/` doc edits and seed/rich-log changes appropriately; exclude the build
+  artifact and submodule pointer. Do NOT attempt to split `agent_loop.py` across commits.
+- INFO: Optional — add the element type to `runtime_progress`. Carry the RBAC replay
+  test into Slice 2.

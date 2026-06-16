@@ -26,6 +26,88 @@ from src.runtime.store import ProjectScope
 
 logger = logging.getLogger(__name__)
 
+# Injected into the tool-use turn so the model knows these live tools exist, which to
+# pick, and that it must resolve execution_ids itself rather than asking the user.
+_RUNTIME_TOOL_GUIDE = (
+    "You have live runtime tools for job/pipeline execution data: list_executions, "
+    "detect_failures, get_execution_details, get_execution_logs. When the user asks "
+    "about runtime status, recent runs, failures, or execution logs, answer using these "
+    "tools — not from documents or memory.\n"
+    "Tool selection: 'what failed' -> detect_failures; 'recent runs' / 'last run of X' / "
+    "'list executions' -> list_executions; details of one run -> get_execution_details; "
+    "logs for a run -> get_execution_logs.\n"
+    "get_execution_details and get_execution_logs REQUIRE an execution_id. If the user "
+    "refers to 'that execution', 'the failed job', or a job by name without giving an id, "
+    "FIRST call list_executions or detect_failures to obtain the execution_id, THEN call "
+    "the details/logs tool. Never ask the user for an execution_id you can look up yourself."
+)
+
+
+_SUMMARY_MAX_ENTRIES = 10
+_HEADLINE_MAX_CHARS = 200
+
+
+def build_runtime_tool_summary(
+    progress_events: list[RuntimeProgressEvent],
+) -> list[dict] | None:
+    """Derive a compact, sanitized reference summary from a turn's runtime tool results.
+
+    Stores only reference fields (tool_name + execution_id/job_name/state/headline) so a
+    later turn can resolve "that execution". Never stores raw `data`, log message text,
+    or other payload content. Input is already redacted/size-bounded by
+    runtime/client.py. Returns None when the turn ran no runtime tools.
+    """
+    entries: list[dict] = []
+    seen: set[tuple[str, str | None]] = set()
+
+    for event in progress_events:
+        if event.event_type != "runtime_tool_result":
+            continue
+        payload = event.payload
+        tool_name = payload.get("tool_name")
+        if not tool_name:
+            continue
+        data = payload.get("data")
+        records = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            execution_id = record.get("execution_id")
+            entry: dict = {"tool_name": tool_name}
+            if execution_id:
+                entry["execution_id"] = execution_id
+            # Logs carry message text per line — keep only the execution pointer.
+            if tool_name != "get_execution_logs":
+                if record.get("job_name"):
+                    entry["job_name"] = record["job_name"]
+                if record.get("state"):
+                    entry["state"] = record["state"]
+                headline = record.get("error_summary")
+                if isinstance(headline, str) and headline:
+                    entry["headline"] = headline[:_HEADLINE_MAX_CHARS]
+            # Skip entries that carry no usable reference.
+            if len(entry) == 1 and "execution_id" not in entry:
+                continue
+            dedup_key = (tool_name, execution_id)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            entries.append(entry)
+            if len(entries) >= _SUMMARY_MAX_ENTRIES:
+                return entries
+
+    return entries or None
+
+
+def _with_runtime_guide(messages: list[dict]) -> list[dict]:
+    """Merge the runtime tool-use guidance into the leading system message (or prepend
+    one), so it travels with the prompt regardless of LLM provider."""
+    if messages and messages[0].get("role") == "system":
+        head = {**messages[0]}
+        head["content"] = f"{head.get('content', '')}\n\n{_RUNTIME_TOOL_GUIDE}".strip()
+        return [head, *messages[1:]]
+    return [{"role": "system", "content": _RUNTIME_TOOL_GUIDE}, *messages]
+
 
 @dataclass
 class RuntimeProgressEvent:
@@ -88,7 +170,7 @@ async def run_runtime_tool_loop(
     """
     tools = list_runtime_tools()
     progress: list[RuntimeProgressEvent] = []
-    working_messages = list(messages)
+    working_messages = _with_runtime_guide(messages)
     usage: UsageStats | None = None
     max_iterations = max(1, settings.runtime_tool_loop_max_iterations)
 

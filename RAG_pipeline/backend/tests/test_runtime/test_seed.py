@@ -15,9 +15,9 @@ from src.db.models.runtime_data import (
     RuntimeFailureRow,
     RuntimeLogEventRow,
 )
-from src.runtime.models import DetectFailuresInput, GetExecutionLogsInput
+from src.runtime.models import DetectFailuresInput, GetExecutionLogsInput, RuntimeLogSeverity
 from src.runtime.store import RuntimeStoreRepository
-from src.runtime.store.seed import seed_mock_runtime_data
+from src.runtime.store.seed import seed_mock_runtime_data, seed_rich_runtime_data
 
 _SYNCED_AT = datetime.datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
 _PROJECT = "demo-runtime"
@@ -58,6 +58,46 @@ class TestSeedIdempotency:
         await seed_mock_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
         for model, first in counts_after_first.items():
             assert await _count(db_session, model) == first
+
+
+class TestRichSeed:
+    async def test_rich_seed_writes_deep_failed_run(self, db_session):
+        summary = await seed_rich_runtime_data(db_session, project_id="esbmain", synced_at=_SYNCED_AT)
+        assert summary.executions == 2  # one failed, one prior success
+        assert summary.failures == 1
+        assert summary.log_events >= 15  # in-depth log sequence
+
+        repo = RuntimeStoreRepository(db_session)
+        failures = await repo.detect_failures(["esbmain"], DetectFailuresInput())
+        assert len(failures) == 1
+        failed_id = failures[0].execution_id
+
+        logs = await repo.get_execution_logs(["esbmain"], GetExecutionLogsInput(execution_id=failed_id, limit=100))
+        assert len(logs) >= 15
+        # logs are time-ordered and include the escalation to ERROR
+        assert any(log.severity == RuntimeLogSeverity.WARNING for log in logs)
+        assert any(log.severity == RuntimeLogSeverity.ERROR for log in logs)
+        timestamps = [log.timestamp for log in logs]
+        assert timestamps == sorted(timestamps)
+
+    async def test_rich_seed_min_severity_filter(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id="esbmain", synced_at=_SYNCED_AT)
+        repo = RuntimeStoreRepository(db_session)
+        failed_id = (await repo.detect_failures(["esbmain"], DetectFailuresInput()))[0].execution_id
+        errors = await repo.get_execution_logs(
+            ["esbmain"], GetExecutionLogsInput(execution_id=failed_id, min_severity=RuntimeLogSeverity.ERROR)
+        )
+        assert len(errors) >= 1
+        assert all(log.severity == RuntimeLogSeverity.ERROR for log in errors)
+
+    async def test_rich_seed_is_idempotent(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id="esbmain", synced_at=_SYNCED_AT)
+        repo = RuntimeStoreRepository(db_session)
+        failed_id = (await repo.detect_failures(["esbmain"], DetectFailuresInput()))[0].execution_id
+        first = len(await repo.get_execution_logs(["esbmain"], GetExecutionLogsInput(execution_id=failed_id, limit=100)))
+        await seed_rich_runtime_data(db_session, project_id="esbmain", synced_at=_SYNCED_AT)
+        second = len(await repo.get_execution_logs(["esbmain"], GetExecutionLogsInput(execution_id=failed_id, limit=100)))
+        assert first == second
 
 
 class TestSeedFreshness:

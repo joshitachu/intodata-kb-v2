@@ -45,24 +45,37 @@ _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
         RuntimeToolSpec(
             name="list_executions",
             description=(
-                "List recent job/pipeline executions, optionally filtered by "
-                "project, job name, or time window."
+                "List recent job/pipeline executions (id, job name, state, timestamps), "
+                "optionally filtered by project, job name, or time window. Use this to "
+                "find executions or to obtain an execution_id for a job the user named "
+                "before calling get_execution_details or get_execution_logs."
             ),
             input_model=ListExecutionsInput,
         ),
         RuntimeToolSpec(
             name="get_execution_details",
-            description="Get details for a single execution by ID.",
+            description=(
+                "Get full details for ONE execution. Requires execution_id. If you do "
+                "not have the id, first call list_executions or detect_failures to get it."
+            ),
             input_model=GetExecutionDetailsInput,
         ),
         RuntimeToolSpec(
             name="detect_failures",
-            description="List failed executions, optionally within a time window.",
+            description=(
+                "List failed executions (id, job name, failed-at, error summary), "
+                "optionally within a time window. Use this for 'what failed' questions; "
+                "its results also give you the execution_id needed for get_execution_logs."
+            ),
             input_model=DetectFailuresInput,
         ),
         RuntimeToolSpec(
             name="get_execution_logs",
-            description="Get log events for a single execution by ID.",
+            description=(
+                "Get the log lines for ONE execution. Requires execution_id. If the user "
+                "refers to a run by name or as 'that execution' without an id, first call "
+                "detect_failures or list_executions to obtain the execution_id."
+            ),
             input_model=GetExecutionLogsInput,
         ),
     )

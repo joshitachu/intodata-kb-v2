@@ -13,7 +13,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, DocGapEvent, QueryUsage
-from src.generation.agent_loop import run_runtime_tool_loop
+from src.generation.agent_loop import build_runtime_tool_summary, run_runtime_tool_loop
 from src.generation.agent_orchestrator import AgentStep, AgentTool, AgentTrace
 from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
 from src.generation.prompt_builder import build_conversation_summary_messages
@@ -1065,6 +1065,7 @@ async def run_conversational_rag(
         user_id=user_id, project_ids=project_ids, db=db, images=images,
     )
 
+    runtime_progress: list = []
     if ctx.precomputed_answer is not None:
         answer = ctx.precomputed_answer
         usage = get_last_usage()
@@ -1072,6 +1073,7 @@ async def run_conversational_rag(
         loop_outcome = await run_runtime_tool_loop(
             ctx.llm_messages, images=images, project_scope=project_ids, db=db
         )
+        runtime_progress = loop_outcome.progress_events
         if loop_outcome.final_answer is not None:
             answer = loop_outcome.final_answer
             usage = loop_outcome.usage or get_last_usage()
@@ -1131,6 +1133,7 @@ async def run_conversational_rag(
         primary_source_layer=ctx.primary_source_layer,
         fallback_used=ctx.fallback_used,
         doc_gap=ctx.doc_gap,
+        runtime_tool_summary=build_runtime_tool_summary(runtime_progress),
     )
     db.add(assistant_msg)
 
@@ -1251,6 +1254,7 @@ async def run_conversational_rag_stream(
     # Stream LLM tokens (or emit precomputed answer as single token)
     accumulated = ""
     loop_usage = None
+    runtime_progress: list = []
     if ctx.precomputed_answer is not None:
         token = ctx.precomputed_answer.replace("[NEED_SEARCH]", "").strip()
         accumulated = token
@@ -1259,6 +1263,7 @@ async def run_conversational_rag_stream(
         loop_outcome = await run_runtime_tool_loop(
             ctx.llm_messages, images=images, project_scope=project_ids, db=db
         )
+        runtime_progress = loop_outcome.progress_events
         if loop_outcome.final_answer is not None:
             for event in loop_outcome.progress_events:
                 yield (event.event_type, json.dumps(event.payload))
@@ -1299,6 +1304,7 @@ async def run_conversational_rag_stream(
         primary_source_layer=ctx.primary_source_layer,
         fallback_used=ctx.fallback_used,
         doc_gap=ctx.doc_gap,
+        runtime_tool_summary=build_runtime_tool_summary(runtime_progress),
     )
     db.add(assistant_msg)
     await db.flush()

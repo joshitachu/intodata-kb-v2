@@ -1,129 +1,106 @@
 ---
-feature: Held Runtime-Data Architecture (Model 2 skeleton, source-agnostic)
+feature: Persist runtime tool results into conversation context (runtime tool memory)
 pipeline_step: 1_grill
 date: 2026-06-16
 ---
 
 ## Feature
 
-Build the source-agnostic "held data" (Model 2) skeleton for runtime integration: a
-Postgres store for runtime executions/failures/logs (+ migration), a repository
-layer, a new DB-backed runtime provider implementing the existing 4-method
-`RuntimeProvider` protocol (`list_executions`, `get_execution_details`,
-`detect_failures`, `get_execution_logs`) registered alongside `mock`/`talend_tmc`,
-and an in-process ingestion write-port where a future sync worker pushes data. The
-real data source is deferred and out of scope; the store is seeded from the existing
-mock fixtures (through the same write-port) so the chat path works end-to-end against
-held data. Provider-agnostic: no changes to chat, the backend tool-use loop, SSE, or
-frontend runtime rendering. Data freshness ("as of") is represented in the store.
+After a runtime tool-use turn, persist a compact, sanitized summary of the runtime
+tool results (tool name + `execution_id` + job name + state/short headline — never raw
+logs or secrets) on the conversation, and replay it into the next turn's LLM context
+so follow-up questions like "show me the logs for that execution" / "the failed job"
+resolve the `execution_id` from memory instead of re-discovering it or asking the user.
 
-Predecessor: EP-004 (runtime status, generic tool registry, mock provider, backend
-tool-use loop, frontend progress, `talend_tmc` live adapter). EP-004 Slice 6
-(real-data PoC) is PAUSED; its pipeline docs are archived in
-`.plans/archive/ep004-runtime/`.
+Builds on the committed Held Runtime-Data epic (`stored` provider + RBAC scope
+threading) and the just-made tool-use guidance change (registry descriptions +
+`agent_loop` runtime guide + iteration cap, currently uncommitted). Predecessor epic
+docs archived in `.plans/archive/held-runtime/`.
 
 ## Problem Statement
 
-Today the runtime path supports only **live pass-through** providers: `mock`
-(in-memory fixtures) and `talend_tmc` (calls the source on every chat question).
-Nothing **holds** runtime data. Consequences:
-
-- Every chat question pays the source's latency / rate-limit / availability cost on
-  the critical path of a conversational turn; a source hiccup fails the answer.
-- Runtime data cannot be queried, joined with RAG documents, or trended — each
-  question is a one-shot call.
-- The system is coupled to whatever source exists, and the long-term source is still
-  undecided (confirmed: it will not be an MCP server).
-- There is no freshness/"as of" concept, because answers are assumed real-time.
-
-We want a store that holds runtime data with the source pluggable later.
+Each chat message runs its own runtime tool-use loop (`run_runtime_tool_loop`), and
+only the final assistant *text* is persisted to `conversation_messages`. The
+structured tool results — including the `execution_id` returned by `detect_failures` /
+`list_executions` — are discarded at end of turn. So on a follow-up like "show me the
+logs for that execution", the model has no `execution_id` in context. The just-shipped
+tool-use guidance helps the model re-discover the id via a tool call, but that depends
+on model behaviour every turn. There is no durable memory of "the execution we were
+just talking about."
 
 ## Definition of Done
 
-- Postgres tables for runtime executions, failures, and log events (additive
-  migration), each project-scoped (`project_id`) and carrying `ingested_at`, plus a
-  store-level sync watermark (`last_synced_at`).
-- A repository layer with: (a) RBAC/project-filtered read methods, and (b) an
-  in-process write-port (upsert) interface for future ingestion.
-- A new DB-backed runtime provider implementing the 4-method `RuntimeProvider`
-  protocol, registered in `_PROVIDER_MODULE_PATHS` (e.g. key `stored`), returning the
-  normalized `RuntimeExecution` / `RuntimeFailure` / `RuntimeLogEvent` models.
-- A seed path that loads the existing mock fixtures **through the write-port**, so
-  with `RUNTIME_PROVIDER_KEY=stored` the chat path answers from held data.
-- Freshness surfaced in the store (watermark + per-record `ingested_at`), retrievable
-  by the provider/repository; deep chat-UI wiring of "as of" may be minimal/deferred
-  but the data must exist and be queryable.
-- Tests: repository read/write, project/RBAC filtering, provider normalization +
-  registry resolution, freshness/watermark behavior, seed idempotency. Existing
-  runtime, tool-loop, and chat tests stay green.
-- No changes to chat, the backend tool-use loop, SSE event contract, or frontend
-  runtime rendering.
-
-Verification: `uv run pytest` (backend) green incl. new tests; end-to-end chat against
-`RUNTIME_PROVIDER_KEY=stored` returns the seeded data with correct project filtering;
-`docker compose config` valid if compose touched.
+- After a runtime turn, the assistant message persists a bounded, sanitized
+  `runtime_tool_summary` (e.g. list of `{tool_name, execution_id?, job_name?, state?,
+  headline?}`) — derived from the turn's `RuntimeToolResult`s, never raw log text.
+- On the next turn, the most recent persisted summary is injected into the LLM context
+  (as a system/context note) so the model can resolve "that execution" without asking.
+- Replaying is RBAC/project-safe: a summary is only injected for the same conversation
+  (already user-owned) and carries no cross-project data beyond what that turn's
+  scope already returned.
+- No raw logs, secrets, or full payloads are persisted (reuse the runtime client's
+  redaction + a hard size/element cap).
+- SSE event contract, LLM tool vocabulary, and frontend are unchanged.
+- Verification: a follow-up "show me the logs for that execution" resolves the id from
+  the persisted summary (backend test drives two sequential turns); migration up/down
+  clean; existing runtime + chat tests stay green.
 
 ## Out of Scope
 
-- The real data source and the sync worker (deferred; "how data comes in is less
-  important rn"). Only the in-process write-port seam is built.
-- EP-004 Slice 6 real-data Talend PoC (paused).
-- HTTP/external ingestion endpoint (chose in-process repository port — no new API
-  route surface).
-- Frontend changes, chat-prompt changes, SSE contract changes.
-- Vectorizing runtime data into Qdrant (wrong store for time-series operational data).
-- Retention/archival policy and high-volume backfill (future).
-- Auth/RBAC framework changes — reuse the existing project-access filtering used for
-  documents.
+- Persisting or rendering full runtime logs in history (only the compact summary).
+- Frontend display of the summary (it is context-only, invisible to the UI).
+- Changing the SSE events, tool names, or input schemas.
+- Cross-conversation memory or a global runtime cache.
+- Re-fetching/refreshing the underlying data (the summary stores the pointer/headline;
+  live data is still fetched on demand by the tools).
+- Vectorizing runtime data into Qdrant.
 
 ## Solution Rationale
 
-Model 2 (sync-and-hold) was chosen over Model 1 (pull-on-demand) because this is a
-chat product: per-question source calls put latency, rate limits, and availability on
-the critical path, and cannot support querying/trends. A held store decouples chat
-from the source, makes the data queryable, and absorbs the still-undecided source
-behind a pluggable seam.
-
-The existing `RuntimeProvider` Protocol + module registry (EP-004 slices 1-5) already
-provide the swap seam, so adding a DB-backed provider needs **no** changes to chat,
-the tool loop, SSE, or the frontend. Postgres is already in the stack and fits
-structured, high-churn execution/time-series data; Qdrant is the wrong home.
-Project-scoping matches the platform's RBAC-on-every-query rule and the document
-access model. Building Model 1 first (EP-004) was not wasted: the `talend_tmc` adapter
-becomes the future sync worker's fetch layer.
+Persisting a structured summary makes the `execution_id` *present* next turn, so
+resolution no longer depends on the model choosing to re-look-it-up (the limitation of
+the prompt-only fix). Storing it as a JSON column on `conversation_messages` matches
+the existing per-message metadata pattern (`sources`, `primary_source_layer`,
+`fallback_used`, `doc_gap` are already columns there) — no new table, no new lifecycle.
+Building the summary from the loop's `RuntimeToolResult`s (already sanitized/bounded by
+`runtime/client.py`) keeps it safe by construction. Replay is a context-build concern
+in `conversational_rag`, mirroring how previous sources are already threaded.
 
 ## Assumptions and Risk
 
-- The generic 4-method contract and normalized models (`RuntimeExecution`,
-  `RuntimeFailure`, `RuntimeLogEvent`) are sufficient to represent held data. Safe —
-  they are the same models `mock`/`talend_tmc` already return.
-- Executions can be attributed to a `project_id`. The real source may not map cleanly
-  to projects yet; the seed assigns a demo project, and mapping is the future sync
-  worker's responsibility. (User chose strict project-scoped over nullable.)
-- Freshness = store watermark + per-record `ingested_at` is enough for now.
-- An in-process write-port is enough; no external worker or network ingestion yet.
-- Schema may need revision when the real source arrives. Mitigated: the normalized
-  models are the contract, not raw source payloads, so changes stay local to the
-  repository/provider/migration.
+- **Open decision (resolve at /plan): replay window.** Default = inject only the most
+  recent runtime summary found in conversation history (simplest, bounded, covers the
+  "that execution" case). Alternative = accumulate the last N runtime turns. Recommend
+  most-recent-only first.
+- `conversation_messages` is the right home (consistent with existing metadata columns)
+  — assume a nullable JSON column is acceptable (additive migration, like 029's
+  `doc_gap`).
+- The summary fields (`execution_id`, `job_name`, `state`, short `headline`) are enough
+  for reference resolution; raw data is never needed in memory.
+- Assumes the persisted id stays a valid pointer; live data is always re-fetched by the
+  tools, so staleness of the *summary* only affects phrasing, not correctness.
 
 ## Critical Areas Touched
 
-- **Auth / RBAC — YES.** The new repository read methods must filter runtime data by
-  the user's allowed projects, exactly as document queries do. This makes the change
-  a critical area: **`/inspect` is mandatory** before commit, and the plan should
-  carry `critical_area: yes`.
-- New surface: Postgres schema + additive migration, repository layer, new runtime
-  provider + registry entry, in-process write-port, seed path.
-- NOT touched: harness pipeline phases, MCP API routes, RAG retrieval chain, chat /
-  tool-use loop / SSE, frontend runtime rendering.
+- **Auth / RBAC — yes (replay safety).** Must ensure the injected summary cannot leak
+  data outside the turn's scope; since it is per-conversation (already owned by the
+  user) and built from already-scoped results, risk is low but must be verified.
+  `/inspect` warranted.
+- Chat path (`generation/conversational_rag.py`, `generation/agent_loop.py`) — message
+  persistence + context build.
+- Schema — additive migration + a column on `conversation_messages`; `MessageResponse`
+  may gain an optional field (backend only; not required to surface in frontend).
+- NOT touched: retrieval chain, MCP API routes, harness pipeline, SSE contract,
+  frontend, runtime tool vocabulary.
 
 ## Risk if Wrong
 
-- **RBAC filter wrong → cross-project runtime data leakage** (confidentiality breach).
-  Highest-severity risk; must be covered by explicit tests.
-- Provider returns wrong/oversized data → blast radius limited: `runtime/client.py`
-  still sanitizes, bounds, and structures errors at the boundary.
-- Migration wrong → DB issues. Mitigated: additive tables only; no changes to existing
-  tables.
-- Freshness wrong → chat could imply data is current when it is stale. Mitigated by
-  storing explicit `last_synced_at` + `ingested_at` so "as of" is truthful.
+- **Leak**: injecting a summary built from a broader scope than the current request
+  could surface another project's execution reference — mitigated by building only from
+  the same-conversation, same-turn scoped results and adding an RBAC replay test.
+- **Bloat / drift**: an unbounded or growing summary could inflate context — mitigated
+  by a hard element/char cap and most-recent-only replay.
+- **Sensitive data**: persisting raw logs would store secrets — mitigated by storing
+  only the compact summary fields, never `data`/log text, reusing client redaction.
+- **Migration**: must be additive + reversible; a bad migration risks the
+  `conversation_messages` table — mitigated by a nullable column only (no backfill).

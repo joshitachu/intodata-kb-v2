@@ -41,6 +41,10 @@ class ConversationMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     sources: Mapped[dict | None] = mapped_column(JSON)  # For assistant messages
     image_data: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Compact, sanitized references to runtime executions this turn surfaced (tool name
+    # + execution_id/job_name/state/headline). Replayed into later turns' context so
+    # follow-ups can resolve "that execution". Never holds raw logs/secrets.
+    runtime_tool_summary: Mapped[list | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(
         String(20),

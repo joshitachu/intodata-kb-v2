@@ -1,6 +1,11 @@
 from unittest.mock import AsyncMock, patch
 
-from src.generation.agent_loop import run_runtime_tool_loop
+from src.generation.agent_loop import (
+    RuntimeProgressEvent,
+    _with_runtime_guide,
+    build_runtime_tool_summary,
+    run_runtime_tool_loop,
+)
 from src.generation.llm_client import RuntimeToolCallRequest, ToolAwareLLMResponse
 from src.generation.usage import UsageStats
 from src.runtime.models import RuntimeToolDefinition, RuntimeToolError, RuntimeToolErrorCode, RuntimeToolResult
@@ -96,6 +101,81 @@ class TestRuntimeToolLoopHappyPath:
         result_payload = outcome.progress_events[1].payload
         assert result_payload["success"] is False
         assert result_payload["error"]["code"] == "unknown_tool"
+
+
+class TestRuntimeToolGuide:
+    def test_guide_merges_into_leading_system_message(self):
+        out = _with_runtime_guide(
+            [{"role": "system", "content": "Base prompt."}, {"role": "user", "content": "hi"}]
+        )
+        assert out[0]["role"] == "system"
+        assert "Base prompt." in out[0]["content"]
+        assert "get_execution_logs" in out[0]["content"]
+        assert "execution_id" in out[0]["content"]
+        assert out[1] == {"role": "user", "content": "hi"}  # rest untouched
+
+    def test_guide_prepends_when_no_system_message(self):
+        out = _with_runtime_guide([{"role": "user", "content": "hi"}])
+        assert out[0]["role"] == "system"
+        assert "list_executions" in out[0]["content"]
+        assert out[1]["role"] == "user"
+
+
+def _result(tool_name, data):
+    return RuntimeProgressEvent("runtime_tool_result", {"tool_name": tool_name, "success": True, "data": data})
+
+
+class TestBuildRuntimeToolSummary:
+    def test_detect_failures_summary(self):
+        out = build_runtime_tool_summary(
+            [_result("detect_failures", [{"execution_id": "e2", "job_name": "nightly_sync", "error_summary": "db timeout"}])]
+        )
+        assert out == [
+            {"tool_name": "detect_failures", "execution_id": "e2", "job_name": "nightly_sync", "headline": "db timeout"}
+        ]
+
+    def test_list_executions_summary_keeps_state(self):
+        out = build_runtime_tool_summary(
+            [_result("list_executions", [{"execution_id": "e1", "job_name": "sync", "state": "success"}])]
+        )
+        assert out == [{"tool_name": "list_executions", "execution_id": "e1", "job_name": "sync", "state": "success"}]
+
+    def test_logs_summary_keeps_only_execution_pointer_no_message_text(self):
+        out = build_runtime_tool_summary(
+            [_result("get_execution_logs", [
+                {"execution_id": "e2", "timestamp": "2026-06-16T00:00:00Z", "severity": "error", "message": "SECRET ORA-12170 stacktrace"},
+            ])]
+        )
+        assert out == [{"tool_name": "get_execution_logs", "execution_id": "e2"}]
+        # raw log message text must never appear anywhere in the summary
+        assert "SECRET" not in str(out)
+
+    def test_single_object_details_result(self):
+        out = build_runtime_tool_summary(
+            [_result("get_execution_details", {"execution_id": "e9", "job_name": "j", "state": "failed"})]
+        )
+        assert out == [{"tool_name": "get_execution_details", "execution_id": "e9", "job_name": "j", "state": "failed"}]
+
+    def test_dedup_and_cap(self):
+        dupes = [{"execution_id": f"e{i}", "job_name": "j"} for i in range(20)]
+        dupes.append({"execution_id": "e0", "job_name": "j"})  # duplicate of first
+        out = build_runtime_tool_summary([_result("list_executions", dupes)])
+        assert len(out) == 10  # capped
+        ids = [e["execution_id"] for e in out]
+        assert len(ids) == len(set(ids))  # deduped
+
+    def test_no_runtime_results_returns_none(self):
+        assert build_runtime_tool_summary([]) is None
+        assert build_runtime_tool_summary([RuntimeProgressEvent("runtime_tool_call", {"tool_name": "detect_failures"})]) is None
+
+    def test_malformed_payload_is_skipped(self):
+        out = build_runtime_tool_summary(
+            [
+                _result("detect_failures", "not-a-list-or-dict"),
+                _result("list_executions", [None, {"no_id": True}, {"execution_id": "ok"}]),
+            ]
+        )
+        assert out == [{"tool_name": "list_executions", "execution_id": "ok"}]
 
 
 class TestRuntimeToolLoopBounds:

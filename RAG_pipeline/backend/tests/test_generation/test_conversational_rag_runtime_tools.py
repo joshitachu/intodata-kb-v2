@@ -187,6 +187,64 @@ class TestNonStreamingRuntimeLoop:
         assert kwargs["project_scope"] == ["project-a"]
         assert kwargs["db"] is db
 
+
+class TestRuntimeToolSummaryPersistence:
+    @staticmethod
+    def _assistant_msg(db):
+        return next(m for m in db.added_objects if getattr(m, "role", None) == "assistant")
+
+    async def test_runtime_turn_persists_summary(self):
+        """A turn that uses runtime tools writes a runtime_tool_summary referencing the
+        execution, built from the (sanitized) tool result."""
+        decisions = [
+            ToolAwareLLMResponse(
+                provider="kimi",
+                tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={}),
+                assistant_message={"role": "assistant", "content": "", "tool_calls": []},
+                usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+            ),
+            ToolAwareLLMResponse(
+                provider="kimi",
+                text="The nightly_sync job failed.",
+                usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+            ),
+        ]
+        db = _mock_db()
+        with (
+            patch("src.generation.conversational_rag._prepare_rag_context", new_callable=AsyncMock) as mock_ctx,
+            patch("src.runtime.client.settings") as mock_runtime_settings,
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
+        ):
+            mock_ctx.return_value = _no_precompute_context()
+            mock_runtime_settings.runtime_provider_key = "mock"
+            mock_runtime_settings.runtime_tool_timeout = 10.0
+            mock_runtime_settings.runtime_tool_result_max_chars = 12000
+
+            await run_conversational_rag(
+                conversation=_mock_conversation(),
+                query="Did the nightly sync fail last night?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                db=db,
+            )
+
+        summary = self._assistant_msg(db).runtime_tool_summary
+        assert summary is not None
+        assert any(e.get("tool_name") == "detect_failures" and e.get("execution_id") for e in summary)
+
+    async def test_precomputed_turn_leaves_summary_null(self):
+        db = _mock_db()
+        with patch("src.generation.conversational_rag._prepare_rag_context", new_callable=AsyncMock) as mock_ctx:
+            mock_ctx.return_value = _precomputed_context("Greetings!")
+            await run_conversational_rag(
+                conversation=_mock_conversation(),
+                query="hi",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                db=db,
+            )
+        assert self._assistant_msg(db).runtime_tool_summary is None
+
     async def test_no_tool_support_falls_back_to_plain_generate_answer(self):
         """Provider chain offers no tool support → existing generate_answer()
         path is used, never claiming live runtime data."""
