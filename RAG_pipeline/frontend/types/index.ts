@@ -365,3 +365,27 @@ export interface RuntimeToolProgress {
   truncated: boolean;
   error: RuntimeToolError | null;
 }
+
+// --- Runtime logs API (EP-005 slice 2 contract; schemas in ./runtime) ---
+export {
+  RuntimeExecutionStateSchema,
+  RuntimeLogSeveritySchema,
+  RuntimeExecutionSchema,
+  RuntimeFailureSchema,
+  RuntimeLogEventSchema,
+  ExecutionListResponseSchema,
+  ExecutionDetailResponseSchema,
+  LogEventListResponseSchema,
+  FailureListResponseSchema,
+} from "./runtime";
+export type {
+  RuntimeExecutionState,
+  RuntimeLogSeverity,
+  RuntimeExecution,
+  RuntimeFailure,
+  RuntimeLogEvent,
+  ExecutionListResponse,
+  ExecutionDetailResponse,
+  LogEventListResponse,
+  FailureListResponse,
+} from "./runtime";
