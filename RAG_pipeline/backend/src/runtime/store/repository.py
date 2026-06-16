@@ -94,6 +94,8 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeExecutionRow.project_name == params.project_name)
         if params.job_name:
             stmt = stmt.where(RuntimeExecutionRow.job_name == params.job_name)
+        if params.state is not None:
+            stmt = stmt.where(RuntimeExecutionRow.state == params.state.value)
         if params.since:
             stmt = stmt.where(RuntimeExecutionRow.started_at >= params.since)
         if params.until:

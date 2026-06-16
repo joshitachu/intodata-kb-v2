@@ -143,6 +143,35 @@ Provider-agnostic contract. `runtime_provider_key` empty means `disabled`. A
 configured key without `runtime_provider_health_url` means `unavailable`. No
 Talend API details, task IDs, secrets, or logs are exposed by this endpoint.
 
+### Runtime logs read API (EP-005 slice 2)
+
+Read-only access to the held runtime-data store for the logs UI.
+
+| Method | Path                                          | Auth | Description                          |
+|--------|-----------------------------------------------|------|--------------------------------------|
+| GET    | /api/v1/runtime/executions                    | Yes  | List executions (bounded)            |
+| GET    | /api/v1/runtime/executions/{execution_id}     | Yes  | Single execution detail              |
+| GET    | /api/v1/runtime/executions/{execution_id}/logs| Yes  | Log events for one execution         |
+| GET    | /api/v1/runtime/failures                      | Yes  | List failures (bounded)              |
+
+Query params:
+- `executions`: `project_id`, `job_name`, `state` (success/failed/running/unknown),
+  `since`, `until` (ISO-8601 datetimes), `limit` (1–200, default 50).
+- `.../logs`: `min_severity` (debug/info/warning/error), `limit` (1–1000, default 100).
+- `failures`: `project_id`, `since`, `until`, `limit` (1–200, default 50).
+
+RBAC: every endpoint derives project scope from `CurrentUser` via
+`get_user_project_ids()` (None = unrestricted, [] = no access, [ids] = restricted).
+`project_id` is a filter *within* the caller's scope — an out-of-scope value yields an
+empty list, never another project's rows. Cross-project or unknown `execution_id`
+point lookups return `404` (no existence leak). An in-scope execution with no log lines
+matching `min_severity` returns an empty list with `200`, not `404`. Reads come from the
+Postgres runtime store via `RuntimeStoreRepository`; logs are never fetched from Qdrant.
+
+Response envelopes: `{executions, total}`, `{execution}`, `{execution_id, events, total}`,
+`{failures, total}`. `total` is the count returned in this bounded response, not a
+full-table pagination total.
+
 ---
 
 ## Usage (external recording)

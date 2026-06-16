@@ -71,6 +71,7 @@ class RuntimeLogEvent(BaseModel):
 class ListExecutionsInput(BaseModel):
     project_name: str | None = None
     job_name: str | None = None
+    state: RuntimeExecutionState | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = Field(default=20, ge=1, le=200)
