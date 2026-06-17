@@ -23,6 +23,13 @@ from pydantic import BaseModel
 
 from src.api.dependencies import CurrentUser, DBSession
 from src.rbac.permissions import get_user_project_ids
+from src.runtime.insights.models import (
+    RuntimeExecutionSummaryInsight,
+    RuntimeIncidentEvidence,
+    RuntimeIncidentInsight,
+    RuntimeTimelineEvent,
+)
+from src.runtime.insights.repository import RuntimeInsightRepository
 from src.runtime.models import (
     DetectFailuresInput,
     GetExecutionDetailsInput,
@@ -180,3 +187,141 @@ async def list_failures(
         DetectFailuresInput(since=since, until=until, limit=limit),
     )
     return FailureListResponse(failures=failures, total=len(failures))
+
+
+# ---------------------------------------------------------------------------
+# Smart-log insight endpoints (Slice 2)
+# ---------------------------------------------------------------------------
+
+
+class ExecutionSummaryResponse(BaseModel):
+    summary: RuntimeExecutionSummaryInsight
+
+
+class TimelineResponse(BaseModel):
+    execution_id: str
+    events: list[RuntimeTimelineEvent]
+    total: int
+
+
+class IncidentListResponse(BaseModel):
+    incidents: list[RuntimeIncidentInsight]
+    total: int
+
+
+class IncidentDetailResponse(BaseModel):
+    incident: RuntimeIncidentInsight
+
+
+class IncidentEvidenceResponse(BaseModel):
+    incident_id: str
+    evidence: list[RuntimeIncidentEvidence]
+    total: int
+
+
+@router.get(
+    "/executions/{execution_id}/summary",
+    response_model=ExecutionSummaryResponse,
+    summary="Get the smart-log execution summary for a runtime execution",
+)
+async def get_execution_summary(
+    execution_id: str,
+    user: CurrentUser,
+    db: DBSession,
+) -> ExecutionSummaryResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeInsightRepository(db)
+    try:
+        summary = await repo.get_execution_summary(scope, execution_id)
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return ExecutionSummaryResponse(summary=summary)
+
+
+@router.get(
+    "/executions/{execution_id}/timeline",
+    response_model=TimelineResponse,
+    summary="Get the enriched event timeline for a runtime execution",
+)
+async def get_execution_timeline(
+    execution_id: str,
+    user: CurrentUser,
+    db: DBSession,
+    min_severity: RuntimeLogSeverity | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> TimelineResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeInsightRepository(db)
+    try:
+        events = await repo.get_execution_timeline(
+            scope,
+            execution_id,
+            min_severity=min_severity.value if min_severity else None,
+            limit=limit,
+        )
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return TimelineResponse(execution_id=execution_id, events=events, total=len(events))
+
+
+@router.get(
+    "/incidents",
+    response_model=IncidentListResponse,
+    summary="List runtime incidents",
+)
+async def list_incidents(
+    user: CurrentUser,
+    db: DBSession,
+    project_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> IncidentListResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeInsightRepository(db)
+    incidents = await repo.list_incidents(
+        _intersect_scope(scope, project_id),
+        since=since,
+        until=until,
+        limit=limit,
+    )
+    return IncidentListResponse(incidents=incidents, total=len(incidents))
+
+
+@router.get(
+    "/incidents/{incident_id}",
+    response_model=IncidentDetailResponse,
+    summary="Get a single runtime incident",
+)
+async def get_incident(
+    incident_id: str,
+    user: CurrentUser,
+    db: DBSession,
+) -> IncidentDetailResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeInsightRepository(db)
+    try:
+        incident = await repo.get_incident(scope, incident_id)
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return IncidentDetailResponse(incident=incident)
+
+
+@router.get(
+    "/incidents/{incident_id}/evidence",
+    response_model=IncidentEvidenceResponse,
+    summary="Get bounded evidence for a runtime incident",
+)
+async def get_incident_evidence(
+    incident_id: str,
+    user: CurrentUser,
+    db: DBSession,
+    limit: int = Query(default=20, ge=1, le=50),
+) -> IncidentEvidenceResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeInsightRepository(db)
+    try:
+        evidence = await repo.get_incident_evidence(scope, incident_id, limit=limit)
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return IncidentEvidenceResponse(incident_id=incident_id, evidence=evidence, total=len(evidence))

@@ -1,188 +1,174 @@
 ---
 feature: Smart Runtime Log Intelligence
-slice: Slice 1 - Deterministic Enrichment + Insight Store
+slice: Slice 2 - Scoped Insight Repository + REST API
 sub_project: rag_pipeline
-critical_area: no - additive runtime schema/service work; security-sensitive project_id propagation, but no auth/RBAC or retrieval-chain edits expected
+critical_area: yes - new runtime API read surface must enforce Auth/RBAC project scope; cross-project execution, incident, evidence, and timeline lookups are leakage risks
 verdict: PASS
 approved_at: 2026-06-17
 ---
 
 ## Problem Statement
 
-The runtime store can persist raw executions, failures, and log lines, but it
-does not yet produce bounded operational insight. Chat and dashboard users still
-need to read low-level log events or ask the model to interpret raw lines. That
-does not scale to high-volume logs and would create token bloat if raw windows
-were pushed into LLM context.
+Slice 1 created deterministic runtime insight rows, but those rows are still only
+internal storage. The dashboard, future chat tools, and tests cannot retrieve
+execution summaries, incidents, evidence, or timelines through a bounded API.
 
-Slice 1 establishes the offline/deterministic insight layer: parse structured
-signals from raw log lines, build project-scoped execution summaries and incident
-records, and preserve bounded evidence references. This slice intentionally does
-not add API endpoints, chat tools, or frontend UI; those are later slices.
+The existing runtime REST API exposes raw executions, failures, and logs with
+project-scope enforcement. Slice 2 must add the smart-log read layer with the
+same authorization semantics: scope comes from the authenticated user via
+`get_user_project_ids()`, optional `project_id` filters may only narrow scope,
+and guessed cross-project IDs must return `404` or empty lists without revealing
+existence.
 
 ## Proposed Solution
 
-Add additive runtime-insight tables and a deterministic builder service under
-`src/runtime/insights/`.
+Add a dedicated insight repository under `src/runtime/insights/` and extend the
+existing `src/api/routes/runtime.py` router with read-only insight endpoints.
 
-Use the existing held-runtime pattern:
+The repository should follow the existing `RuntimeStoreRepository` pattern:
+async SQLAlchemy, explicit `ProjectScope`, `_denies_all` behavior, scope applied
+in SQL, deterministic row-to-Pydantic mapping, and `RuntimeRecordNotFoundError`
+for point lookups that are unknown or out of scope.
 
-- SQLAlchemy row models in `src/db/models/`.
-- Alembic additive migration with indexes/unique constraints.
-- Async SQLAlchemy service/repository code using select-then-update/insert rather
-  than Postgres-only `ON CONFLICT`, so SQLite tests keep working.
-- Seed/test flow driven by `seed_rich_runtime_data()`.
+Because the Slice 1 schema is intentionally lean, API models should join derived
+rows with raw runtime rows where needed:
 
-The parser should be conservative. It extracts strong signals when present and
-returns `None`/empty fields when uncertain. It must not invent causes. The first
-builder can use deterministic heuristics for the seeded Talend-style failure:
-component extraction, Oracle timeout error code, exception class, retry attempts,
-warning/error counts, primary failed component, evidence lines, and next-check
-suggestions.
+- execution summary endpoint joins `runtime_execution_summaries` with
+  `runtime_executions` and optionally `runtime_incidents`;
+- incident detail joins `runtime_incidents` with execution summary/raw execution
+  and signature rows;
+- evidence joins `runtime_incident_evidence` to `runtime_log_events` so callers
+  receive timestamps/severity plus bounded excerpts;
+- timeline reads raw log events for the execution and left-joins enriched event
+  fields when present.
+
+No schema migration is planned for this slice unless implementation finds a hard
+gap that cannot be solved by joins.
 
 ## Affected Files
 
-- `RAG_pipeline/backend/alembic/versions/032_add_runtime_insights.py` (new)
-- `RAG_pipeline/backend/src/db/models/runtime_insights.py` (new)
-- `RAG_pipeline/backend/src/db/models/__init__.py`
-- `RAG_pipeline/backend/src/runtime/insights/__init__.py` (new)
-- `RAG_pipeline/backend/src/runtime/insights/parser.py` (new)
-- `RAG_pipeline/backend/src/runtime/insights/builder.py` (new)
-- `RAG_pipeline/backend/src/runtime/store/seed.py`
-- `RAG_pipeline/backend/tests/test_runtime/test_insight_parser.py` (new)
-- `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` (new)
+- `RAG_pipeline/backend/src/runtime/insights/models.py` (new)
+- `RAG_pipeline/backend/src/runtime/insights/repository.py` (new)
+- `RAG_pipeline/backend/src/runtime/insights/__init__.py`
+- `RAG_pipeline/backend/src/api/routes/runtime.py`
+- `RAG_pipeline/backend/tests/test_api/test_runtime_insight_endpoints.py` (new)
+- `RAG_pipeline/.agent/system/api-reference.md`
 
-Possible but avoid unless needed:
+Possible only if needed:
 
-- `RAG_pipeline/backend/src/runtime/store/repository.py` only if the builder needs
-  a reusable raw-row read helper. Prefer keeping insight-specific reads inside the
-  new builder for this slice.
+- `RAG_pipeline/backend/src/runtime/models.py` if shared enums/input models belong
+  there more cleanly than in `runtime/insights/models.py`.
+
+Avoid unless a real blocker appears:
+
+- `RAG_pipeline/backend/src/db/models/runtime_insights.py`
+- `RAG_pipeline/backend/alembic/versions/032_add_runtime_insights.py`
+- `RAG_pipeline/backend/src/auth/`
+- `RAG_pipeline/backend/src/rbac/`
+- `RAG_pipeline/backend/src/retrieval/`
 
 ## Architecture Contracts
 
-- Raw runtime tables remain the source of truth. Insight tables are derived and
-  rebuildable.
-- Every derived table carries `project_id`. No insight row may be global or
-  inferred only from execution id.
-- Derived rows are idempotent per project/execution/log event/signature. Rebuilding
-  the same seeded run with the same timestamps must update rows rather than
-  duplicate them.
-- No raw log vectorization and no LLM enrichment in this slice.
-- Parser output is evidence metadata, not final truth. The builder may produce
-  `root_cause_candidate` and `confidence`, but must preserve uncertainty.
-- Store bounded evidence excerpts only. Full raw log text remains in
-  `runtime_log_events`.
-- Use generic JSON columns where needed for SQLite test compatibility, matching
-  existing project conventions.
-- Keep runtime insight modules source-agnostic where practical. Talend-specific
-  regexes can live in parser helpers, but table and service names should not be
-  Talend-specific.
+- All insight reads are project-scoped at the repository/query level, not
+  filtered after rows are loaded.
+- Route handlers derive scope from `CurrentUser` and `get_user_project_ids()`.
+  Scope never comes from query params, path params, request body, or future LLM
+  tool arguments.
+- Optional `project_id` query params narrow scope via the existing
+  `_intersect_scope()` helper only.
+- `ProjectScope` semantics stay identical to the held runtime store:
+  `None` means unrestricted, `[]` means deny all, `[ids]` means restricted.
+- Point lookups by `execution_id` or `incident_id` return `404` for unknown and
+  out-of-scope records, with the same response shape so existence is not leaked.
+- List endpoints return empty lists for deny-all scope or out-of-scope
+  `project_id` filters.
+- Endpoint payloads are bounded and redacted. Evidence may include bounded
+  excerpts already written by Slice 1; do not expose arbitrary raw log windows
+  through these new endpoints.
+- Timeline endpoint may include raw log messages only in the same bounded way as
+  the existing log endpoint, and should include enriched fields separately so UI
+  and later tools can avoid reparsing text.
+- No LLM calls, no vector search, no runtime write actions, and no sync worker
+  behavior in this slice.
 
 ## Implementation Steps
 
-1. Create migration `032_add_runtime_insights.py`.
-   - Add `runtime_enriched_events`.
-   - Add `runtime_error_signatures`.
-   - Add `runtime_execution_summaries`.
-   - Add `runtime_incidents`.
-   - Add `runtime_incident_evidence`.
-   - Include `created_at` and `updated_at` columns in the migration, matching
-     existing runtime migration style.
-   - Add indexes for common future reads:
-     `project_id`, `(project_id, execution_id)`, `(project_id, incident_id)`,
-     `(project_id, signature_hash)`, and relevant timestamps.
-   - Add unique constraints for idempotency, especially:
-     `(project_id, log_event_id)` for enriched events,
-     `(project_id, execution_id)` for summaries/incidents,
-     `(project_id, signature_hash)` for signatures,
-     `(project_id, incident_id, log_event_id)` for evidence.
+1. Add insight domain/API models in `runtime/insights/models.py`.
+   - `RuntimeExecutionSummaryInsight`
+   - `RuntimeIncidentInsight`
+   - `RuntimeIncidentEvidence`
+   - `RuntimeTimelineEvent`
+   - list/filter input models if useful, e.g. `ListRuntimeIncidentsInput` and
+     `GetRuntimeTimelineInput`
+   - Keep types strict and Pydantic v2-compatible; prefer concrete list element
+     types over untyped JSON where response shape is known.
 
-2. Add SQLAlchemy models in `runtime_insights.py`.
-   - Mirror migration columns exactly.
-   - Import/export them from `src/db/models/__init__.py` so test metadata
-     creation sees the tables.
-   - Prefer simple scalar fields plus JSON for bounded lists such as
-     `next_checks` or `evidence_refs`.
+2. Add `RuntimeInsightRepository`.
+   - Constructor accepts `AsyncSession`.
+   - Reuse local `_denies_all()` and `_apply_scope()` helpers, or factor them only
+     if duplication with `RuntimeStoreRepository` becomes meaningful.
+   - Implement:
+     - `get_execution_summary(scope, execution_id)`
+     - `get_execution_timeline(scope, execution_id, min_severity=None, limit=200)`
+     - `list_incidents(scope, project_id=None, since=None, until=None, limit=50)`
+     - `get_incident(scope, incident_id)`
+     - `get_incident_evidence(scope, incident_id, limit=20)`
+   - Join raw execution rows where summary/incident fields need job, state,
+     start/end, duration, or project name.
+   - Join enriched rows into timeline events by `(project_id, log_event_id)`.
+   - Use an existence gate for timeline/evidence point reads so an in-scope record
+     with no matching rows returns empty `200`, while unknown/out-of-scope returns
+     `404`.
 
-3. Implement `parser.py`.
-   - Define a typed dataclass, e.g. `ParsedRuntimeLog`, with optional fields:
-     `component_name`, `error_code`, `exception_class`, `retry_attempt`,
-     `retry_max`, `duration_ms`, `timeout_ms`, `endpoint`, `host`,
-     `database_name`, `table_name`, `queue_name`, `message_family`, and
-     `confidence`.
-   - Implement pure functions with type hints:
-     `parse_runtime_log_message(message: str) -> ParsedRuntimeLog`.
-   - Cover seeded rich log patterns:
-     bracket component prefixes like `[tOracleConnection_1]`,
-     `ORA-12170`,
-     `SQLRecoverableException`,
-     `attempt 3/3`,
-     `30000ms`, `timeout=30s`,
-     JDBC host/database,
-     JMS queue names,
-     SELECT table names.
-   - Add basic credential redaction for extracted endpoints/excerpts:
-     never preserve obvious `password=`, `token=`, `secret=`, or
-     credential-like values.
+3. Extend `src/api/routes/runtime.py`.
+   - Keep the existing router and `_intersect_scope()` helper.
+   - Add response envelopes:
+     - `{ "summary": ... }`
+     - `{ "events": [...], "total": n, "execution_id": "..." }`
+     - `{ "incidents": [...], "total": n }`
+     - `{ "incident": ... }`
+     - `{ "incident_id": "...", "evidence": [...], "total": n }`
+   - Add endpoints:
+     - `GET /api/v1/runtime/executions/{execution_id}/summary`
+     - `GET /api/v1/runtime/executions/{execution_id}/timeline`
+     - `GET /api/v1/runtime/incidents`
+     - `GET /api/v1/runtime/incidents/{incident_id}`
+     - `GET /api/v1/runtime/incidents/{incident_id}/evidence`
+   - Use FastAPI `Query` constraints for limits:
+     - incidents limit: `1..200`, default `50`
+     - evidence limit: `1..50`, default `20`
+     - timeline limit: `1..1000`, default `200`
+   - Reuse `RuntimeLogSeverity` for timeline `min_severity`.
+   - Map `RuntimeRecordNotFoundError` to `HTTPException(404, ...)`.
 
-4. Implement `builder.py`.
-   - Add a function/service such as:
-     `build_runtime_insights_for_execution(session, project_id, execution_id,
-     source_key, ingested_at)`.
-   - Read raw `RuntimeExecutionRow` and ordered `RuntimeLogEventRow` rows for the
-     project/execution.
-   - Parse each log event and upsert `RuntimeEnrichedEventRow`.
-   - Build one `RuntimeExecutionSummaryRow`:
-     warning/error counts, first warning/error, final error, failed component,
-     primary error code, primary exception class, bounded summary text, and
-     evidence references.
-   - For failed executions, build one `RuntimeIncidentRow`:
-     deterministic `incident_id`, `signature_hash`, symptom summary,
-     root-cause candidate, confidence, first bad timestamp, last healthy timestamp,
-     and next checks.
-   - Upsert `RuntimeErrorSignatureRow` for the normalized signature.
-   - Upsert bounded `RuntimeIncidentEvidenceRow` rows for the strongest evidence:
-     first warning, first error, exception/error-code line, final failure line,
-     and route shutdown/rollback line when present.
-   - Keep all upserts dialect-portable with select-then-update/insert.
+4. Add route tests in `test_runtime_insight_endpoints.py`.
+   - Seed `esbmain` with `seed_rich_runtime_data(..., build_insights=True)`.
+   - Seed another project with rich or mock data and build insights where needed.
+   - Patch `src.api.routes.runtime.get_user_project_ids` exactly like
+     `test_runtime_endpoints.py`.
+   - Assert in-scope summary includes seeded job, failed component,
+     `ORA-12170`, `SQLRecoverableException`, warning/error counts, and incident
+     reference.
+   - Assert incident list is scoped and bounded.
+   - Assert incident detail returns likely/root-cause candidate, confidence,
+     next checks, execution id, signature hash, and project id.
+   - Assert evidence returns bounded excerpts with roles plus joined timestamp and
+     severity.
+   - Assert timeline returns chronological events with enriched fields for the
+     Oracle timeout/error lines.
+   - Assert optional `project_id` cannot widen scope.
+   - Assert empty scope returns empty lists for list endpoints.
+   - Assert cross-project or unknown execution/incident point lookups return
+     `404`.
+   - Assert in-scope timeline/evidence filters that match no rows return empty
+     `200` only after the parent execution/incident exists in scope.
+   - Assert unauthenticated requests still return `401`.
 
-5. Wire an optional seed path.
-   - Add an optional `build_insights: bool = False` parameter to
-     `seed_mock_runtime_data()` and `seed_rich_runtime_data()`, or add a separate
-     explicit helper such as `build_seed_runtime_insights(...)`.
-   - Add a CLI flag such as `--build-insights`.
-   - Do not auto-run this at application startup.
-
-6. Add parser tests.
-   - Validate component extraction.
-   - Validate `ORA-12170`.
-   - Validate `SQLRecoverableException`.
-   - Validate retry attempt/max extraction.
-   - Validate duration/timeout extraction.
-   - Validate queue/table/host/database extraction where present.
-   - Validate safe no-match behavior on generic informational lines.
-   - Validate basic redaction behavior.
-
-7. Add builder tests.
-   - Use `seed_rich_runtime_data(..., project_id="esbmain")`.
-   - Build insights for the failed execution.
-   - Assert summary contains:
-     job `esb_order_sync_route`,
-     failed component `tOracleConnection_1`,
-     error code `ORA-12170`,
-     exception class `SQLRecoverableException`,
-     warning and error counts,
-     bounded evidence references.
-   - Assert incident contains:
-     deterministic incident id,
-     signature hash,
-     likely/root-cause candidate mentioning source database timeout,
-     confidence,
-     next checks,
-     first bad timestamp.
-   - Assert idempotency by building twice and checking row counts stay stable.
-   - Assert project scoping by seeding a second project and verifying derived rows
-     keep separate `project_id` values.
+5. Update API documentation.
+   - Extend `RAG_pipeline/.agent/system/api-reference.md` under Runtime with the
+     new smart-log endpoints, query params, response envelopes, and RBAC semantics.
+   - Mention that smart-log API reads from derived Postgres insight tables plus
+     scoped joins to raw runtime rows; logs are not vectorized into Qdrant.
 
 ## Verification Strategy
 
@@ -190,28 +176,22 @@ Run focused backend validation for this slice:
 
 ```bash
 cd RAG_pipeline/backend
-python3 -m py_compile src/db/models/runtime_insights.py src/runtime/insights/parser.py src/runtime/insights/builder.py src/runtime/store/seed.py
-uv run pytest tests/test_runtime/test_insight_parser.py tests/test_runtime/test_insight_builder.py tests/test_runtime/test_seed.py tests/test_runtime/test_store_repository.py
+python3 -m py_compile src/runtime/insights/models.py src/runtime/insights/repository.py src/api/routes/runtime.py
+uv run pytest tests/test_api/test_runtime_insight_endpoints.py tests/test_api/test_runtime_endpoints.py tests/test_runtime/test_insight_builder.py tests/test_runtime/test_seed.py
 ```
 
-If migration syntax needs checking locally:
-
-```bash
-cd RAG_pipeline/backend
-python3 -m py_compile alembic/versions/032_add_runtime_insights.py
-```
-
-Full validation can wait for `/validate`, but the focused runtime tests above
-must pass before moving to inspection or the next slice.
+Because this is a critical Auth/RBAC API surface, run `/inspect` after build and
+before `/validate` or commit.
 
 ## Out of Scope
 
-- Runtime insight REST endpoints.
-- Chat/runtime tool changes.
-- Frontend dashboard changes.
-- Similar-failure API/tool behavior beyond storing the first signature row needed
-  by future slices.
-- Real Talend TMC sync/polling.
-- Production alert/email delivery.
-- LLM-based enrichment.
-- Any change to `src/auth/`, `src/rbac/`, or `src/retrieval/`.
+- High-level runtime intelligence tools for chat.
+- Runtime tool registry/provider changes.
+- Conversational RAG answer formatting.
+- Frontend dashboard or BFF route changes.
+- Similar-failure endpoint/tool behavior.
+- Alerting/email delivery.
+- Real Talend TMC sync worker.
+- LLM-based enrichment or summarization.
+- Schema changes unless implementation proves Slice 1 fields cannot support the
+  API contract through joins.
