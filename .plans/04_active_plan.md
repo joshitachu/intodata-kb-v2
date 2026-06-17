@@ -1,218 +1,217 @@
 ---
-feature: Logs Dashboard + RAG x Runtime Cross-Reference
-slice: Slice 3 - Frontend logs dashboard
+feature: Smart Runtime Log Intelligence
+slice: Slice 1 - Deterministic Enrichment + Insight Store
 sub_project: rag_pipeline
-critical_area: no - frontend only; RBAC enforced by Slice 2 backend endpoints
+critical_area: no - additive runtime schema/service work; security-sensitive project_id propagation, but no auth/RBAC or retrieval-chain edits expected
 verdict: PASS
-approved_at: 2026-06-16
+approved_at: 2026-06-17
 ---
 
 ## Problem Statement
 
-Slice 2 exposes RBAC-scoped runtime data through backend REST endpoints, but the
-RAG frontend still has no operator-facing logs view. The only existing runtime UI
-surface is the small runtime status indicator and chat-side runtime progress.
-Operators need an admin page where they can browse recent executions, inspect
-failures, and drill into log lines without asking the chat to fetch data.
+The runtime store can persist raw executions, failures, and log lines, but it
+does not yet produce bounded operational insight. Chat and dashboard users still
+need to read low-level log events or ask the model to interpret raw lines. That
+does not scale to high-volume logs and would create token bloat if raw windows
+were pushed into LLM context.
 
-This slice should not add a marketing page or a separate app shell. It should add
-a functional `/admin/logs` page inside the existing admin section, with dense,
-scan-friendly operational controls and clear loading, error, empty, and detail
-states.
+Slice 1 establishes the offline/deterministic insight layer: parse structured
+signals from raw log lines, build project-scoped execution summaries and incident
+records, and preserve bounded evidence references. This slice intentionally does
+not add API endpoints, chat tools, or frontend UI; those are later slices.
 
 ## Proposed Solution
 
-Build the logs dashboard as a frontend-only slice on top of the Slice 2 backend
-contract. Add Next.js BFF proxy routes under `app/api/runtime/*`, Zod schemas and
-TypeScript types for the four runtime response shapes, React Query hooks in
-`useRuntimeLogs.ts`, and a new `/admin/logs` admin page.
+Add additive runtime-insight tables and a deterministic builder service under
+`src/runtime/insights/`.
 
-Use the existing frontend conventions:
+Use the existing held-runtime pattern:
 
-- BFF proxy routes forward cookies/CSRF with `backendProxyHeaders()`.
-- Hooks fetch through the local `/api/*` routes and validate with Zod.
-- The admin page lives under `app/admin`, so `app/admin/layout.tsx` already gates
-  access with `hasAnyAdminPermission`.
-- Sidebar visibility uses `adminSubLinks` and `usePermissions()`.
-- Icons come from `lucide-react`.
+- SQLAlchemy row models in `src/db/models/`.
+- Alembic additive migration with indexes/unique constraints.
+- Async SQLAlchemy service/repository code using select-then-update/insert rather
+  than Postgres-only `ON CONFLICT`, so SQLite tests keep working.
+- Seed/test flow driven by `seed_rich_runtime_data()`.
 
-The page should be an actual operational dashboard, not a landing page:
-
-- Top-level tabs or segmented controls for `Executions` and `Failures`.
-- Executions table with filter controls for state and job name.
-- Failures table/panel showing recent failure summaries.
-- Log detail drilldown opened by selecting an execution row, with severity filter
-  and timestamped log lines.
-- Loading, error, empty, and selected-detail states handled explicitly.
+The parser should be conservative. It extracts strong signals when present and
+returns `None`/empty fields when uncertain. It must not invent causes. The first
+builder can use deterministic heuristics for the seeded Talend-style failure:
+component extraction, Oracle timeout error code, exception class, retry attempts,
+warning/error counts, primary failed component, evidence lines, and next-check
+suggestions.
 
 ## Affected Files
 
-- `RAG_pipeline/frontend/app/admin/logs/page.tsx` (new)
-  - Main client page for executions, failures, and log detail drilldown.
-  - Use dense tables/panels consistent with existing admin pages.
-  - Avoid nested cards; use full-width admin layout sections and simple repeated
-    row/detail surfaces.
+- `RAG_pipeline/backend/alembic/versions/032_add_runtime_insights.py` (new)
+- `RAG_pipeline/backend/src/db/models/runtime_insights.py` (new)
+- `RAG_pipeline/backend/src/db/models/__init__.py`
+- `RAG_pipeline/backend/src/runtime/insights/__init__.py` (new)
+- `RAG_pipeline/backend/src/runtime/insights/parser.py` (new)
+- `RAG_pipeline/backend/src/runtime/insights/builder.py` (new)
+- `RAG_pipeline/backend/src/runtime/store/seed.py`
+- `RAG_pipeline/backend/tests/test_runtime/test_insight_parser.py` (new)
+- `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` (new)
 
-- `RAG_pipeline/frontend/app/api/runtime/executions/route.ts` (new)
-  - Proxy `GET /api/v1/runtime/executions`.
-  - Preserve query string filters.
+Possible but avoid unless needed:
 
-- `RAG_pipeline/frontend/app/api/runtime/executions/[id]/route.ts` (new)
-  - Proxy `GET /api/v1/runtime/executions/{execution_id}`.
-
-- `RAG_pipeline/frontend/app/api/runtime/executions/[id]/logs/route.ts` (new)
-  - Proxy `GET /api/v1/runtime/executions/{execution_id}/logs`.
-  - Preserve `min_severity` and `limit`.
-
-- `RAG_pipeline/frontend/app/api/runtime/failures/route.ts` (new)
-  - Proxy `GET /api/v1/runtime/failures`.
-  - Preserve query string filters.
-
-- `RAG_pipeline/frontend/hooks/useRuntimeLogs.ts` (new)
-  - React Query hooks for executions, execution detail, log events, and failures.
-  - Follow `useRuntimeStatus()` style: local fetch, `res.ok` guard, Zod parse,
-    stable query keys.
-
-- `RAG_pipeline/frontend/types/runtime.ts` (new)
-  - Zod schemas and inferred types for runtime executions, failures, logs, and
-    response envelopes.
-  - Export severity/state enums as Zod unions.
-
-- `RAG_pipeline/frontend/types/index.ts`
-  - Re-export runtime log schemas/types, or import from `types/runtime.ts` where
-    used. Keep one clear public type surface.
-
-- `RAG_pipeline/frontend/components/Sidebar.tsx`
-  - Add a "Logs" admin sub-link, likely with `ScrollText`, `ListTree`, or another
-    existing lucide icon.
-  - Permission should match the intended admin audience. Prefer `perm:
-    "view_audit_logs"` unless Slice 2 introduced a more specific permission.
-
-- Optional tests:
-  - `RAG_pipeline/frontend/tests/hooks/useRuntimeLogs.test.ts`
-  - `RAG_pipeline/frontend/tests/app/admin/logs.test.tsx` or component-level tests
-    if page logic is extracted into testable child components.
+- `RAG_pipeline/backend/src/runtime/store/repository.py` only if the builder needs
+  a reusable raw-row read helper. Prefer keeping insight-specific reads inside the
+  new builder for this slice.
 
 ## Architecture Contracts
 
-- Frontend never calls FastAPI directly from client components; all browser calls
-  go through Next.js BFF routes.
-- BFF routes must forward auth cookies and CSRF token using `backendProxyHeaders()`.
-- Backend remains the RBAC boundary. Frontend permission checks hide navigation and
-  gate admin layout, but they are not the data-isolation mechanism.
-- All API responses are validated with Zod before being used by hooks/components.
-- TypeScript strict mode: no `any`; use `unknown` and schema parsing/narrowing.
-- Handle loading, error, empty, and data states for each view.
-- No new npm dependencies.
-- No backend code in this slice, except only if Slice 2 response shape is found to
-  be incompatible with its own documented contract.
+- Raw runtime tables remain the source of truth. Insight tables are derived and
+  rebuildable.
+- Every derived table carries `project_id`. No insight row may be global or
+  inferred only from execution id.
+- Derived rows are idempotent per project/execution/log event/signature. Rebuilding
+  the same seeded run with the same timestamps must update rows rather than
+  duplicate them.
+- No raw log vectorization and no LLM enrichment in this slice.
+- Parser output is evidence metadata, not final truth. The builder may produce
+  `root_cause_candidate` and `confidence`, but must preserve uncertainty.
+- Store bounded evidence excerpts only. Full raw log text remains in
+  `runtime_log_events`.
+- Use generic JSON columns where needed for SQLite test compatibility, matching
+  existing project conventions.
+- Keep runtime insight modules source-agnostic where practical. Talend-specific
+  regexes can live in parser helpers, but table and service names should not be
+  Talend-specific.
 
 ## Implementation Steps
 
-1. Add runtime frontend types
-   - Create `types/runtime.ts` with:
-     - `RuntimeExecutionStateSchema`: `success | failed | running | unknown`
-     - `RuntimeLogSeveritySchema`: `debug | info | warning | error`
-     - `RuntimeExecutionSchema`
-     - `RuntimeFailureSchema`
-     - `RuntimeLogEventSchema`
-     - `ExecutionListResponseSchema`
-     - `ExecutionDetailResponseSchema`
-     - `LogEventListResponseSchema`
-     - `FailureListResponseSchema`
-   - Export inferred TypeScript types.
-   - Re-export from `types/index.ts` if that is the local convention used by the
-     new hooks.
+1. Create migration `032_add_runtime_insights.py`.
+   - Add `runtime_enriched_events`.
+   - Add `runtime_error_signatures`.
+   - Add `runtime_execution_summaries`.
+   - Add `runtime_incidents`.
+   - Add `runtime_incident_evidence`.
+   - Include `created_at` and `updated_at` columns in the migration, matching
+     existing runtime migration style.
+   - Add indexes for common future reads:
+     `project_id`, `(project_id, execution_id)`, `(project_id, incident_id)`,
+     `(project_id, signature_hash)`, and relevant timestamps.
+   - Add unique constraints for idempotency, especially:
+     `(project_id, log_event_id)` for enriched events,
+     `(project_id, execution_id)` for summaries/incidents,
+     `(project_id, signature_hash)` for signatures,
+     `(project_id, incident_id, log_event_id)` for evidence.
 
-2. Add BFF proxy routes
-   - Implement all four `app/api/runtime/*` route handlers.
-   - Use `FASTAPI_URL` and `backendProxyHeaders(request)` like
-     `app/api/runtime/status/route.ts`.
-   - Forward the incoming `request.nextUrl.search` query string unchanged.
-   - Parse backend JSON defensively with `res.json().catch(() => ({}))`.
-   - Return `NextResponse.json(data, { status: res.status })`.
+2. Add SQLAlchemy models in `runtime_insights.py`.
+   - Mirror migration columns exactly.
+   - Import/export them from `src/db/models/__init__.py` so test metadata
+     creation sees the tables.
+   - Prefer simple scalar fields plus JSON for bounded lists such as
+     `next_checks` or `evidence_refs`.
 
-3. Add `useRuntimeLogs.ts`
-   - Add `useRuntimeExecutions(filters)`.
-   - Add `useRuntimeExecution(executionId, enabled)`.
-   - Add `useRuntimeExecutionLogs(executionId, filters, enabled)`.
-   - Add `useRuntimeFailures(filters)`.
-   - Construct query strings with `URLSearchParams`, omitting empty filters.
-   - Use stable query keys that include filter values.
-   - Set short stale times appropriate for operational data, for example 10-30s.
+3. Implement `parser.py`.
+   - Define a typed dataclass, e.g. `ParsedRuntimeLog`, with optional fields:
+     `component_name`, `error_code`, `exception_class`, `retry_attempt`,
+     `retry_max`, `duration_ms`, `timeout_ms`, `endpoint`, `host`,
+     `database_name`, `table_name`, `queue_name`, `message_family`, and
+     `confidence`.
+   - Implement pure functions with type hints:
+     `parse_runtime_log_message(message: str) -> ParsedRuntimeLog`.
+   - Cover seeded rich log patterns:
+     bracket component prefixes like `[tOracleConnection_1]`,
+     `ORA-12170`,
+     `SQLRecoverableException`,
+     `attempt 3/3`,
+     `30000ms`, `timeout=30s`,
+     JDBC host/database,
+     JMS queue names,
+     SELECT table names.
+   - Add basic credential redaction for extracted endpoints/excerpts:
+     never preserve obvious `password=`, `token=`, `secret=`, or
+     credential-like values.
 
-4. Build `/admin/logs`
-   - Add a client page under `app/admin/logs/page.tsx`.
-   - State:
-     - selected tab/view
-     - `state` filter
-     - `jobName` text filter
-     - selected execution id
-     - log `min_severity`
-   - Executions view:
-     - Filter row with state segmented/select control, job input, refresh button.
-     - Table columns: execution id, job name, project name, state badge,
-       started_at, duration_ms.
-     - Row click selects an execution and loads logs.
-   - Failures view:
-     - Table/panel columns: job name, failed_at, error_summary, execution id.
-     - Row click selects the failure's execution and opens log detail.
-   - Detail panel:
-     - Shows selected execution metadata if loaded.
-     - Severity filter.
-     - Timestamped log lines with severity badges.
-     - Empty state when an execution has no log lines for the selected severity.
-   - Use accessible buttons/inputs, fixed table layout where needed, and avoid text
-     overflow in narrow widths.
+4. Implement `builder.py`.
+   - Add a function/service such as:
+     `build_runtime_insights_for_execution(session, project_id, execution_id,
+     source_key, ingested_at)`.
+   - Read raw `RuntimeExecutionRow` and ordered `RuntimeLogEventRow` rows for the
+     project/execution.
+   - Parse each log event and upsert `RuntimeEnrichedEventRow`.
+   - Build one `RuntimeExecutionSummaryRow`:
+     warning/error counts, first warning/error, final error, failed component,
+     primary error code, primary exception class, bounded summary text, and
+     evidence references.
+   - For failed executions, build one `RuntimeIncidentRow`:
+     deterministic `incident_id`, `signature_hash`, symptom summary,
+     root-cause candidate, confidence, first bad timestamp, last healthy timestamp,
+     and next checks.
+   - Upsert `RuntimeErrorSignatureRow` for the normalized signature.
+   - Upsert bounded `RuntimeIncidentEvidenceRow` rows for the strongest evidence:
+     first warning, first error, exception/error-code line, final failure line,
+     and route shutdown/rollback line when present.
+   - Keep all upserts dialect-portable with select-then-update/insert.
 
-5. Add sidebar navigation
-   - Add `Logs` to `adminSubLinks` in `components/Sidebar.tsx`.
-   - Use a lucide icon rather than custom SVG.
-   - Use the existing permission filtering pattern.
+5. Wire an optional seed path.
+   - Add an optional `build_insights: bool = False` parameter to
+     `seed_mock_runtime_data()` and `seed_rich_runtime_data()`, or add a separate
+     explicit helper such as `build_seed_runtime_insights(...)`.
+   - Add a CLI flag such as `--build-insights`.
+   - Do not auto-run this at application startup.
 
-6. Tests
-   - Add hook tests for URL construction, Zod validation success, and failed fetch.
-   - Add a page/component test for loading/error/empty/data states if feasible.
-   - Update existing sidebar tests only if they exist; otherwise rely on typecheck
-     and manual navigation.
+6. Add parser tests.
+   - Validate component extraction.
+   - Validate `ORA-12170`.
+   - Validate `SQLRecoverableException`.
+   - Validate retry attempt/max extraction.
+   - Validate duration/timeout extraction.
+   - Validate queue/table/host/database extraction where present.
+   - Validate safe no-match behavior on generic informational lines.
+   - Validate basic redaction behavior.
 
-7. Documentation/logging after build
-   - Update RAG frontend/session logs through the project workflow after the slice
-     is implemented and validated.
+7. Add builder tests.
+   - Use `seed_rich_runtime_data(..., project_id="esbmain")`.
+   - Build insights for the failed execution.
+   - Assert summary contains:
+     job `esb_order_sync_route`,
+     failed component `tOracleConnection_1`,
+     error code `ORA-12170`,
+     exception class `SQLRecoverableException`,
+     warning and error counts,
+     bounded evidence references.
+   - Assert incident contains:
+     deterministic incident id,
+     signature hash,
+     likely/root-cause candidate mentioning source database timeout,
+     confidence,
+     next checks,
+     first bad timestamp.
+   - Assert idempotency by building twice and checking row counts stay stable.
+   - Assert project scoping by seeding a second project and verifying derived rows
+     keep separate `project_id` values.
 
 ## Verification Strategy
 
-- Typecheck:
-  - `cd RAG_pipeline/frontend && npx tsc --noEmit`
+Run focused backend validation for this slice:
 
-- Tests:
-  - `cd RAG_pipeline/frontend && npm test`
-  - If tests are scoped during implementation, run at least:
-    - `cd RAG_pipeline/frontend && npm test -- tests/hooks/useRuntimeLogs.test.ts`
-    - relevant component/page tests if added.
+```bash
+cd RAG_pipeline/backend
+python3 -m py_compile src/db/models/runtime_insights.py src/runtime/insights/parser.py src/runtime/insights/builder.py src/runtime/store/seed.py
+uv run pytest tests/test_runtime/test_insight_parser.py tests/test_runtime/test_insight_builder.py tests/test_runtime/test_seed.py tests/test_runtime/test_store_repository.py
+```
 
-- Build:
-  - `cd RAG_pipeline/frontend && npm run build`
+If migration syntax needs checking locally:
 
-- Manual UI check with Slice 2 backend running and seeded runtime data:
-  - Open `/admin/logs`.
-  - Confirm executions table loads and filters by state/job.
-  - Select a failed execution and confirm log detail loads.
-  - Set severity to `error` and confirm lower severity lines are hidden.
-  - Open failures view and select a failure; confirm it opens the same detail flow.
-  - Confirm empty/error states render without layout breakage.
-  - Confirm "Logs" appears in the admin sidebar for permitted users.
+```bash
+cd RAG_pipeline/backend
+python3 -m py_compile alembic/versions/032_add_runtime_insights.py
+```
 
-- Browser check:
-  - After implementation, run the frontend dev server and inspect `/admin/logs` in
-    the in-app browser or equivalent local browser workflow.
+Full validation can wait for `/validate`, but the focused runtime tests above
+must pass before moving to inspection or the next slice.
 
 ## Out of Scope
 
-- Slice 1 conversational RAG cross-reference behavior.
-- Slice 2 backend runtime REST endpoints or schemas.
-- Any backend RBAC change.
-- Runtime write actions such as retry, acknowledge, resolve, or delete.
-- Trend/analytics charts, success-rate dashboards, or SLA views.
-- Real Talend TMC polling/sync worker.
-- New npm dependencies.
+- Runtime insight REST endpoints.
+- Chat/runtime tool changes.
+- Frontend dashboard changes.
+- Similar-failure API/tool behavior beyond storing the first signature row needed
+  by future slices.
+- Real Talend TMC sync/polling.
+- Production alert/email delivery.
+- LLM-based enrichment.
+- Any change to `src/auth/`, `src/rbac/`, or `src/retrieval/`.

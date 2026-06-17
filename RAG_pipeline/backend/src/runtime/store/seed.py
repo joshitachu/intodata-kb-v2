@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.session import async_session_factory
+from src.runtime.insights.builder import build_runtime_insights_for_execution
 from src.runtime.models import (
     DetectFailuresInput,
     GetExecutionLogsInput,
@@ -71,6 +72,7 @@ async def seed_mock_runtime_data(
     project_id: str = DEFAULT_PROJECT_ID,
     source_key: str = DEFAULT_SOURCE_KEY,
     synced_at: datetime.datetime | None = None,
+    build_insights: bool = False,
 ) -> SeedSummary:
     """Load mock runtime fixtures into the held store for `project_id`.
 
@@ -131,6 +133,16 @@ async def seed_mock_runtime_data(
 
     await repo.update_sync_state(source_key, project_id, synced_at)
 
+    if build_insights:
+        for execution in executions:
+            await build_runtime_insights_for_execution(
+                session,
+                project_id=project_id,
+                execution_id=execution.execution_id,
+                source_key=source_key,
+                ingested_at=synced_at,
+            )
+
     return SeedSummary(
         project_id=project_id,
         source_key=source_key,
@@ -186,6 +198,7 @@ async def seed_rich_runtime_data(
     project_id: str = DEFAULT_PROJECT_ID,
     source_key: str = DEFAULT_SOURCE_KEY,
     synced_at: datetime.datetime | None = None,
+    build_insights: bool = False,
 ) -> SeedSummary:
     """Seed a deeper, realistic Talend-ESB-style failed run (plus a prior success for
     comparison) with an in-depth log sequence. Writes through the repository
@@ -258,6 +271,17 @@ async def seed_rich_runtime_data(
             log_count += 1
 
     await repo.update_sync_state(source_key, project_id, synced_at)
+
+    if build_insights:
+        for exec_id in (_RICH_FAILED_EXEC, _RICH_SUCCESS_EXEC):
+            await build_runtime_insights_for_execution(
+                session,
+                project_id=project_id,
+                execution_id=exec_id,
+                source_key=source_key,
+                ingested_at=synced_at,
+            )
+
     return SeedSummary(
         project_id=project_id,
         source_key=source_key,
@@ -279,6 +303,12 @@ async def main() -> None:
         help="Seed the deeper Talend-ESB-style sample (realistic multi-line failure logs) "
         "instead of the basic mock fixtures.",
     )
+    parser.add_argument(
+        "--build-insights",
+        action="store_true",
+        help="Also build deterministic insight rows (enriched events, summaries, incidents) "
+        "after seeding raw runtime data.",
+    )
     args = parser.parse_args()
 
     synced_at = None
@@ -294,7 +324,11 @@ async def main() -> None:
     async with async_session_factory() as session:
         try:
             summary = await seed_fn(
-                session, project_id=args.project_id, source_key=args.source_key, synced_at=synced_at
+                session,
+                project_id=args.project_id,
+                source_key=args.source_key,
+                synced_at=synced_at,
+                build_insights=args.build_insights,
             )
             await session.commit()
         except Exception:

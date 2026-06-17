@@ -27,6 +27,13 @@ from src.db.models.runtime_data import (
     RuntimeLogEventRow,
     RuntimeSyncStateRow,
 )
+from src.db.models.runtime_insights import (
+    RuntimeEnrichedEventRow,
+    RuntimeErrorSignatureRow,
+    RuntimeExecutionSummaryRow,
+    RuntimeIncidentRow,
+    RuntimeIncidentEvidenceRow,
+)
 
 __all__ = [
     "User",
@@ -58,4 +65,9 @@ __all__ = [
     "RuntimeFailureRow",
     "RuntimeLogEventRow",
     "RuntimeSyncStateRow",
+    "RuntimeEnrichedEventRow",
+    "RuntimeErrorSignatureRow",
+    "RuntimeExecutionSummaryRow",
+    "RuntimeIncidentRow",
+    "RuntimeIncidentEvidenceRow",
 ]
