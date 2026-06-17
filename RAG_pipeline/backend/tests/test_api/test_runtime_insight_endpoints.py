@@ -387,3 +387,66 @@ class TestAuthentication:
         finally:
             app.dependency_overrides.clear()
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Similar failures
+# ---------------------------------------------------------------------------
+
+
+class TestSimilarFailures:
+    async def _get_incident_id(self, client, scope_val) -> str:
+        with _scope(scope_val):
+            resp = await client.get("/api/v1/runtime/incidents?limit=5")
+        assert resp.status_code == 200
+        incidents = resp.json()["incidents"]
+        assert len(incidents) > 0
+        return incidents[0]["incident_id"]
+
+    async def test_returns_recurrence_for_in_scope_incident(self, seeded_client):
+        incident_id = await self._get_incident_id(seeded_client, [_ESB])
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/incidents/{incident_id}/similar"
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["incident_id"] == incident_id
+        assert "recurrence" in body
+        assert "similar_incidents" in body
+        r = body["recurrence"]
+        assert isinstance(r["occurrence_count"], int)
+        assert isinstance(r["is_recurring"], bool)
+        assert len(r["alert_fingerprint"]) > 0
+        assert len(r["dedupe_key"]) > 0
+
+    async def test_cross_project_scope_returns_404(self, seeded_client):
+        incident_id = await self._get_incident_id(seeded_client, [_ESB])
+        with _scope([_OTHER]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/incidents/{incident_id}/similar"
+            )
+        assert resp.status_code == 404
+
+    async def test_empty_scope_returns_404(self, seeded_client):
+        incident_id = await self._get_incident_id(seeded_client, [_ESB])
+        with _scope([]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/incidents/{incident_id}/similar"
+            )
+        assert resp.status_code == 404
+
+    async def test_unknown_incident_returns_404(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                "/api/v1/runtime/incidents/deadbeefdeadbeefdeadbeefdeadbeef/similar"
+            )
+        assert resp.status_code == 404
+
+    async def test_oversized_limit_returns_422(self, seeded_client):
+        incident_id = await self._get_incident_id(seeded_client, [_ESB])
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/incidents/{incident_id}/similar?limit=100"
+            )
+        assert resp.status_code == 422

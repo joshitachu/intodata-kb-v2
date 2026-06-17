@@ -1,110 +1,150 @@
 ---
-feature: Logs Dashboard + RAG×Runtime Cross-Reference
+feature: Smart Runtime Log Intelligence
 pipeline_step: 1_grill
-date: 2026-06-16
+date: 2026-06-17
 ---
 
 ## Feature
-A logs dashboard page in the existing RAG frontend where users can browse live
-execution data, and an LLM that cross-references that live log data with indexed
-documentation in the same answer turn — so a user can ask "I see this error in the
-logs, what should I look at?" and get an answer grounded in both.
+
+Build a smart runtime-log intelligence layer on top of the existing held runtime
+log store, runtime tools, chat integration, and `/admin/logs` dashboard.
+
+The goal is to move from "raw logs are available" to "the system can explain what
+went wrong, why it likely happened, which evidence supports that answer, and what
+the user should check next" without pushing large raw log volumes into the LLM
+context window.
+
+The feature should support high-volume logs, including scenarios with hundreds of
+thousands or millions of log lines, by precomputing structured summaries,
+incidents, error signatures, and evidence references. Chat should consume those
+derived insights first and fetch raw log lines only as supporting evidence.
+
+Logs must remain scoped to projects. For example, an ESB project has its own log
+set, while another project has a different log set. Chat and dashboard views must
+never mix project-scoped runtime data across authorization boundaries.
 
 ## Problem Statement
-Two gaps today:
 
-1. **No UI for logs.** The only way to see runtime data is to ask the chat. There
-   is no page where a user can browse executions, see failure summaries, or drill
-   into log lines. The data is in Postgres but invisible.
+Raw runtime logs exist, but users cannot do much with them yet. The current system
+can store logs, display logs, and let chat call low-level runtime tools, but the
+user still has to interpret noisy records. This does not scale when a project has
+large log volume.
 
-2. **RAG and runtime tool calls never happen in the same turn.** The chat either
-   does document search (Qdrant) OR runtime tool calls (Postgres). When the LLM
-   produces a precomputed answer from the RAG path, it short-circuits before the
-   runtime loop ever runs. A question like "I see ORA-12170 in the logs — what
-   does our ESB architecture doc say I should check?" cannot be answered today.
+The specific gaps:
+
+1. Raw logs are too verbose for direct LLM use. Sending many log lines to the LLM
+   creates token bloat, high latency, higher cost, and worse answers.
+2. Current runtime tools expose low-level access (`get_execution_logs`,
+   `detect_failures`) but not higher-level operational insight such as failed
+   component, likely cause, repeated signature, timeline, or next checks.
+3. The dashboard can show logs, but it does not yet surface "smart logs" where a
+   user can immediately see what failed and why without waiting on or reading the
+   full log stream.
+4. Project scoping must stay explicit and enforced. Runtime insights, raw logs,
+   and chat answers must be scoped to the authenticated user's project access.
 
 ## Definition of Done
-- A `/admin/logs` page exists in the frontend. It shows a table of executions
-  (filterable by project/job/state), a failures panel, and a drilldown to log
-  lines for a selected execution.
-- The AI correctly answers questions that require both live log context AND
-  indexed documentation in the same response — verified with at least two
-  representative test questions against seeded data.
-- Cross-project data cannot leak: a user scoped to project A cannot receive log
-  data from project B in any response, even when asking a combined question.
+
+- A seeded/mock failed Talend-style run can be analyzed end to end.
+- Chat can answer questions such as "what went wrong?", "why did job X fail?",
+  and "what should I check next?" using runtime log-derived insight rather than
+  dumping raw log lines into context.
+- Chat answers identify:
+  - failed job/execution
+  - failed component when detectable
+  - likely cause or root-cause candidate
+  - timeline of relevant events
+  - evidence log lines or references
+  - next checks for the user
+- The dashboard shows the same smart-log insight for the test/mock failure, not
+  only raw log lines.
+- The approach is tested with seeded data where a failed Talend run produces a
+  clear explanation such as: job X failed because component Y timed out, with
+  evidence lines and recommended checks.
+- High-volume behavior is designed so chat uses bounded summaries/incidents and
+  evidence references, not unbounded raw logs.
+- Project scoping is verified: project A users cannot see project B logs,
+  incidents, summaries, evidence lines, or chat-derived answers.
 
 ## Out of Scope
-- Building a real polling/sync worker against Talend TMC or any live source.
-  Data continues to be seeded manually. Poller is a separate future epic.
-- Modifying the ingest, chunking, or embedding pipeline.
-- New LLM providers or model changes.
-- Write actions on the logs page (retry a job, acknowledge a failure).
-- Trend/analytics aggregation (execution success rates over time) — useful but
-  separate from the cross-reference story.
+
+- Building the real Talend TMC sync worker or any production ingestion worker.
+  This feature builds the architecture and intelligence layer first; data
+  acquisition comes later.
+- Runtime write actions such as retry, acknowledge, resolve, rerun, or edit.
+- Full trend analytics dashboards such as SLA reporting, long-term success-rate
+  charts, or capacity planning.
+- Replacing the existing raw log dashboard. Raw log viewing remains available as
+  evidence/detail.
+- Sending large raw log windows directly to the LLM as the main strategy.
+- Production-grade alert routing rules. Lightweight alert/email hooks may be
+  considered as optional design groundwork, but operational alerting is not the
+  core first deliverable.
 
 ## Solution Rationale
-**Cross-reference (LLM path):**
-The agent audit found that Qdrant context is already injected into `llm_messages`
-before the runtime loop fires in `conversational_rag.py`. The only thing blocking
-combined answers is the `precomputed_answer` early-return in the QA branches
-(lines ~1082–1102 non-streaming, ~1278–1293 streaming). Removing that early-return
-and returning `llm_messages` instead is ~30–50 lines — the architecture already
-supports it. This is the correct minimal change.
 
-**Logs page:**
-The frontend audit found exactly 4 missing REST endpoints on the backend
-(list executions, get execution details, get execution logs, list failures). The
-repository methods and DB models exist already. The admin section of the frontend
-has an established table/card/hook pattern (modelled on the usage page). No new
-dependencies needed.
+The system should treat raw logs as evidence, not as the primary chat abstraction.
+For large log volumes, dumping raw lines into the LLM will create token bloat and
+slow, expensive, fragile answers. A better architecture is:
 
-**TMC MCP repo patterns to adopt:**
-- Pre-aggregate where possible — a `detect_failures` call with a time window
-  should return a grouped summary, not raw rows, to avoid filling the LLM context
-  window with records it then has to count itself.
-- Component-level fields (job_name, component) are the natural join key between
-  log data and RAG-indexed documentation — queries like "which component failed
-  and what does the doc say it does?" are feasible if RAG chunks carry job/component
-  metadata.
-- Consider gap-detection tools as a future category: "jobs with no documentation",
-  "jobs that failed but have no matching doc" — these combine both data sources
-  server-side and are more useful than raw retrieval for diagnosis.
+1. Store raw runtime logs as structured records.
+2. Parse and enrich logs into structured fields such as component names, error
+   codes, exception classes, retry attempts, source endpoints, and timeout values.
+3. Build execution summaries and incident records from those enriched events.
+4. Cluster failures by normalized error signature.
+5. Give chat higher-level runtime tools such as `analyze_execution_failure`,
+   `get_execution_timeline`, `find_similar_failures`, and
+   `compare_with_previous_success`.
+6. Let chat answer from bounded insight records first, then quote or reference a
+   small number of raw log lines as evidence.
+
+This should reduce token use, improve latency, and make the dashboard and chat
+more useful than raw log browsing.
+
+Regex/deterministic parsing is acceptable as a first layer because many Talend and
+runtime log signals are structured enough to extract safely: component names,
+error codes, exception names, retry counts, durations, and severity/timestamps.
+LLM enrichment can be added later as an asynchronous advisory layer, but it should
+not be required on the critical path for first-pass insight.
 
 ## Assumptions and Risk
-- The `precomputed_answer` short-circuit is the only fork — confirmed by the audit.
-  If there are other early-returns in the non-streaming and streaming paths that
-  were missed, the combined-answer feature may only partially work.
-- Ollama does not support structured tool calls (`_TOOL_AWARE_FUNCS` only lists
-  `kimi` today). On Ollama deployments the LLM will silently fall back to RAG-only
-  even after the fix. This must be documented as a known limitation, not left silent.
-- The RBAC coupling between Qdrant scope and Postgres scope is currently implicit
-  (both derive from the same `project_ids` but are passed separately). If that
-  coupling breaks in a future change, cross-project leakage becomes possible. The
-  fix is to introduce a single `RequestScope` object that carries both, enforced
-  by type — this should be done as part of this epic, not deferred.
-- Seeded data is the only source right now. Test questions must work against the
-  existing `esbmain` seeded data (ORA-12170 failure scenario + ESB docs if indexed).
+
+- Regex and deterministic parsing will extract enough value from Talend-style logs
+  to support the first version. This may be wrong if real logs vary heavily across
+  customers or platforms.
+- Component names from logs can be joined or at least correlated with indexed
+  project documentation and generated analysis. This may require later metadata
+  improvements if docs do not expose matching component names.
+- High-volume log data can be reduced into bounded summaries, incident records,
+  and error signatures without losing the evidence needed for trustworthy answers.
+- Seeded/mock logs are representative enough to design the architecture before
+  the real TMC sync worker exists.
+- Alerting may become useful, but premature alert delivery could distract from
+  the core requirement: reliable explanations and evidence.
 
 ## Critical Areas Touched
-- **RAG retrieval chain** (`RAG_pipeline/backend/src/retrieval/`,
-  `src/generation/conversational_rag.py`) — removing the early-return changes
-  when and how Qdrant results are used. `/inspect` required.
-- **Auth/RBAC** — new REST endpoints must enforce project-scope; the implicit
-  RBAC coupling between RAG and runtime should be made explicit. `/inspect` required.
-- **Frontend** — new admin page and 4 proxy routes. Not a critical area per
-  the CLAUDE.md definition, but RBAC must be respected at the API boundary.
+
+- RAG generation and conversational runtime tool loop:
+  - Chat must prefer high-level runtime insights before raw logs.
+  - Answers must remain evidence-backed and bounded.
+- Auth/RBAC:
+  - Runtime summaries, incidents, signatures, evidence, raw logs, dashboard views,
+    and chat tools must all enforce project scope.
+- Runtime API/schema/migrations:
+  - New derived tables or models are likely needed for execution summaries,
+    incidents, enriched events, evidence references, and error signatures.
+- Frontend dashboard:
+  - `/admin/logs` should surface smart summaries/incidents alongside raw lines.
 
 ## Risk if Wrong
-- **Wrong project data in answers**: if RBAC is not correctly threaded into the
-  combined path, a user could receive log data from a project they don't have
-  access to, surfaced alongside docs they do have access to. This is a data
-  isolation failure.
-- **Incorrect answers that cite logs as facts**: the LLM may hallucinate a
-  connection between a log error and a doc section that doesn't exist. Mitigation:
-  the system prompt should tell the LLM to cite which source (log vs doc) each
-  claim comes from.
-- **Silent RAG-only fallback on Ollama**: users on Ollama get no runtime data and
-  no error — they just get an incomplete answer. Must be surfaced, not silent.
-- **Streaming path inconsistency**: if only the non-streaming path is fixed and
-  the streaming path is not updated symmetrically, behaviour differs between
-  streaming and non-streaming clients. Both must change together.
+
+- Users receive wrong root-cause or next-check suggestions, which makes the bot
+  actively harmful during operational diagnosis.
+- Cross-project log or incident data leaks through chat, dashboard, evidence
+  references, or similar-failure clustering.
+- Retrieval and response time become high while producing little value if the
+  system still pushes too much raw log data into the LLM.
+- The parser creates noisy or misleading summaries if it over-trusts weak regex
+  matches.
+- Users lose confidence if the system presents guesses as facts instead of
+  separating evidence, likely cause, and uncertainty.

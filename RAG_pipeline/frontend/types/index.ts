@@ -377,6 +377,20 @@ export {
   ExecutionDetailResponseSchema,
   LogEventListResponseSchema,
   FailureListResponseSchema,
+  // Smart-log insight schemas (EP-006 slice 2)
+  RuntimeExecutionSummaryInsightSchema,
+  ExecutionSummaryResponseSchema,
+  RuntimeTimelineEventSchema,
+  TimelineResponseSchema,
+  RuntimeIncidentInsightSchema,
+  IncidentListResponseSchema,
+  IncidentDetailResponseSchema,
+  RuntimeIncidentEvidenceSchema,
+  IncidentEvidenceResponseSchema,
+  // Similar failures schemas (EP-006 slice 5)
+  RuntimeSimilarIncidentSchema,
+  RuntimeAlertReadyMetadataSchema,
+  IncidentSimilarResponseSchema,
 } from "./runtime";
 export type {
   RuntimeExecutionState,
@@ -388,4 +402,18 @@ export type {
   ExecutionDetailResponse,
   LogEventListResponse,
   FailureListResponse,
+  // Smart-log insight types (EP-006 slice 2)
+  RuntimeExecutionSummaryInsight,
+  ExecutionSummaryResponse,
+  RuntimeTimelineEvent,
+  TimelineResponse,
+  RuntimeIncidentInsight,
+  IncidentListResponse,
+  IncidentDetailResponse,
+  RuntimeIncidentEvidence,
+  IncidentEvidenceResponse,
+  // Similar failures types (EP-006 slice 5)
+  RuntimeSimilarIncident,
+  RuntimeAlertReadyMetadata,
+  IncidentSimilarResponse,
 } from "./runtime";

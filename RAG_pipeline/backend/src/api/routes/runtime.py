@@ -24,9 +24,11 @@ from pydantic import BaseModel
 from src.api.dependencies import CurrentUser, DBSession
 from src.rbac.permissions import get_user_project_ids
 from src.runtime.insights.models import (
+    RuntimeAlertReadyMetadata,
     RuntimeExecutionSummaryInsight,
     RuntimeIncidentEvidence,
     RuntimeIncidentInsight,
+    RuntimeSimilarIncident,
     RuntimeTimelineEvent,
 )
 from src.runtime.insights.repository import RuntimeInsightRepository
@@ -325,3 +327,35 @@ async def get_incident_evidence(
     except RuntimeRecordNotFoundError:
         raise HTTPException(status_code=404, detail="Incident not found")
     return IncidentEvidenceResponse(incident_id=incident_id, evidence=evidence, total=len(evidence))
+
+
+class IncidentSimilarResponse(BaseModel):
+    incident_id: str
+    execution_id: str
+    recurrence: RuntimeAlertReadyMetadata
+    similar_incidents: list[RuntimeSimilarIncident]
+
+
+@router.get(
+    "/incidents/{incident_id}/similar",
+    response_model=IncidentSimilarResponse,
+    summary="Get similar failures for a runtime incident",
+)
+async def get_similar_failures(
+    incident_id: str,
+    user: CurrentUser,
+    db: DBSession,
+    limit: int = Query(default=10, ge=1, le=50),
+) -> IncidentSimilarResponse:
+    scope = await get_user_project_ids(user, db)
+    repo = RuntimeInsightRepository(db)
+    try:
+        result = await repo.get_similar_failures_for_incident(scope, incident_id, limit=limit)
+    except RuntimeRecordNotFoundError:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return IncidentSimilarResponse(
+        incident_id=result.incident_id,
+        execution_id=result.execution_id,
+        recurrence=result.recurrence,
+        similar_incidents=result.similar_incidents,
+    )

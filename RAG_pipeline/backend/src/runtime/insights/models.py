@@ -71,6 +71,43 @@ class RuntimeIncidentEvidence(BaseModel):
     severity: str
 
 
+class RuntimeFailureAnalysis(BaseModel):
+    """Bounded failure-analysis object returned by the analyze_execution_failure tool.
+
+    Combines execution summary, incident, and bounded evidence into one object so
+    the model can answer failure-cause questions without multiple round-trips.
+    Evidence excerpts are already bounded at 300 chars by the insight builder;
+    this list is additionally capped at a small limit before being returned to the LLM.
+    """
+
+    execution_id: str
+    job_name: str | None
+    state: str | None
+    started_at: datetime.datetime | None
+    ended_at: datetime.datetime | None
+    duration_ms: int | None
+    warning_count: int
+    error_count: int
+    failed_component: str | None
+    primary_error_code: str | None
+    primary_exception_class: str | None
+    summary_text: str | None
+    has_incident: bool
+    incident_id: str | None
+    symptom_summary: str | None
+    root_cause_candidate: str | None
+    confidence: str | None
+    next_checks: list[str]
+    evidence: list[RuntimeIncidentEvidence]
+
+
+class RuntimeIncidentDetail(BaseModel):
+    """Incident with bounded evidence for the get_runtime_incident tool."""
+
+    incident: RuntimeIncidentInsight
+    evidence: list[RuntimeIncidentEvidence]
+
+
 class RuntimeTimelineEvent(BaseModel):
     """One timestamped event in an execution timeline.
 
@@ -91,3 +128,45 @@ class RuntimeTimelineEvent(BaseModel):
     retry_max: int | None
     confidence: str | None
     message_family: str | None
+
+
+class RuntimeSimilarIncident(BaseModel):
+    """Compact reference to a prior incident with the same error signature."""
+
+    incident_id: str
+    execution_id: str
+    job_name: str | None
+    state: str | None
+    first_bad_at: datetime.datetime | None
+    symptom_summary: str | None
+    root_cause_candidate: str | None
+    confidence: str | None
+
+
+class RuntimeAlertReadyMetadata(BaseModel):
+    """Alerting-ready recurrence metadata derived from the error signature aggregate.
+
+    No alert is delivered in this slice — these fields are stable enough for a
+    future alert/email slice to consume directly.
+    """
+
+    signature_hash: str | None
+    signature_summary: str | None
+    occurrence_count: int
+    similar_count: int
+    first_seen_at: datetime.datetime | None
+    last_seen_at: datetime.datetime | None
+    is_recurring: bool
+    alert_fingerprint: str
+    dedupe_key: str
+    alert_title: str
+    alert_reason: str
+
+
+class RuntimeSimilarFailures(BaseModel):
+    """Similar-failure result for one incident: recurrence metadata + bounded prior list."""
+
+    incident_id: str
+    execution_id: str
+    recurrence: RuntimeAlertReadyMetadata
+    similar_incidents: list[RuntimeSimilarIncident]

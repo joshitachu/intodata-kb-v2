@@ -14,10 +14,13 @@ from src.generation.llm_client import RuntimeToolCallRequest, ToolAwareLLMRespon
 from src.generation.usage import UsageStats
 from src.runtime.client import execute_runtime_tool
 from src.runtime.models import RuntimeToolCall, RuntimeToolDefinition, RuntimeToolErrorCode
-from src.runtime.store.seed import seed_mock_runtime_data
+from src.runtime.store.seed import seed_mock_runtime_data, seed_rich_runtime_data
 
 _SYNCED_AT = datetime.datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
 _PROJECT = "demo-runtime"
+_ESB = "esbmain"
+_FAILED_EXEC = "esbmain-route-7841"
+_SUCCESS_EXEC = "esbmain-route-7840"
 
 
 def _stored_settings(mock_settings):
@@ -70,6 +73,130 @@ class TestStoredEndToEnd:
     async def test_missing_db_is_structured_provider_error(self, db_session):
         await seed_mock_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
         result = await _call("list_executions", None, project_scope=[_PROJECT])
+        assert result.success is False
+        assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
+
+
+class TestStoredHighLevelTools:
+    """High-level insight tools on the stored provider, seeded with rich runtime data."""
+
+    async def test_analyze_execution_failure_returns_diagnostic_fields(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "analyze_execution_failure", db_session,
+            project_scope=[_ESB], arguments={"execution_id": _FAILED_EXEC},
+        )
+        assert result.success is True
+        data = result.data
+        assert data["execution_id"] == _FAILED_EXEC
+        assert data["failed_component"] == "tOracleConnection_1"
+        assert data["primary_error_code"] == "ORA-12170"
+        assert data["primary_exception_class"] == "SQLRecoverableException"
+        assert data["has_incident"] is True
+        assert data["incident_id"] is not None
+        assert data["root_cause_candidate"] is not None
+        assert data["confidence"] in ("high", "medium", "low")
+        assert isinstance(data["next_checks"], list)
+        # Evidence must be bounded — never raw log dumps
+        assert isinstance(data["evidence"], list)
+        for ev in data["evidence"]:
+            if ev.get("excerpt"):
+                assert len(ev["excerpt"]) <= 300
+
+    async def test_analyze_execution_failure_success_exec_has_no_incident(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "analyze_execution_failure", db_session,
+            project_scope=[_ESB], arguments={"execution_id": _SUCCESS_EXEC},
+        )
+        assert result.success is True
+        assert result.data["has_incident"] is False
+        assert result.data["incident_id"] is None
+        assert result.data["error_count"] == 0
+
+    async def test_analyze_execution_failure_cross_project_returns_provider_error(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "analyze_execution_failure", db_session,
+            project_scope=["other-proj"], arguments={"execution_id": _FAILED_EXEC},
+        )
+        assert result.success is False
+        assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
+
+    async def test_get_execution_timeline_returns_chronological_events(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "get_execution_timeline", db_session,
+            project_scope=[_ESB], arguments={"execution_id": _FAILED_EXEC},
+        )
+        assert result.success is True
+        events = result.data
+        assert len(events) > 0
+        timestamps = [e["timestamp"] for e in events]
+        assert timestamps == sorted(timestamps)
+
+    async def test_get_execution_timeline_severity_filter(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "get_execution_timeline", db_session,
+            project_scope=[_ESB],
+            arguments={"execution_id": _FAILED_EXEC, "min_severity": "error"},
+        )
+        assert result.success is True
+        events = result.data
+        assert len(events) > 0
+        assert all(e["severity"] == "error" for e in events)
+
+    async def test_get_execution_timeline_messages_are_capped(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "get_execution_timeline", db_session,
+            project_scope=[_ESB], arguments={"execution_id": _FAILED_EXEC},
+        )
+        assert result.success is True
+        for event in result.data:
+            assert len(event["message"]) <= 200
+
+    async def test_get_execution_timeline_cross_project_returns_provider_error(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call(
+            "get_execution_timeline", db_session,
+            project_scope=["other-proj"], arguments={"execution_id": _FAILED_EXEC},
+        )
+        assert result.success is False
+        assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
+
+    async def test_get_runtime_incident_returns_incident_with_evidence(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        # Get incident_id from analyze first
+        analysis = await _call(
+            "analyze_execution_failure", db_session,
+            project_scope=[_ESB], arguments={"execution_id": _FAILED_EXEC},
+        )
+        incident_id = analysis.data["incident_id"]
+
+        result = await _call(
+            "get_runtime_incident", db_session,
+            project_scope=[_ESB], arguments={"incident_id": incident_id},
+        )
+        assert result.success is True
+        assert result.data["incident"]["incident_id"] == incident_id
+        assert result.data["incident"]["execution_id"] == _FAILED_EXEC
+        assert result.data["incident"]["confidence"] in ("high", "medium", "low")
+        assert isinstance(result.data["evidence"], list)
+        assert len(result.data["evidence"]) > 0
+
+    async def test_get_runtime_incident_cross_project_returns_provider_error(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        analysis = await _call(
+            "analyze_execution_failure", db_session,
+            project_scope=[_ESB], arguments={"execution_id": _FAILED_EXEC},
+        )
+        incident_id = analysis.data["incident_id"]
+        result = await _call(
+            "get_runtime_incident", db_session,
+            project_scope=["other-proj"], arguments={"incident_id": incident_id},
+        )
         assert result.success is False
         assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
 

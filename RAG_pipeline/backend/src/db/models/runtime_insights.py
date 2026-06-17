@@ -104,6 +104,7 @@ class RuntimeIncidentRow(Base):
         UniqueConstraint("project_id", "execution_id", name="uq_runtime_incidents_project_exec"),
         Index("ix_runtime_incidents_project_id", "project_id"),
         Index("ix_runtime_incidents_project_incident", "project_id", "incident_id"),
+        Index("ix_runtime_incidents_project_signature_bad_at", "project_id", "signature_hash", "first_bad_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

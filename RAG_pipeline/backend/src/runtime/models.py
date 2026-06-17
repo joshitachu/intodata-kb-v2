@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RuntimeConnectionStatus(str, Enum):
@@ -91,6 +91,36 @@ class GetExecutionLogsInput(BaseModel):
     execution_id: str
     limit: int = Field(default=100, ge=1, le=1000)
     min_severity: RuntimeLogSeverity | None = None
+
+
+class AnalyzeExecutionFailureInput(BaseModel):
+    execution_id: str
+
+
+class GetExecutionTimelineInput(BaseModel):
+    execution_id: str
+    min_severity: RuntimeLogSeverity | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class GetRuntimeIncidentInput(BaseModel):
+    incident_id: str
+    include_evidence: bool = True
+    evidence_limit: int = Field(default=5, ge=1, le=20)
+
+
+class FindSimilarFailuresInput(BaseModel):
+    incident_id: str | None = None
+    execution_id: str | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def check_one_provided(self) -> "FindSimilarFailuresInput":
+        if self.incident_id is None and self.execution_id is None:
+            raise ValueError("exactly one of incident_id or execution_id is required")
+        if self.incident_id is not None and self.execution_id is not None:
+            raise ValueError("provide exactly one of incident_id or execution_id, not both")
+        return self
 
 
 # --- Generic tool envelope models ---

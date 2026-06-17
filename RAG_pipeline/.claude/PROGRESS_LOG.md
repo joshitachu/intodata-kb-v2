@@ -1,5 +1,61 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-06-17
+
+### [Feature]: EP-006 slice 1 — deterministic runtime insight layer (commit `82116db`)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/alembic/versions/032_add_runtime_insights.py` — migration 032 (revises 031); 5 new tables: `runtime_enriched_events`, `runtime_error_signatures`, `runtime_execution_summaries`, `runtime_incidents`, `runtime_incident_evidence` with indexes and unique constraints
+  - `RAG_pipeline/backend/src/db/models/runtime_insights.py` — 5 SQLAlchemy models; all inherit `Base` (get `created_at`/`updated_at` free); `evidence_refs`/`next_checks` use `JSON` type for SQLite compat; `incident_id` is `String(64)` SHA-256 hex digest
+  - `RAG_pipeline/backend/src/db/models/__init__.py` — imports all 5 new model classes so `Base.metadata.create_all` sees them in tests
+  - `RAG_pipeline/backend/src/runtime/insights/parser.py` — `parse_runtime_log_message()` + `redact_credentials()`; regex patterns for bracket-component, ORA codes, exception class, retry, duration/timeout, JDBC URL, JMS queue, SELECT TABLE, credentials
+  - `RAG_pipeline/backend/src/runtime/insights/builder.py` — `build_runtime_insights_for_execution()`; upserts 5 derived tables using select-then-update/insert for dialect portability (SQLite tests + Postgres prod)
+  - `RAG_pipeline/backend/src/runtime/insights/__init__.py` — module exports
+  - `RAG_pipeline/backend/src/runtime/store/seed.py` — `build_insights: bool = False` param on both seed functions; `--build-insights` CLI flag
+  - `RAG_pipeline/backend/tests/test_runtime/test_insight_parser.py` — 11 test classes covering all regex extractors, confidence scoring, credential redaction
+  - `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` — 6 test classes covering summary contents, incident contents, enriched events, evidence selection, idempotency, project scoping
+- **Problem**: Raw runtime logs had no structure extraction or derived diagnostics. The platform needed a deterministic parse+build layer to surface failure summaries and incident data without LLM calls.
+- **Change**: Added pure Python insight layer. `parser.py` extracts structured signals from log message strings. `builder.py` loads raw log rows for an execution, runs the parser on each, and upserts five derived insight tables. `failed_component` is taken from the FIRST error-severity row (the originating component), not the last (which is the parent route propagation). Upserts use select-then-update/insert for SQLite/Postgres portability.
+- **Why this approach**: Deterministic extraction keeps the insight layer rebuildable from the raw store with no LLM dependency. Separate parser/builder modules keep signal extraction testable in isolation from database operations.
+- **Key invariant**: `failed_component = first ERROR row component`, not last. The last ERROR row is the parent route propagation (`[esb_order_sync_route] Route failed`); the originating failure lives in the first ERROR row (`[tOracleConnection_1]`).
+- **Verification**: `uv run pytest tests/test_runtime/test_insight_parser.py tests/test_runtime/test_insight_builder.py -q` — 78 tests passed. Inspector PASS.
+
+### [Feature]: EP-006 slice 2 — scoped insight REST API (commit `2e38bd0`)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/runtime/insights/models.py` — 4 Pydantic models: `RuntimeExecutionSummaryInsight`, `RuntimeIncidentInsight`, `RuntimeIncidentEvidence`, `RuntimeTimelineEvent`
+  - `RAG_pipeline/backend/src/runtime/insights/repository.py` — `RuntimeInsightRepository`; 5 RBAC-scoped async reads; local `_denies_all`/`_apply_scope`/`_as_utc`/`_severities_at_or_above` helpers; two-query join pattern throughout
+  - `RAG_pipeline/backend/src/runtime/insights/__init__.py` — updated exports to include Slice 2 symbols
+  - `RAG_pipeline/backend/src/api/routes/runtime.py` — 5 new endpoints: `GET /runtime/executions/{id}/summary`, `GET /runtime/executions/{id}/timeline`, `GET /runtime/incidents`, `GET /runtime/incidents/{id}`, `GET /runtime/incidents/{id}/evidence`; 5 response envelope models
+  - `RAG_pipeline/backend/tests/test_api/test_runtime_insight_endpoints.py` — 32 API tests across 6 classes covering all endpoints, RBAC, scope narrowing, 404-vs-empty semantics
+- **Problem**: The derived insight tables from Slice 1 had no read API. Callers needed RBAC-enforced endpoints to retrieve execution summaries, enriched timelines, incidents, and evidence.
+- **Change**: `RuntimeInsightRepository` with project-scoped reads using two-query join pattern (batch load by id set, merge via dict — avoids N+1, avoids SQLAlchemy join complexity, stays SQLite-compatible). Timeline gates on `RuntimeExecutionRow` (not summary row) so executions without built insights return 200+empty instead of 404. Evidence uses a two-step gate: verify incident scope first, then load evidence and join log event timestamps/severities. All five endpoints reuse the existing `_intersect_scope()` for `project_id` query params.
+- **Why this approach**: Two-query join over ORM join keeps reads SQLite-compatible and avoids join complexity across the store/insight table boundary. The timeline gate asymmetry is intentional: summary-row absence means "insights not built yet", not "execution doesn't exist".
+- **Verification**: `uv run pytest tests/ -x -q` — 647 tests passed. Inspector PASS. `/validate` PASS.
+
+### [Feature]: EP-006 slice 3 — runtime intelligence tools + chat answer discipline (uncommitted)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/runtime/models.py` — 3 new input models: `AnalyzeExecutionFailureInput`, `GetExecutionTimelineInput`, `GetRuntimeIncidentInput`
+  - `RAG_pipeline/backend/src/runtime/insights/models.py` — 2 new response models: `RuntimeFailureAnalysis` (composite: summary + incident + bounded evidence), `RuntimeIncidentDetail` (incident + evidence)
+  - `RAG_pipeline/backend/src/runtime/registry.py` — 3 new `RuntimeToolSpec` entries with steering descriptions in a HIGH-LEVEL section; `get_execution_logs` description updated to steer model away for failure questions
+  - `RAG_pipeline/backend/src/runtime/client.py` — hardened provider method resolution: `getattr(provider, tool_name, None)` + callable check; missing methods return structured `PROVIDER_ERROR` not `AttributeError`
+  - `RAG_pipeline/backend/src/runtime/providers/__init__.py` — 3 new `RuntimeProvider` protocol stubs for the insight tools
+  - `RAG_pipeline/backend/src/runtime/providers/stored.py` — `_repository()` renamed `_store_repository()`; added `_insight_repository()`, `_TIMELINE_MESSAGE_MAX_CHARS = 200`; 3 new async methods: `analyze_execution_failure`, `get_execution_timeline`, `get_runtime_incident`
+  - `RAG_pipeline/backend/src/generation/agent_loop.py` — `_RUNTIME_TOOL_GUIDE` expanded with HIGH-LEVEL/LOW-LEVEL sections and answer-discipline format; `_EVENT_LIKE_TOOLS` frozenset; `build_runtime_tool_summary` handles 3 new tool shapes; `_flatten_incident_detail` helper
+  - `RAG_pipeline/backend/tests/test_runtime/test_registry.py` — tool count check updated to 7; 6 new tests for new tool specs and input validation
+  - `RAG_pipeline/backend/tests/test_runtime/test_client.py` — `TestExecuteRuntimeToolUnsupportedMethod`: verifies PROVIDER_ERROR on missing provider method
+  - `RAG_pipeline/backend/tests/test_runtime/test_stored_end_to_end.py` — `TestStoredHighLevelTools`: 8 tests for analyze_failure/success/cross-project, timeline/message-cap/cross-project, incident with evidence/cross-project
+  - `RAG_pipeline/backend/tests/test_generation/test_agent_loop.py` — 7 new tests: guide structure, answer discipline, `_flatten_incident_detail`, new tool shapes in `build_runtime_tool_summary`
+  - `RAG_pipeline/backend/tests/test_generation/test_conversational_rag_runtime_insights.py` (new) — 3 integration tests: failure tool produces final answer, project_scope forwarded, streaming event order
+  - `.plans/04_active_plan.md` — updated to EP-006 Slice 4 (Smart Logs Dashboard Panels), `verdict: PENDING`
+  - `.plans/05_inspection_report.md` — Slice 3 inspection result: `verdict: WARN`, 3 non-blocking findings
+- **Problem**: High-level insight tables (Slice 1) and insight REST endpoints (Slice 2) existed but were not accessible from chat. The LLM had no failure-analysis tool — only raw log tools — so diagnosis required multiple round-trips and the model would dump raw logs into answers.
+- **Change**: Wired 3 new high-level tools into the chat loop: `analyze_execution_failure` (bounded composite: summary + incident + evidence in one call), `get_execution_timeline` (enriched chronological events, messages capped at 200 chars), `get_runtime_incident` (incident + evidence). Hardened client to return `PROVIDER_ERROR` for providers missing a method. Extended `_RUNTIME_TOOL_GUIDE` with HIGH-LEVEL/LOW-LEVEL sections and answer-discipline structure (Finding/Evidence/Likely Cause/Next Checks). Extended `build_runtime_tool_summary` to handle the 3 new tool shapes without ever storing evidence excerpts.
+- **Why this approach**: Strategy+Registry pattern: new tools added via `_TOOL_SPECS` registry entry and `RuntimeProvider` protocol stub; no existing tool touched. `_flatten_incident_detail` handles the nested `RuntimeIncidentDetail` shape without special-casing the summary builder's core loop. Client guard at the call boundary (`execute_runtime_tool`) is the general fix — catches all providers, all tools, not one callsite.
+- **Key invariants**: (1) `project_scope` always from `context.project_scope`, never from LLM tool args. (2) Evidence excerpts are bounded (300 chars by builder) and never stored in `runtime_tool_summary`. (3) Timeline entries produce no summary rows (`_EVENT_LIKE_TOOLS`) — they carry no `execution_id` field and message text must not be stored. (4) Mock and talend_tmc providers intentionally do not implement the 3 new insight tools; the client guard handles this gracefully.
+- **Verification**: `uv run pytest tests/ -x -q` — 674 tests passed. Inspector WARN (3 non-blocking: missing comment, dedup key semantics, mock/talend protocol drift). `/validate` PASS.
+
 ## Session: 2026-06-02
 
 ### [Feature]: Constrained read-only RAG agent layer for normal Chat

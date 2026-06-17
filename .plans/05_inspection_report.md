@@ -1,37 +1,36 @@
 ---
-inspected_at: 2026-06-16
-verdict: PASS
+inspected_at: 2026-06-17
+verdict: WARN
 ---
 
 ## Verdict Summary
-Slice 2 adds four read-only runtime endpoints that derive project scope server-side and
-cannot be widened by query params or path values; RBAC, contracts, and credential safety
-all hold.
+
+EP-006 Slice 4 conforms to the plan architecture contracts with two non-blocking warnings: a stale-data race condition in the project-change deselection logic, and the `useRuntimeIncidents` projectId wiring listed in the plan has no call site since no incident list view was added.
 
 ## Check Results
-| Check              | Result | Notes |
-|--------------------|--------|-------|
-| Plan conformance   | PASS   | 4 endpoints under /runtime (keeps /status); route-local response envelopes; `_intersect_scope` matches plan step 2; `state` added to `ListExecutionsInput` + repository (plan step 3); 404 mapping; api-reference.md updated. |
-| Root cause         | PASS   | Adds the missing read API; no symptom patch. |
-| Generalized        | PASS   | All 4 endpoints share one scope-derivation + intersect pattern; none bypass `get_user_project_ids`. |
-| Design patterns    | PASS   | Repository pattern (no raw SQL in route); thin route layer delegating to `RuntimeStoreRepository`. |
-| Contract respect   | PASS   | Repository-only reads (no Qdrant); limits bounded (200/1000); since/until as datetimes; cross-project 404; no migration/dependency. |
-| No special-casing  | PASS   | `_intersect_scope` is general; the logs existence-gate encodes a real semantic (unknown id → 404 vs no-severity-match → empty), not a per-scenario shim. |
-| Edge cases         | PASS   | Tests: empty scope, out-of-scope filter, cross-project + unknown point lookups, min_severity filter incl. empty-not-404, limit-over-max 422, unauthenticated 401. |
-| RBAC               | PASS   | Scope derived server-side from `CurrentUser`+`get_user_project_ids`; `project_id` filter narrows only; logs gated on scoped `get_execution_details`; repository re-applies scope (defense in depth). |
-| Credential safety  | PASS   | Generic 404 detail; no secrets in code; log content is already-normalized store data. |
+
+| Check             | Result | Notes |
+|-------------------|--------|-------|
+| Plan conformance  | WARN   | All 7 steps delivered; 5 BFF routes + hooks + component + project filter + insight panel all present. Two deviations: (1) plan step 4 says pass `projectId` to `useRuntimeIncidents`, but that hook has no call site in the page — no incidents list view exists; (2) `handleProjectChange` deselection logic checks stale data |
+| Root cause        | PASS   | Frontend-only slice; no root-cause concern applies |
+| Generalized       | PASS   | All 5 BFF routes follow identical proxy pattern (`backendProxyHeaders`, `encodeURIComponent`, `res.status` preserved, `cache: "no-store"`); all hooks follow the shared `buildQuery` + Zod parse pattern; no one-off deviations |
+| Design patterns   | PASS   | React Query hooks + BFF proxy (Next.js route handler) pattern used consistently; `RuntimeInsightPanel` extracted per plan; `enabled` gates on all dependent hooks |
+| Contract respect  | PASS   | Browser never calls FastAPI directly; all 5 BFF routes are read-only GET proxies; status codes preserved end-to-end; Zod validates all successful shapes; TypeScript strict; project filter is UI narrowing-only — no browser-side authorization decision made |
+| No special-casing | PASS   | `SeverityChip` handles unknown severity values with a generic fallback (not a special branch); no compat shims; no feature flags |
+| Edge cases        | PASS   | Summary loading/404/error handled per section; no-incident → neutral Info message; evidence empty → explicit message; timeline empty → explicit message; all three states (loading/error/data) rendered per section independently |
+| RBAC              | PASS   | All RBAC enforcement is backend-side; `projectId` filter is explicitly narrowing UI state, not authorization; point lookups (summary, incident, evidence) are scoped by backend auth via forwarded cookies |
+| Credential safety | PASS   | No credentials in code; cookies forwarded via existing `backendProxyHeaders`; no log statements added |
 
 ## Findings
-1. INFO — `RequestScope` (Slice 1) is intentionally not used: these endpoints read a
-   single data source (runtime store), so the dual-name Qdrant/runtime coupling guard is
-   unnecessary. The plan explicitly permitted `get_user_project_ids` directly.
-2. INFO — `GET /executions/{id}/logs` issues two queries (scoped existence check, then
-   logs) to distinguish 404 from an empty severity-filtered result. Two indexed point
-   lookups are well within the <200ms p95 NFR; acceptable.
-3. INFO — `total` is the bounded returned-row count, not a full-table count; documented in
-   the response-envelope comment and api-reference.md.
+
+1. **WARN** (`app/admin/logs/page.tsx:107`) — `handleProjectChange` checks against stale `executions.data` to decide whether to deselect `selectedId`. At call time, `executions.data` still holds the OLD unfiltered result. The check `executions.data.executions.some(e => e.execution_id === selectedId)` will almost always be `true` (the execution is in the old list), so `selectedId` is rarely cleared. A project filter change can therefore leave an execution panel open for an execution that belongs to the deselected project. The correct approach is to always reset `selectedId` on project change (the backend insight calls will return 404 and show a graceful degraded state, so user experience is safe either way).
+
+2. **WARN** (`hooks/useRuntimeLogs.ts` — `useRuntimeIncidents`) — Plan step 4 lists `useRuntimeIncidents` as one of the hooks to receive the `projectId` filter. The hook is implemented and supports `IncidentFilters.projectId`, but it is not called anywhere in the logs page (there is no incidents list view). The hook's interface is correct; the gap is that the plan's filter-wiring step is only partially exercised. No functional regression — incident data enters the page via `useRuntimeIncident` (point lookup in `RuntimeInsightPanel`), which is correctly scoped by backend auth.
 
 ## Required Actions
-- BLOCK: none.
-- WARN: none.
-- PASS: None — ready to commit. 566 backend tests pass (17 new endpoint tests).
+
+**BLOCK:** None.
+
+**WARN — optional improvements:**
+1. In `handleProjectChange`, replace the stale-data check with `setSelectedId(null)` unconditionally (or defer the check to an effect that runs after `executions` refetches with the new filter). The current check is misleading and won't protect the user from a stale panel in practice.
+2. Document in `PROJECT_MEMORY.md` that `useRuntimeIncidents` exists for future use (incidents list view or filtering) but is not yet called from the logs page.

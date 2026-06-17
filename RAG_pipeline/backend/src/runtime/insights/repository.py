@@ -18,21 +18,26 @@ Timeline and evidence reads use a two-step gate: verify the parent record is in 
 from __future__ import annotations
 
 import datetime
+import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import RuntimeExecutionRow, RuntimeLogEventRow
 from src.db.models.runtime_insights import (
     RuntimeEnrichedEventRow,
+    RuntimeErrorSignatureRow,
     RuntimeIncidentEvidenceRow,
     RuntimeIncidentRow,
     RuntimeExecutionSummaryRow,
 )
 from src.runtime.insights.models import (
+    RuntimeAlertReadyMetadata,
     RuntimeExecutionSummaryInsight,
     RuntimeIncidentEvidence,
     RuntimeIncidentInsight,
+    RuntimeSimilarFailures,
+    RuntimeSimilarIncident,
     RuntimeTimelineEvent,
 )
 from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError
@@ -304,6 +309,134 @@ class RuntimeInsightRepository:
                 )
             )
         return result
+
+    # -------------------------------------------------------------------------
+    # Similar failures
+    # -------------------------------------------------------------------------
+
+    async def get_similar_failures_for_incident(
+        self, scope: ProjectScope, incident_id: str, limit: int = 10
+    ) -> RuntimeSimilarFailures:
+        """Return recurrence info for an in-scope incident.
+
+        Raises RuntimeRecordNotFoundError if incident_id is unknown or out of scope.
+        Returns occurrence_count=1, is_recurring=False with an empty similar list when
+        no signature hash is stored on the incident.
+        """
+        if self._denies_all(scope):
+            raise RuntimeRecordNotFoundError(f"Incident not found: {incident_id}")
+
+        inc_stmt = select(RuntimeIncidentRow).where(
+            RuntimeIncidentRow.incident_id == incident_id
+        )
+        inc_stmt = self._apply_scope(inc_stmt, RuntimeIncidentRow.project_id, scope)
+        parent_row = (await self._session.execute(inc_stmt)).scalars().first()
+        if parent_row is None:
+            raise RuntimeRecordNotFoundError(f"Incident not found: {incident_id}")
+
+        project_id = parent_row.project_id
+        signature_hash = parent_row.signature_hash
+
+        if signature_hash is None:
+            fingerprint = incident_id
+            return RuntimeSimilarFailures(
+                incident_id=incident_id,
+                execution_id=parent_row.execution_id,
+                recurrence=RuntimeAlertReadyMetadata(
+                    signature_hash=None,
+                    signature_summary=None,
+                    occurrence_count=1,
+                    similar_count=0,
+                    first_seen_at=_as_utc(parent_row.first_bad_at),
+                    last_seen_at=_as_utc(parent_row.first_bad_at),
+                    is_recurring=False,
+                    alert_fingerprint=fingerprint,
+                    dedupe_key=fingerprint,
+                    alert_title="Unknown failure pattern",
+                    alert_reason="No signature could be derived for this incident.",
+                ),
+                similar_incidents=[],
+            )
+
+        sig_stmt = select(RuntimeErrorSignatureRow).where(
+            RuntimeErrorSignatureRow.project_id == project_id,
+            RuntimeErrorSignatureRow.signature_hash == signature_hash,
+        )
+        sig_row = (await self._session.execute(sig_stmt)).scalars().first()
+
+        similar_stmt = (
+            select(RuntimeIncidentRow)
+            .where(
+                RuntimeIncidentRow.project_id == project_id,
+                RuntimeIncidentRow.signature_hash == signature_hash,
+                RuntimeIncidentRow.incident_id != incident_id,
+            )
+            .order_by(RuntimeIncidentRow.first_bad_at.desc())
+            .limit(limit)
+        )
+        similar_rows = list((await self._session.execute(similar_stmt)).scalars().all())
+
+        similar_exec_map: dict[str, RuntimeExecutionRow] = {}
+        if similar_rows:
+            exec_ids = [row.execution_id for row in similar_rows]
+            exec_stmt = select(RuntimeExecutionRow).where(
+                RuntimeExecutionRow.execution_id.in_(exec_ids),
+                RuntimeExecutionRow.project_id == project_id,
+            )
+            exec_rows = (await self._session.execute(exec_stmt)).scalars().all()
+            similar_exec_map = {row.execution_id: row for row in exec_rows}
+
+        similar_incidents = [
+            RuntimeSimilarIncident(
+                incident_id=row.incident_id,
+                execution_id=row.execution_id,
+                job_name=similar_exec_map[row.execution_id].job_name
+                if row.execution_id in similar_exec_map
+                else None,
+                state=similar_exec_map[row.execution_id].state
+                if row.execution_id in similar_exec_map
+                else None,
+                first_bad_at=_as_utc(row.first_bad_at),
+                symptom_summary=row.symptom_summary,
+                root_cause_candidate=row.root_cause_candidate,
+                confidence=row.confidence,
+            )
+            for row in similar_rows
+        ]
+
+        occurrence_count = sig_row.occurrence_count if sig_row else 1
+        similar_count = len(similar_incidents)
+        is_recurring = occurrence_count > 1
+        alert_fingerprint = hashlib.sha256(
+            f"{project_id}:{signature_hash}".encode()
+        ).hexdigest()[:32]
+        dedupe_key = f"{project_id[:8]}:{signature_hash[:16]}"
+        sig_summary = sig_row.summary_text if sig_row else None
+        alert_title = sig_summary or "Unknown failure pattern"
+        alert_reason = (
+            f"Seen {occurrence_count} time(s) in this project."
+            if is_recurring
+            else "First occurrence of this failure pattern in this project."
+        )
+
+        return RuntimeSimilarFailures(
+            incident_id=incident_id,
+            execution_id=parent_row.execution_id,
+            recurrence=RuntimeAlertReadyMetadata(
+                signature_hash=signature_hash,
+                signature_summary=sig_summary,
+                occurrence_count=occurrence_count,
+                similar_count=similar_count,
+                first_seen_at=_as_utc(sig_row.first_seen_at) if sig_row else None,
+                last_seen_at=_as_utc(sig_row.last_seen_at) if sig_row else None,
+                is_recurring=is_recurring,
+                alert_fingerprint=alert_fingerprint,
+                dedupe_key=dedupe_key,
+                alert_title=alert_title,
+                alert_reason=alert_reason,
+            ),
+            similar_incidents=similar_incidents,
+        )
 
     # -------------------------------------------------------------------------
     # Private load helpers

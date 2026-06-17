@@ -5,11 +5,13 @@ seed_rich_runtime_data, then builds insights and asserts the derived rows.
 """
 
 import datetime
+import hashlib
 from datetime import UTC
 
 import pytest
 from sqlalchemy import func, select
 
+from src.db.models.runtime_data import RuntimeExecutionRow, RuntimeLogEventRow
 from src.db.models.runtime_insights import (
     RuntimeEnrichedEventRow,
     RuntimeErrorSignatureRow,
@@ -351,3 +353,104 @@ class TestProjectScoping:
         esbmain_rows = (await db_session.execute(stmt)).scalars().all()
         assert all(r.project_id == _PROJECT for r in esbmain_rows)
         assert len(esbmain_rows) > 0
+
+
+class TestSignatureIdempotency:
+    """Signature occurrence_count must be derived from distinct incidents, not build count."""
+
+    async def test_rebuild_same_execution_does_not_increase_occurrence_count(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        for _ in range(2):
+            await build_runtime_insights_for_execution(
+                db_session,
+                project_id=_PROJECT,
+                execution_id=_RICH_FAILED_EXEC,
+                source_key="mock",
+                ingested_at=_SYNCED_AT,
+            )
+
+        stmt = select(RuntimeErrorSignatureRow).where(
+            RuntimeErrorSignatureRow.project_id == _PROJECT
+        )
+        rows = list((await db_session.execute(stmt)).scalars().all())
+        assert len(rows) == 1
+        assert rows[0].occurrence_count == 1
+
+    async def test_two_distinct_executions_produce_occurrence_count_two(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=_RICH_FAILED_EXEC,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+
+        second_exec_id = "esbmain-route-second"
+        exec2 = RuntimeExecutionRow(
+            project_id=_PROJECT,
+            execution_id=second_exec_id,
+            job_name=_RICH_JOB,
+            project_name=_PROJECT,
+            state="failed",
+            source_key="mock",
+            started_at=datetime.datetime(2026, 6, 18, 10, 0, tzinfo=UTC),
+            ended_at=datetime.datetime(2026, 6, 18, 10, 1, tzinfo=UTC),
+            duration_ms=60000,
+            ingested_at=_SYNCED_AT,
+        )
+        db_session.add(exec2)
+        for offset, msg in [
+            (30, "[tOracleConnection_1] Connection attempt 3/3 failed: ORA-12170: TNS:Connect timeout"),
+            (31, "[tOracleConnection_1] java.sql.SQLRecoverableException: IO Error: Connection timed out"),
+        ]:
+            _ts = datetime.datetime(2026, 6, 18, 10, 0, offset, tzinfo=UTC)
+            _fp = hashlib.sha256(f"{_ts.isoformat()}|error|{msg}".encode()).hexdigest()[:64]
+            db_session.add(RuntimeLogEventRow(
+                project_id=_PROJECT,
+                execution_id=second_exec_id,
+                source_key="mock",
+                severity="error",
+                message=msg,
+                event_fingerprint=_fp,
+                timestamp=_ts,
+                ingested_at=_SYNCED_AT,
+            ))
+        await db_session.flush()
+
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=second_exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+
+        stmt = select(RuntimeErrorSignatureRow).where(
+            RuntimeErrorSignatureRow.project_id == _PROJECT,
+            RuntimeErrorSignatureRow.error_code == "ORA-12170",
+        )
+        sig = (await db_session.execute(stmt)).scalars().first()
+        assert sig is not None
+        assert sig.occurrence_count == 2
+
+    async def test_same_signature_other_project_counted_separately(self, db_session):
+        for pid in (_PROJECT, _OTHER_PROJECT):
+            await seed_rich_runtime_data(db_session, project_id=pid, synced_at=_SYNCED_AT)
+            await build_runtime_insights_for_execution(
+                db_session,
+                project_id=pid,
+                execution_id=_RICH_FAILED_EXEC,
+                source_key="mock",
+                ingested_at=_SYNCED_AT,
+            )
+
+        for pid in (_PROJECT, _OTHER_PROJECT):
+            stmt = select(RuntimeErrorSignatureRow).where(
+                RuntimeErrorSignatureRow.project_id == pid
+            )
+            rows = list((await db_session.execute(stmt)).scalars().all())
+            assert len(rows) >= 1
+            assert all(r.occurrence_count == 1 for r in rows), (
+                f"{pid}: expected occurrence_count==1, got {[r.occurrence_count for r in rows]}"
+            )

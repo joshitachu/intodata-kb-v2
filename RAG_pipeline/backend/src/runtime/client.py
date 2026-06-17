@@ -92,7 +92,14 @@ async def execute_runtime_tool(
             call.tool_name, RuntimeToolErrorCode.UNAVAILABLE, f"Unknown runtime provider: {provider_key}", t0
         )
 
-    method = getattr(provider, call.tool_name)
+    method = getattr(provider, call.tool_name, None)
+    if method is None or not callable(method):
+        return _error_result(
+            call.tool_name,
+            RuntimeToolErrorCode.PROVIDER_ERROR,
+            f"Tool {call.tool_name} is not supported by provider {provider_key}",
+            t0,
+        )
     context = RuntimeProviderContext(project_scope=project_scope, db=db)
 
     try:

@@ -15,7 +15,7 @@ import dataclasses
 import datetime
 import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import RuntimeExecutionRow, RuntimeLogEventRow
@@ -338,6 +338,10 @@ async def _build_incident(
         )
         if p
     )
+    if not sig_parts:
+        # No strong diagnostic signal — include job_name so distinct unknown
+        # failures from different jobs do not all collapse into one signature group.
+        sig_parts = f"unknown|{exec_row.job_name}"
     signature_hash = hashlib.sha256(sig_parts.encode("utf-8")).hexdigest()
 
     first_bad_at = summary.first_warning_at or summary.first_error_at
@@ -371,16 +375,7 @@ async def _build_incident(
         host=summary.first_host,
     )
 
-    await _upsert_error_signature(
-        session,
-        project_id=project_id,
-        signature_hash=signature_hash,
-        execution_start=_as_utc(exec_row.started_at),
-        error_code=summary.primary_error_code,
-        exception_class=summary.primary_exception_class,
-        failed_component=summary.failed_component,
-    )
-
+    # Upsert incident row first so _upsert_error_signature can aggregate from it.
     stmt = select(RuntimeIncidentRow).where(
         RuntimeIncidentRow.project_id == project_id,
         RuntimeIncidentRow.execution_id == execution_id,
@@ -399,6 +394,15 @@ async def _build_incident(
     inc_row.next_checks = next_checks
     await session.flush()
 
+    await _upsert_error_signature(
+        session,
+        project_id=project_id,
+        signature_hash=signature_hash,
+        error_code=summary.primary_error_code,
+        exception_class=summary.primary_exception_class,
+        failed_component=summary.failed_component,
+    )
+
     for log_row, role in _select_evidence_rows(log_rows, parsed_list):
         excerpt = redact_credentials(log_row.message[:300])
         await _upsert_incident_evidence(session, project_id, incident_id, log_row.id, role, excerpt)
@@ -411,28 +415,36 @@ async def _upsert_error_signature(
     *,
     project_id: str,
     signature_hash: str,
-    execution_start: datetime.datetime | None,
     error_code: str | None,
     exception_class: str | None,
     failed_component: str | None,
 ) -> None:
-    stmt = select(RuntimeErrorSignatureRow).where(
+    # Derive occurrence_count, first_seen_at, last_seen_at from distinct incident rows
+    # so repeated builds of the same execution do not inflate counts.
+    agg_stmt = select(
+        func.count(RuntimeIncidentRow.incident_id).label("cnt"),
+        func.min(RuntimeIncidentRow.first_bad_at).label("first_seen"),
+        func.max(RuntimeIncidentRow.first_bad_at).label("last_seen"),
+    ).where(
+        RuntimeIncidentRow.project_id == project_id,
+        RuntimeIncidentRow.signature_hash == signature_hash,
+    )
+    agg = (await session.execute(agg_stmt)).first()
+    occurrence_count = max(agg.cnt, 1) if agg and agg.cnt else 1
+    first_seen_at = _as_utc(agg.first_seen) if agg else None
+    last_seen_at = _as_utc(agg.last_seen) if agg else None
+
+    sig_stmt = select(RuntimeErrorSignatureRow).where(
         RuntimeErrorSignatureRow.project_id == project_id,
         RuntimeErrorSignatureRow.signature_hash == signature_hash,
     )
-    row = (await session.execute(stmt)).scalars().first()
+    row = (await session.execute(sig_stmt)).scalars().first()
     if row is None:
         row = RuntimeErrorSignatureRow(project_id=project_id, signature_hash=signature_hash)
-        row.first_seen_at = execution_start
-        row.last_seen_at = execution_start
-        row.occurrence_count = 1
         session.add(row)
-    else:
-        if execution_start is not None and (
-            row.last_seen_at is None or execution_start > _as_utc(row.last_seen_at)
-        ):
-            row.last_seen_at = execution_start
-        row.occurrence_count = (row.occurrence_count or 0) + 1
+    row.occurrence_count = occurrence_count
+    row.first_seen_at = first_seen_at
+    row.last_seen_at = last_seen_at
     row.error_code = error_code
     row.exception_class = exception_class
     row.component_name = failed_component

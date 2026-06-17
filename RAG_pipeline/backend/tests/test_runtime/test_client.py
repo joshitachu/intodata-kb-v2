@@ -262,6 +262,24 @@ class TestExecuteRuntimeToolStoredProviderRBAC:
         assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
 
 
+class TestExecuteRuntimeToolUnsupportedMethod:
+    async def test_high_level_tool_on_mock_provider_returns_structured_provider_error(self):
+        """The mock provider has no analyze_execution_failure method. The client must
+        return a structured PROVIDER_ERROR, not raise AttributeError."""
+        with patch("src.runtime.client.settings") as mock_settings:
+            mock_settings.runtime_provider_key = "mock"
+            mock_settings.runtime_tool_timeout = 10.0
+            mock_settings.runtime_tool_result_max_chars = 12000
+            result = await execute_runtime_tool(
+                RuntimeToolCall(tool_name="analyze_execution_failure", arguments={"execution_id": "exec-1"}),
+                project_scope=None,
+            )
+        assert result.success is False
+        assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
+        assert "analyze_execution_failure" in result.error.message
+        assert "mock" in result.error.message
+
+
 class TestSanitizeAndBound:
     def test_truncates_oversized_payload(self):
         _, truncated = _sanitize_and_bound({"a": "b" * 50}, max_chars=10)

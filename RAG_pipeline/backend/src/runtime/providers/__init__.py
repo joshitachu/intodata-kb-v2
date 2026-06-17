@@ -13,10 +13,20 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.runtime.insights.models import (
+    RuntimeFailureAnalysis,
+    RuntimeIncidentDetail,
+    RuntimeSimilarFailures,
+    RuntimeTimelineEvent,
+)
 from src.runtime.models import (
+    AnalyzeExecutionFailureInput,
     DetectFailuresInput,
+    FindSimilarFailuresInput,
     GetExecutionDetailsInput,
     GetExecutionLogsInput,
+    GetExecutionTimelineInput,
+    GetRuntimeIncidentInput,
     ListExecutionsInput,
     RuntimeExecution,
     RuntimeFailure,
@@ -61,3 +71,19 @@ class RuntimeProvider(Protocol):
     async def get_execution_logs(
         self, params: GetExecutionLogsInput, context: RuntimeProviderContext | None = None
     ) -> list[RuntimeLogEvent]: ...
+
+    async def analyze_execution_failure(
+        self, params: AnalyzeExecutionFailureInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeFailureAnalysis: ...
+
+    async def get_execution_timeline(
+        self, params: GetExecutionTimelineInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeTimelineEvent]: ...
+
+    async def get_runtime_incident(
+        self, params: GetRuntimeIncidentInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeIncidentDetail: ...
+
+    async def find_similar_failures(
+        self, params: FindSimilarFailuresInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeSimilarFailures: ...

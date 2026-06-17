@@ -8,6 +8,8 @@ import {
   useRuntimeExecutions,
   useRuntimeFailures,
 } from "@/hooks/useRuntimeLogs";
+import { useUserProjects } from "@/hooks/useUserProjects";
+import { RuntimeInsightPanel } from "@/components/runtime/RuntimeInsightPanel";
 import type {
   RuntimeExecution,
   RuntimeExecutionState,
@@ -83,18 +85,26 @@ export default function RuntimeLogsPage() {
   const [jobName, setJobName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [minSeverity, setMinSeverity] = useState<"" | RuntimeLogSeverity>("");
+  const [projectId, setProjectId] = useState<string>("");
 
+  const projects = useUserProjects();
   const executions = useRuntimeExecutions({
     state: stateFilter || undefined,
     jobName: jobName.trim() || undefined,
+    projectId: projectId || undefined,
   });
-  const failures = useRuntimeFailures({});
+  const failures = useRuntimeFailures({ projectId: projectId || undefined });
   const detail = useRuntimeExecution(selectedId, selectedId !== null);
   const logs = useRuntimeExecutionLogs(
     selectedId,
     { minSeverity: minSeverity || undefined, limit: 1000 },
     selectedId !== null,
   );
+
+  function handleProjectChange(id: string) {
+    setProjectId(id);
+    setSelectedId(null);
+  }
 
   function refresh() {
     executions.refetch();
@@ -140,6 +150,25 @@ export default function RuntimeLogsPage() {
           ))}
         </nav>
       </div>
+
+      {/* Project filter — applies to both tabs */}
+      {projects.data && projects.data.projects.length > 1 && (
+        <div className="flex items-center gap-2">
+          <select
+            value={projectId}
+            onChange={(e) => handleProjectChange(e.target.value)}
+            className="px-3 py-2 border rounded-md text-sm bg-background"
+            aria-label="Filter by project"
+          >
+            <option value="">All projects</option>
+            {projects.data.projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {view === "executions" ? (
         <ExecutionsView
@@ -390,26 +419,40 @@ function LogDetailPanel({
         </div>
       </div>
 
-      <div className="p-2">
-        {logs.isLoading ? (
-          <StatusBox>Loading log lines…</StatusBox>
-        ) : logs.isError ? (
-          <StatusBox error>Failed to load log lines.</StatusBox>
-        ) : !logs.data || logs.data.events.length === 0 ? (
-          <StatusBox>No log lines for the selected severity.</StatusBox>
-        ) : (
-          <ul className="divide-y font-mono text-xs">
-            {logs.data.events.map((ev, i) => (
-              <li key={`${ev.timestamp}-${i}`} className="flex items-start gap-2 px-2 py-1.5">
-                <span className="text-muted-foreground whitespace-nowrap shrink-0">
-                  {formatTimestamp(ev.timestamp)}
-                </span>
-                <SeverityBadge severity={ev.severity} />
-                <span className="whitespace-pre-wrap break-words">{ev.message}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+      {/* Smart insight section — above raw logs */}
+      <div className="px-4 py-3">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+          Smart Summary
+        </p>
+        <RuntimeInsightPanel executionId={executionId} />
+      </div>
+
+      {/* Raw log lines */}
+      <div className="border-t">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide px-4 py-2">
+          Raw Logs
+        </p>
+        <div className="p-2">
+          {logs.isLoading ? (
+            <StatusBox>Loading log lines…</StatusBox>
+          ) : logs.isError ? (
+            <StatusBox error>Failed to load log lines.</StatusBox>
+          ) : !logs.data || logs.data.events.length === 0 ? (
+            <StatusBox>No log lines for the selected severity.</StatusBox>
+          ) : (
+            <ul className="divide-y font-mono text-xs">
+              {logs.data.events.map((ev, i) => (
+                <li key={`${ev.timestamp}-${i}`} className="flex items-start gap-2 px-2 py-1.5">
+                  <span className="text-muted-foreground whitespace-nowrap shrink-0">
+                    {formatTimestamp(ev.timestamp)}
+                  </span>
+                  <SeverityBadge severity={ev.severity} />
+                  <span className="whitespace-pre-wrap break-words">{ev.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   );

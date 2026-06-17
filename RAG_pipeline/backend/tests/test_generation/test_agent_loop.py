@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.generation.agent_loop import (
     RuntimeProgressEvent,
+    _flatten_incident_detail,
     _with_runtime_guide,
     build_runtime_tool_summary,
     run_runtime_tool_loop,
@@ -128,6 +129,30 @@ class TestRuntimeToolGuide:
         assert "(from logs)" in content
         assert "(from <doc name>)" in content
 
+    def test_guide_lists_high_level_tools_with_primary_marker(self):
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        content = out[0]["content"]
+        assert "analyze_execution_failure" in content
+        assert "get_execution_timeline" in content
+        assert "get_runtime_incident" in content
+        assert "PRIMARY" in content
+
+    def test_guide_includes_answer_discipline_sections(self):
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        content = out[0]["content"]
+        assert "Finding:" in content
+        assert "Evidence:" in content
+        assert "Likely Cause:" in content
+        assert "Next Checks:" in content
+
+    def test_guide_steers_away_from_raw_logs_for_failure_questions(self):
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        content = out[0]["content"]
+        assert "analyze_execution_failure" in content
+        assert "get_execution_logs" in content
+        # Guide must tell model to prefer analyze over raw logs
+        assert "prefer" in content.lower() or "ALWAYS" in content or "before" in content
+
     def test_guide_includes_prior_runtime_summary_when_provided(self):
         summary = [{"tool_name": "detect_failures", "execution_id": "exec-7841", "job_name": "esb_order_sync_route", "state": "failed"}]
         out = _with_runtime_guide([{"role": "system", "content": "Base."}], prior_runtime_summary=summary)
@@ -216,6 +241,82 @@ class TestBuildRuntimeToolSummary:
             ]
         )
         assert out == [{"tool_name": "list_executions", "execution_id": "ok"}]
+
+    def test_analyze_execution_failure_summary_includes_incident_and_headline(self):
+        data = {
+            "execution_id": "exec-7841",
+            "job_name": "esb_order_sync_route",
+            "state": "failed",
+            "incident_id": "abc123def456",
+            "primary_error_code": "ORA-12170",
+            "root_cause_candidate": "Source database connection timeout",
+            "evidence": [{"log_event_id": 1, "excerpt": "ORA-12170 timeout"}],  # must NOT appear
+        }
+        out = build_runtime_tool_summary([_result("analyze_execution_failure", data)])
+        assert len(out) == 1
+        entry = out[0]
+        assert entry["execution_id"] == "exec-7841"
+        assert entry["job_name"] == "esb_order_sync_route"
+        assert entry["state"] == "failed"
+        assert entry["incident_id"] == "abc123def456"
+        assert entry["headline"] == "ORA-12170"
+        # Evidence excerpts must not appear anywhere in the summary
+        assert "excerpt" not in str(out)
+        assert "timeout" not in str(out)  # only in evidence, not in headline path
+
+    def test_get_execution_timeline_summary_keeps_no_event_messages(self):
+        # timeline events have no execution_id → all records skipped → no summary
+        events = [
+            {"log_event_id": 1, "timestamp": "2026-06-17T00:00:00Z", "severity": "error",
+             "message": "SECRET ORA-12170 stacktrace detail"},
+            {"log_event_id": 2, "timestamp": "2026-06-17T00:00:01Z", "severity": "info",
+             "message": "Job started"},
+        ]
+        out = build_runtime_tool_summary([_result("get_execution_timeline", events)])
+        assert out is None
+        # No message text must leak
+        assert "SECRET" not in str(out)
+
+    def test_get_runtime_incident_summary_stores_no_evidence(self):
+        data = {
+            "incident": {
+                "incident_id": "abc123",
+                "execution_id": "exec-7841",
+                "job_name": "esb_order_sync_route",
+                "state": "failed",
+                "root_cause_candidate": "Source database timeout",
+            },
+            "evidence": [
+                {"log_event_id": 1, "excerpt": "SENSITIVE: ORA-12170 password=hunter2"},
+            ],
+        }
+        out = build_runtime_tool_summary([_result("get_runtime_incident", data)])
+        assert len(out) == 1
+        entry = out[0]
+        assert entry["incident_id"] == "abc123"
+        assert entry["execution_id"] == "exec-7841"
+        assert entry["job_name"] == "esb_order_sync_route"
+        # Evidence and excerpts must never appear in the summary
+        assert "SENSITIVE" not in str(out)
+        assert "hunter2" not in str(out)
+        assert "excerpt" not in str(out)
+
+    def test_flatten_incident_detail_extracts_reference_fields(self):
+        data = {
+            "incident": {
+                "incident_id": "abc123",
+                "execution_id": "exec-7841",
+                "job_name": "esb_order_sync_route",
+                "state": "failed",
+                "root_cause_candidate": "timeout",
+            },
+            "evidence": [{"log_event_id": 1, "excerpt": "sensitive"}],
+        }
+        record = _flatten_incident_detail(data)
+        assert record["incident_id"] == "abc123"
+        assert record["execution_id"] == "exec-7841"
+        assert "evidence" not in record
+        assert "excerpt" not in str(record)
 
 
 class TestRuntimeToolLoopBounds:
