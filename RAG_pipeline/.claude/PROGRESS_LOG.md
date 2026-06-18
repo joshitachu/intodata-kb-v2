@@ -1,5 +1,71 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-06-18
+
+> Feature: **Generalize and harden the runtime log intelligence mechanism** (4 slices,
+> orchestrated one sub-agent per slice). All uncommitted; HEAD still `9b9a91d`. Full
+> backend suite **753 passed**; runtime subset grew 175 → 232. Per-slice plan +
+> inspection + summary preserved under `.plans/slice-1..4/`.
+
+### [Feature]: Slice 1 — credential-redaction + severity-normalization hardening
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/runtime/insights/parser.py` — added `_USERINFO_RE` + extended `redact_credentials` to strip inline `user:pass@host` / `user/pass@host` JDBC userinfo before the keyword=value pass (generic, not Oracle-specific); `endpoint` now emerges credential-free
+  - `RAG_pipeline/backend/src/runtime/insights/builder.py` — added `_SEVERITY_ALIASES` + `normalize_severity()`; routed all 7 severity comparisons through it (warning/error partition, failed-component selection, last-healthy INFO scan, evidence first_warning/first_error/final_failure)
+  - `RAG_pipeline/backend/tests/test_runtime/test_insight_parser.py` — +4 redaction tests
+  - `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` — +3 tests + `_seed_custom_failed_execution` helper
+- **Problem**: Inline JDBC URLs leaked `user:pass@host` credentials into the persisted `endpoint` field (redaction only caught `keyword=value`); severity was matched literally, missing SEVERE/FATAL/uppercase from real sources.
+- **Root cause**: `redact_credentials` had a single `keyword=value` pattern; severity comparisons were scattered literal `== "error"` checks.
+- **Change**: One inline-userinfo redaction pattern added to the shared redactor; one `normalize_severity` helper routed through every severity callsite.
+- **Why this approach**: Fix once at the shared-helper level so every persisting path is covered (root cause, not per-callsite patch).
+- **Verification**: `tests/test_runtime/` 182 passed; py_compile clean.
+
+### [Feature]: Slice 2 — FailurePatternCatalog + multi-platform generalization
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/runtime/insights/catalog.py` (NEW) — `FailurePatternCatalog` (Strategy/Registry); Pydantic v2 frozen `CodeFamily`/`FailurePattern`/`FailurePatternCatalog`; module singleton `CATALOG`; 6 code families + 13 patterns (oracle/mysql/postgres/http/mule/generic/exception)
+  - `RAG_pipeline/backend/src/runtime/insights/parser.py` — deleted `_ORA_CODE_RE`; `error_code` delegates to `CATALOG.extract_error_code`; added `ParsedRuntimeLog.error_family`
+  - `RAG_pipeline/backend/src/runtime/insights/builder.py` — deleted `_derive_root_cause`/`_build_next_checks`; root cause + next checks now from `CATALOG.match` + render helpers (control flow pattern-agnostic)
+  - `RAG_pipeline/backend/tests/test_runtime/test_catalog.py` (NEW) — 18 tests
+  - `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` — +10 tests (Oracle no-regression + MySQL/Postgres/HTTP/Mule)
+- **Problem**: `_ORA_CODE_RE` was the only error-code matcher and root-cause/next-checks hardcoded `ORA-12` branches, so every non-Oracle failure degraded to generic text and each new failure type meant another inline branch (the special-case accumulation CLAUDE.md forbids).
+- **Root cause**: Vendor-specific knowledge embedded in control flow rather than data.
+- **Change**: Moved all error-code/root-cause/next-checks knowledge into a data-driven catalog; parser/builder delegate. Adding a family is now catalog data + a test, zero control-flow edits.
+- **Why this approach**: Strategy/Registry is the named pattern that satisfies the no-special-case + design-pattern rules and unlocks platform-agnostic support.
+- **Verification**: `tests/test_runtime/` 210 passed; Oracle no-regression confirmed; grep confirms no `startswith("ORA`/`_ORA_CODE_RE` remain.
+
+### [Feature]: Slice 3 — causal extraction + honest signature/confidence (migration 034)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/runtime/insights/parser.py` — deepest `Caused by:` root resolution (`_resolve_causal_exception`, `_CAUSED_BY_RE`); exception regex broadened to `*Error` (CamelCase-gated so "IO Error"/bare "Error" never match); removed `qualified[0]` outermost bug; new transient `ParsedRuntimeLog.causal_message`
+  - `RAG_pipeline/backend/src/runtime/insights/builder.py` — causal selection (`_select_causal_signal`/`_select_failed_component`/`_terminal_error_message`); new `_compose_signature`; reworked `_derive_confidence(error_code, exception_class, pattern)`; persist `cause_origin="deterministic"` + `pattern_id`; new public `rebuild_runtime_insights`
+  - `RAG_pipeline/backend/src/db/models/runtime_insights.py` — `RuntimeIncidentRow.cause_origin` (String(20) NOT NULL server_default "deterministic") + `pattern_id` (String(64) nullable)
+  - `RAG_pipeline/backend/src/runtime/insights/models.py` — expose `cause_origin`/`pattern_id` on read models
+  - `RAG_pipeline/backend/src/runtime/insights/repository.py` — map the new fields
+  - `RAG_pipeline/backend/src/runtime/providers/stored.py` — set `cause_origin` on `RuntimeFailureAnalysis`
+  - `RAG_pipeline/backend/alembic/versions/034_add_runtime_incident_cause_origin.py` (NEW) — revision 034 → 033; add columns + signature rebuild; downgrade drops both
+  - `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` — +9 tests
+- **Problem**: Multi-line traces were parsed flat (`qualified[0]` = outermost, never the `Caused by:` root); `primary_error_code`/`failed_component` were first-seen not causal; the `unknown|{job_name}` signature fallback collapsed all unrelated unknown failures of a job into one "recurring" group; confidence counted signals not correctness.
+- **Root cause**: Positional (first-seen) attribution + a signature that needed only a job name when no diagnostic signal was present.
+- **Change**: Parser resolves the deepest causal exception; builder selects the terminal/causal code+component; new signature requires a diagnostic signal on the strong path and disambiguates unknowns by component + `pattern_id` + a redacted causal-message digest; confidence derives from catalog `specificity` + signal agreement and persists `low`.
+- **Why this approach**: Causal correctness fixes the misattribution at its source; the disambiguated signature stops false recurrence without breaking genuine recurrence.
+- **Key invariant**: Strong-path signature needs error_code OR exception_class (a bare component is no longer enough); unknown-path signature = `sha256("unknown|{job}|{component}|{pattern_id}|{sha256(redact(causal_message))[:16]}")`.
+- **Verification**: `tests/test_runtime/` 219 passed; `test_similar_failures` (recurrence) green and unchanged — no assertion weakened (no test asserts a literal signature hash); `alembic heads` = single head `034`.
+
+### [Feature]: Slice 4 — bounded opt-in LLM fallback for low-confidence incidents
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/runtime/insights/llm_fallback.py` (NEW) — Decorator over the deterministic result; Pydantic v2 frozen `LlmFallbackEvidence`/`LlmFallbackInput`/`LlmFallbackResult`; `build_fallback_input(...)` + `async maybe_run_llm_fallback(...)`; reuses `src/generation/llm_client.generate_answer` (provider-neutral); caps `_MAX_EXCERPTS=5`, `_MAX_EXCERPT_CHARS=300`, `_MAX_PROMPT_CHARS=6000`
+  - `RAG_pipeline/backend/src/config.py` — `runtime_llm_fallback_enabled: bool = False` (env `RUNTIME_LLM_FALLBACK_ENABLED`)
+  - `RAG_pipeline/backend/src/runtime/insights/builder.py` — in `_build_incident`: compute bounded redacted `evidence_excerpts` once (reused for evidence upsert), `await maybe_run_llm_fallback(...)`, write returned `cause_origin`
+  - `RAG_pipeline/backend/tests/test_runtime/test_llm_fallback.py` (NEW) — 13 tests
+- **Problem**: Low-confidence deterministic incidents handed operators generic causes with no escalation path; raw-logs-to-LLM was ruled out by the EP-006 token-bloat thesis.
+- **Root cause**: N/A (new capability) — driven by the need for a bounded residual escalation that does not reintroduce token bloat.
+- **Change**: An env-gated, off-by-default fallback that runs a single redacted, capped LLM call ONLY on `low`-confidence incidents, marks `cause_origin="llm_fallback"`, never overwrites high/medium results, and fails safe (LLM error/unparseable → deterministic result stands, no raise).
+- **Why this approach**: Decorator over the deterministic result keeps the LLM strictly a bounded fallback; provider-neutral client honors the platform-agnostic-model requirement; flag-off path is byte-for-byte identical to Slice 3.
+- **Key invariant**: Bounds enforced at the captured-payload level (1 call, ≤5 excerpts, ≤300 chars each, 6000-char prompt cap, no raw logs); every excerpt + structured field passes through `redact_credentials` before the call.
+- **Verification**: `tests/test_runtime/` 232 passed; full backend suite 753 passed; flag-off-does-not-call-LLM and flag-off-identical-to-deterministic both asserted; redaction + fail-safe tests green.
+
 ## Session: 2026-06-17
 
 ### [Feature]: EP-006 slice 1 — deterministic runtime insight layer (commit `82116db`)

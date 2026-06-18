@@ -52,6 +52,10 @@ class RuntimeIncidentInsight(BaseModel):
     symptom_summary: str | None
     root_cause_candidate: str | None
     confidence: str | None
+    # "deterministic" (default) or "llm_fallback" (Slice 4). Lets callers tell
+    # whether the root cause came from the rule engine or the LLM fallback.
+    cause_origin: str | None
+    pattern_id: str | None
     first_bad_at: datetime.datetime | None
     last_healthy_at: datetime.datetime | None
     next_checks: list[str]
@@ -97,6 +101,7 @@ class RuntimeFailureAnalysis(BaseModel):
     symptom_summary: str | None
     root_cause_candidate: str | None
     confidence: str | None
+    cause_origin: str | None
     next_checks: list[str]
     evidence: list[RuntimeIncidentEvidence]
 

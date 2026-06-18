@@ -13,13 +13,25 @@ from __future__ import annotations
 import dataclasses
 import re
 
+from src.runtime.insights.catalog import CATALOG
+
 # ---------------------------------------------------------------------------
 # Regex library
 # ---------------------------------------------------------------------------
 
 _BRACKET_COMPONENT_RE = re.compile(r"^\[([^\]]+)\]")
-_ORA_CODE_RE = re.compile(r"(ORA-\d+)")
-_EXCEPTION_CLASS_RE = re.compile(r"([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*Exception)")
+# Java/.NET style class name ending in Exception or Error. Requires at least one
+# capitalised qualifier before the suffix (e.g. SQLRecoverableException, IOError)
+# so prose such as "IO Error" or a bare "Error" token is never mistaken for a
+# class. A "." anywhere (package-qualified) also satisfies the qualifier.
+_EXCEPTION_CLASS_RE = re.compile(
+    r"((?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Z][A-Za-z0-9_]*(?:Exception|Error))"
+)
+# A "Caused by:" marker introduces a deeper (root) exception in a wrapped trace.
+# The deepest marker is the true fault; everything above it is a wrapper.
+_CAUSED_BY_RE = re.compile(
+    r"(?i)caused by:\s*((?:[A-Za-z][A-Za-z0-9_]*\.)*[A-Z][A-Za-z0-9_]*(?:Exception|Error))"
+)
 _RETRY_RE = re.compile(r"attempt\s+(\d+)/(\d+)", re.IGNORECASE)
 _DURATION_MS_RE = re.compile(r"(\d+)ms\b")
 _TIMEOUT_S_RE = re.compile(r"timeout[= ](\d+)s\b", re.IGNORECASE)
@@ -30,6 +42,9 @@ _SELECT_TABLE_RE = re.compile(r"\bSELECT(?:\s+\w+)?\s+on\s+(\w+)", re.IGNORECASE
 _CREDENTIAL_RE = re.compile(
     r"(?i)(password|passwd|pwd|token|secret|api[_\-]?key)\s*[=:]\s*\S+",
 )
+# Inline URL/JDBC userinfo: scheme://user:pass@host or jdbc:...user/pass@host.
+# Requires a trailing "@host" so plain "host:port" (no userinfo) is never touched.
+_USERINFO_RE = re.compile(r"[^\s:/@]+[:/][^\s:/@]+@(?=/*[^\s/@])")
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +53,71 @@ _CREDENTIAL_RE = re.compile(
 
 
 def redact_credentials(text: str) -> str:
-    """Replace credential-pattern values with <redacted>."""
-    return _CREDENTIAL_RE.sub(r"\1=<redacted>", text)
+    """Replace credential patterns with <redacted>.
+
+    Covers both keyword forms (password=..., token:...) and inline URL/JDBC
+    userinfo (user:pass@host, user/pass@host). Userinfo is stripped first so a
+    secret embedded in a connection string never survives into a persisted field.
+    """
+    redacted = _USERINFO_RE.sub("<redacted>@", text)
+    return _CREDENTIAL_RE.sub(r"\1=<redacted>", redacted)
+
+
+def _simple_class_name(qualified: str) -> str:
+    return qualified.split(".")[-1]
+
+
+def _resolve_causal_exception(message: str) -> tuple[str | None, str | None]:
+    """Resolve the root exception of a (possibly multi-line) log message.
+
+    Returns ``(simple_exception_class, causal_message)`` where ``causal_message``
+    is the line that carries the true fault — used as a catalog message hint.
+
+    Resolution order:
+      1. Deepest ``Caused by:`` marker — the root of a wrapped stack trace. The
+         outermost exception is the wrapper, not the fault, so the LAST marker
+         wins (the previous ``qualified[0]`` logic incorrectly returned the
+         wrapper).
+      2. No ``Caused by:`` — pick the most specific single exception: prefer the
+         exception sharing a line with an extractable error code (the
+         failure-attributed line); else the last exception in the message
+         (deepest position). Tie-break: first qualified simple name, else first
+         bare match. Preserves the existing single-exception behaviour.
+    """
+    caused = list(_CAUSED_BY_RE.finditer(message))
+    if caused:
+        deepest = caused[-1]
+        line = _line_containing(message, deepest.start())
+        return _simple_class_name(deepest.group(1)), line
+
+    exc_matches = list(_EXCEPTION_CLASS_RE.finditer(message))
+    if not exc_matches:
+        return None, None
+
+    # Prefer the exception on a line that also carries an error code.
+    coded = [m for m in exc_matches if _has_error_code(_line_containing(message, m.start()))]
+    if coded:
+        chosen = coded[-1]
+        return _simple_class_name(chosen.group(0)), _line_containing(message, chosen.start())
+
+    # Otherwise prefer the deepest (last) exception, but keep the legacy
+    # tie-break: a qualified simple name is clearer than a bare name.
+    qualified = [m for m in exc_matches if "." in m.group(0)]
+    chosen = qualified[0] if qualified else exc_matches[0]
+    return _simple_class_name(chosen.group(0)), _line_containing(message, chosen.start())
+
+
+def _line_containing(message: str, index: int) -> str:
+    start = message.rfind("\n", 0, index) + 1
+    end = message.find("\n", index)
+    if end == -1:
+        end = len(message)
+    return message[start:end].strip()
+
+
+def _has_error_code(line: str) -> bool:
+    code, _ = CATALOG.extract_error_code(line)
+    return code is not None
 
 
 @dataclasses.dataclass
@@ -49,6 +127,7 @@ class ParsedRuntimeLog:
 
     component_name: str | None = None
     error_code: str | None = None
+    error_family: str | None = None
     exception_class: str | None = None
     retry_attempt: int | None = None
     retry_max: int | None = None
@@ -61,6 +140,9 @@ class ParsedRuntimeLog:
     queue_name: str | None = None
     message_family: str | None = None
     confidence: str | None = None
+    # The deepest causal line (root of a "Caused by:" chain, or the
+    # failure-attributed line). Transient hint for catalog matching — not persisted.
+    causal_message: str | None = None
 
 
 def parse_runtime_log_message(message: str) -> ParsedRuntimeLog:
@@ -77,17 +159,19 @@ def parse_runtime_log_message(message: str) -> ParsedRuntimeLog:
     if comp_m:
         result.component_name = comp_m.group(1)
 
-    # Oracle error code
-    ora_m = _ORA_CODE_RE.search(message)
-    if ora_m:
-        result.error_code = ora_m.group(1)
+    # Error code: delegate family matching to the catalog (Oracle, MySQL,
+    # Postgres/SQLSTATE, HTTP, generic). Conservative — benign lines yield None.
+    code, family = CATALOG.extract_error_code(message)
+    if code is not None:
+        result.error_code = code
+        result.error_family = family
 
-    # Exception class — prefer most specific (shortest non-qualified name last)
-    exc_matches = _EXCEPTION_CLASS_RE.findall(message)
-    if exc_matches:
-        # Prefer fully-qualified names (contain ".") for clarity; fall back to bare name.
-        qualified = [m for m in exc_matches if "." in m]
-        result.exception_class = qualified[0].split(".")[-1] if qualified else exc_matches[0]
+    # Exception class — resolve the deepest causal exception (root of a
+    # "Caused by:" chain or the failure-attributed line), not the outermost.
+    exc_class, causal_message = _resolve_causal_exception(message)
+    if exc_class is not None:
+        result.exception_class = exc_class
+        result.causal_message = causal_message
 
     # Retry attempt / max
     retry_m = _RETRY_RE.search(message)

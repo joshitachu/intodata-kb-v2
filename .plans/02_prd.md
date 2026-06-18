@@ -1,426 +1,194 @@
 ---
-feature: Smart Runtime Log Intelligence
+feature: Generalize and harden the runtime log intelligence mechanism
 pipeline_step: 2_prd
 ---
 
 ## Executive Summary
-
-IntoData already has the foundation for runtime logs: a held Postgres runtime
-store, project-scoped runtime tools, chat integration, and an `/admin/logs`
-dashboard. The next product step is to make logs useful at operational scale.
-
-This feature adds a smart runtime-log intelligence layer that converts raw log
-events into bounded, project-scoped insight records: enriched log fields,
-execution summaries, incidents, error signatures, timelines, and evidence
-references. Chat should use those records first, then fetch a small number of raw
-log lines only as evidence. The dashboard should show the same derived insights
-so users can see "what failed and why" without reading or waiting on raw logs.
-
-The core design principle is: raw logs are evidence, not the primary chat
-abstraction.
+The runtime log mechanism (parser.py + builder.py) turns raw log events into
+incidents, signatures, and evidence, but its extraction and cause logic are
+hardcoded to Oracle/Talend, attribute causes by position rather than causality,
+report confidence as a signal-count, and leak inline JDBC credentials. This work
+replaces the inline logic with a data-driven failure-pattern catalog
+(Strategy/Registry), fixes causal extraction and signature stability, makes
+confidence honest, and adds an opt-in, bounded LLM fallback only for low-confidence
+incidents. Done means a new platform or failure family is added as catalog data
+plus tests -- with zero edits to parser.py or builder.py control flow.
 
 ## Problem
-
-Raw runtime logs exist, but they are still too low-level. The system can store log
-lines, list executions, detect failures, and fetch logs, but users still have to
-interpret the operational meaning themselves.
-
-This breaks down at realistic volume. A project may have hundreds of thousands or
-millions of log lines. Pushing large windows of those lines into an LLM would
-create token bloat, high latency, higher cost, and unreliable answers. It also
-increases the risk that the model overfits noise or presents guesses as facts.
-
-The current runtime chat tools are useful for retrieval, but not yet for insight:
-they can answer "show me the logs" but not reliably "what broke, why did it
-break, has this happened before, and what should I check next?"
+parser.py and builder.py carry five defects. (1) `_ORA_CODE_RE` is the only
+error-code matcher and `_derive_root_cause` / `_build_next_checks` hardcode
+`ORA-12` branches, so every non-Oracle failure degrades to generic text and each
+new failure type means another inline branch -- the special-case accumulation
+CLAUDE.md forbids. (2) Multi-line messages are parsed flat: `qualified[0]` returns
+the outermost exception, never the `Caused by:` root, and `primary_error_code` /
+`failed_component` are first-seen rather than causal, so a benign earlier event
+misattributes the cause and poisons the signature. (3) The signature
+`error_code|exception_class|failed_component` inherits that misattribution, and the
+`unknown|{job_name}` fallback collapses unrelated unknown failures of one job into
+a single recurring group. (4) Confidence counts present signals, not correctness,
+so a wrong templated cause can ship as "high". (5) `_JDBC_URL_RE` stores the whole
+`jdbc:...user/pass@host` substring into `endpoint`, and `redact_credentials` only
+catches `keyword=value`, so inline credentials survive into a surfaced field;
+severity is matched literally and misses SEVERE/FATAL/uppercase.
 
 ## Goals
-
-1. Convert raw runtime logs into bounded, structured insight records that are
-   useful for both chat and dashboard users.
-2. Let chat answer operational questions from derived insights first, not from
-   unbounded raw log windows.
-3. Preserve raw log lines as evidence that can be quoted or referenced when
-   supporting a finding.
-4. Surface smart-log insight in the dashboard: failed component, likely cause,
-   evidence, timeline, and next checks.
-5. Keep project isolation explicit and enforced across raw logs, enriched events,
-   summaries, incidents, signatures, dashboard views, and chat tools.
-6. Support high-volume log data by using indexed structured queries and bounded
-   records rather than vectorizing or embedding raw log lines.
-7. Provide a first implementation that works end to end on seeded/mock
-   Talend-style runtime data before the real TMC sync worker exists.
+1. All error-code, root-cause, and next-check knowledge is expressed as catalog
+   data; adding a platform/failure family requires no parser/builder control-flow
+   edits.
+2. The parser resolves multi-line messages to the deepest `Caused by:` root
+   exception and selects the terminal/causal error code and component, not the
+   first-seen one.
+3. The failure signature is stable under noise and never merges unrelated unknown
+   failures by job_name; recurrence counts reflect genuinely identical failures.
+4. Confidence reflects evidence quality and is surfaced honestly in the data
+   (not only in UI copy).
+5. An opt-in, off-by-default LLM fallback improves only low-confidence incidents,
+   using bounded redacted evidence (never raw logs), via the existing
+   provider-neutral client.
+6. No credential pattern -- keyword form or inline `user:pass@host` -- appears in any
+   persisted insight field; severity matching is case/format-insensitive.
 
 ## Non-Goals
-
-- Building the real Talend TMC sync worker or any production ingestion worker.
-- Runtime write actions such as retry, acknowledge, resolve, rerun, or edit.
-- Full operational analytics dashboards such as SLA reporting, long-term
-  success-rate charts, or capacity planning.
-- Replacing raw log viewing. Raw logs remain available as detail/evidence.
-- Sending large raw log windows directly to the LLM as the main strategy.
-- Production-grade alert routing. Optional alert/email design hooks may be
-  included if cheap, but alert delivery is not the primary deliverable.
-- Reworking document ingestion, embeddings, chunking, or Qdrant retrieval.
+- Ingestion transport (TMC sync, polling, webhooks, file drops).
+- Write-back to source (retry/rerun) and operator state (ack/resolve/edit).
+- Raw log windows to the LLM as the primary strategy -- LLM is a bounded fallback only.
+- Operational analytics dashboards and alert delivery.
+- Document ingestion, embeddings, chunking, Qdrant retrieval.
 
 ## User Stories
-
-1. As a developer, I want to ask "why did job X fail?" and receive a short answer
-   with failed component, likely cause, key evidence, and next checks, so I can
-   diagnose faster than reading the full log stream.
-
-2. As an operator, I want the logs dashboard to show a smart failure summary for
-   a failed execution, so I can immediately see what matters before drilling into
-   raw log lines.
-
-3. As a developer, I want the bot to answer "has this happened before?" by
-   comparing the current failure signature to prior incidents, so I can
-   distinguish a new issue from a recurring one.
-
-4. As a user working on project A, I want chat and dashboard results to include
-   only project A runtime data, so unrelated customer/project logs never appear.
-
-5. As an admin, I want bounded and explainable runtime answers, so the system does
-   not waste tokens or latency by pushing excessive logs into the LLM.
-
-6. As a future operator, I want the architecture to leave room for alerting, so
-   repeated or severe incidents can later trigger email or notification flows.
+- As an operator triaging a non-Oracle (MySQL/Postgres/HTTP/Mule) failure, I want a
+  specific root cause and next checks, so that I am not handed generic
+  "review the log" text.
+- As an operator reading a wrapped Java stack trace, I want the reported exception
+  to be the `Caused by:` root, so that I chase the real fault, not a wrapper.
+- As an operator relying on the recurring badge, I want "recurring" to mean the same
+  failure actually happened before, so that I trust the count.
+- As a security reviewer, I want no database credentials to ever appear in stored
+  insight fields or LLM input, so that secrets never leak through diagnostics.
+- As a maintainer adding support for a new platform, I want to add a catalog entry
+  and a test, so that I never touch parser/builder logic.
 
 ## Functional Requirements
-
-### Runtime Enrichment
-
-1. The system must provide a deterministic enrichment step for runtime log events.
-   It must extract structured fields when present:
-   - component name, e.g. `tOracleConnection_1`
-   - error code, e.g. `ORA-12170`
-   - exception class, e.g. `SQLRecoverableException`
-   - retry attempt data, e.g. `3/3`
-   - duration/timeout values
-   - endpoint, queue, host, database, table, or connection identifiers when safely
-     available
-2. Enrichment must be deterministic and testable. Regex/parser extraction is the
-   first layer. LLM-generated enrichment is optional and must not be required on
-   the critical path.
-3. Enriched data must preserve project scope and execution id.
-4. Enriched records must never store unredacted credentials or secrets.
-
-### Execution Summary
-
-5. The system must create or update one execution summary per runtime execution.
-6. The summary must include:
-   - project id
-   - execution id
-   - job name
-   - state
-   - start/end/duration
-   - warning count
-   - error count
-   - first warning timestamp when present
-   - first error timestamp when present
-   - final error timestamp when present
-   - detected failed component when present
-   - primary error code when present
-   - primary exception class when present
-   - short human-readable summary
-   - bounded evidence references
-7. The summary must be bounded and suitable for LLM context without including a
-   large raw log payload.
-
-### Incidents and Error Signatures
-
-8. The system must create an incident record for failed executions.
-9. Incident records must include:
-   - incident id
-   - project id
-   - execution id
-   - job name
-   - failed component when detectable
-   - error signature
-   - root-cause candidate
-   - confidence or certainty level
-   - symptom summary
-   - first bad timestamp
-   - last known healthy timestamp when derivable
-   - evidence references
-   - next-check suggestions
-10. Error signatures must normalize repeated failures across executions. At
-    minimum, a signature should combine available fields such as job name,
-    component, error code, exception class, and normalized message family.
-11. The system must support finding similar incidents by project scope and error
-    signature.
-
-### Evidence Model
-
-12. Evidence references must point back to specific raw log events or bounded
-    excerpts.
-13. Evidence must be retrievable for dashboard and chat without exposing data
-    outside the caller's project scope.
-14. Chat answers must distinguish:
-    - evidence facts from logs
-    - inferred likely cause
-    - uncertainty or missing evidence
-    - recommended next checks
-
-### Runtime Intelligence Tools
-
-15. Add high-level runtime intelligence tools alongside the existing low-level
-    tools. Initial tools should include:
-    - `analyze_execution_failure(execution_id)`
-    - `get_execution_timeline(execution_id)`
-    - `find_similar_failures(execution_id | error_signature)`
-    - `get_runtime_incident(incident_id)`
-16. Existing low-level tools (`list_executions`, `detect_failures`,
-    `get_execution_details`, `get_execution_logs`) must remain available for raw
-    retrieval and evidence drilldown.
-17. Chat tool guidance must prefer high-level insight tools for failure-analysis
-    questions and use raw-log tools only for evidence/detail.
-18. Tool results must be redacted, bounded, and project-scoped.
-
-### Chat Behavior
-
-19. Chat must answer seeded failure-analysis questions using smart-log insight
-    records instead of unbounded raw log lines.
-20. Chat answers for runtime failures must follow this shape:
-    - finding
-    - evidence
-    - likely cause
-    - next checks
-    - uncertainty or missing data, when relevant
-21. Chat must not present inferred causes as proven facts. It must label likely
-    causes as likely/probable unless direct evidence proves them.
-22. Chat must preserve the existing docs+logs cross-reference behavior where
-    applicable: runtime insights may be combined with indexed documentation in
-    the same answer.
-
-### Dashboard Behavior
-
-23. The `/admin/logs` page must surface smart-log insight for failed executions.
-24. The failed execution drilldown must show:
-    - summary
-    - failed component
-    - likely cause
-    - evidence log lines
-    - timeline
-    - similar incidents count or list when available
-    - raw log lines as a detail panel
-25. Dashboard loading, error, and empty states must remain explicit.
-
-### Project Scope and Authorization
-
-26. Every new read path must derive scope from the authenticated user, not from
-    query params or LLM tool arguments.
-27. Optional `project_id` filters may narrow scope only. They must never widen it.
-28. Cross-project incident lookup by guessed id, execution id, or signature must
-    return 404 or empty results without revealing existence.
+1. A `FailurePatternCatalog` maps a matched signal set (error code family,
+   exception class, message family) to: a human root-cause template, an ordered
+   next-checks list, and a stable pattern id. Catalog entries are data, loaded once.
+2. The error-code matcher recognizes multiple families (at minimum: Oracle `ORA-`,
+   generic SQLSTATE, MySQL `ER_`/numeric, Postgres SQLSTATE, HTTP status, and a
+   generic `[A-Z]{2,}-\d+` form) via the catalog, not inline regex in builder.
+3. Exception extraction parses multi-line messages and returns the deepest
+   `Caused by:` exception when present; otherwise the most specific single exception.
+4. `primary_error_code` and `failed_component` are selected from the terminal/causal
+   error event (the failure-attributed line), with a defined, tested tie-break, not
+   the first matching row.
+5. The signature is computed from the resolved causal signals; the `unknown` branch
+   does not merge unrelated failures -- distinct unknown failures get distinct
+   signatures (job_name alone is insufficient).
+6. Confidence is derived from evidence quality (catalog match strength + signal
+   agreement), and a `low` confidence incident is explicitly marked as such in the
+   persisted incident row.
+7. An opt-in LLM fallback, gated by an env flag (default off), runs only when an
+   incident's deterministic confidence is `low`; it receives only the already-
+   redacted, count-capped evidence excerpts and produces a candidate root cause /
+   next checks. Its output is marked with a distinct cause origin and never
+   overwrites a high/medium deterministic result.
+8. Credential redaction covers inline `user:pass@host` JDBC forms in addition to
+   `keyword=value`; redaction is applied before any value is persisted or sent to
+   the LLM.
+9. Severity classification normalizes case and common aliases (ERROR/SEVERE/FATAL ->
+   error; WARN/WARNING -> warning) before counting and selection.
 
 ## Non-Functional Requirements
-
-- Token efficiency: chat must not include more than a bounded summary plus a small
-  evidence set for a failure-analysis answer. Raw log context must be capped.
-- Latency: high-level insight reads should target sub-200ms p95 for normal
-  dashboard/API reads over indexed rows.
-- Scalability: data model and indexes must be suitable for high-volume logs. The
-  design must avoid full-table scans for common reads by project, execution,
-  incident, signature, and timestamp.
-- Security: credentials/secrets must be redacted before enrichment output,
-  dashboard display, or LLM context.
-- Reliability: deterministic parser tests must cover the seeded Talend-style
-  failure and representative non-matching log lines.
-- Explainability: every runtime answer must be traceable back to evidence or
-  explicitly marked as inference.
-- No new dependencies unless a later plan justifies them. Prefer Python stdlib
-  regex/parsing and existing SQLAlchemy/FastAPI patterns.
+- Deterministic path makes no network/LLM call and stays linear in log-row count;
+  per-execution build remains synchronous.
+- LLM fallback: single call per low-confidence incident, <= 5 evidence excerpts,
+  each <= 300 chars, with a hard input-token cap; off by default; provider-neutral
+  via `src/generation/llm_client.py` (no new provider, no Claude CLI dependency).
+- Security: a test asserts no credential pattern (keyword or inline form) appears in
+  `endpoint`, `excerpt`, `summary_text`, or LLM input for credential-bearing fixtures.
+- RBAC: every new/changed query carries `project_id` scope; signature lookup is never
+  driven by arbitrary external input.
+- Rebuildability: insight tables remain fully rebuildable from the raw runtime store;
+  a signature-algorithm change ships with a rebuild path for existing rows.
 
 ## Architecture Impact
-
-### Backend Runtime Store
-
-Add derived runtime intelligence models/tables, likely including:
-
-- `runtime_enriched_events`
-- `runtime_execution_summaries`
-- `runtime_incidents`
-- `runtime_error_signatures`
-- optional `runtime_incident_evidence`
-
-These should be additive migrations. Existing raw runtime tables remain the
-source of truth.
-
-### Runtime Repository and Services
-
-Add a service layer for enrichment and summarization, likely under
-`src/runtime/insights/` or `src/runtime/intelligence/`, while keeping raw store
-access in `RuntimeStoreRepository`.
-
-Expected responsibilities:
-
-- parse/enrich raw log events
-- build execution summaries
-- create incident records
-- compute normalized error signatures
-- fetch evidence windows
-- expose high-level query methods for tools and API routes
-
-### Runtime Tool Registry
-
-Extend `src/runtime/registry.py` and provider/tool execution with high-level
-insight tools. The `stored` provider should satisfy these from Postgres-derived
-insight tables. Low-level provider contracts remain intact.
-
-### Conversational RAG
-
-Update `agent_loop` runtime guidance so failure questions use high-level insight
-tools before raw logs. Existing `RequestScope` coupling must continue to thread
-the same authenticated project allow-list to docs and runtime tools.
-
-### Runtime API
-
-Add read-only endpoints for smart-log insights, for example:
-
-- `GET /api/v1/runtime/executions/{execution_id}/summary`
-- `GET /api/v1/runtime/incidents`
-- `GET /api/v1/runtime/incidents/{incident_id}`
-- `GET /api/v1/runtime/incidents/{incident_id}/evidence`
-- `GET /api/v1/runtime/incidents/{incident_id}/similar`
-
-Exact endpoint shape can be finalized in slices, but all endpoints must be
-project-scoped.
-
-### Frontend Dashboard
-
-Extend `/admin/logs` rather than creating a separate dashboard first. The page
-should show smart summaries and incidents beside raw execution/log detail.
-
-### Auth/RBAC
-
-This feature touches auth/RBAC because every derived artifact is project-scoped
-and must be protected with the same rigor as raw logs. Similar-failure queries
-are especially sensitive because signatures can accidentally reveal that another
-project has the same failure.
+- New module `src/runtime/insights/catalog.py` (FailurePatternCatalog: data + match
+  API). parser.py and builder.py call into it; their control flow becomes
+  pattern-agnostic. This matches the CLAUDE.md design-pattern / no-special-case rules.
+- parser.py: multi-line/`Caused by:` handling, multi-family code matching delegated
+  to the catalog, severity normalization, inline-credential redaction fix.
+- builder.py: causal selection for primary code/component, catalog-driven cause and
+  next-checks, evidence-quality confidence, signature recomputation.
+- Schema (runtime_insights.py): add a cause-origin marker to `RuntimeIncidentRow`
+  (deterministic vs llm_fallback) and optionally a `pattern_id` on
+  `RuntimeEnrichedEventRow`/`RuntimeIncidentRow`. Requires an Alembic migration.
+  Because the signature algorithm changes, existing `RuntimeErrorSignatureRow` /
+  incident signatures must be rebuilt (data migration or documented re-seed).
+- LLM fallback reuses `src/generation/llm_client.py`; no change to the RAG retrieval
+  chain or auth/RBAC layers.
+- Read-layer models (insights/models.py) gain the cause-origin field so the UI and
+  runtime tools can distinguish deterministic from LLM-assisted causes.
 
 ## Implementation Phases
+### Phase A -- Catalog + generalization (no behavior regression)
+Goal: replace inline Oracle/ORA-12 logic with a data-driven catalog; add multi-family
+matching, severity normalization, and the inline-credential redaction fix.
+Deliverables: `catalog.py`; parser/builder delegate to it; severity + redaction fixes.
+Validation: existing Oracle fixtures still produce the same incident; new
+MySQL/Postgres/HTTP/Mule fixtures produce specific (non-generic) causes; credential-
+leak and severity-variant tests pass.
 
-### Phase 1: Data Model and Deterministic Enrichment
+### Phase B -- Causal correctness + honest signature/confidence
+Goal: multi-line `Caused by:` resolution, terminal/causal selection, signature
+stabilization, evidence-quality confidence, cause-origin schema field + migration.
+Deliverables: parser/builder changes; Alembic migration; signature rebuild path.
+Validation: stack-trace fixture reports the root exception; misattribution fixture
+selects the causal component; two unrelated unknown failures get distinct signatures;
+recurrence counts only identical failures; low confidence persisted as `low`.
 
-Deliver:
-
-- Add additive migration(s) for enriched events, execution summaries, incidents,
-  signatures, and evidence references.
-- Implement deterministic parser for seeded Talend-style logs.
-- Add enrichment/summarization service operating on existing raw log events.
-- Extend seed flow or add a developer command to build insights for seeded data.
-
-Validation:
-
-- Seeded rich Talend failure produces extracted component, error code,
-  exception class, retry information, and evidence references.
-- Parser handles non-matching lines without false positives or crashes.
-- Project scope columns exist on all derived tables.
-
-### Phase 2: Insight Repository and High-Level Tools
-
-Deliver:
-
-- Add repository methods for execution summary, incident detail, timeline,
-  evidence, and similar failures.
-- Add high-level runtime tools:
-  - `analyze_execution_failure`
-  - `get_execution_timeline`
-  - `find_similar_failures`
-  - `get_runtime_incident`
-- Update runtime tool guidance to prefer insight tools for failure analysis.
-
-Validation:
-
-- Chat/tool tests show the model can answer "why did this fail?" using
-  `analyze_execution_failure`.
-- Cross-project tests prove tool arguments cannot widen scope.
-- Tool payloads are bounded and do not include large raw logs.
-
-### Phase 3: Chat Answer Quality and Evidence Discipline
-
-Deliver:
-
-- Update runtime answer guidance to use Finding/Evidence/Likely Cause/Next Checks.
-- Ensure answers label inference and evidence separately.
-- Preserve docs+logs cross-reference behavior where project docs are relevant.
-
-Validation:
-
-- Seeded failed Talend run -> chat explains job, component, likely cause,
-  evidence lines, and next checks.
-- Answer includes no large raw log dump.
-- Answer does not claim certainty when only inferred evidence exists.
-
-### Phase 4: Dashboard Smart-Log UI
-
-Deliver:
-
-- Extend `/admin/logs` to show execution summary and incident insight.
-- Add incident/timeline/evidence panels.
-- Add similar-failure count/list when available.
-- Keep raw log drilldown available.
-
-Validation:
-
-- Dashboard displays the smart summary for seeded failure without requiring the
-  user to read raw logs.
-- Evidence panel links or shows bounded raw lines.
-- Loading, error, and empty states render cleanly.
-
-### Phase 5: Optional Alerting Groundwork
-
-Deliver only if cheap and non-disruptive:
-
-- Add fields that would later support alerting, such as severity, repeated count,
-  first_seen_at, last_seen_at, and notification eligibility.
-- Do not implement production email delivery unless explicitly reprioritized.
-
-Validation:
-
-- Incident data contains enough metadata for a future alerting slice.
+### Phase C -- Bounded opt-in LLM fallback
+Goal: env-gated escalation for low-confidence incidents only, redacted bounded
+evidence, provider-neutral, marked cause origin, never overwriting deterministic
+high/medium results.
+Deliverables: fallback hook in builder; flag wiring; cause-origin propagation to
+read models.
+Validation: with flag off, behavior is identical to Phase B; with flag on, only
+low-confidence incidents call the LLM, input is redacted and capped, and origin is
+recorded; a token/evidence-cap test passes.
 
 ## Risks and Open Questions
-
-1. Regex may be too brittle for real customer logs. Mitigation: keep parser
-   modular, deterministic, and conservative; store confidence/unknown states
-   instead of overclaiming.
-2. Component names may not reliably join to indexed docs. Mitigation: first
-   version can correlate by component/job text; later slices may improve metadata
-   or entity aliases.
-3. Similar-failure clustering may leak cross-project existence if not scoped at
-   every query. Mitigation: project scope is mandatory on all signature queries.
-4. Incident summaries may become stale if raw logs are re-seeded or re-ingested.
-   Mitigation: derived rows should be rebuildable/idempotent per project/source/
-   execution.
-5. Root-cause candidates may be wrong. Mitigation: answer format separates
-   evidence from likely cause and includes uncertainty.
-6. High-volume performance depends on indexes and bounded queries. Migration and
-   repository design must be explicit about query paths.
-7. Real TMC log format is not confirmed in this feature. The design must not bake
-   in Talend-only assumptions beyond first parser modules.
+- Multi-line traces are assumed to arrive within one message (confirmed seed.py:180).
+  If a real source splits a trace across rows, cross-row grouping is a larger,
+  separate change.
+- Changing the signature algorithm breaks recurrence continuity for already-built
+  incidents; a rebuild/migration is required and must be validated against the
+  slice-5 recurrence feature.
+- LLM fallback cost/latency and provider availability; must stay provider-neutral and
+  default off.
+- Open: should the source-provided `error_summary` (seed.py:248) anchor the cause when
+  present, or only the parsed log lines? Default assumption: use it as a corroborating
+  signal, never as the sole source.
+- Open: confidence taxonomy stays {high, medium, low} vs adding `unknown`. Default:
+  keep three, treat absent-signal as `low`.
 
 ## Acceptance Criteria
-
-- [ ] A seeded rich Talend failure produces an execution summary with failed job,
-  failed component, error code, exception class, warning/error counts, and bounded
-  evidence references.
-- [ ] A failed execution produces an incident with root-cause candidate, symptom
-  summary, timeline fields, next checks, and an error signature.
-- [ ] Chat can answer "why did this job fail?" from the incident/summary without
-  dumping raw logs into the prompt.
-- [ ] Chat answer includes Finding, Evidence, Likely Cause, and Next Checks.
-- [ ] Chat answer references a small bounded evidence set and separates inference
-  from fact.
-- [ ] Dashboard shows smart failure insight for the seeded failed execution
-  alongside raw log drilldown.
-- [ ] Similar-failure lookup works for same-project seeded examples and does not
-  return cross-project matches.
-- [ ] A user scoped to project A cannot access project B summaries, incidents,
-  evidence, raw logs, signatures, or chat answers.
-- [ ] Parser tests cover component extraction, error code extraction, exception
-  extraction, retry extraction, and safe no-match behavior.
-- [ ] New API/tool payloads are bounded and redacted.
-- [ ] Relevant backend tests pass, and frontend typecheck/tests pass for dashboard
-  changes when those slices are implemented.
+- [ ] Adding a new platform/failure family requires only a catalog entry + test;
+      parser.py and builder.py control flow are unchanged by it.
+- [ ] MySQL, Postgres, HTTP, and MuleSoft failure fixtures each yield a specific root
+      cause and tailored next checks (not the generic fallback text).
+- [ ] A wrapped-exception fixture reports the `Caused by:` root exception class.
+- [ ] A misattribution fixture (benign earlier event) selects the causal
+      component/code, not the first-seen one.
+- [ ] Two unrelated unknown-signal failures in the same job produce distinct
+      signatures and do not inflate each other's occurrence_count.
+- [ ] A low-confidence incident is persisted with confidence `low` and a deterministic
+      cause origin.
+- [ ] With the fallback flag off, output is identical to the deterministic path; with
+      it on, only low-confidence incidents trigger a single, redacted, capped LLM call,
+      recorded with an llm_fallback origin, never overwriting high/medium results.
+- [ ] No credential pattern (keyword=value or inline user:pass@host) appears in
+      `endpoint`, `excerpt`, `summary_text`, or any LLM input across credential-bearing
+      fixtures.
+- [ ] Severity variants (ERROR/SEVERE/FATAL/WARN, mixed case) are counted and selected
+      correctly.
+- [ ] Existing insight tables rebuild cleanly from the raw store after the signature
+      change; the slice-5 recurrence feature still passes its tests.

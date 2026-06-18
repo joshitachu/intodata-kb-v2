@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import hashlib
+from collections.abc import Callable
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,11 +27,33 @@ from src.db.models.runtime_insights import (
     RuntimeIncidentEvidenceRow,
     RuntimeIncidentRow,
 )
+from src.runtime.insights.catalog import CATALOG
+from src.runtime.insights.llm_fallback import maybe_run_llm_fallback
 from src.runtime.insights.parser import ParsedRuntimeLog, parse_runtime_log_message, redact_credentials
 
 _SEV_WARNING = "warning"
 _SEV_ERROR = "error"
 _SEV_INFO = "info"
+
+_SEVERITY_ALIASES = {
+    "error": _SEV_ERROR,
+    "severe": _SEV_ERROR,
+    "fatal": _SEV_ERROR,
+    "critical": _SEV_ERROR,
+    "warn": _SEV_WARNING,
+    "warning": _SEV_WARNING,
+}
+
+
+def normalize_severity(raw: str | None) -> str:
+    """Map a raw severity token to a canonical level.
+
+    Case- and alias-insensitive: error/severe/fatal/critical -> "error";
+    warn/warning -> "warning"; any other value is lowercased and returned as-is
+    (e.g. "INFO" -> "info"). Single source of truth for every severity compare.
+    """
+    token = (raw or "").strip().lower()
+    return _SEVERITY_ALIASES.get(token, token)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +124,43 @@ async def build_runtime_insights_for_execution(
     )
 
 
+async def rebuild_runtime_insights(
+    session: AsyncSession, *, project_id: str | None = None
+) -> int:
+    """Rebuild all derived insight rows from the raw runtime store.
+
+    The insight tables are derived: the raw runtime store is the source of truth.
+    When the deterministic algorithm changes (e.g. the signature formula in this
+    slice), stored insight rows become stale. This routine re-runs
+    ``build_runtime_insights_for_execution`` for every stored execution (optionally
+    scoped to one project) so signatures, confidence, and cause_origin are
+    recomputed. Idempotent; returns the number of executions rebuilt.
+
+    Used by Alembic migration 034 to repair signatures after the formula change.
+    """
+    stmt = select(
+        RuntimeExecutionRow.project_id,
+        RuntimeExecutionRow.execution_id,
+        RuntimeExecutionRow.source_key,
+    )
+    if project_id is not None:
+        stmt = stmt.where(RuntimeExecutionRow.project_id == project_id)
+    rows = (await session.execute(stmt)).all()
+
+    rebuilt = 0
+    now = datetime.datetime.now(datetime.UTC)
+    for row in rows:
+        await build_runtime_insights_for_execution(
+            session,
+            project_id=row.project_id,
+            execution_id=row.execution_id,
+            source_key=row.source_key,
+            ingested_at=now,
+        )
+        rebuilt += 1
+    return rebuilt
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -112,6 +172,83 @@ def _as_utc(value: datetime.datetime | None) -> datetime.datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=datetime.UTC)
     return value.astimezone(datetime.UTC)
+
+
+def _select_causal_signal(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+    getter: Callable[[ParsedRuntimeLog], str | None],
+) -> str | None:
+    """Pick a diagnostic signal from the failure-attributed (terminal causal) event.
+
+    Replaces first-seen selection: a benign value emitted early in the run must
+    not shadow the real fault. Preference order, highest first:
+      1. The LAST error-severity row that carries the signal (terminal cause).
+      2. The LAST warning-severity row that carries the signal.
+      3. The LAST row overall that carries the signal.
+    Deterministic: within a tier the latest qualifying row wins, which matches the
+    chronological-terminal definition of "the failing event".
+    """
+    by_error: str | None = None
+    by_warning: str | None = None
+    by_any: str | None = None
+    for log_row, parsed in zip(log_rows, parsed_list):
+        value = getter(parsed)
+        if not value:
+            continue
+        by_any = value
+        sev = normalize_severity(log_row.severity)
+        if sev == _SEV_ERROR:
+            by_error = value
+        elif sev == _SEV_WARNING:
+            by_warning = value
+    if by_error is not None:
+        return by_error
+    if by_warning is not None:
+        return by_warning
+    return by_any
+
+
+def _select_failed_component(
+    log_rows: list[RuntimeLogEventRow],
+    parsed_list: list[ParsedRuntimeLog],
+) -> str | None:
+    """Pick the component of the failure-attributed line.
+
+    The failed component is the originating component, not the parent route that
+    propagates the failure. Preference order:
+      1. The LAST error-severity row that carries BOTH a component and a
+         diagnostic signal (error_code or exception_class) — the line that
+         actually reports the fault.
+      2. Else the LAST error-severity row that carries a component.
+      3. Else the LAST row overall that carries a component.
+    """
+    diagnostic: str | None = None
+    error_component: str | None = None
+    any_component: str | None = None
+    for log_row, parsed in zip(log_rows, parsed_list):
+        if not parsed.component_name:
+            continue
+        any_component = parsed.component_name
+        if normalize_severity(log_row.severity) != _SEV_ERROR:
+            continue
+        error_component = parsed.component_name
+        if parsed.error_code or parsed.exception_class:
+            diagnostic = parsed.component_name
+    if diagnostic is not None:
+        return diagnostic
+    if error_component is not None:
+        return error_component
+    return any_component
+
+
+def _terminal_error_message(log_rows: list[RuntimeLogEventRow]) -> str | None:
+    """Return the message of the last error-severity row (the failure-attributed
+    line) for unknown-failure disambiguation. None when no error row exists."""
+    for log_row in reversed(log_rows):
+        if normalize_severity(log_row.severity) == _SEV_ERROR:
+            return log_row.message
+    return None
 
 
 async def _fetch_execution(
@@ -188,6 +325,7 @@ class _SummaryData:
     failed_component: str | None
     primary_error_code: str | None
     primary_exception_class: str | None
+    causal_message: str | None
     first_host: str | None
     first_retry_max: int | None
     summary_text: str
@@ -199,24 +337,18 @@ def _compute_summary(
     log_rows: list[RuntimeLogEventRow],
     parsed_list: list[ParsedRuntimeLog],
 ) -> _SummaryData:
-    warning_rows = [r for r in log_rows if r.severity == _SEV_WARNING]
-    error_rows = [r for r in log_rows if r.severity == _SEV_ERROR]
+    warning_rows = [r for r in log_rows if normalize_severity(r.severity) == _SEV_WARNING]
+    error_rows = [r for r in log_rows if normalize_severity(r.severity) == _SEV_ERROR]
 
     first_warning_at = _as_utc(warning_rows[0].timestamp) if warning_rows else None
     first_error_at = _as_utc(error_rows[0].timestamp) if error_rows else None
     final_error_at = _as_utc(error_rows[-1].timestamp) if error_rows else None
 
-    primary_error_code: str | None = None
-    primary_exception_class: str | None = None
     first_host: str | None = None
     first_retry_max: int | None = None
     evidence_refs: list[int] = []
 
     for log_row, parsed in zip(log_rows, parsed_list):
-        if parsed.error_code and primary_error_code is None:
-            primary_error_code = parsed.error_code
-        if parsed.exception_class and primary_exception_class is None:
-            primary_exception_class = parsed.exception_class
         if parsed.host and first_host is None:
             first_host = parsed.host
         if parsed.retry_max is not None and first_retry_max is None:
@@ -224,13 +356,22 @@ def _compute_summary(
         if parsed.error_code or parsed.exception_class or parsed.retry_attempt is not None:
             evidence_refs.append(log_row.id)
 
-    # Failed component: component from first error-severity row that has one
-    # (the originating component, not the parent route that propagates the failure)
-    failed_component: str | None = None
-    for log_row, parsed in zip(log_rows, parsed_list):
-        if log_row.severity == _SEV_ERROR and parsed.component_name:
-            failed_component = parsed.component_name
-            break
+    # Causal selection (NOT first-seen): the primary diagnostic signals must come
+    # from the failure-attributed event, i.e. the terminal causal error. A benign
+    # code emitted early in the run must not shadow the real fault.
+    primary_error_code = _select_causal_signal(log_rows, parsed_list, lambda p: p.error_code)
+    primary_exception_class = _select_causal_signal(
+        log_rows, parsed_list, lambda p: p.exception_class
+    )
+    causal_message = _select_causal_signal(log_rows, parsed_list, lambda p: p.causal_message)
+    if causal_message is None:
+        # No exception/Caused-by line. Fall back to the terminal error line's text
+        # so the unknown-signature digest can still distinguish distinct faults.
+        causal_message = _terminal_error_message(log_rows)
+    # Failed component: the component on the failure-attributed line — the line
+    # carrying a diagnostic signal (error_code / exception_class), not the parent
+    # route that merely propagates the failure ("Route failed ...").
+    failed_component = _select_failed_component(log_rows, parsed_list)
 
     summary_text = _build_summary_text(
         job_name=exec_row.job_name,
@@ -250,6 +391,7 @@ def _compute_summary(
         failed_component=failed_component,
         primary_error_code=primary_error_code,
         primary_exception_class=primary_exception_class,
+        causal_message=causal_message,
         first_host=first_host,
         first_retry_max=first_retry_max,
         summary_text=summary_text,
@@ -329,30 +471,6 @@ async def _build_incident(
 ) -> tuple[str, str]:
     incident_id = hashlib.sha256(f"{project_id}:{execution_id}".encode()).hexdigest()[:32]
 
-    sig_parts = "|".join(
-        p
-        for p in (
-            summary.primary_error_code or "",
-            summary.primary_exception_class or "",
-            summary.failed_component or "",
-        )
-        if p
-    )
-    if not sig_parts:
-        # No strong diagnostic signal — include job_name so distinct unknown
-        # failures from different jobs do not all collapse into one signature group.
-        sig_parts = f"unknown|{exec_row.job_name}"
-    signature_hash = hashlib.sha256(sig_parts.encode("utf-8")).hexdigest()
-
-    first_bad_at = summary.first_warning_at or summary.first_error_at
-
-    last_healthy_at: datetime.datetime | None = None
-    if first_bad_at is not None:
-        for log_row in log_rows:
-            ts = _as_utc(log_row.timestamp)
-            if ts is not None and ts < first_bad_at and log_row.severity == _SEV_INFO:
-                last_healthy_at = ts
-
     symptom_summary = _build_symptom_summary(
         execution_id=execution_id,
         job_name=exec_row.job_name,
@@ -360,19 +478,76 @@ async def _build_incident(
         primary_error_code=summary.primary_error_code,
         primary_exception_class=summary.primary_exception_class,
     )
-    root_cause_candidate = _derive_root_cause(
+    # Match the catalog against the resolved causal line when available — the
+    # deepest "Caused by:" / failure-attributed text — so message_contains
+    # constraints fire on the real fault, not the wrapper or a synthetic summary.
+    match_message = summary.causal_message or symptom_summary
+    pattern = CATALOG.match(
+        summary.primary_error_code,
+        summary.primary_exception_class,
+        match_message,
+    )
+
+    signature_hash = _compose_signature(
+        job_name=exec_row.job_name,
         error_code=summary.primary_error_code,
         exception_class=summary.primary_exception_class,
-        retry_max=summary.first_retry_max,
+        failed_component=summary.failed_component,
+        pattern_id=pattern.pattern_id if pattern else None,
+        causal_message=summary.causal_message or symptom_summary,
     )
+
+    first_bad_at = summary.first_warning_at or summary.first_error_at
+
+    last_healthy_at: datetime.datetime | None = None
+    if first_bad_at is not None:
+        for log_row in log_rows:
+            ts = _as_utc(log_row.timestamp)
+            if ts is not None and ts < first_bad_at and normalize_severity(log_row.severity) == _SEV_INFO:
+                last_healthy_at = ts
+
+    if pattern is None:
+        root_cause_candidate = "Execution terminated with errors; review log events for details."
+        next_checks = ["Review execution log for error details"]
+    else:
+        root_cause_candidate = CATALOG.render_root_cause(
+            pattern,
+            error_code=summary.primary_error_code,
+            exception_class=summary.primary_exception_class,
+            host=summary.first_host,
+            retry_max=summary.first_retry_max,
+        )
+        next_checks = CATALOG.render_next_checks(pattern, host=summary.first_host)
+        if not next_checks:
+            next_checks = ["Review execution log for error details"]
     confidence = _derive_confidence(
         error_code=summary.primary_error_code,
         exception_class=summary.primary_exception_class,
+        pattern=pattern,
     )
-    next_checks = _build_next_checks(
+    pattern_id = pattern.pattern_id if pattern else None
+
+    # Bounded, redacted evidence excerpts — the SAME excerpts persisted below are the
+    # only payload the LLM fallback may see (never raw log windows).
+    evidence_excerpts: list[tuple[int, str, str]] = [
+        (log_row.id, role, redact_credentials(log_row.message[:300]))
+        for log_row, role in _select_evidence_rows(log_rows, parsed_list)
+    ]
+
+    # Decorator over the deterministic result: escalates to a single bounded,
+    # redacted LLM call only when the flag is on AND confidence == "low". Off by
+    # default => byte-for-byte identical to the deterministic path. Fail-safe: any
+    # LLM error keeps the deterministic result. Awaited directly — the whole build
+    # path is async, so no event loop is created.
+    root_cause_candidate, next_checks, cause_origin = await maybe_run_llm_fallback(
+        root_cause_candidate,
+        next_checks,
+        confidence=confidence,
+        symptom_summary=symptom_summary,
         error_code=summary.primary_error_code,
         exception_class=summary.primary_exception_class,
-        host=summary.first_host,
+        failed_component=summary.failed_component,
+        excerpts=[(role, excerpt) for _, role, excerpt in evidence_excerpts],
     )
 
     # Upsert incident row first so _upsert_error_signature can aggregate from it.
@@ -389,6 +564,8 @@ async def _build_incident(
     inc_row.symptom_summary = symptom_summary
     inc_row.root_cause_candidate = root_cause_candidate
     inc_row.confidence = confidence
+    inc_row.cause_origin = cause_origin
+    inc_row.pattern_id = pattern_id
     inc_row.first_bad_at = first_bad_at
     inc_row.last_healthy_at = last_healthy_at
     inc_row.next_checks = next_checks
@@ -403,9 +580,8 @@ async def _build_incident(
         failed_component=summary.failed_component,
     )
 
-    for log_row, role in _select_evidence_rows(log_rows, parsed_list):
-        excerpt = redact_credentials(log_row.message[:300])
-        await _upsert_incident_evidence(session, project_id, incident_id, log_row.id, role, excerpt)
+    for log_event_id, role, excerpt in evidence_excerpts:
+        await _upsert_incident_evidence(session, project_id, incident_id, log_event_id, role, excerpt)
 
     return incident_id, signature_hash
 
@@ -498,12 +674,12 @@ def _select_evidence_rows(
             result.append((row, role))
 
     for row in log_rows:
-        if row.severity == _SEV_WARNING:
+        if normalize_severity(row.severity) == _SEV_WARNING:
             _add(row, "first_warning")
             break
 
     for row in log_rows:
-        if row.severity == _SEV_ERROR:
+        if normalize_severity(row.severity) == _SEV_ERROR:
             _add(row, "first_error")
             break
 
@@ -524,7 +700,7 @@ def _select_evidence_rows(
             break
 
     for row in reversed(log_rows):
-        if row.severity == _SEV_ERROR:
+        if normalize_severity(row.severity) == _SEV_ERROR:
             _add(row, "final_failure")
             break
 
@@ -553,51 +729,65 @@ def _build_symptom_summary(
     return " ".join(parts) + "."
 
 
-def _derive_root_cause(
+_SPECIFIC_PATTERN_FLOOR = 25
+_FALLBACK_PATTERN_CEILING = 2
+
+
+def _compose_signature(
+    *,
+    job_name: str,
     error_code: str | None,
     exception_class: str | None,
-    retry_max: int | None,
+    failed_component: str | None,
+    pattern_id: str | None,
+    causal_message: str | None,
 ) -> str:
-    if error_code and error_code.startswith("ORA-12"):
-        attempts_text = f" after {retry_max} attempts" if retry_max else ""
-        return (
-            f"Source database connection timeout{attempts_text} ({error_code}): "
-            "network path to database host may be unreachable or Oracle listener unavailable."
-        )
-    if error_code:
-        return f"Execution terminated with database error {error_code}."
-    if exception_class:
-        return f"Execution terminated with exception {exception_class}."
-    return "Execution terminated with errors; review log events for details."
+    """Compose a stable signature hash from resolved causal signals.
+
+    Strong path: when any of error_code / exception_class / failed_component is
+    present, the signature is their join — genuinely-identical failures hash
+    identically (recurrence) and genuinely-distinct failures differ.
+
+    Unknown path: with no strong signals the old behaviour was
+    ``unknown|{job_name}`` which collapsed EVERY unknown failure of a job into one
+    signature. Instead, anchor on the catalog ``pattern_id`` plus a short digest
+    of the redacted causal message so two distinct unknown failures in the same
+    job get distinct signatures, while two identical unknown failures still
+    collapse (recurrence preserved).
+    """
+    # A diagnostic signal (error_code or exception_class) is required to call a
+    # failure "known". A bare component is NOT enough — two unrelated faults in the
+    # same component would otherwise collapse — so it falls through to the unknown
+    # path where the causal message digest disambiguates them.
+    has_diagnostic = bool(error_code or exception_class)
+    if has_diagnostic:
+        strong_parts = [p for p in (error_code, exception_class, failed_component) if p]
+        sig_input = "|".join(strong_parts)
+    else:
+        digest_source = redact_credentials(causal_message or "")
+        signal_digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
+        sig_input = f"unknown|{job_name}|{failed_component or ''}|{pattern_id or ''}|{signal_digest}"
+    return hashlib.sha256(sig_input.encode("utf-8")).hexdigest()
 
 
-def _derive_confidence(error_code: str | None, exception_class: str | None) -> str:
-    strong = sum(1 for v in (error_code, exception_class) if v is not None)
-    if strong >= 2:
-        return "high"
-    if strong == 1:
-        return "medium"
-    return "low"
-
-
-def _build_next_checks(
+def _derive_confidence(
     error_code: str | None,
     exception_class: str | None,
-    host: str | None,
-) -> list[str]:
-    checks: list[str] = []
-    if error_code and error_code.startswith("ORA-12"):
-        checks.extend([
-            "Check network connectivity to database host",
-            "Verify Oracle listener status and port availability",
-            "Review connection timeout configuration",
-        ])
-        if host:
-            checks.append(f"Confirm database host '{host}' is reachable from application host")
-    elif error_code:
-        checks.append(f"Investigate error code {error_code}")
-    if exception_class and "Recoverable" in exception_class:
-        checks.append("Retry execution to determine if failure is transient")
-    if not checks:
-        checks.append("Review execution log for error details")
-    return checks
+    pattern,  # FailurePattern | None
+) -> str:
+    """Confidence reflects evidence quality: strong-signal count AND catalog match.
+
+    high   : >=2 strong signals confirmed by a specific catalog pattern.
+    medium : exactly one strong signal, OR >=2 signals matched only by a
+             low-specificity pattern.
+    low    : no strong signals, OR only the fallback pattern matched
+             (generic.unknown / exception.generic). Persisted verbatim as "low"
+             so Slice 4 can trigger the LLM fallback on it.
+    """
+    strong = sum(1 for v in (error_code, exception_class) if v is not None)
+    specificity = pattern.specificity if pattern is not None else 0
+    if strong == 0 or specificity <= _FALLBACK_PATTERN_CEILING:
+        return "low"
+    if strong >= 2 and specificity >= _SPECIFIC_PATTERN_FLOOR:
+        return "high"
+    return "medium"
