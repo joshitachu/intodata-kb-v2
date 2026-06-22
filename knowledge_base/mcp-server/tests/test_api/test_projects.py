@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import subprocess
 import zipfile
 from unittest.mock import AsyncMock, patch
 
@@ -275,6 +276,268 @@ async def test_scan_repairs_stale_managed_repo_path(client, session_factory, tmp
         project = await registry.get_project("nexus")
         assert project is not None
         assert project.local_path == str(repo)
+
+
+async def test_reingestion_readiness_repair_cleans_remote_without_workflow_side_effects(
+    client,
+    session_factory,
+    tmp_path,
+):
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://user:credential@example.com/acme/repo.git"],
+        cwd=repo,
+        check=True,
+    )
+    output_dir = config.project_root / "output" / "gitproj"
+    docs = output_dir / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output_dir / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (support / "group.md").write_text("analysis", encoding="utf-8")
+    (cache / "group.md").write_text("analysis", encoding="utf-8")
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "gitproj",
+            str(repo),
+            repo_url="https://user:credential@example.com/acme/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = "a" * 40
+        await session.commit()
+
+    report_resp = await client.get("/mcp/projects/gitproj/reingestion-readiness")
+    assert report_resp.status_code == 200
+    report = report_resp.json()
+    assert report["status"] == "needs_remote_repair"
+    assert report["origin_had_credentials"] is True
+    assert report["repo_url_had_credentials"] is True
+    assert report["has_docs"] is True
+    assert report["has_rag_support"] is True
+    assert report["rag_support_analysis_count"] == 1
+    assert report["analysis_cache_count"] == 1
+    assert report["targeted_regen_ready"] is True
+    assert report["requires_full_rebaseline"] is False
+    assert "user:credential@" not in json.dumps(report)
+
+    repair_resp = await client.post("/mcp/projects/gitproj/reingestion-readiness/repair")
+    assert repair_resp.status_code == 200
+    repaired = repair_resp.json()
+    assert repaired["repaired"] is True
+    assert repaired["origin_had_credentials"] is False
+    assert repaired["repo_url_had_credentials"] is False
+    assert repaired["ready"] is True
+    assert repaired["targeted_regen_ready"] is True
+    assert repaired["requires_full_rebaseline"] is False
+    assert repaired["reason_codes"] == []
+    assert "user:credential@" not in json.dumps(repaired)
+
+    origin = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    assert origin == "https://example.com/acme/repo.git"
+
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("gitproj")
+        assert project is not None
+        assert project.repo_url == "https://example.com/acme/repo.git"
+        assert project.last_ingested_commit_sha == "a" * 40
+        assert project.last_scan_at is None
+        assert project.last_generate_at is None
+        assert project.last_rag_push_at is None
+        assert project.git_update_summary["action"] == "reingestion_readiness_repair"
+        assert project.git_update_summary["targeted_regen_ready"] is True
+        assert project.git_update_summary["requires_full_rebaseline"] is False
+
+
+async def test_reingestion_readiness_reports_full_rebaseline_for_missing_support(
+    client,
+    session_factory,
+    tmp_path,
+):
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    repo = tmp_path / "repo-missing-support"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://example.com/acme/repo.git"],
+        cwd=repo,
+        check=True,
+    )
+    output_dir = config.project_root / "output" / "gitproj-cache-gap"
+    docs = output_dir / "docs"
+    cache = output_dir / "analysis_cache"
+    docs.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (cache / "group.md").write_text("analysis", encoding="utf-8")
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "gitproj-cache-gap",
+            str(repo),
+            repo_url="https://example.com/acme/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = "a" * 40
+        await session.commit()
+
+    resp = await client.get("/mcp/projects/gitproj-cache-gap/reingestion-readiness")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "requires_full_rebaseline"
+    assert data["ready"] is False
+    assert data["has_docs"] is True
+    assert data["has_analysis_cache"] is True
+    assert data["has_rag_support"] is False
+    assert data["targeted_regen_ready"] is False
+    assert data["requires_full_rebaseline"] is True
+    assert data["reason_codes"] == ["missing_rag_support"]
+
+
+async def test_reingestion_status_aggregates_operator_evidence_without_workflow_side_effects(
+    client,
+    session_factory,
+    tmp_path,
+):
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    project_id = "status-operator"
+    repo = tmp_path / "repo-status"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/acme/status.git"],
+        cwd=repo,
+        check=True,
+    )
+
+    output_dir = config.project_root / "output" / project_id
+    docs = output_dir / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output_dir / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (support / "group.md").write_text("analysis", encoding="utf-8")
+    (cache / "group.md").write_text("analysis", encoding="utf-8")
+
+    before_sha = "a" * 40
+    after_sha = "b" * 40
+    summary = {
+        "action": "failed",
+        "outcome": "failed",
+        "reason_code": "rag_sync_failed",
+        "reason": "RAG push failed: rag unavailable",
+        "error": "RAG push failed: rag unavailable",
+        "before": before_sha,
+        "after": after_sha,
+        "decision_strategy": "bounded_patch",
+        "fallback_used": False,
+        "targeted_regen_ready": True,
+        "requires_full_rebaseline": False,
+        "touched_docs": ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
+        "patched_docs": ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
+        "rag_result": {"pushed": 0, "errors": ["rag unavailable"]},
+        "webhook": {
+            "event": "push",
+            "delivery_id": "delivery-status",
+            "repo_url": "https://github.com/acme/status.git",
+            "canonical_repo": "https://github.com/acme/status",
+            "registered": True,
+            "project_id": project_id,
+            "status": "queued",
+            "observations": ["webhook_received", "project_matched"],
+            "before_sha": before_sha,
+            "after_sha": after_sha,
+        },
+    }
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            project_id,
+            str(repo),
+            repo_url="https://github.com/acme/status.git",
+            platform="generic",
+            source_type="git",
+        )
+        project.status = "ready"
+        project.github_webhook_id = 42
+        project.last_ingested_commit_sha = before_sha
+        project.git_update_summary = summary
+        await session.commit()
+
+    with (
+        patch("mcp_server.api.routes.projects.ScannerService.run_scan", new=AsyncMock()) as scan,
+        patch(
+            "mcp_server.api.routes.projects.DocGenerationCoordinator.generate_docs",
+            new=AsyncMock(),
+        ) as generate,
+        patch("mcp_server.api.routes.projects.AutoDocUpdateService.run", new=AsyncMock()) as patcher,
+        patch("mcp_server.api.routes.projects.RagBridge.push_docs", new=AsyncMock()) as rag_push,
+    ):
+        resp = await client.get(f"/mcp/projects/{project_id}/reingestion-status")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["project_id"] == project_id
+    assert data["project_status"] == "ready"
+    assert data["last_ingested_commit_sha"] == before_sha
+    assert data["webhook"]["registered"] is True
+    assert data["webhook"]["status"] == "active"
+    assert data["webhook"]["webhook_id"] == 42
+    assert data["webhook"]["last_observation"]["event"] == "push"
+    assert data["webhook"]["last_observation"]["delivery_id"] == "delivery-status"
+    assert data["webhook"]["last_observation"]["before_sha"] == before_sha
+    assert data["webhook"]["last_observation"]["after_sha"] == after_sha
+    assert data["last_update"]["action"] == "failed"
+    assert data["last_update"]["outcome"] == "failed"
+    assert data["last_update"]["reason_code"] == "rag_sync_failed"
+    assert data["last_update"]["error"] == "RAG push failed: rag unavailable"
+    assert data["last_update"]["rag_result"]["errors"] == ["rag unavailable"]
+    assert data["remote_hygiene"]["status"] == "ready"
+    assert data["remote_hygiene"]["ready"] is True
+    assert data["remote_hygiene"]["origin_matches_repo_url"] is True
+    assert data["remote_hygiene"]["origin_had_credentials"] is False
+    assert data["cache"]["has_last_ingested_commit"] is True
+    assert data["cache"]["has_docs"] is True
+    assert data["cache"]["has_rag_support"] is True
+    assert data["cache"]["has_analysis_cache"] is True
+    assert data["cache"]["targeted_regen_ready"] is True
+    assert data["cache"]["requires_full_rebaseline"] is False
+
+    scan.assert_not_awaited()
+    generate.assert_not_awaited()
+    patcher.assert_not_awaited()
+    rag_push.assert_not_awaited()
+
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project(project_id)
+        assert project is not None
+        assert project.last_ingested_commit_sha == before_sha
+        assert project.last_scan_at is None
+        assert project.last_generate_at is None
+        assert project.last_rag_push_at is None
+        assert project.git_update_summary == summary
 
 
 # --- Logs ---

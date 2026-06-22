@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -234,6 +235,15 @@ class ProjectRegistry:
         error: str | None = None,
     ) -> None:
         now = datetime.datetime.now(datetime.timezone.utc)
+        existing = await self.get_project(project_id)
+        existing_summary = existing.git_update_summary if existing else None
+        if (
+            isinstance(existing_summary, dict)
+            and isinstance(existing_summary.get("webhook"), dict)
+            and isinstance(summary, dict)
+            and "webhook" not in summary
+        ):
+            summary = {**summary, "webhook": existing_summary["webhook"]}
         await self.db.execute(
             update(Project)
             .where(Project.id == project_id)
@@ -243,6 +253,74 @@ class ProjectRegistry:
                 auto_reingest_error=error,
                 updated_at=now,
             )
+        )
+        await self.db.flush()
+
+    async def record_webhook_observation(
+        self,
+        project_id: str,
+        observation: dict[str, Any],
+        *,
+        error: str | None = None,
+        set_error: bool = False,
+    ) -> None:
+        """Merge sanitized webhook receipt/matching evidence into project metadata."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        project = await self.get_project(project_id)
+        existing_summary = project.git_update_summary if project else None
+        summary = dict(existing_summary) if isinstance(existing_summary, dict) else {}
+        existing_webhook = summary.get("webhook")
+        webhook = dict(existing_webhook) if isinstance(existing_webhook, dict) else {}
+        webhook.update(observation)
+        summary["webhook"] = webhook
+
+        values: dict[str, object | None] = {
+            "git_update_summary": summary,
+            "auto_reingest_last_checked_at": now,
+            "updated_at": now,
+        }
+        if set_error:
+            values["auto_reingest_error"] = error
+
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(**values)
+        )
+        await self.db.flush()
+
+    async def update_git_remote_metadata(
+        self,
+        project_id: str,
+        *,
+        repo_url: str | None = None,
+        summary: dict | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Record sanitized Git remote hygiene metadata without triggering workflows."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        existing = await self.get_project(project_id)
+        existing_summary = existing.git_update_summary if existing else None
+        if (
+            isinstance(existing_summary, dict)
+            and isinstance(existing_summary.get("webhook"), dict)
+            and isinstance(summary, dict)
+            and "webhook" not in summary
+        ):
+            summary = {**summary, "webhook": existing_summary["webhook"]}
+        values: dict[str, object | None] = {
+            "auto_reingest_last_checked_at": now,
+            "auto_reingest_error": error,
+            "updated_at": now,
+        }
+        if repo_url is not None:
+            values["repo_url"] = repo_url
+        if summary is not None:
+            values["git_update_summary"] = summary
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(**values)
         )
         await self.db.flush()
 

@@ -6,7 +6,6 @@ import datetime
 import asyncio
 import json
 import logging
-import os
 import re
 import shutil
 import zipfile
@@ -54,6 +53,8 @@ from mcp_server.schemas import (
     ProjectResponse,
     ProjectUsageResponse,
     PushToRagRequest,
+    ReingestionReadinessResponse,
+    ReingestionStatusResponse,
     ResetStatusRequest,
     ReviewAggregateResponse,
     ScanRequest,
@@ -68,6 +69,15 @@ from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
+from mcp_server.services.git_remote_service import (
+    ReingestionReadinessReport,
+    authenticated_url,
+    git_subprocess_env,
+    inspect_reingestion_readiness,
+    repair_remote_hygiene,
+    run_git,
+    strip_url_credentials,
+)
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
@@ -81,13 +91,16 @@ from mcp_server.services import validation_service
 router = APIRouter(tags=["projects"])
 
 
-def _project_to_response(p) -> ProjectResponse:
-    webhook_status: str | None = None
+def _project_webhook_status(p: Project) -> str | None:
     if p.source_type == "git" and p.repo_url:
         if p.github_webhook_id:
-            webhook_status = "active"
-        else:
-            webhook_status = "not_registered"
+            return "active"
+        return "not_registered"
+    return None
+
+
+def _project_to_response(p) -> ProjectResponse:
+    webhook_status = _project_webhook_status(p)
     return ProjectResponse(
         id=p.id,
         display_name=p.display_name,
@@ -114,6 +127,122 @@ def _project_to_response(p) -> ProjectResponse:
         plugin_pack_id=getattr(p, "plugin_pack_id", None),
         created_at=p.created_at,
         updated_at=p.updated_at,
+    )
+
+
+def _sanitize_status_value(value: object) -> object:
+    if isinstance(value, str):
+        return sanitize_git_error(value)
+    if isinstance(value, list):
+        return [_sanitize_status_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _sanitize_status_value(item) for key, item in value.items()}
+    return value
+
+
+def _summary_string(summary: dict[str, object], key: str) -> str | None:
+    value = summary.get(key)
+    if value is None:
+        return None
+    return sanitize_git_error(str(value))
+
+
+def _summary_string_list(summary: dict[str, object], key: str) -> list[str]:
+    value = summary.get(key)
+    if not isinstance(value, list):
+        return []
+    return [sanitize_git_error(str(item)) for item in value]
+
+
+def _build_reingestion_status_response(
+    project: Project,
+    readiness: ReingestionReadinessReport,
+) -> ReingestionStatusResponse:
+    summary: dict[str, object] = (
+        project.git_update_summary if isinstance(project.git_update_summary, dict) else {}
+    )
+    webhook = summary.get("webhook") if isinstance(summary.get("webhook"), dict) else None
+    webhook_registered = bool(project.github_webhook_id) or bool(
+        isinstance(webhook, dict) and webhook.get("registered") is True
+    )
+    webhook_status = _project_webhook_status(project)
+    if webhook_registered and webhook_status == "not_registered":
+        webhook_status = "observed"
+    error = _summary_string(summary, "error")
+    if error is None and project.auto_reingest_error:
+        error = sanitize_git_error(project.auto_reingest_error)
+
+    return ReingestionStatusResponse(
+        project_id=project.id,
+        project_status=project.status,
+        source_type=project.source_type,
+        auto_reingest_enabled=project.auto_reingest_enabled,
+        auto_reingest_last_checked_at=project.auto_reingest_last_checked_at,
+        last_ingested_commit_sha=project.last_ingested_commit_sha,
+        last_rag_push_at=project.last_rag_push_at,
+        webhook={
+            "registered": webhook_registered,
+            "status": webhook_status,
+            "webhook_id": project.github_webhook_id,
+            "last_observation": _sanitize_status_value(webhook) if webhook else None,
+        },
+        last_update={
+            "action": _summary_string(summary, "action"),
+            "outcome": _summary_string(summary, "outcome"),
+            "reason_code": _summary_string(summary, "reason_code"),
+            "reason": _summary_string(summary, "reason"),
+            "manual_review_reason": _summary_string(summary, "manual_review_reason"),
+            "error": error,
+            "before_sha": _summary_string(summary, "before"),
+            "after_sha": _summary_string(summary, "after"),
+            "decision_strategy": _summary_string(summary, "decision_strategy"),
+            "fallback_used": summary.get("fallback_used")
+            if isinstance(summary.get("fallback_used"), bool)
+            else None,
+            "targeted_regen_ready": summary.get("targeted_regen_ready")
+            if isinstance(summary.get("targeted_regen_ready"), bool)
+            else None,
+            "requires_full_rebaseline": summary.get("requires_full_rebaseline")
+            if isinstance(summary.get("requires_full_rebaseline"), bool)
+            else None,
+            "touched_docs": _summary_string_list(summary, "touched_docs"),
+            "patched_docs": _summary_string_list(summary, "patched_docs"),
+            "matched_docs": _summary_string_list(summary, "matched_docs"),
+            "rag_result": _sanitize_status_value(summary.get("rag_result"))
+            if isinstance(summary.get("rag_result"), dict)
+            else None,
+            "regen_result": _sanitize_status_value(summary.get("regen_result"))
+            if isinstance(summary.get("regen_result"), dict)
+            else None,
+        },
+        remote_hygiene={
+            "status": readiness.status,
+            "ready": readiness.ready,
+            "repairable": readiness.repairable,
+            "issues": list(readiness.issues),
+            "repo_url": readiness.repo_url,
+            "origin_url": readiness.origin_url,
+            "repo_url_had_credentials": readiness.repo_url_had_credentials,
+            "origin_had_credentials": readiness.origin_had_credentials,
+            "origin_matches_repo_url": readiness.origin_matches_repo_url,
+            "has_github_token": readiness.has_github_token,
+            "auth_failed": readiness.auth_failed,
+            "error": sanitize_git_error(readiness.error) if readiness.error else None,
+        },
+        cache={
+            "has_last_ingested_commit": readiness.has_last_ingested_commit,
+            "has_docs": readiness.has_docs,
+            "doc_count": readiness.doc_count,
+            "has_rag_support": readiness.has_rag_support,
+            "rag_support_analysis_count": readiness.rag_support_analysis_count,
+            "has_analysis_cache": readiness.has_analysis_cache,
+            "analysis_cache_count": readiness.analysis_cache_count,
+            "cache_support_match": readiness.cache_support_match,
+            "targeted_regen_ready": readiness.targeted_regen_ready,
+            "requires_full_rebaseline": readiness.requires_full_rebaseline,
+            "reason_codes": list(readiness.reason_codes),
+            "can_incremental_regen": readiness.can_incremental_regen,
+        },
     )
 
 
@@ -145,10 +274,9 @@ async def add_repo(req: AddRepoRequest, request: Request):
         source_type = "git"
         # Strip GitHub tree/blob browser suffixes so git clone gets the bare repo URL
         url = re.sub(r"/(tree|blob)/[^/].*$", "", url.rstrip("/"))
-        repo_url = url
+        repo_url = strip_url_credentials(url)
         clone_dir = config.repos_dir / req.project_id
         if not clone_dir.exists():
-            from mcp_server.utils.encryption import inject_token as _inject_token
             _token_enc_tmp: str | None = None
             if req.github_token:
                 from mcp_server.utils.encryption import encrypt_token as _encrypt_token
@@ -156,13 +284,13 @@ async def add_repo(req: AddRepoRequest, request: Request):
                     _token_enc_tmp = _encrypt_token(req.github_token)
                 except Exception:
                     _token_enc_tmp = None
-            clone_url = _inject_token(url, _token_enc_tmp)
+            clone_url = authenticated_url(repo_url or url, _token_enc_tmp)
             _clone_proc = await asyncio.create_subprocess_exec(
                 "git", "clone", "--", clone_url, str(clone_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
+                env=git_subprocess_env(),
             )
             try:
                 _, _stderr = await asyncio.wait_for(_clone_proc.communicate(), timeout=120.0)
@@ -173,6 +301,8 @@ async def add_repo(req: AddRepoRequest, request: Request):
             if _clone_proc.returncode != 0:
                 logger.warning("Git clone failed for %s: %s", req.project_id, _stderr.decode().strip())
                 raise HTTPException(status_code=400, detail="Git clone failed — check the URL and credentials")
+            if repo_url:
+                await run_git(str(clone_dir), "remote", "set-url", "origin", repo_url)
         local_path = str(clone_dir)
     elif url == "zip":
         source_type = "zip"
@@ -485,6 +615,98 @@ async def repair_latest_git_update(project_id: str, request: Request, background
         status="repair_triggered",
         message=f"Diff-only repair started for {project_id}",
     )
+
+
+@router.get(
+    "/projects/{project_id}/reingestion-readiness",
+    response_model=ReingestionReadinessResponse,
+)
+async def get_reingestion_readiness(project_id: str, request: Request):
+    """Inspect Git reingestion readiness without triggering workflow work."""
+    await require_project_access(request, project_id)
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        report = await inspect_reingestion_readiness(project)
+
+    return ReingestionReadinessResponse(**report.to_dict())
+
+
+@router.get(
+    "/projects/{project_id}/reingestion-status",
+    response_model=ReingestionStatusResponse,
+)
+async def get_reingestion_status(project_id: str, request: Request):
+    """Return compact webhook/reingestion status without starting workflows."""
+    await require_project_access(request, project_id)
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        report = await inspect_reingestion_readiness(project)
+
+    return _build_reingestion_status_response(project, report)
+
+
+@router.post(
+    "/projects/{project_id}/reingestion-readiness/repair",
+    response_model=ReingestionReadinessResponse,
+)
+async def repair_reingestion_readiness(project_id: str, request: Request):
+    """Repair credential hygiene only; never scan, generate, patch, or sync RAG."""
+    await require_project_access(request, project_id)
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if project.source_type != "git":
+            raise HTTPException(status_code=400, detail="Reingestion repair is only available for git projects")
+
+        before = await inspect_reingestion_readiness(project)
+        local_report = await repair_remote_hygiene(project)
+        repo_url_clean = strip_url_credentials(project.repo_url)
+        repo_url_repaired = bool(project.repo_url and repo_url_clean and project.repo_url != repo_url_clean)
+        if repo_url_repaired:
+            project.repo_url = repo_url_clean
+
+        after = await inspect_reingestion_readiness(project)
+        repaired = local_report.repaired or repo_url_repaired
+        summary = {
+            "action": "reingestion_readiness_repair",
+            "repaired": repaired,
+            "before_status": before.status,
+            "after_status": after.status,
+            "issues": after.issues,
+            "reason_codes": after.reason_codes,
+            "origin_url": after.origin_url,
+            "repo_url": after.repo_url,
+            "has_docs": after.has_docs,
+            "has_rag_support": after.has_rag_support,
+            "rag_support_analysis_count": after.rag_support_analysis_count,
+            "has_analysis_cache": after.has_analysis_cache,
+            "analysis_cache_count": after.analysis_cache_count,
+            "targeted_regen_ready": after.targeted_regen_ready,
+            "requires_full_rebaseline": after.requires_full_rebaseline,
+        }
+        error = None if after.ready else f"Reingestion readiness: {after.status}"
+        await registry.update_git_remote_metadata(
+            project_id,
+            repo_url=repo_url_clean if repo_url_clean else None,
+            summary=summary,
+            error=error,
+        )
+        await db.commit()
+
+        response = {**after.to_dict(), "repaired": repaired}
+
+    return ReingestionReadinessResponse(**response)
 
 
 @router.patch("/projects/{project_id}/github-token", response_model=ProjectResponse)

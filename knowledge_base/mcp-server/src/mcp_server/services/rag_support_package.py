@@ -25,6 +25,7 @@ import hashlib
 import json
 import shutil
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
 
@@ -43,6 +44,141 @@ LAYER_TECHNICAL_ANALYSIS = "technical_analysis"
 LAYER_SUPPORT_MAPS = "support_maps"
 LAYER_SCORECARD = "scorecard"
 LAYER_EVIDENCE_SLICES = "evidence_slices"
+
+REASON_MISSING_BASELINE = "missing_baseline_commit"
+REASON_MISSING_DOCS = "missing_docs"
+REASON_MISSING_RAG_SUPPORT = "missing_rag_support"
+REASON_MISSING_ANALYSIS_CACHE = "missing_analysis_cache"
+REASON_CACHE_SUPPORT_MISMATCH = "analysis_cache_rag_support_mismatch"
+REASON_MISSING_CHANGED_GROUPS = "missing_changed_groups"
+
+REBASELINE_REASON_CODES = {
+    REASON_MISSING_BASELINE,
+    REASON_MISSING_DOCS,
+    REASON_MISSING_RAG_SUPPORT,
+    REASON_MISSING_ANALYSIS_CACHE,
+    REASON_CACHE_SUPPORT_MISMATCH,
+    REASON_MISSING_CHANGED_GROUPS,
+}
+
+
+@dataclass(frozen=True)
+class GenerationCacheReadiness:
+    """Filesystem readiness for targeted regeneration."""
+
+    has_docs: bool
+    doc_count: int
+    has_rag_support: bool
+    rag_support_analysis_count: int
+    has_analysis_cache: bool
+    analysis_cache_count: int
+    cache_support_match: bool
+    targeted_regen_ready: bool
+    requires_full_rebaseline: bool
+    reason_codes: list[str] = field(default_factory=list)
+    changed_group_count: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "has_docs": self.has_docs,
+            "doc_count": self.doc_count,
+            "has_rag_support": self.has_rag_support,
+            "rag_support_analysis_count": self.rag_support_analysis_count,
+            "has_analysis_cache": self.has_analysis_cache,
+            "analysis_cache_count": self.analysis_cache_count,
+            "cache_support_match": self.cache_support_match,
+            "targeted_regen_ready": self.targeted_regen_ready,
+            "requires_full_rebaseline": self.requires_full_rebaseline,
+            "reason_codes": list(self.reason_codes),
+            "changed_group_count": self.changed_group_count,
+        }
+
+
+def _nonempty_md_names(directory: Path) -> set[str]:
+    if not directory.is_dir():
+        return set()
+    names: set[str] = set()
+    for path in directory.glob("*.md"):
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                names.add(path.name)
+        except OSError:
+            continue
+    return names
+
+
+def _nonempty_md_hashes(directory: Path) -> dict[str, str]:
+    if not directory.is_dir():
+        return {}
+    hashes: dict[str, str] = {}
+    for path in directory.glob("*.md"):
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return hashes
+
+
+def inspect_generation_cache_readiness(
+    output_dir: Path,
+    *,
+    has_baseline: bool = True,
+    changed_groups: Iterable[str] | None = None,
+) -> GenerationCacheReadiness:
+    """Inspect docs, published support analyses, and restored analysis cache.
+
+    ``changed_groups=None`` means a general project readiness report where no
+    diff is in hand yet. Passing an iterable additionally gates targeted
+    regeneration on at least one resolvable changed group.
+    """
+    docs_dir = output_dir / "docs"
+    support_dir = docs_dir / RAG_SUPPORT_DIRNAME / PHASE2_ANALYSIS_SUBDIR
+    cache_dir = output_dir / "analysis_cache"
+
+    doc_names = _nonempty_md_names(docs_dir)
+    support_hashes = _nonempty_md_hashes(support_dir)
+    cache_hashes = _nonempty_md_hashes(cache_dir)
+    support_names = set(support_hashes)
+    cache_names = set(cache_hashes)
+    changed_group_names = (
+        {str(group).strip() for group in changed_groups if str(group).strip()}
+        if changed_groups is not None
+        else None
+    )
+
+    reason_codes: list[str] = []
+    if not has_baseline:
+        reason_codes.append(REASON_MISSING_BASELINE)
+    if not doc_names:
+        reason_codes.append(REASON_MISSING_DOCS)
+    if not support_names:
+        reason_codes.append(REASON_MISSING_RAG_SUPPORT)
+    if not cache_names:
+        reason_codes.append(REASON_MISSING_ANALYSIS_CACHE)
+    cache_support_match = bool(
+        support_hashes and cache_hashes and support_hashes == cache_hashes
+    )
+    if support_hashes and cache_hashes and not cache_support_match:
+        reason_codes.append(REASON_CACHE_SUPPORT_MISMATCH)
+    if changed_group_names is not None and not changed_group_names:
+        reason_codes.append(REASON_MISSING_CHANGED_GROUPS)
+
+    targeted_regen_ready = not reason_codes
+    requires_full_rebaseline = any(code in REBASELINE_REASON_CODES for code in reason_codes)
+    return GenerationCacheReadiness(
+        has_docs=bool(doc_names),
+        doc_count=len(doc_names),
+        has_rag_support=bool(support_names),
+        rag_support_analysis_count=len(support_names),
+        has_analysis_cache=bool(cache_names),
+        analysis_cache_count=len(cache_names),
+        cache_support_match=cache_support_match,
+        targeted_regen_ready=targeted_regen_ready,
+        requires_full_rebaseline=requires_full_rebaseline,
+        reason_codes=reason_codes,
+        changed_group_count=len(changed_group_names) if changed_group_names is not None else None,
+    )
 
 
 def build_rag_support_package(

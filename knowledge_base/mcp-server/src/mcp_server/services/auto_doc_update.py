@@ -18,11 +18,21 @@ from mcp_server.services.git_diff_patcher import (
     _git,
     _manual,
     _run_diff_patch,
+    _summary_with_outcome,
     parse_name_status,
 )
-from mcp_server.services.git_reingestion import run_git_reingestion
+from mcp_server.services.git_remote_service import fetch_remote, pull_remote_ff_only
+from mcp_server.services.git_reingestion import (
+    ChangedFile,
+    resolve_changed_groups,
+    run_git_reingestion,
+)
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.services.rag_support_package import (
+    GenerationCacheReadiness,
+    inspect_generation_cache_readiness,
+)
 from mcp_server.services.quick_change_scanner import QuickChangeScanner, QuickScanReport
 
 logger = logging.getLogger(__name__)
@@ -34,6 +44,7 @@ class AutoDocUpdateContext:
     local_path: str
     doc_generation_provider: str | None
     github_token_enc: str | None
+    last_ingested_commit_sha: str | None = None
 
 
 class AutoDocToolBudgetExceeded(RuntimeError):
@@ -70,6 +81,11 @@ def _should_targeted_regen_after_patch_failure(reason: str) -> bool:
             "no doc edits for a doc-relevant code diff",
         )
     )
+
+
+def _full_rebaseline_reason(reason_codes: list[str]) -> str:
+    suffix = ", ".join(reason_codes) if reason_codes else "targeted_regen_not_ready"
+    return f"Full rebaseline required before targeted regeneration: {suffix}"
 
 
 class AutoDocAgentRuntime:
@@ -113,8 +129,7 @@ class AutoDocAgentRuntime:
 
             if not quick_scan.doc_relevant_files:
                 return await self._skip(
-                    ctx.project_id,
-                    ctx.local_path,
+                    ctx,
                     after_sha,
                     summary,
                     "Only ignored/non-doc-impacting files changed",
@@ -136,8 +151,7 @@ class AutoDocAgentRuntime:
 
             if plan.strategy == "skip":
                 return await self._skip(
-                    ctx.project_id,
-                    ctx.local_path,
+                    ctx,
                     after_sha,
                     summary,
                     plan.reason or "Agent determined no doc update is needed",
@@ -196,9 +210,13 @@ class AutoDocAgentRuntime:
             "repair_attempts": 0,
             "fallback_used": False,
             "reason": "",
+            "outcome": "unknown",
+            "reason_code": None,
+            "decision_strategy": "tool_loop_agent",
             "confidence": None,
             "manual_review_reason": None,
             "docs_dir": str(config.project_root / "output" / ctx.project_id / "docs"),
+            "has_baseline": bool(ctx.last_ingested_commit_sha),
         }
 
     async def _inspect_diff(
@@ -207,12 +225,7 @@ class AutoDocAgentRuntime:
         before_sha: str,
         after_sha: str,
     ) -> dict[str, Any]:
-        if ctx.github_token_enc:
-            from mcp_server.utils.encryption import inject_token as _inject_token
-
-            current_url = (await _git(ctx.local_path, "remote", "get-url", "origin")).strip()
-            await _git(ctx.local_path, "remote", "set-url", "origin", _inject_token(current_url, ctx.github_token_enc))
-        await _git(ctx.local_path, "fetch", "--quiet", "origin")
+        await fetch_remote(ctx.local_path, ctx.github_token_enc, git_func=_git)
         name_status = await _git(ctx.local_path, "diff", "--name-status", before_sha, after_sha)
         changes = parse_name_status(name_status)
         changed_files = [change.path for change in changes]
@@ -228,6 +241,20 @@ class AutoDocAgentRuntime:
                 *changed_files,
             )
         quick_scan = self.quick_scanner.scan(changes, full_diff_text)
+        changed_groups = sorted(
+            resolve_changed_groups(
+                ctx.project_id,
+                [
+                    ChangedFile(
+                        status=change.status,
+                        path=change.path,
+                        previous_path=change.previous_path,
+                    )
+                    for change in changes
+                ],
+                False,
+            )
+        )
         chunks = _chunk_diff(full_diff_text, changes)
         chunk_summary = [
             {"index": chunk.index, "paths": chunk.paths, "chars": len(chunk.text)}
@@ -255,6 +282,7 @@ class AutoDocAgentRuntime:
             "quick_scan": quick_dict,
             "diff_chunks": chunk_summary,
             "generated_docs": generated_docs,
+            "changed_groups": changed_groups,
             "_quick_scan": quick_scan,
         }
 
@@ -390,15 +418,14 @@ class AutoDocAgentRuntime:
 
     async def _skip(
         self,
-        project_id: str,
-        local_path: str,
+        ctx: AutoDocUpdateContext,
         after_sha: str,
         summary: dict[str, Any],
         reason: str,
     ) -> DiffPatchResult:
         self._record_tool("finish", {"action": "skipped", "reason": reason})
-        await _git(local_path, "pull", "--ff-only")
-        await self.log_mgr.emit(project_id, f"Git update skipped: {reason}", "info")
+        await pull_remote_ff_only(ctx.local_path, ctx.github_token_enc, git_func=_git)
+        await self.log_mgr.emit(ctx.project_id, f"Git update skipped: {reason}", "info")
         return DiffPatchResult(
             action="skipped",
             summary=self._finalize_summary(summary, action="skipped", reason=reason),
@@ -416,6 +443,33 @@ class AutoDocAgentRuntime:
         reason: str,
     ) -> DiffPatchResult:
         self._record_tool("targeted_regen_needed", {"reason": reason, "affected_docs": plan.affected_docs})
+        cache_readiness = self._targeted_regen_cache_readiness(ctx, before_sha, summary)
+        if not cache_readiness.targeted_regen_ready:
+            rebaseline_reason = _full_rebaseline_reason(cache_readiness.reason_codes)
+            await self.log_mgr.emit(ctx.project_id, rebaseline_reason, "warning")
+            return self._manual(
+                {
+                    **summary,
+                    **plan.to_dict(),
+                    "targeted_regen_ready": False,
+                    "requires_full_rebaseline": cache_readiness.requires_full_rebaseline,
+                    "reason_codes": cache_readiness.reason_codes,
+                    "targeted_regen_preflight": cache_readiness.to_dict(),
+                    "fallback_used": False,
+                    "fallback_reason": rebaseline_reason,
+                    "expensive_fallback_required": True,
+                    "regen_result": {
+                        "type": "targeted_regen",
+                        "success": False,
+                        "skipped": True,
+                        "reason": "preflight_failed",
+                        "reason_codes": cache_readiness.reason_codes,
+                    },
+                },
+                rebaseline_reason,
+                reason_code="full_rebaseline_required",
+            )
+
         await self.log_mgr.emit(ctx.project_id, f"Auto-doc targeted regeneration: {reason}", "warning")
         ok = await run_git_reingestion(
             ctx.project_id,
@@ -425,7 +479,20 @@ class AutoDocAgentRuntime:
             log_mgr=self.log_mgr,
         )
         final_summary = self._finalize_summary(
-            {**summary, **plan.to_dict(), "fallback_used": True, "fallback_reason": reason},
+            {
+                **summary,
+                **plan.to_dict(),
+                "targeted_regen_ready": True,
+                "requires_full_rebaseline": False,
+                "targeted_regen_preflight": cache_readiness.to_dict(),
+                "fallback_used": True,
+                "fallback_reason": reason,
+                "regen_result": {
+                    "type": "targeted_regen",
+                    "success": ok,
+                    "baseline_source": "generation_rag_sync",
+                },
+            },
             action="targeted_regen" if ok else "manual_review",
             reason=reason if ok else f"Targeted regeneration failed: {reason}",
             touched_docs=plan.affected_docs,
@@ -434,12 +501,33 @@ class AutoDocAgentRuntime:
             return DiffPatchResult(action="targeted_regen", summary=final_summary, advance_commit=False)
         return _manual(final_summary, f"Targeted regeneration failed after agent request: {reason}")
 
+    def _targeted_regen_cache_readiness(
+        self,
+        ctx: AutoDocUpdateContext,
+        before_sha: str,
+        summary: dict[str, Any],
+    ) -> GenerationCacheReadiness:
+        changed_groups = [
+            str(group).strip()
+            for group in summary.get("changed_groups", [])
+            if str(group).strip()
+        ]
+        has_baseline = bool(
+            ctx.last_ingested_commit_sha and before_sha and before_sha != "0" * 40
+        )
+        return inspect_generation_cache_readiness(
+            config.project_root / "output" / ctx.project_id,
+            has_baseline=has_baseline,
+            changed_groups=changed_groups,
+        )
+
     def _manual(
         self,
         summary: dict[str, Any],
         reason: str,
         *,
         repair_attempts: int | None = None,
+        reason_code: str | None = None,
     ) -> DiffPatchResult:
         try:
             self._record_tool("finish", {"action": "manual_review", "reason": reason})
@@ -450,6 +538,7 @@ class AutoDocAgentRuntime:
             action="manual_review",
             reason=reason,
             repair_attempts=repair_attempts,
+            reason_code=reason_code,
         )
         final["manual_review_reason"] = reason
         return DiffPatchResult(
@@ -481,10 +570,10 @@ class AutoDocAgentRuntime:
         reason: str | None = None,
         touched_docs: list[str] | None = None,
         repair_attempts: int | None = None,
+        reason_code: str | None = None,
     ) -> dict[str, Any]:
         final = dict(summary)
         final["mode"] = "tool_loop_agent"
-        final["action"] = action
         final["tool_calls"] = list(self._tool_calls)
         final["tool_call_count"] = len(self._tool_calls)
         final["touched_docs"] = touched_docs if touched_docs is not None else _summary_docs(final)
@@ -498,7 +587,13 @@ class AutoDocAgentRuntime:
             final["reason"] = reason
         final.setdefault("reason", "")
         final.setdefault("confidence", final.get("confidence"))
-        return final
+        return _summary_with_outcome(
+            final,
+            action=action,
+            reason=final.get("reason"),
+            decision_strategy=str(final.get("strategy") or final.get("decision_strategy") or "tool_loop_agent"),
+            reason_code=reason_code,
+        )
 
 
 class AutoDocUpdateService:
@@ -549,6 +644,7 @@ class AutoDocUpdateService:
                 local_path=project.local_path,
                 doc_generation_provider=project.doc_generation_provider,
                 github_token_enc=getattr(project, "github_token_enc", None),
+                last_ingested_commit_sha=project.last_ingested_commit_sha,
             )
 
     async def _run(
@@ -572,12 +668,13 @@ class AutoDocUpdateService:
         after_sha: str,
         summary: dict[str, Any],
         reason: str,
+        github_token_enc: str | None = None,
     ) -> DiffPatchResult:
-        await _git(local_path, "pull", "--ff-only")
+        await pull_remote_ff_only(local_path, github_token_enc, git_func=_git)
         await self.log_mgr.emit(project_id, f"Git update skipped: {reason}", "info")
         return DiffPatchResult(
             action="skipped",
-            summary={**summary, "action": "skipped", "reason": reason},
+            summary=_summary_with_outcome(summary, action="skipped", reason=reason),
             advance_commit=True,
         )
 
@@ -592,6 +689,48 @@ class AutoDocUpdateService:
         reason: str,
     ) -> DiffPatchResult:
         await self.log_mgr.emit(ctx.project_id, f"Auto-doc fallback: {reason}", "warning")
+        cache_readiness = inspect_generation_cache_readiness(
+            config.project_root / "output" / ctx.project_id,
+            has_baseline=bool(
+                ctx.last_ingested_commit_sha and before_sha and before_sha != "0" * 40
+            ),
+            changed_groups=[
+                str(group).strip()
+                for group in summary.get("changed_groups", [])
+                if str(group).strip()
+            ],
+        )
+        if not cache_readiness.targeted_regen_ready:
+            rebaseline_reason = _full_rebaseline_reason(cache_readiness.reason_codes)
+            final_summary = {
+                **summary,
+                **plan.to_dict(),
+                "targeted_regen_ready": False,
+                "requires_full_rebaseline": cache_readiness.requires_full_rebaseline,
+                "reason_codes": cache_readiness.reason_codes,
+                "targeted_regen_preflight": cache_readiness.to_dict(),
+                "fallback_used": False,
+                "fallback_reason": rebaseline_reason,
+                "expensive_fallback_required": True,
+                "regen_result": {
+                    "type": "targeted_regen",
+                    "success": False,
+                    "skipped": True,
+                    "reason": "preflight_failed",
+                    "reason_codes": cache_readiness.reason_codes,
+                },
+            }
+            return DiffPatchResult(
+                action="manual_review",
+                summary=_summary_with_outcome(
+                    final_summary,
+                    action="manual_review",
+                    reason=rebaseline_reason,
+                    decision_strategy=str(plan.strategy),
+                    reason_code="full_rebaseline_required",
+                ),
+                error=f"Manual review required: {rebaseline_reason}",
+            )
         ok = await run_git_reingestion(
             ctx.project_id,
             before_sha,
@@ -608,7 +747,13 @@ class AutoDocUpdateService:
         if ok:
             return DiffPatchResult(
                 action="targeted_regen",
-                summary={**final_summary, "action": "targeted_regen"},
+                summary=_summary_with_outcome(
+                    final_summary,
+                    action="targeted_regen",
+                    reason=reason,
+                    decision_strategy=str(plan.strategy),
+                    regen_result={"type": "targeted_regen", "success": True},
+                ),
                 advance_commit=False,
             )
         return _manual(

@@ -103,6 +103,109 @@ class UpdateGithubTokenRequest(BaseModel):
     github_token: str = Field(..., min_length=1, description="GitHub Personal Access Token")
 
 
+class ReingestionReadinessResponse(BaseModel):
+    project_id: str
+    source_type: str
+    status: str
+    ready: bool
+    repairable: bool
+    repaired: bool = False
+    issues: list[str] = Field(default_factory=list)
+    local_path_exists: bool = False
+    is_git_repo: bool = False
+    repo_url: str | None = None
+    origin_url: str | None = None
+    repo_url_had_credentials: bool = False
+    origin_had_credentials: bool = False
+    origin_matches_repo_url: bool | None = None
+    has_github_token: bool = False
+    has_last_ingested_commit: bool = False
+    has_docs: bool = False
+    doc_count: int = 0
+    has_rag_support: bool = False
+    rag_support_analysis_count: int = 0
+    has_analysis_cache: bool = False
+    analysis_cache_count: int = 0
+    cache_support_match: bool = False
+    targeted_regen_ready: bool = False
+    requires_full_rebaseline: bool = False
+    reason_codes: list[str] = Field(default_factory=list)
+    can_incremental_regen: bool = False
+    auth_failed: bool = False
+    error: str | None = None
+
+
+class ReingestionWebhookStatus(BaseModel):
+    registered: bool = False
+    status: str | None = None
+    webhook_id: int | None = None
+    last_observation: dict[str, object] | None = None
+
+
+class ReingestionLastUpdateStatus(BaseModel):
+    action: str | None = None
+    outcome: str | None = None
+    reason_code: str | None = None
+    reason: str | None = None
+    manual_review_reason: str | None = None
+    error: str | None = None
+    before_sha: str | None = None
+    after_sha: str | None = None
+    decision_strategy: str | None = None
+    fallback_used: bool | None = None
+    targeted_regen_ready: bool | None = None
+    requires_full_rebaseline: bool | None = None
+    touched_docs: list[str] = Field(default_factory=list)
+    patched_docs: list[str] = Field(default_factory=list)
+    matched_docs: list[str] = Field(default_factory=list)
+    rag_result: dict[str, object] | None = None
+    regen_result: dict[str, object] | None = None
+
+
+class ReingestionRemoteHygieneStatus(BaseModel):
+    status: str
+    ready: bool
+    repairable: bool
+    issues: list[str] = Field(default_factory=list)
+    repo_url: str | None = None
+    origin_url: str | None = None
+    repo_url_had_credentials: bool = False
+    origin_had_credentials: bool = False
+    origin_matches_repo_url: bool | None = None
+    has_github_token: bool = False
+    auth_failed: bool = False
+    error: str | None = None
+
+
+class ReingestionCacheStatus(BaseModel):
+    has_last_ingested_commit: bool = False
+    has_docs: bool = False
+    doc_count: int = 0
+    has_rag_support: bool = False
+    rag_support_analysis_count: int = 0
+    has_analysis_cache: bool = False
+    analysis_cache_count: int = 0
+    cache_support_match: bool = False
+    targeted_regen_ready: bool = False
+    requires_full_rebaseline: bool = False
+    reason_codes: list[str] = Field(default_factory=list)
+    can_incremental_regen: bool = False
+
+
+class ReingestionStatusResponse(BaseModel):
+    project_id: str
+    project_status: str
+    source_type: str
+    auto_reingest_enabled: bool
+    auto_reingest_last_checked_at: datetime.datetime | None = None
+    last_ingested_commit_sha: str | None = None
+    last_rag_push_at: datetime.datetime | None = None
+    webhook: ReingestionWebhookStatus
+    last_update: ReingestionLastUpdateStatus
+    remote_hygiene: ReingestionRemoteHygieneStatus
+    cache: ReingestionCacheStatus
+
+
 class ScanRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
     force: bool = False

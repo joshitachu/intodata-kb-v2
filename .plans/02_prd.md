@@ -1,194 +1,297 @@
 ---
-feature: Generalize and harden the runtime log intelligence mechanism
+feature: Git webhook reingestion reliability and patch-first update flow
 pipeline_step: 2_prd
 ---
 
 ## Executive Summary
-The runtime log mechanism (parser.py + builder.py) turns raw log events into
-incidents, signatures, and evidence, but its extraction and cause logic are
-hardcoded to Oracle/Talend, attribute causes by position rather than causality,
-report confidence as a signal-count, and leak inline JDBC credentials. This work
-replaces the inline logic with a data-driven failure-pattern catalog
-(Strategy/Registry), fixes causal extraction and signature stability, makes
-confidence honest, and adds an opt-in, bounded LLM fallback only for low-confidence
-incidents. Done means a new platform or failure family is added as catalog data
-plus tests -- with zero edits to parser.py or builder.py control flow.
+
+Make GitHub push-triggered reingestion deterministic, observable, secure, and
+patch-first. A push to a registered GitHub project must leave enough durable
+evidence to answer: did the webhook arrive, did it match the right project, did
+Git diff inspection work, why was the update skipped/patched/regenerated/manual,
+did RAG sync complete, and was `last_ingested_commit_sha` advanced?
+
+The implementation should repair the current trust gaps without changing the
+core documentation quality goals. Small bounded changes should patch existing
+docs. Regeneration should be a last-case fallback because it can cost roughly
+2M-8M tokens. Existing projects also need a repair/rebaseline path because live
+inspection found authentication failures, tokenized remotes, missing baseline
+SHAs, and missing `_rag_support`/`analysis_cache` artifacts.
 
 ## Problem
-parser.py and builder.py carry five defects. (1) `_ORA_CODE_RE` is the only
-error-code matcher and `_derive_root_cause` / `_build_next_checks` hardcode
-`ORA-12` branches, so every non-Oracle failure degrades to generic text and each
-new failure type means another inline branch -- the special-case accumulation
-CLAUDE.md forbids. (2) Multi-line messages are parsed flat: `qualified[0]` returns
-the outermost exception, never the `Caused by:` root, and `primary_error_code` /
-`failed_component` are first-seen rather than causal, so a benign earlier event
-misattributes the cause and poisons the signature. (3) The signature
-`error_code|exception_class|failed_component` inherits that misattribution, and the
-`unknown|{job_name}` fallback collapses unrelated unknown failures of one job into
-a single recurring group. (4) Confidence counts present signals, not correctness,
-so a wrong templated cause can ship as "high". (5) `_JDBC_URL_RE` stores the whole
-`jdbc:...user/pass@host` substring into `endpoint`, and `redact_credentials` only
-catches `keyword=value`, so inline credentials survive into a surfaced field;
-severity is matched literally and misses SEVERE/FATAL/uppercase.
+
+The current Git reingestion mechanism is not trusted in normal use. Webhooks are
+hard to set up, may not fire consistently, and no successful production-like
+patch update has been observed. Unit tests for the isolated services pass, but
+they do not prove real GitHub delivery, real private-repo auth behavior, or an
+end-to-end patch from GitHub push through RAG sync.
+
+Observed issues from the 2026-06-18 analysis:
+
+- Some live Git projects have `auto_reingest_error=authentication_failed`.
+- Some live Git projects have no `last_ingested_commit_sha`, so incremental
+  patching cannot safely run on the next push.
+- Several existing Git remotes are persisted with embedded credentials, which is
+  both a reliability defect and a security defect.
+- Sampled generated-doc directories lack `_rag_support/phase2_analysis` and
+  `analysis_cache`, so targeted regeneration falls back to full generation.
+- The patch versus regenerate policy exists in code, but the operational
+  contract is not explicit enough to make cost and correctness predictable.
+- A partial success, especially docs updated but RAG stale, is hard to diagnose
+  from the current project state alone.
 
 ## Goals
-1. All error-code, root-cause, and next-check knowledge is expressed as catalog
-   data; adding a platform/failure family requires no parser/builder control-flow
-   edits.
-2. The parser resolves multi-line messages to the deepest `Caused by:` root
-   exception and selects the terminal/causal error code and component, not the
-   first-seen one.
-3. The failure signature is stable under noise and never merges unrelated unknown
-   failures by job_name; recurrence counts reflect genuinely identical failures.
-4. Confidence reflects evidence quality and is surfaced honestly in the data
-   (not only in UI copy).
-5. An opt-in, off-by-default LLM fallback improves only low-confidence incidents,
-   using bounded redacted evidence (never raw logs), via the existing
-   provider-neutral client.
-6. No credential pattern -- keyword form or inline `user:pass@host` -- appears in any
-   persisted insight field; severity matching is case/format-insensitive.
+
+- Make webhook setup and delivery easy to verify from project state, logs, and a
+  repeatable smoke test.
+- Persist one clear reingestion outcome per push in `git_update_summary`, with
+  the decision, reason, source SHA, target SHA, touched files, and RAG result.
+- Make patch the default for small, bounded, doc-relevant changes that can be
+  safely mapped to existing documentation.
+- Make skip/manual/targeted-regeneration/full-regeneration decisions explicit
+  and testable.
+- Prevent personal access tokens or other credentials from being persisted in
+  `.git/config`, project summaries, logs, or API responses.
+- Provide a repair/rebaseline path for existing Git projects with tokenized
+  remotes, auth failures, missing baseline SHAs, or missing support cache.
+- Preserve the current server-side RAG push contract: MCP pushes generated or
+  patched markdown through `RagBridge` and the RAG backend ingest APIs.
+- Keep old docs intact when generation fails, using the existing staging swap
+  behavior.
 
 ## Non-Goals
-- Ingestion transport (TMC sync, polling, webhooks, file drops).
-- Write-back to source (retry/rerun) and operator state (ack/resolve/edit).
-- Raw log windows to the LLM as the primary strategy -- LLM is a bounded fallback only.
-- Operational analytics dashboards and alert delivery.
-- Document ingestion, embeddings, chunking, Qdrant retrieval.
+
+- Migrating from webhook secrets/PATs to a GitHub App.
+- Redesigning the dashboard beyond necessary webhook/reingestion visibility and
+  operator actions.
+- Changing generated documentation quality requirements.
+- Changing the RAG retrieval algorithm.
+- Changing auth/RBAC behavior except where needed to keep webhook and project
+  access checks intact.
+- Changing the core documentation generation prompt strategy except where needed
+  to reuse existing outputs and support incremental generation correctly.
 
 ## User Stories
-- As an operator triaging a non-Oracle (MySQL/Postgres/HTTP/Mule) failure, I want a
-  specific root cause and next checks, so that I am not handed generic
-  "review the log" text.
-- As an operator reading a wrapped Java stack trace, I want the reported exception
-  to be the `Caused by:` root, so that I chase the real fault, not a wrapper.
-- As an operator relying on the recurring badge, I want "recurring" to mean the same
-  failure actually happened before, so that I trust the count.
-- As a security reviewer, I want no database credentials to ever appear in stored
-  insight fields or LLM input, so that secrets never leak through diagnostics.
-- As a maintainer adding support for a new platform, I want to add a catalog entry
-  and a test, so that I never touch parser/builder logic.
+
+- As an operator, I can register or verify a GitHub webhook and see whether a
+  `ping` event reached the MCP server and matched the expected project.
+- As an operator, after pushing a small code or config change, I can see the
+  update classified as a bounded patch, with patched files and RAG sync status.
+- As an operator, after pushing a broad or unsafe change, I can see exactly why
+  the system selected targeted regeneration, full regeneration, or manual review.
+- As an operator, I can repair an existing project so its Git remote is clean,
+  Git auth works, baseline SHA is known, and support cache state is visible.
+- As a maintainer, I can run a local/smoke test that simulates or exercises a
+  GitHub push and proves the workflow from webhook receipt through SHA advance.
+- As a maintainer, I can audit logs and summaries without seeing raw credentials.
 
 ## Functional Requirements
-1. A `FailurePatternCatalog` maps a matched signal set (error code family,
-   exception class, message family) to: a human root-cause template, an ordered
-   next-checks list, and a stable pattern id. Catalog entries are data, loaded once.
-2. The error-code matcher recognizes multiple families (at minimum: Oracle `ORA-`,
-   generic SQLSTATE, MySQL `ER_`/numeric, Postgres SQLSTATE, HTTP status, and a
-   generic `[A-Z]{2,}-\d+` form) via the catalog, not inline regex in builder.
-3. Exception extraction parses multi-line messages and returns the deepest
-   `Caused by:` exception when present; otherwise the most specific single exception.
-4. `primary_error_code` and `failed_component` are selected from the terminal/causal
-   error event (the failure-attributed line), with a defined, tested tie-break, not
-   the first matching row.
-5. The signature is computed from the resolved causal signals; the `unknown` branch
-   does not merge unrelated failures -- distinct unknown failures get distinct
-   signatures (job_name alone is insufficient).
-6. Confidence is derived from evidence quality (catalog match strength + signal
-   agreement), and a `low` confidence incident is explicitly marked as such in the
-   persisted incident row.
-7. An opt-in LLM fallback, gated by an env flag (default off), runs only when an
-   incident's deterministic confidence is `low`; it receives only the already-
-   redacted, count-capped evidence excerpts and produces a candidate root cause /
-   next checks. Its output is marked with a distinct cause origin and never
-   overwrites a high/medium deterministic result.
-8. Credential redaction covers inline `user:pass@host` JDBC forms in addition to
-   `keyword=value`; redaction is applied before any value is persisted or sent to
-   the LLM.
-9. Severity classification normalizes case and common aliases (ERROR/SEVERE/FATAL ->
-   error; WARN/WARNING -> warning) before counting and selection.
+
+### Webhook Receipt and Matching
+
+- The GitHub webhook endpoint must verify HMAC signatures unless the explicit
+  development bypass is enabled.
+- `ping` events must return a clear matched/unmatched result and persist project
+  evidence such as `last_webhook_ping_at`, matched repository URL, and any
+  mismatch reason.
+- `push` events must persist durable run evidence before and after processing,
+  even when processing fails early.
+- Repository matching must handle canonical URL variants, including `.git`
+  suffix differences and sanitized URLs.
+- Unregistered repositories must be rejected or recorded as unmatched without
+  triggering scan, patch, generation, or RAG sync.
+
+### Git Credential and Remote Handling
+
+- Clone, fetch, diff, poller, patcher, and reingestion paths must use credentials
+  only for the active Git operation and must restore the clean remote URL in a
+  `finally` path.
+- Newly registered Git projects must not persist tokenized remotes after clone.
+- Existing projects must have a repair routine that detects and cleans tokenized
+  remotes, then verifies fetch access using the stored credential.
+- Logs, errors, project summaries, and API responses must redact credentials.
+- Tests must cover clone/setup, fetch failure, fetch success, diff inspection,
+  patcher, poller, and reingestion remote restoration.
+
+### Reingestion State Machine
+
+- Every push must resolve to exactly one top-level outcome:
+  `skip`, `bounded_patch`, `targeted_regen`, `full_regen`, `manual_review`, or
+  `failed`.
+- Each outcome must include a machine-readable reason code and a human-readable
+  explanation in `git_update_summary`.
+- The state machine must record at least these stages:
+  `webhook_received`, `project_matched`, `git_fetch_started`,
+  `git_fetch_completed`, `diff_inspected`, `decision_made`,
+  `execution_started`, `rag_sync_started`, `rag_sync_completed`,
+  `sha_advanced`, and `failed`.
+- `last_ingested_commit_sha` must advance only after the selected update path
+  and required RAG sync finish successfully.
+- If RAG sync fails after docs are updated, the project must record a distinct
+  RAG error state and must not pretend the push is fully ingested.
+
+### Patch-First Decision Policy
+
+- `skip` is valid only for ignored or clearly non-doc-impacting changes.
+- `bounded_patch` is valid only when all of these are true:
+  - The project has a known baseline SHA and existing docs.
+  - The diff is small enough for the configured patch thresholds.
+  - Changed files are doc-relevant and map to existing generated docs/sections.
+  - The patcher can produce bounded markdown changes without broad rewrites.
+  - Patch validation passes before RAG sync.
+- `manual_review` is required when there is no safe automated action, including
+  first push without baseline, missing docs, unregistered repo, auth failure,
+  unknown project match, no mapped docs, unsafe diff, or patch validation failure.
+- `targeted_regen` is valid when patching is unsafe but changed groups can be
+  resolved and required generation cache/support artifacts are usable.
+- `full_regen` is valid only when a baseline must be created, targeted cache is
+  missing or invalid, changed scope is too broad for targeted regeneration, or a
+  successful repair/rebaseline explicitly requires it.
+- Regeneration decisions must record an estimated cost or at least a clear
+  "expensive fallback" flag before running.
+
+### Generation, Cache, and RAG Sync
+
+- Bounded patch must push only patched top-level markdown files to RAG.
+- Targeted/full regeneration must preserve the existing staging swap contract:
+  write to `docs_staging/`, swap to `docs/` only on success, and delete failed
+  staging output without losing old docs.
+- Regeneration must push canonical top-level markdown docs to RAG and sync any
+  supported internal layers through the existing server-side bridge.
+- Successful generation must rebuild or restore `analysis_cache` from
+  `_rag_support/phase2_analysis` when the support package exists.
+- If `_rag_support` or `analysis_cache` is missing, the system must record the
+  fallback reason and avoid presenting targeted regeneration as available.
+- Removed docs must be deleted from RAG when regeneration removes them.
+
+### Existing Project Repair and Rebaseline
+
+- Provide an operator-safe repair flow for each Git project:
+  clean remote URL, verify stored credential fetch, inspect baseline SHA, inspect
+  docs/support-cache state, and report the next safe action.
+- The repair flow must not run expensive generation without an explicit operator
+  action or an approved plan step.
+- Projects with no `last_ingested_commit_sha` must be marked as needing baseline
+  rather than trying to patch an unknown diff.
+- Projects with missing `_rag_support`/`analysis_cache` must be marked as needing
+  full rebaseline before targeted regeneration can be trusted.
+
+### Verification and Observability
+
+- Add or update automated tests for webhook ping/push, repo matching,
+  token-safe remotes, patch decisioning, manual-review fallbacks, targeted/full
+  regen fallbacks, RAG sync success/failure, and SHA advancement.
+- Add a smoke script or documented runbook for a real or local GitHub-style push:
+  commit/push to test repo, webhook received, decision recorded, patch or regen
+  executed, RAG sync observed, and SHA advanced.
+- Minimal dashboard/API visibility must show webhook status, last ping, last push
+  outcome, last error, last ingested SHA, remote hygiene status, and cache
+  readiness.
 
 ## Non-Functional Requirements
-- Deterministic path makes no network/LLM call and stays linear in log-row count;
-  per-execution build remains synchronous.
-- LLM fallback: single call per low-confidence incident, <= 5 evidence excerpts,
-  each <= 300 chars, with a hard input-token cap; off by default; provider-neutral
-  via `src/generation/llm_client.py` (no new provider, no Claude CLI dependency).
-- Security: a test asserts no credential pattern (keyword or inline form) appears in
-  `endpoint`, `excerpt`, `summary_text`, or LLM input for credential-bearing fixtures.
-- RBAC: every new/changed query carries `project_id` scope; signature lookup is never
-  driven by arbitrary external input.
-- Rebuildability: insight tables remain fully rebuildable from the raw runtime store;
-  a signature-algorithm change ships with a rebuild path for existing rows.
+
+- Security: no raw PATs or secrets in Git remotes, logs, summaries, test output,
+  or API responses.
+- Cost control: full regeneration must be explicitly justified and visible before
+  running whenever an operator path is involved.
+- Reliability: processing must be idempotent for duplicate GitHub deliveries and
+  must not run two conflicting reingestions for the same project/SHA.
+- Observability: every failure path must leave a specific reason code and enough
+  context to diagnose the next action without reading container internals first.
+- Performance: webhook handlers should acknowledge promptly and do long-running
+  scan/generation/RAG work in background tasks.
+- Compatibility: public and private GitHub repositories must remain supported.
+- Maintainability: duplicated Git token/remote logic should be centralized in a
+  small service or helper used by all Git paths.
+- Code quality: Python changes must keep type hints, async I/O boundaries, and
+  specific exception handling.
 
 ## Architecture Impact
-- New module `src/runtime/insights/catalog.py` (FailurePatternCatalog: data + match
-  API). parser.py and builder.py call into it; their control flow becomes
-  pattern-agnostic. This matches the CLAUDE.md design-pattern / no-special-case rules.
-- parser.py: multi-line/`Caused by:` handling, multi-family code matching delegated
-  to the catalog, severity normalization, inline-credential redaction fix.
-- builder.py: causal selection for primary code/component, catalog-driven cause and
-  next-checks, evidence-quality confidence, signature recomputation.
-- Schema (runtime_insights.py): add a cause-origin marker to `RuntimeIncidentRow`
-  (deterministic vs llm_fallback) and optionally a `pattern_id` on
-  `RuntimeEnrichedEventRow`/`RuntimeIncidentRow`. Requires an Alembic migration.
-  Because the signature algorithm changes, existing `RuntimeErrorSignatureRow` /
-  incident signatures must be rebuilt (data migration or documented re-seed).
-- LLM fallback reuses `src/generation/llm_client.py`; no change to the RAG retrieval
-  chain or auth/RBAC layers.
-- Read-layer models (insights/models.py) gain the cause-origin field so the UI and
-  runtime tools can distinguish deterministic from LLM-assisted causes.
+
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py` will need
+  stronger durable event evidence, canonical project matching, and clearer early
+  failure summaries.
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` may need
+  updates for Git project registration, webhook status, repair/rebaseline
+  actions, and any background generation/RAG state reporting.
+- `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py` should
+  become the explicit decision/state-machine owner for skip, patch, regeneration,
+  manual review, and failure reason codes.
+- `knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py`,
+  `git_poller.py`, and `git_reingestion.py` should share centralized
+  credential-safe Git remote handling instead of each managing remotes directly.
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py` and the RAG
+  ingest endpoints may need tighter success/failure reporting, but RAG retrieval
+  behavior is not in scope.
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_support_package.py` and
+  generation background logic must keep the `_rag_support` to `analysis_cache`
+  contract visible to reingestion decisions.
+- Dashboard changes, if any, should be limited to operational status and repair
+  controls needed to validate webhook/reingestion health.
+- Deployment docs such as `deploy/WEBHOOK-SETUP.md` should be updated to match
+  the verified setup and smoke-test flow.
 
 ## Implementation Phases
-### Phase A -- Catalog + generalization (no behavior regression)
-Goal: replace inline Oracle/ORA-12 logic with a data-driven catalog; add multi-family
-matching, severity normalization, and the inline-credential redaction fix.
-Deliverables: `catalog.py`; parser/builder delegate to it; severity + redaction fixes.
-Validation: existing Oracle fixtures still produce the same incident; new
-MySQL/Postgres/HTTP/Mule fixtures produce specific (non-generic) causes; credential-
-leak and severity-variant tests pass.
 
-### Phase B -- Causal correctness + honest signature/confidence
-Goal: multi-line `Caused by:` resolution, terminal/causal selection, signature
-stabilization, evidence-quality confidence, cause-origin schema field + migration.
-Deliverables: parser/builder changes; Alembic migration; signature rebuild path.
-Validation: stack-trace fixture reports the root exception; misattribution fixture
-selects the causal component; two unrelated unknown failures get distinct signatures;
-recurrence counts only identical failures; low confidence persisted as `low`.
-
-### Phase C -- Bounded opt-in LLM fallback
-Goal: env-gated escalation for low-confidence incidents only, redacted bounded
-evidence, provider-neutral, marked cause origin, never overwriting deterministic
-high/medium results.
-Deliverables: fallback hook in builder; flag wiring; cause-origin propagation to
-read models.
-Validation: with flag off, behavior is identical to Phase B; with flag on, only
-low-confidence incidents call the LLM, input is redacted and capped, and origin is
-recorded; a token/evidence-cap test passes.
+1. Git credential safety and repair foundation:
+   centralize clean/injected remote handling, stop future token persistence, add
+   detection/cleanup for existing tokenized remotes, and test all Git paths.
+2. Webhook observability and setup verification:
+   persist ping/push receipt evidence, normalize repository matching, expose
+   last delivery status, and document/setup smoke checks.
+3. Patch-first decision state machine:
+   make the outcome policy explicit, add reason codes, ensure manual review is
+   chosen for unsafe cases, and gate SHA advancement on successful execution and
+   RAG sync.
+4. Rebaseline and cache readiness:
+   inspect baseline SHA, docs, `_rag_support`, and `analysis_cache`; provide a
+   safe repair report/action path; make targeted/full regeneration fallback
+   reasons visible.
+5. End-to-end validation:
+   run focused MCP/RAG tests plus a real or locally simulated GitHub push smoke
+   test that proves webhook to decision to patch/regen to RAG to SHA advancement.
 
 ## Risks and Open Questions
-- Multi-line traces are assumed to arrive within one message (confirmed seed.py:180).
-  If a real source splits a trace across rows, cross-row grouping is a larger,
-  separate change.
-- Changing the signature algorithm breaks recurrence continuity for already-built
-  incidents; a rebuild/migration is required and must be validated against the
-  slice-5 recurrence feature.
-- LLM fallback cost/latency and provider availability; must stay provider-neutral and
-  default off.
-- Open: should the source-provided `error_summary` (seed.py:248) anchor the cause when
-  present, or only the parsed log lines? Default assumption: use it as a corroborating
-  signal, never as the sole source.
-- Open: confidence taxonomy stays {high, medium, low} vs adding `unknown`. Default:
-  keep three, treat absent-signal as `low`.
+
+- Real GitHub delivery can fail outside code because of public URL, tunnel,
+  reverse proxy, secret mismatch, webhook event configuration, or GitHub repo
+  permissions.
+- Private repo auth may fail after cleaning remotes if token injection/restoration
+  is incomplete in any Git path.
+- Existing projects may require one expensive rebaseline before patch-first or
+  targeted regeneration can be trusted.
+- A patch policy that is too aggressive can corrupt docs; a policy that is too
+  conservative can trigger expensive regeneration too often.
+- RAG sync may need better partial-failure semantics if docs swap succeeds but
+  indexing fails.
+- Open question: should durable webhook/reingestion history stay in existing
+  JSON fields, or should a small run/event table be added for auditability?
+- Open question: what is the exact production webhook URL and is it stable
+  enough for GitHub delivery without a tunnel?
+- Open question: which existing projects should be rebaselined first after the
+  repair flow is available?
 
 ## Acceptance Criteria
-- [ ] Adding a new platform/failure family requires only a catalog entry + test;
-      parser.py and builder.py control flow are unchanged by it.
-- [ ] MySQL, Postgres, HTTP, and MuleSoft failure fixtures each yield a specific root
-      cause and tailored next checks (not the generic fallback text).
-- [ ] A wrapped-exception fixture reports the `Caused by:` root exception class.
-- [ ] A misattribution fixture (benign earlier event) selects the causal
-      component/code, not the first-seen one.
-- [ ] Two unrelated unknown-signal failures in the same job produce distinct
-      signatures and do not inflate each other's occurrence_count.
-- [ ] A low-confidence incident is persisted with confidence `low` and a deterministic
-      cause origin.
-- [ ] With the fallback flag off, output is identical to the deterministic path; with
-      it on, only low-confidence incidents trigger a single, redacted, capped LLM call,
-      recorded with an llm_fallback origin, never overwriting high/medium results.
-- [ ] No credential pattern (keyword=value or inline user:pass@host) appears in
-      `endpoint`, `excerpt`, `summary_text`, or any LLM input across credential-bearing
-      fixtures.
-- [ ] Severity variants (ERROR/SEVERE/FATAL/WARN, mixed case) are counted and selected
-      correctly.
-- [ ] Existing insight tables rebuild cleanly from the raw store after the signature
-      change; the slice-5 recurrence feature still passes its tests.
+
+- Focused MCP tests pass for webhook route, Git poller, auto-doc update, Git
+  reingestion, RAG support package, RAG bridge, and Git diff patcher.
+- Focused RAG ingest tests pass for markdown ingest/delete/internal-layer
+  behavior touched by this work.
+- No newly cloned or fetched Git project persists credentials in `.git/config`.
+- Existing sampled Git projects can be reported as clean or repaired without
+  exposing credentials.
+- A webhook `ping` records matched project evidence and is visible through the
+  project status path.
+- A simulated or real `push` for a small bounded change records
+  `bounded_patch`, patches only expected docs, pushes those docs to RAG, and
+  advances `last_ingested_commit_sha` only after RAG success.
+- A push with no baseline or missing docs records `manual_review` or
+  `full_regen_required` without silently running an expensive regeneration.
+- A push that cannot safely patch records a targeted/full regeneration reason,
+  cache readiness, and expected cost/fallback status before regeneration.
+- RAG sync failure is recorded distinctly and does not masquerade as a fully
+  ingested commit.
+- `deploy/WEBHOOK-SETUP.md` or an equivalent runbook contains the verified
+  webhook setup and end-to-end smoke-test procedure.
+- Because MCP API routes and harness-adjacent generation behavior are in scope,
+  `/inspect` is run before commit.

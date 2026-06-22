@@ -1,6 +1,98 @@
 # KB Sub-project Context
 
-## Last Completed (2026-06-12) — Layered RAG Slice 3 (commit `39895b1`)
+## Last Completed (2026-06-19) -- Reingestion Reliability Slice 5 (uncommitted)
+
+Slice 5 end-to-end smoke path and minimal operator visibility is implemented,
+inspected, and validated for MCP server API/webhook behavior. New
+`GET /mcp/projects/{project_id}/reingestion-status` returns a compact read-only
+status surface covering project status, webhook registration and last
+observation, last update action/outcome/reason/error, RAG/regeneration result,
+last ingested SHA, remote hygiene, and cache/rebaseline readiness. The local
+smoke helper `scripts/smoke_reingestion_webhook.py` posts GitHub-style ping/push
+payloads, signs with GitHub's standard `X-Hub-Signature-256` header, redacts
+secrets in dry-run output, and fetches status using the existing
+`access_token` cookie auth contract. Inspection found and fixed the pre-existing
+non-standard signature header issue that would reject real signed GitHub
+deliveries. Validation passed: py_compile on touched Slice 5 API/schema/test
+files and script, smoke script `--help`, smoke script `--dry-run`, focused MCP
+API tests (`42 passed`), full `mcp-server` pytest (`658 passed`), and
+`git diff --check`.
+
+## Previous (2026-06-19) -- Reingestion Reliability Slice 4 (uncommitted)
+
+Slice 4 cache-aware targeted regeneration and safe rebaseline behavior is
+implemented, inspected, and validated for MCP server services/API. Reingestion
+readiness now distinguishes visible docs, published
+`docs/_rag_support/phase2_analysis`, and restored `analysis_cache`, including
+analysis counts, cache/support hash match, `targeted_regen_ready`,
+`requires_full_rebaseline`, and reason codes. Targeted regeneration preflight now
+stops before generation when baseline/docs/support/cache/changed groups are not
+usable and records `reason_code: full_rebaseline_required` with an expensive
+fallback marker. Incremental staging returns a structured result instead of
+silently doing nothing. Readiness repair remains credential-hygiene only and
+does not scan, generate, patch, or sync RAG. Inspection fixed changed-group
+normalization and origin/repo mismatch readiness. Validation passed: py_compile
+on touched Slice 4 files, focused MCP tests (`66 passed`), full `mcp-server`
+pytest (`656 passed`), and `git diff --check`.
+
+## Previous (2026-06-18) -- Reingestion Reliability Slice 3 (uncommitted)
+
+Slice 3 patch-first decision summaries and SHA/RAG success semantics are
+implemented and validated for MCP server services. Git update summaries now keep
+legacy internal `action` values for compatibility while persisting normalized
+operator-facing `outcome`, `reason_code`, and `decision_strategy` fields. The
+normalized outcome vocabulary is `skip`, `bounded_patch`, `targeted_regen`,
+`full_regen`, `manual_review`, and `failed`. Bounded patch success now requires
+the expected patched docs to be pushed to RAG; RAG errors or zero-pushed required
+docs persist `outcome: failed`, `reason_code: rag_sync_failed`, restore docs, and
+preserve the previous baseline SHA. Manual review and missing-baseline outcomes
+also preserve SHA. Targeted regeneration summaries record `regen_result`, and
+`run_git_reingestion()` now fills the `after_sha` baseline only after background
+generation leaves the project `ready` with no `error_message`, avoiding a
+conflicting second write when generation already recorded it. Inspection also
+fixed sanitized Git stderr handling and credential-safe skip/no-op pulls.
+Validation passed: py_compile on touched Slice 3 files, focused service pytest
+(`46 passed`), and full `mcp-server` pytest (`646 passed`).
+
+## Previous (2026-06-18) -- Reingestion Reliability Slice 2 (uncommitted)
+
+Slice 2 webhook receipt, matching, and setup observability is implemented and
+validated. Webhook project/plugin-pack matching now uses canonical sanitized URL
+keys from `git_remote_service.py`, so clean HTTPS URLs, token-sanitized stored
+URLs, and trailing `.git` differences match correctly. The webhook route records
+durable `git_update_summary.webhook` evidence for matched `ping`, `push`, and
+`pull_request` deliveries before background work starts, including sanitized repo
+URL, canonical repo key, delivery ID, event, status, observations, and push SHAs.
+Unsupported events and invalid push SHAs record reason codes for matched projects;
+unregistered repos return sanitized no-op responses and schedule no background
+project work. Registry summary writes preserve the webhook subdocument across
+later patch and remote-hygiene summary updates. `deploy/WEBHOOK-SETUP.md` now
+documents observable metadata and troubleshooting reason codes. Slice 2 inspection
+verdict is PASS. Validation passed: focused webhook/project/registry tests
+(`53 passed`) and full `mcp-server` pytest (`641 passed`).
+
+## Previous (2026-06-18) — Reingestion Reliability Slice 1 (uncommitted)
+
+Slice 1 credential-safe Git operations and repair/report path is implemented for
+MCP server. New `services/git_remote_service.py` centralizes credential stripping,
+temporary authenticated remote use, clean-origin restoration in `finally`,
+non-interactive Git env, readiness classification, and local remote hygiene repair.
+Poller, diff patcher, full reingestion, and auto-doc inspection/skip now use the
+central helpers. Git clone registration stores sanitized repo URLs and resets
+`origin` to the sanitized URL after clone. New project endpoints report and repair
+reingestion readiness:
+`GET /mcp/projects/{project_id}/reingestion-readiness` and
+`POST /mcp/projects/{project_id}/reingestion-readiness/repair`. Reports classify
+clean, tokenized, auth-failing, missing-baseline, and missing-cache states without
+raw credentials. The repair path is side-effect limited to remote/DB URL hygiene
+plus sanitized metadata summaries; it does not scan, generate, patch, reingest,
+advance baseline SHAs, or sync RAG. Slice 1 inspection verdict is PASS. Validation
+passed: py_compile on touched Python files, 86 focused MCP tests covering git
+remote service, project registry, poller, diff patcher, reingestion, auto-doc
+update, project routes, and webhook routes, plus full `mcp-server` pytest
+(`635 passed`).
+
+## Previous (2026-06-12) — Layered RAG Slice 3 (commit `39895b1`)
 
 Internal-layer ingestion push + entity index shipped across both sub-projects. `RagBridge.sync_internal_layers()` runs after generation and on `/push-to-rag`: wholesale delete-and-repush of `_internal/{layer}/...` docs (technical_analysis, support_maps, scorecard, evidence_slices) with `source_layer`/`visibility: internal` metadata; `_facts` CSVs feed the new `entity_aliases` table (migration 028, transactional per-project replace endpoint). Default retrieval stays canonical-only. Inspector WARN: LIKE-escaping fixed in-session; internal docs appearing in admin document lists is an open follow-up. 353 + 627 tests pass. Also today: Phase 3 LLM-preamble strip fix (`53914ae`, 112/169 historical outputs affected) and Slice 2 (`fc3788a`). Next: Slice 4 retrieval ladder; deploy note — backend needs `alembic upgrade head` (028) on rollout, and existing projects need a re-push to populate internal layers.
 
@@ -76,14 +168,16 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Immediate Next Steps
 
-1. **Layered RAG Slice 4**: retrieval ladder routing across layers (canonical → internal fallback), insufficiency gate, doc-gap logging. Slice 3 follow-ups to fold in: exclude `_internal/` docs from admin document-list endpoints; smoke-test internal sync end-to-end on the local stack (`docker-compose up`, re-push the `phase2` project, verify `_internal/` docs + entity_aliases rows + canonical-only default answers); run `alembic upgrade head` (028) on any deployed backend.
-2. **Run Track B full pipeline** (`/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → commit). Track A FR-8 dead-fallback removal is the prerequisite and is committed. Per Track B PRD: output-affecting, before/after human spot-check on >=3 docs required before commit is accepted. Target: average Phase 3 context <=150 KB per doc (down from ~400 KB); packs for docs with disjoint `phase2_sections` differ by >=30% by byte count.
-2. **Optional: paired-run acceptance on reference project** for Track A. Verify staging file count, total bytes, and per-call `_model_inputs/**/manifest.json` invariance against a recorded model-response baseline. Manual step; requires a scanned project + working model + ~10-30 min runtime.
-3. **Plan the next documentation-evidence slice**: likely Phase 3 handoff/writer input quality, answerability inspection, or final cross-slice validation harness. Keep token cost visible and preserve the rule that formal `/validate` waits until all slices are complete.
-2. **Do not run formal `/validate` yet**: user wants validation across all slices together after the remaining slices are complete.
-3. **Keep current slice files staged mentally but not committed yet**: Slices 1-5 are built/inspected; validation and commit happen after all slices.
-4. **When all slices are complete, run full `/validate`** across the combined evidence-depth work before commit.
-5. **Smoke-test estimate endpoint**: `curl -s http://localhost:8001/mcp/projects/{project_id}/generate/estimate` — confirm 7 phases returned (EvidenceQualityGate should appear with calls_min=0, calls_max=0).
+1. **Reingestion Reliability commit-readiness**: Slices 1-5 are built,
+   inspected, and validated together (`uv run pytest -q` -> 658 passed). Keep
+   unrelated dirty files separate. No commit was made in this session.
+2. **Reingestion Reliability release smoke**: run a live GitHub delivery or the
+   local smoke helper against a running MCP server and a real registered project:
+   `python3 scripts/smoke_reingestion_webhook.py --base-url <url> --project-id <id> --repo-url <repo> --secret "$MCP_GITHUB_WEBHOOK_SECRET"`.
+3. **Layered RAG Slice 4**: retrieval ladder routing across layers (canonical -> internal fallback), insufficiency gate, doc-gap logging. Slice 3 follow-ups to fold in: exclude `_internal/` docs from admin document-list endpoints; smoke-test internal sync end-to-end on the local stack (`docker-compose up`, re-push the `phase2` project, verify `_internal/` docs + entity_aliases rows + canonical-only default answers); run `alembic upgrade head` (028) on any deployed backend.
+4. **Run Track B full pipeline** (`/grill` -> `/prd` -> `/slices` -> `/plan` -> `/plan-approve pass` -> build -> `/inspect` -> commit). Track A FR-8 dead-fallback removal is the prerequisite and is committed. Per Track B PRD: output-affecting, before/after human spot-check on >=3 docs required before commit is accepted. Target: average Phase 3 context <=150 KB per doc (down from ~400 KB); packs for docs with disjoint `phase2_sections` differ by >=30% by byte count.
+5. **Optional: paired-run acceptance on reference project** for Track A. Verify staging file count, total bytes, and per-call `_model_inputs/**/manifest.json` invariance against a recorded model-response baseline. Manual step; requires a scanned project + working model + ~10-30 min runtime.
+6. **Smoke-test estimate endpoint**: `curl -s http://localhost:8001/mcp/projects/{project_id}/generate/estimate` — confirm 7 phases returned (EvidenceQualityGate should appear with calls_min=0, calls_max=0).
 3. **Validate DAG mode on a small project**: Run with `MCP_AGENT_DAG_ENABLED=true`, `MCP_AGENT_PLANNER_ENABLED=false`. Confirm deterministic fallback graph mirrors current behavior, `_plans/*.json` files are written, final gates still pass, and no Phase 2 core tool calls happen unless `phase2.deep_dive` is selected.
 2. **Validate LLM planner separately**: Run with `MCP_AGENT_DAG_ENABLED=true`, `MCP_AGENT_PLANNER_ENABLED=true` on a non-client draft project. Confirm unsafe/invalid JSON falls back cleanly and valid planner output cannot add undeclared docs or omit final gates.
 3. **Validate tiered Phase 2 on complex project**: Force or request `analysis_mode=skeleton_plus_deep_dive`; confirm `_analysis/_skeleton/*.json` exists, deep groups use `phase2.deep_dive`, shallow groups use direct Phase 2, and final Phase 2 validators still pass.

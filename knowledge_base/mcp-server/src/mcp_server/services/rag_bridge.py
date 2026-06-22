@@ -17,6 +17,15 @@ from mcp_server.services.rag_support_package import (
 logger = logging.getLogger(__name__)
 
 
+def rag_push_succeeded(result: dict, *, expected_count: int | None = None) -> bool:
+    """Return True only when a required RAG push completed without errors."""
+    if result.get("errors"):
+        return False
+    if expected_count is not None and int(result.get("pushed") or 0) < expected_count:
+        return False
+    return True
+
+
 class RagBridge:
     """Pushes markdown documents to the RAG pipeline for indexing."""
 
@@ -24,6 +33,11 @@ class RagBridge:
         self.base_url = config.rag_base_url
         self.log_manager = log_manager
         self._api_key = config.ingest_api_key
+
+    @staticmethod
+    def push_succeeded(result: dict, *, expected_count: int | None = None) -> bool:
+        """Return True only when a required RAG push completed without errors."""
+        return rag_push_succeeded(result, expected_count=expected_count)
 
     async def delete_project_documents(self, project_id: str) -> dict:
         """Delete all documents for a project from the RAG pipeline.

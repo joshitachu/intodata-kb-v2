@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcp_server.services.rag_bridge import RagBridge
+from mcp_server.services.rag_bridge import RagBridge, rag_push_succeeded
+
+
+def test_rag_push_succeeded_requires_errors_clear_and_expected_count() -> None:
+    assert rag_push_succeeded({"pushed": 2, "errors": []}, expected_count=2) is True
+    assert rag_push_succeeded({"pushed": 1, "errors": []}, expected_count=2) is False
+    assert rag_push_succeeded({"pushed": 2, "errors": ["boom"]}, expected_count=2) is False
 
 
 @pytest.fixture
