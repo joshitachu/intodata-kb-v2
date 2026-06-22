@@ -32,6 +32,48 @@ _PROJECT = "esbmain"
 _OTHER_PROJECT = "otherproject"
 
 
+async def _seed_custom_failed_execution(
+    session,
+    *,
+    project_id: str,
+    execution_id: str,
+    job_name: str,
+    lines: list[tuple[int, str, str]],
+) -> None:
+    """Seed one failed execution with explicit (offset, severity, message) lines.
+
+    Used to exercise severity-alias normalization and credential redaction with
+    severities/messages not present in the canonical rich seed.
+    """
+    exec_row = RuntimeExecutionRow(
+        project_id=project_id,
+        execution_id=execution_id,
+        job_name=job_name,
+        project_name=project_id,
+        state="failed",
+        source_key="mock",
+        started_at=datetime.datetime(2026, 6, 18, 9, 0, tzinfo=UTC),
+        ended_at=datetime.datetime(2026, 6, 18, 9, 1, tzinfo=UTC),
+        duration_ms=60000,
+        ingested_at=_SYNCED_AT,
+    )
+    session.add(exec_row)
+    for offset, severity, message in lines:
+        ts = datetime.datetime(2026, 6, 18, 9, 0, offset, tzinfo=UTC)
+        fp = hashlib.sha256(f"{ts.isoformat()}|{severity}|{message}".encode()).hexdigest()[:64]
+        session.add(RuntimeLogEventRow(
+            project_id=project_id,
+            execution_id=execution_id,
+            source_key="mock",
+            severity=severity,
+            message=message,
+            event_fingerprint=fp,
+            timestamp=ts,
+            ingested_at=_SYNCED_AT,
+        ))
+    await session.flush()
+
+
 async def _count(session, model) -> int:
     return (await session.execute(select(func.count()).select_from(model))).scalar()
 
@@ -454,3 +496,481 @@ class TestSignatureIdempotency:
             assert all(r.occurrence_count == 1 for r in rows), (
                 f"{pid}: expected occurrence_count==1, got {[r.occurrence_count for r in rows]}"
             )
+
+
+class TestSeverityNormalization:
+    """Severity matching must be case- and alias-insensitive (FR 9)."""
+
+    async def test_uppercase_and_alias_severities_are_counted(self, db_session):
+        exec_id = "sev-variant-exec"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="severity_variant_job",
+            lines=[
+                (10, "INFO", "[route_1] Route starting (context PROD)"),
+                (11, "WARNING", "[tOracleConnection_1] Connection attempt 1/3 failed"),
+                (12, "WARN", "[tOracleConnection_1] Connection attempt 2/3 failed"),
+                (13, "SEVERE", "[tOracleConnection_1] Connection attempt 3/3 failed: ORA-12170: TNS:Connect timeout"),
+                (14, "FATAL", "[tOracleConnection_1] java.sql.SQLRecoverableException: IO Error"),
+                (15, "ERROR", "[route_1] Route aborted"),
+            ],
+        )
+        result = await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+
+        assert result.had_incident
+        summary = await _get_summary(db_session, _PROJECT, exec_id)
+        assert summary is not None
+        # WARNING + WARN -> 2 warnings; SEVERE + FATAL + ERROR -> 3 errors.
+        assert summary.warning_count == 2
+        assert summary.error_count == 3
+        # Causal signals must still be extracted from the alias-severity rows.
+        assert summary.primary_error_code == "ORA-12170"
+        assert summary.primary_exception_class == "SQLRecoverableException"
+
+    async def test_failed_component_selected_from_alias_severity_row(self, db_session):
+        exec_id = "sev-component-exec"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="severity_component_job",
+            lines=[
+                (10, "INFO", "[route_1] Route starting"),
+                (11, "SEVERE", "[tOracleConnection_1] ORA-12170: TNS:Connect timeout"),
+            ],
+        )
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        summary = await _get_summary(db_session, _PROJECT, exec_id)
+        assert summary is not None
+        assert summary.failed_component == "tOracleConnection_1"
+
+
+class TestOracleNoRegression:
+    """The Oracle knowledge moved into the catalog as data; behavior must not drift."""
+
+    async def test_oracle_root_cause_and_checks_preserved(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=_RICH_FAILED_EXEC,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        incident = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
+        assert incident is not None
+        cause = incident.root_cause_candidate.lower()
+        assert "source database" in cause
+        assert "timeout" in cause
+        assert "ora-12170" in cause
+        joined = " ".join(incident.next_checks).lower()
+        assert "network connectivity" in joined
+        assert "listener" in joined
+
+
+class TestMultiPlatformRootCause:
+    """Non-Oracle failures must yield specific (non-generic) causes + checks."""
+
+    _GENERIC = "review log events for details"
+
+    async def _build_and_get(self, db_session, exec_id, lines):
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name=f"{exec_id}_job",
+            lines=lines,
+        )
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        return await _get_incident(db_session, _PROJECT, exec_id)
+
+    async def test_mysql_access_denied_specific(self, db_session):
+        incident = await self._build_and_get(
+            db_session,
+            "mysql-denied-exec",
+            [
+                (10, "INFO", "[route_1] Route starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[tMysqlConnection_1] java.sql.SQLException: ER_ACCESS_DENIED_ERROR "
+                    "access denied for user 'app'@'10.0.0.5'",
+                ),
+            ],
+        )
+        cause = incident.root_cause_candidate.lower()
+        assert self._GENERIC not in cause
+        assert "access denied" in cause
+        joined = " ".join(incident.next_checks).lower()
+        assert "password" in joined or "grants" in joined
+
+    async def test_postgres_connection_specific(self, db_session):
+        incident = await self._build_and_get(
+            db_session,
+            "pg-conn-exec",
+            [
+                (10, "INFO", "[route_1] Route starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[tPostgresInput_1] org.postgresql.util.PSQLException: "
+                    "connection reset; SQLSTATE 08006",
+                ),
+            ],
+        )
+        cause = incident.root_cause_candidate.lower()
+        assert self._GENERIC not in cause
+        assert "postgresql" in cause
+        joined = " ".join(incident.next_checks).lower()
+        assert "postgresql" in joined
+
+    async def test_http_server_error_specific(self, db_session):
+        incident = await self._build_and_get(
+            db_session,
+            "http-503-exec",
+            [
+                (10, "INFO", "[route_1] Route starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[cHttpClient_1] Downstream call to /orders returned HTTP 503 "
+                    "Service Unavailable",
+                ),
+            ],
+        )
+        cause = incident.root_cause_candidate.lower()
+        assert self._GENERIC not in cause
+        assert "server error" in cause
+        assert "503" in cause
+
+    async def test_mule_connectivity_specific(self, db_session):
+        incident = await self._build_and_get(
+            db_session,
+            "mule-conn-exec",
+            [
+                (10, "INFO", "[flow_1] Flow starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[db-connector] org.mule.runtime.api.connection.ConnectException: "
+                    "could not reach target system",
+                ),
+            ],
+        )
+        cause = incident.root_cause_candidate.lower()
+        assert self._GENERIC not in cause
+        assert "mulesoft" in cause
+        joined = " ".join(incident.next_checks).lower()
+        assert "connector" in joined or "connectivity" in joined
+
+
+class TestCausalExtraction:
+    """Slice 3: root cause must come from the deepest causal event, not first-seen."""
+
+    async def test_caused_by_chain_resolves_to_root_exception(self, db_session):
+        # The outermost exception is a wrapper; the deepest "Caused by:" is the fault.
+        exec_id = "caused-by-exec"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="caused_by_job",
+            lines=[
+                (10, "INFO", "[route_1] Route starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[tRESTClient_1] org.apache.camel.CamelExecutionException: failed to deliver\n"
+                    "\tat org.apache.camel.Pipeline.process(Pipeline.java:1)\n"
+                    "Caused by: java.net.SocketTimeoutException: Read timed out\n"
+                    "\tat java.base/java.net.SocketInputStream.read(SocketInputStream.java:1)",
+                ),
+            ],
+        )
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        summary = await _get_summary(db_session, _PROJECT, exec_id)
+        assert summary is not None
+        # Root (deepest) exception wins, not the outer CamelExecutionException wrapper.
+        assert summary.primary_exception_class == "SocketTimeoutException"
+
+    async def test_primary_signals_from_terminal_causal_not_first_seen(self, db_session):
+        # A benign early error code must not shadow the real terminal fault.
+        exec_id = "misattribution-exec"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="misattribution_job",
+            lines=[
+                (10, "INFO", "[route_1] Route starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[tWarmup_1] non-fatal error code APP-001 during warmup; continuing",
+                ),
+                (
+                    12,
+                    "ERROR",
+                    "[tOracleConnection_1] Connection attempt 3/3 failed: "
+                    "ORA-12170: TNS:Connect timeout",
+                ),
+            ],
+        )
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        summary = await _get_summary(db_session, _PROJECT, exec_id)
+        assert summary is not None
+        # Terminal causal code, not the first-seen APP-001.
+        assert summary.primary_error_code == "ORA-12170"
+        assert summary.failed_component == "tOracleConnection_1"
+
+
+class TestUnknownSignatureDisambiguation:
+    """Slice 3: distinct unknown failures in one job must NOT collapse together."""
+
+    _UNKNOWN_A = [
+        (10, "INFO", "[route_1] Route starting"),
+        (11, "ERROR", "[route_1] Route aborted: disk volume /data is full"),
+    ]
+    _UNKNOWN_B = [
+        (10, "INFO", "[route_1] Route starting"),
+        (11, "ERROR", "[route_1] Route aborted: upstream feed produced malformed payload"),
+    ]
+
+    async def _build(self, db_session, exec_id, lines):
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="shared_unknown_job",
+            lines=lines,
+        )
+        return await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+
+    async def test_two_distinct_unknowns_get_distinct_signatures(self, db_session):
+        r1 = await self._build(db_session, "unknown-a", self._UNKNOWN_A)
+        r2 = await self._build(db_session, "unknown-b", self._UNKNOWN_B)
+        assert r1.signature_hash is not None
+        assert r2.signature_hash is not None
+        assert r1.signature_hash != r2.signature_hash
+
+        # Each distinct unknown failure is its own signature group: occurrence 1.
+        for sig in (r1.signature_hash, r2.signature_hash):
+            stmt = select(RuntimeErrorSignatureRow).where(
+                RuntimeErrorSignatureRow.project_id == _PROJECT,
+                RuntimeErrorSignatureRow.signature_hash == sig,
+            )
+            row = (await db_session.execute(stmt)).scalars().first()
+            assert row is not None
+            assert row.occurrence_count == 1
+
+    async def test_identical_unknowns_recur_under_one_signature(self, db_session):
+        r1 = await self._build(db_session, "unknown-same-1", self._UNKNOWN_A)
+        r2 = await self._build(db_session, "unknown-same-2", self._UNKNOWN_A)
+        assert r1.signature_hash == r2.signature_hash
+
+        stmt = select(RuntimeErrorSignatureRow).where(
+            RuntimeErrorSignatureRow.project_id == _PROJECT,
+            RuntimeErrorSignatureRow.signature_hash == r1.signature_hash,
+        )
+        row = (await db_session.execute(stmt)).scalars().first()
+        assert row is not None
+        assert row.occurrence_count == 2
+
+
+class TestConfidenceAndCauseOrigin:
+    """Slice 3: confidence reflects evidence quality; cause_origin defaults deterministic."""
+
+    async def test_low_confidence_persisted_for_unknown_failure(self, db_session):
+        exec_id = "low-conf-exec"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="low_conf_job",
+            lines=[
+                (10, "INFO", "[route_1] Route starting"),
+                (11, "ERROR", "[route_1] Route aborted: disk volume /data is full"),
+            ],
+        )
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        incident = await _get_incident(db_session, _PROJECT, exec_id)
+        assert incident is not None
+        assert incident.confidence == "low"
+
+    async def test_high_confidence_for_specific_two_signal_failure(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=_RICH_FAILED_EXEC,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        incident = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
+        assert incident is not None
+        # ORA-12170 + SQLRecoverableException + specific oracle.net.timeout pattern.
+        assert incident.confidence == "high"
+
+    async def test_cause_origin_defaults_deterministic(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=_RICH_FAILED_EXEC,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        incident = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
+        assert incident is not None
+        assert incident.cause_origin == "deterministic"
+        assert incident.pattern_id == "oracle.net.timeout"
+
+
+class TestRebuildRuntimeInsights:
+    """Slice 3: insight tables must be fully rebuildable from the raw runtime store."""
+
+    async def test_rebuild_recomputes_incident_signatures(self, db_session):
+        from src.runtime.insights.builder import rebuild_runtime_insights
+
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        # No insights built yet — rebuild from raw store.
+        rebuilt = await rebuild_runtime_insights(db_session, project_id=_PROJECT)
+        assert rebuilt == 2  # one failed + one success execution
+
+        incident = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
+        assert incident is not None
+        assert incident.signature_hash is not None
+        assert incident.cause_origin == "deterministic"
+
+    async def test_rebuild_is_idempotent(self, db_session):
+        from src.runtime.insights.builder import rebuild_runtime_insights
+
+        await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
+        await rebuild_runtime_insights(db_session, project_id=_PROJECT)
+        first = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
+        first_sig = first.signature_hash
+
+        await rebuild_runtime_insights(db_session, project_id=_PROJECT)
+        again = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
+        assert again.signature_hash == first_sig
+        # Signature occurrence_count stays at 1 (single failed execution).
+        stmt = select(RuntimeErrorSignatureRow).where(
+            RuntimeErrorSignatureRow.project_id == _PROJECT,
+            RuntimeErrorSignatureRow.signature_hash == first_sig,
+        )
+        row = (await db_session.execute(stmt)).scalars().first()
+        assert row is not None
+        assert row.occurrence_count == 1
+
+
+class TestCredentialRedactionInPersistedFields:
+    """No credential pattern may survive into endpoint, excerpt, or summary_text."""
+
+    async def test_inline_jdbc_credentials_not_persisted(self, db_session):
+        exec_id = "cred-leak-exec"
+        secret_user = "scott"
+        secret_pass = "tiger"
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name="credential_job",
+            lines=[
+                (10, "INFO", "[route_1] Route starting"),
+                (
+                    11,
+                    "ERROR",
+                    "[tOracleConnection_1] Opening connection "
+                    "jdbc:oracle:thin:scott/tiger@//db-prod:1521/ORCLPDB1 failed: "
+                    "ORA-12170: TNS:Connect timeout",
+                ),
+                (
+                    12,
+                    "ERROR",
+                    "[tMysqlConnection_1] jdbc:mysql://scott:tiger@db-prod:3306/sales "
+                    "java.sql.SQLException: access denied",
+                ),
+            ],
+        )
+        result = await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        assert result.had_incident
+
+        # Enriched event endpoints
+        enriched = (await db_session.execute(
+            select(RuntimeEnrichedEventRow).where(
+                RuntimeEnrichedEventRow.project_id == _PROJECT,
+                RuntimeEnrichedEventRow.execution_id == exec_id,
+            )
+        )).scalars().all()
+        for ev in enriched:
+            if ev.endpoint:
+                assert secret_user not in ev.endpoint
+                assert secret_pass not in ev.endpoint
+
+        # Incident evidence excerpts
+        evidence = (await db_session.execute(
+            select(RuntimeIncidentEvidenceRow).where(
+                RuntimeIncidentEvidenceRow.project_id == _PROJECT,
+                RuntimeIncidentEvidenceRow.incident_id == result.incident_id,
+            )
+        )).scalars().all()
+        for ev in evidence:
+            if ev.excerpt:
+                assert secret_user not in ev.excerpt
+                assert secret_pass not in ev.excerpt
+
+        # Execution summary text
+        summary = await _get_summary(db_session, _PROJECT, exec_id)
+        assert summary is not None
+        assert secret_user not in summary.summary_text
+        assert secret_pass not in summary.summary_text

@@ -58,6 +58,10 @@ knowledge_base/intodoc-output/
 # Claude Code temp files
 tmpclaude-*
 
+# Mavis / stray local artifacts
+.mavis/
+*-command-messagecode-reviewcommand-message.txt
+
 # Claude Code skills (auto-generated, not project code)
 .agents/
 .claude/skills/

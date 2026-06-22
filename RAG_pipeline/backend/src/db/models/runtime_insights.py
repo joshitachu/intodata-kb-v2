@@ -115,6 +115,14 @@ class RuntimeIncidentRow(Base):
     symptom_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_cause_candidate: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Origin of the root-cause attribution. "deterministic" is the only value the
+    # builder writes; "llm_fallback" is reserved for the Slice 4 LLM fallback.
+    cause_origin: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="deterministic", default="deterministic"
+    )
+    # Catalog pattern id that matched this incident (diagnostics + unknown-signature
+    # disambiguation). None when no pattern matched at all.
+    pattern_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     first_bad_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_healthy_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_checks: Mapped[list | None] = mapped_column(JSON, nullable=True)

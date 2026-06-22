@@ -487,6 +487,8 @@ def _to_incident_insight(
         symptom_summary=row.symptom_summary,
         root_cause_candidate=row.root_cause_candidate,
         confidence=row.confidence,
+        cause_origin=row.cause_origin,
+        pattern_id=row.pattern_id,
         first_bad_at=_as_utc(row.first_bad_at),
         last_healthy_at=_as_utc(row.last_healthy_at),
         next_checks=row.next_checks or [],

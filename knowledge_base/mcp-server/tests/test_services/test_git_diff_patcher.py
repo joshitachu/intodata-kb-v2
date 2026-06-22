@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import pytest
+
 from mcp_server.providers.custom.models import ModelResult
 from mcp_server.services.project_registry import ProjectRegistry
 
@@ -19,6 +21,60 @@ def test_parse_agent_json_repairs_malformed_model_output():
     assert parsed["change_summary"] == "x"
     assert parsed["edits"] == []
     assert parsed["confidence"] == 0.9
+
+
+async def test_run_git_sanitizes_remote_errors(monkeypatch, tmp_path):
+    import mcp_server.services.git_diff_patcher as patcher
+
+    class ProcStub:
+        returncode = 128
+
+        async def communicate(self):
+            return (
+                b"",
+                b"fatal: Authentication failed for 'https://token@example.com/org/repo.git'",
+            )
+
+        def kill(self):
+            return None
+
+    async def create_proc(*args, **kwargs):
+        return ProcStub()
+
+    monkeypatch.setattr(patcher.asyncio, "create_subprocess_exec", create_proc)
+
+    with pytest.raises(RuntimeError) as exc:
+        await patcher._run_git(str(tmp_path), "fetch", "--quiet", "origin")
+
+    assert str(exc.value) == "error_type: authentication_failed"
+    assert "token@" not in str(exc.value)
+
+
+async def test_manual_or_skip_uses_token_aware_pull(monkeypatch, log_manager):
+    import mcp_server.services.git_diff_patcher as patcher
+
+    calls: list[tuple[str, str | None, object | None]] = []
+
+    async def pull_stub(local_path: str, github_token_enc: str | None, git_func=None) -> str:
+        calls.append((local_path, github_token_enc, git_func))
+        return ""
+
+    monkeypatch.setattr(patcher, "pull_remote_ff_only", pull_stub)
+
+    result = await patcher._manual_or_skip(
+        "proj",
+        "/tmp/repo",
+        "b" * 40,
+        {"action": "unknown"},
+        ("skipped", "Only ignored/non-doc-impacting files changed"),
+        log_manager,
+        github_token_enc="enc-token",
+    )
+
+    assert result.advance_commit is True
+    assert result.summary["outcome"] == "skip"
+    assert result.summary["reason_code"] == "non_doc_change"
+    assert calls == [("/tmp/repo", "enc-token", patcher._git)]
 
 
 def test_agent_confidence_infers_confidence_for_valid_edits(monkeypatch):
@@ -111,6 +167,8 @@ async def test_webhook_diff_update_skips_ignored_readme_change(
         assert project is not None
         assert project.last_ingested_commit_sha == "b" * 40
         assert project.git_update_summary["action"] == "skipped"
+        assert project.git_update_summary["outcome"] == "skip"
+        assert project.git_update_summary["reason_code"] == "non_doc_change"
 
 
 async def test_webhook_diff_update_patches_matched_doc_only(
@@ -204,6 +262,8 @@ async def test_webhook_diff_update_patches_matched_doc_only(
         assert project is not None
         assert project.last_ingested_commit_sha == "b" * 40
         assert project.git_update_summary["action"] == "patched"
+        assert project.git_update_summary["outcome"] == "bounded_patch"
+        assert project.git_update_summary["reason_code"] == "bounded_patch_succeeded"
         assert project.git_update_summary["patched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
 
 
@@ -369,6 +429,8 @@ async def test_webhook_diff_update_manual_review_when_no_doc_match(
         assert project is not None
         assert project.last_ingested_commit_sha == "a" * 40
         assert project.git_update_summary["action"] == "manual_review"
+        assert project.git_update_summary["outcome"] == "manual_review"
+        assert project.git_update_summary["reason_code"] == "unmapped_diff"
 
 
 async def test_webhook_diff_update_first_push_requires_manual_initial_ingestion(
@@ -409,6 +471,8 @@ async def test_webhook_diff_update_first_push_requires_manual_initial_ingestion(
         assert project is not None
         assert project.last_ingested_commit_sha is None
         assert project.git_update_summary["action"] == "manual_review"
+        assert project.git_update_summary["outcome"] == "manual_review"
+        assert project.git_update_summary["reason_code"] == "missing_baseline"
 
 
 async def test_webhook_diff_update_manual_review_when_too_many_docs_match(
@@ -663,6 +727,88 @@ async def test_webhook_diff_update_rag_failure_prevents_commit_advancement(
         assert project is not None
         assert project.last_ingested_commit_sha == "a" * 40
         assert project.git_update_summary["action"] == "failed"
+        assert project.git_update_summary["outcome"] == "failed"
+        assert project.git_update_summary["reason_code"] == "rag_sync_failed"
+        assert project.git_update_summary["rag_result"]["errors"] == ["rag unavailable"]
+
+
+async def test_webhook_diff_update_zero_pushed_rag_result_prevents_commit_advancement(
+    session_factory,
+    monkeypatch,
+    tmp_path,
+    log_manager,
+):
+    import mcp_server.services.git_diff_patcher as patcher
+    from mcp_server.config import config
+
+    monkeypatch.setattr(patcher, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    docs_dir = tmp_path / "output" / "proj" / "docs"
+    docs_dir.mkdir(parents=True)
+    doc = docs_dir / "04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"
+    doc.write_text("# Business Logic\n\n## PaymentService\n\nOld behavior.\n", encoding="utf-8")
+
+    async def git_stub(local_path: str, *args: str) -> str:
+        if args[:2] == ("diff", "--name-status"):
+            return "M\tsrc/PaymentService.ts\n"
+        if args and args[0] == "diff":
+            return "+function PaymentService() { return true }\n"
+        return ""
+
+    monkeypatch.setattr(patcher, "_git", git_stub)
+
+    class ProviderStub:
+        async def complete(self, prompt, context_files=None, options=None):
+            return ModelResult(
+                success=True,
+                model_name="test-model",
+                input_tokens=50,
+                output_tokens=20,
+                text=(
+                    '{"change_summary":"payment changed","inspected_context":["diff"],'
+                    '"affected_docs":["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],'
+                    '"edits":[{"filename":"04_BUSINESS_RULES_AND_TRANSFORMATIONS.md","heading":"PaymentService",'
+                    '"replacement_markdown":"## PaymentService\\n\\nNew behavior."}],'
+                    '"confidence":0.95}'
+                ),
+            )
+
+    monkeypatch.setattr(patcher, "_patch_provider", lambda provider_type: ProviderStub())
+
+    class ZeroPushRagStub:
+        def __init__(self, log_manager=None):
+            self.log_manager = log_manager
+
+        async def push_docs(self, project_id, output_dir=None, filenames=None, docs=None):
+            return {"pushed": 0, "errors": []}
+
+    monkeypatch.setattr(patcher, "RagBridge", ZeroPushRagStub)
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "proj",
+            str(tmp_path / "repo"),
+            repo_url="https://github.com/example/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = "a" * 40
+        await session.commit()
+
+    ok = await patcher.run_webhook_diff_update(
+        project_id="proj",
+        before_sha="a" * 40,
+        after_sha="b" * 40,
+        log_mgr=log_manager,
+    )
+
+    assert ok is False
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("proj")
+        assert project is not None
+        assert project.last_ingested_commit_sha == "a" * 40
+        assert project.git_update_summary["outcome"] == "failed"
+        assert project.git_update_summary["reason_code"] == "rag_sync_failed"
 
 
 async def test_webhook_diff_update_manual_review_when_output_cap_hit_before_obligation(

@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mcp_server.services.git_diff_patcher import FileChange
 from mcp_server.services.project_registry import ProjectRegistry
+
+
+def _make_targeted_regen_ready_tree(root: Path, project_id: str) -> None:
+    output_dir = root / "output" / project_id
+    docs = output_dir / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output_dir / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (support / "new_module.md").write_text("# new_module analysis", encoding="utf-8")
+    (cache / "new_module.md").write_text("# new_module analysis", encoding="utf-8")
+
+
+def _make_scan_group(root: Path, project_id: str, group: str) -> None:
+    (root / project_id / "scan" / "jobs" / group).mkdir(parents=True)
 
 
 def test_quick_change_scanner_detects_source_tests_readme_claims_and_modules():
@@ -108,6 +126,9 @@ async def test_auto_doc_update_skip_advances_commit_and_persists_summary(
         assert project.last_ingested_commit_sha == "b" * 40
         assert project.git_update_summary["mode"] == "tool_loop_agent"
         assert project.git_update_summary["action"] == "skipped"
+        assert project.git_update_summary["outcome"] == "skip"
+        assert project.git_update_summary["reason_code"] == "non_doc_change"
+        assert project.git_update_summary["decision_strategy"] == "tool_loop_agent"
         assert project.git_update_summary["tool_call_count"] >= 2
 
 
@@ -198,6 +219,8 @@ async def test_auto_doc_update_repairs_validation_failure_once(
         assert project is not None
         assert project.last_ingested_commit_sha == "b" * 40
         assert project.git_update_summary["action"] == "patched"
+        assert project.git_update_summary["outcome"] == "bounded_patch"
+        assert project.git_update_summary["decision_strategy"] == "bounded_patch"
         assert project.git_update_summary["repair_attempts"] == 1
         assert project.git_update_summary["touched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
 
@@ -209,9 +232,12 @@ async def test_auto_doc_update_targeted_regen_requested_by_agent(
     log_manager,
 ):
     import mcp_server.services.auto_doc_update as auto_doc_update
+    from mcp_server.config import config
     from mcp_server.services.doc_impact_agent import DocImpactPlan
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
 
     async def git_stub(local_path: str, *args: str) -> str:
         if args[:2] == ("diff", "--name-status"):
@@ -241,13 +267,16 @@ async def test_auto_doc_update_targeted_regen_requested_by_agent(
 
     async with session_factory() as session:
         registry = ProjectRegistry(session)
-        await registry.add_project(
+        project = await registry.add_project(
             "proj",
             str(tmp_path / "repo"),
             repo_url="https://github.com/example/repo.git",
             source_type="git",
         )
+        project.last_ingested_commit_sha = "a" * 40
         await session.commit()
+    _make_targeted_regen_ready_tree(tmp_path, "proj")
+    _make_scan_group(tmp_path / "intodoc-output", "proj", "new_module")
 
     ok = await auto_doc_update.AutoDocUpdateService(
         log_mgr=log_manager,
@@ -264,8 +293,92 @@ async def test_auto_doc_update_targeted_regen_requested_by_agent(
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
         assert project.git_update_summary["action"] == "targeted_regen"
+        assert project.git_update_summary["outcome"] == "targeted_regen"
+        assert project.git_update_summary["reason_code"] == "targeted_regen_succeeded"
+        assert project.git_update_summary["decision_strategy"] == "targeted_regen"
+        assert project.git_update_summary["regen_result"]["success"] is True
         assert project.git_update_summary["fallback_used"] is True
+        assert project.git_update_summary["targeted_regen_ready"] is True
         assert project.git_update_summary["touched_docs"] == ["01_ARCHITECTURE_MAP.md"]
+
+
+async def test_auto_doc_update_targeted_regen_missing_cache_requires_rebaseline(
+    session_factory,
+    monkeypatch,
+    tmp_path,
+    log_manager,
+):
+    import mcp_server.services.auto_doc_update as auto_doc_update
+    from mcp_server.config import config
+    from mcp_server.services.doc_impact_agent import DocImpactPlan
+
+    monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
+
+    async def git_stub(local_path: str, *args: str) -> str:
+        if args[:2] == ("diff", "--name-status"):
+            return "A\tsrc/new_module/A.ts\n"
+        if args and args[0] == "diff":
+            return "diff --git a/src/new_module/A.ts b/src/new_module/A.ts\n+export class A {}\n"
+        return ""
+
+    monkeypatch.setattr(auto_doc_update, "_git", git_stub)
+
+    class ImpactStub:
+        async def plan(self, **kwargs):
+            return DocImpactPlan(
+                strategy="targeted_regen",
+                affected_docs=["01_ARCHITECTURE_MAP.md"],
+                confidence=0.8,
+                reason="new module needs regenerated coverage",
+            )
+
+    async def regen_stub(*args, **kwargs):
+        raise AssertionError("missing cache/support must not launch generation")
+
+    monkeypatch.setattr(auto_doc_update, "run_git_reingestion", regen_stub)
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "proj",
+            str(tmp_path / "repo"),
+            repo_url="https://github.com/example/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = "a" * 40
+        await session.commit()
+    docs = tmp_path / "output" / "proj" / "docs"
+    docs.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    _make_scan_group(tmp_path / "intodoc-output", "proj", "new_module")
+
+    ok = await auto_doc_update.AutoDocUpdateService(
+        log_mgr=log_manager,
+        impact_agent=ImpactStub(),
+    ).run(
+        project_id="proj",
+        before_sha="a" * 40,
+        after_sha="b" * 40,
+        trigger="webhook",
+    )
+
+    assert ok is False
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("proj")
+        assert project is not None
+        assert project.last_ingested_commit_sha == "a" * 40
+        assert project.git_update_summary["action"] == "manual_review"
+        assert project.git_update_summary["outcome"] == "manual_review"
+        assert project.git_update_summary["reason_code"] == "full_rebaseline_required"
+        assert project.git_update_summary["targeted_regen_ready"] is False
+        assert project.git_update_summary["requires_full_rebaseline"] is True
+        assert project.git_update_summary["regen_result"]["skipped"] is True
+        assert project.git_update_summary["reason_codes"] == [
+            "missing_rag_support",
+            "missing_analysis_cache",
+        ]
 
 
 async def test_auto_doc_update_broad_bounded_plan_stays_in_patch_lane(
@@ -421,5 +534,7 @@ async def test_auto_doc_update_prompt_too_large_does_not_regenerate(
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
         assert project.git_update_summary["action"] == "manual_review"
+        assert project.git_update_summary["outcome"] == "manual_review"
+        assert project.git_update_summary["reason_code"] == "unsafe_scope"
         assert project.git_update_summary["fallback_used"] is False
         assert "Patch prompts too large" in project.git_update_summary["reason"]

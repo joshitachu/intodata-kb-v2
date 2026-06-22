@@ -170,6 +170,13 @@ class Settings(BaseSettings):
     # within one turn while staying bounded.
     runtime_tool_loop_max_iterations: int = 4
 
+    # Runtime insight LLM fallback (EP-005 slice 4) — opt-in, off by default.
+    # When True, an incident whose deterministic confidence is "low" escalates to a
+    # SINGLE bounded, redacted LLM call (via the provider-neutral generate_answer).
+    # When False (default), the deterministic path is byte-for-byte unchanged and no
+    # LLM client is invoked. High/medium incidents never escalate regardless.
+    runtime_llm_fallback_enabled: bool = False
+
     # Talend TMC runtime provider (EP-004 slice 5) — opt-in adapter behind the
     # generic runtime contract. Default empty keeps Talend disabled. The API token
     # is read from a mounted secret file, never a plaintext env var. Enable by

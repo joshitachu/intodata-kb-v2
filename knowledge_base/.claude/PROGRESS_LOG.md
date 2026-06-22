@@ -3,6 +3,131 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-06-19
+
+### [Feature/Fix]: Reingestion Reliability Slice 5 - end-to-end smoke path and operator status
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py`
+  - `knowledge_base/mcp-server/src/mcp_server/schemas.py`
+  - `knowledge_base/mcp-server/scripts/smoke_reingestion_webhook.py`
+  - `knowledge_base/mcp-server/tests/test_api/test_projects.py`
+  - `knowledge_base/mcp-server/tests/test_api/test_webhook.py`
+  - `deploy/WEBHOOK-SETUP.md`
+  - `.plans/reingestion-reliability/slice-05/04_active_plan.md`
+  - `.plans/reingestion-reliability/slice-05/05_inspection_report.md`
+  - `.plans/reingestion-reliability/slice-05/validation.md`
+- **Problem**: After the credential-safe Git, webhook matching, patch-first
+  decision, and cache-aware regeneration slices, operators still lacked one
+  compact status endpoint and one repeatable smoke path to prove whether a GitHub
+  delivery matched a project, queued work, selected patch/regeneration/manual
+  review, synced RAG, and advanced or preserved the baseline SHA.
+- **Root cause**: Webhook observations and Git update summaries were durable but
+  scattered in project metadata, logs, readiness state, and filesystem cache
+  checks. The existing setup runbook did not provide a scriptable local ping/push
+  smoke, and inspection found the webhook verifier was using the non-standard
+  `X-GitHub-Signature-256` header instead of GitHub's real
+  `X-Hub-Signature-256` header.
+- **Change**: Added `GET /mcp/projects/{project_id}/reingestion-status`, which
+  aggregates project status, webhook registration/last observation, normalized
+  last update fields, RAG/regeneration result, last ingested SHA, remote hygiene,
+  and cache/rebaseline readiness without starting scan, generation, patch, RAG
+  sync, fetch, or pull work. Added `scripts/smoke_reingestion_webhook.py` to
+  post GitHub-style ping/push payloads, HMAC-sign with `X-Hub-Signature-256`,
+  redact secrets in dry-run output, and read the status endpoint using the MCP
+  API's existing `access_token` cookie contract. Updated webhook tests to use
+  the standard GitHub header while preserving legacy header compatibility.
+  Updated `deploy/WEBHOOK-SETUP.md` with real and simulated smoke steps,
+  expected outcome states, reason codes, and auth/header details.
+- **Why this approach**: It keeps operator visibility read-only and project
+  scoped, reuses the existing readiness and `git_update_summary` surfaces, and
+  avoids adding a dashboard dependency before the backend workflow is proven.
+  Fixing the signature header at the webhook boundary addresses a likely real
+  setup failure mode directly instead of documenting around it.
+- **Verification**:
+  - `python3 -m py_compile src/mcp_server/api/routes/projects.py src/mcp_server/api/routes/webhook.py src/mcp_server/schemas.py tests/test_api/test_projects.py tests/test_api/test_webhook.py scripts/smoke_reingestion_webhook.py`
+  - `python3 scripts/smoke_reingestion_webhook.py --help`
+  - `python3 scripts/smoke_reingestion_webhook.py --dry-run --base-url http://127.0.0.1:8002 --project-id smoke-proj --repo-url https://github.com/acme/repo.git --secret test-secret --auth-token test-jwt`
+  - `cd knowledge_base/mcp-server && uv run pytest tests/test_api/test_projects.py tests/test_api/test_webhook.py -q` -> 42 passed.
+  - `cd knowledge_base/mcp-server && uv run pytest -q` -> 658 passed.
+  - `git diff --check -- <Slice 5 files>` -> clean.
+  - Inspection verdict: PASS.
+
+### [Feature/Fix]: Reingestion Reliability Slice 4 - cache-aware targeted regeneration and safe rebaseline
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/services/rag_support_package.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_remote_service.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+  - `knowledge_base/mcp-server/src/mcp_server/schemas.py`
+  - `knowledge_base/mcp-server/tests/test_services/test_git_remote_service.py`
+  - `knowledge_base/mcp-server/tests/test_services/test_git_reingestion.py`
+  - `knowledge_base/mcp-server/tests/test_services/test_rag_support_package.py`
+  - `knowledge_base/mcp-server/tests/test_services/test_auto_doc_update.py`
+  - `knowledge_base/mcp-server/tests/test_api/test_projects.py`
+  - `.plans/reingestion-reliability/slice-04/04_active_plan.md`
+  - `.plans/reingestion-reliability/slice-04/05_inspection_report.md`
+  - `.plans/reingestion-reliability/slice-04/validation.md`
+- **Problem**: Targeted regeneration readiness only exposed a coarse flat `analysis_cache` flag, so old projects missing published `_rag_support/phase2_analysis` or holding stale cache could look safe for targeted regeneration. Full rebaseline reasons were not visible enough before expensive fallback paths.
+- **Root cause**: Cache/support inspection lived implicitly in `setup_incremental_staging()` and returned no structured result. Readiness APIs could not distinguish docs, support package, restored cache, stale cache, or changed-group availability.
+- **Change**: Added `GenerationCacheReadiness` and `inspect_generation_cache_readiness()` to distinguish visible docs, published support analyses, restored flat cache, cache/support count/hash match, changed-group availability, and stable rebaseline reason codes. Reingestion readiness/API responses now expose those fields. Targeted regeneration preflight in auto-doc and full reingestion now stops before generation when support/cache/baseline/docs/groups are not usable, recording `reason_code: full_rebaseline_required`, `requires_full_rebaseline`, `targeted_regen_ready`, `reason_codes`, and `expensive_fallback_required`. Incremental staging now returns `IncrementalStagingResult`. Readiness repair remains credential-hygiene only and records cache readiness without scan/generation/patch/RAG side effects. Inspection also fixed non-string changed-group normalization and made origin/repo mismatch prevent `ready`.
+- **Why this approach**: It keeps full generation as an explicit, visible fallback instead of an automatic webhook side effect. Hash-matching support/cache catches stale flat cache after manual filesystem drift, while keeping the existing `_rag_support` to `analysis_cache` post-swap contract intact.
+- **Verification**:
+  - `python3 -m py_compile` on touched Slice 4 service, API, schema, and test files.
+  - `cd knowledge_base/mcp-server && uv run pytest tests/test_services/test_git_remote_service.py tests/test_services/test_git_reingestion.py tests/test_services/test_rag_support_package.py tests/test_services/test_auto_doc_update.py tests/test_api/test_projects.py -q` -> 66 passed.
+  - `cd knowledge_base/mcp-server && uv run pytest -q` -> 656 passed.
+  - `git diff --check -- <Slice 4 files>` -> clean.
+  - Inspection verdict: PASS.
+
+## Session: 2026-06-18
+
+### [Feature/Fix]: Reingestion Reliability Slice 2 - webhook receipt and matching observability
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/project_registry.py`
+  - `knowledge_base/mcp-server/tests/test_api/test_webhook.py`
+  - `knowledge_base/mcp-server/tests/test_services/test_project_registry.py`
+  - `deploy/WEBHOOK-SETUP.md`
+  - `.plans/reingestion-reliability/slice-02/04_active_plan.md`
+  - `.plans/reingestion-reliability/slice-02/05_inspection_report.md`
+  - `.plans/reingestion-reliability/slice-02/validation.md`
+- **Problem**: Webhook deliveries could be received, ignored, matched, or rejected without durable project-visible evidence before background patch/scan work started. URL matching was also a simple string comparison, so sanitized URLs and `.git` suffix differences could make a registered repo look unregistered.
+- **Root cause**: The webhook route owned its own matching and response logic instead of using the centralized URL normalization from Slice 1, and project metadata did not preserve a dedicated webhook observation subdocument when patch/reingestion summaries were later written.
+- **Change**: Webhook project/plugin-pack matching now uses canonical sanitized URL keys. `ping`, `push`, and `pull_request` deliveries record `git_update_summary.webhook` with sanitized repo URL, canonical repo key, delivery ID, event, status, observations, and push before/after SHAs before background work starts. Unsupported events and invalid push SHA payloads record explicit reason codes for matched projects; unregistered repos return a sanitized reason-code response and schedule no background project work. `ProjectRegistry.record_webhook_observation()` merges webhook evidence into existing summaries, and existing summary writers preserve the webhook subdocument across later patch or remote-hygiene summary writes. `deploy/WEBHOOK-SETUP.md` documents the observable ping/push fields and reason-code troubleshooting path.
+- **Why this approach**: Reuses the existing `git_update_summary` surface instead of adding schema while still giving operators durable evidence. Keeping webhook data under a `webhook` subdocument lets patch/regeneration summaries continue to own top-level `action` while preserving delivery diagnostics.
+- **Verification**:
+  - `python3 -m py_compile knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py knowledge_base/mcp-server/src/mcp_server/services/project_registry.py knowledge_base/mcp-server/tests/test_api/test_webhook.py knowledge_base/mcp-server/tests/test_services/test_project_registry.py`
+  - `cd knowledge_base/mcp-server && uv run pytest tests/test_api/test_webhook.py tests/test_api/test_projects.py tests/test_services/test_project_registry.py -q` -> 53 passed.
+  - `cd knowledge_base/mcp-server && uv run pytest -q` -> 641 passed.
+  - Inspection verdict: PASS.
+
+### [Feature/Fix]: Reingestion Reliability Slice 1 - credential-safe Git remotes and readiness repair
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_remote_service.py` (new)
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_poller.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/project_registry.py`
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+  - `knowledge_base/mcp-server/src/mcp_server/schemas.py`
+  - `knowledge_base/mcp-server/tests/test_services/test_git_remote_service.py` (new)
+  - `knowledge_base/mcp-server/tests/test_api/test_projects.py`
+- **Problem**: Git webhook/poller reingestion paths duplicated remote credential handling. Some paths temporarily wrote tokenized remotes into `origin` and did not consistently restore clean URLs. Operators also had no low-cost API to inspect or repair credential hygiene, missing baselines, or incremental-cache readiness without triggering scan, generation, patch, reingestion, or RAG sync.
+- **Root cause**: Remote URL auth was implemented independently in poller, diff patcher, auto-doc inspection, clone registration, and full reingestion. There was no central helper for URL credential stripping, temporary authenticated remote use, non-interactive Git environment, or readiness classification.
+- **Change**: Added `git_remote_service.py` with URL credential stripping/canonicalization, authenticated URL construction for in-memory operations, `GIT_TERMINAL_PROMPT=0`/`GIT_ASKPASS=echo` subprocess env, clean-origin get/set helpers, `fetch_remote`, `pull_remote_ff_only`, `with_temporary_authenticated_origin`, and reingestion readiness/repair reports. Replaced duplicated token-injection paths in poller, diff patcher, auto-doc inspection/skip, and full reingestion with the helper. Git clone registration now stores a sanitized `repo_url`, clones with temporary auth when needed, then resets local `origin` to the sanitized URL. Added `GET /mcp/projects/{project_id}/reingestion-readiness` and `POST /mcp/projects/{project_id}/reingestion-readiness/repair`; repair only cleans local remote/DB repo URL hygiene and records a sanitized summary. It does not alter baseline SHAs or start scan/generation/patch/RAG workflows. Inspection added explicit `auth_failed` readiness classification from sanitized `auto_reingest_error` so auth-failing projects cannot report as ready.
+- **Why this approach**: Centralizing remote mutation makes the safety invariant testable: tokenized URLs are only temporary, and `origin` is restored in `finally` on success or failure. Readiness and repair live under project routes because they are project-scoped operator actions, but they call only the remote hygiene service and registry metadata update.
+- **Verification**:
+  - `python3 -m py_compile knowledge_base/mcp-server/src/mcp_server/services/git_remote_service.py knowledge_base/mcp-server/src/mcp_server/services/git_poller.py knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py knowledge_base/mcp-server/src/mcp_server/services/project_registry.py knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py knowledge_base/mcp-server/src/mcp_server/schemas.py knowledge_base/mcp-server/tests/test_services/test_git_remote_service.py knowledge_base/mcp-server/tests/test_api/test_projects.py`
+  - `cd knowledge_base/mcp-server && uv run pytest tests/test_services/test_git_remote_service.py tests/test_services/test_project_registry.py tests/test_services/test_git_poller.py tests/test_services/test_git_diff_patcher.py tests/test_services/test_git_reingestion.py tests/test_services/test_auto_doc_update.py tests/test_api/test_projects.py tests/test_api/test_webhook.py -q` -> 86 passed.
+  - `cd knowledge_base/mcp-server && uv run pytest -q` -> 635 passed.
+  - `git diff --check -- <Slice 1 files>` -> clean.
+
 ## Session: 2026-06-10
 
 ### [Refactor]: Track A complete — Slices 3-5 built, inspected, committed, deployed (FR-1c, FR-1d, FR-2, FR-3, FR-6, FR-7, FR-8, FR-9, FR-10, FR-11)
@@ -2276,3 +2401,14 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Change**: RAG backend gains `entity_aliases` table (migration 028), `DELETE /ingest/by-project/{id}/internal` (escaped `startswith` filter on `{project}/_internal/` scoped filenames; also clears aliases), and `POST /ingest/entity-aliases` (per-project transactional replace; full project delete also clears aliases). MCP `rag_support_package.py` gains `collect_internal_artifacts()` (4 layers: technical_analysis from `_rag_support/`, support_maps from `_facts/*.md`, scorecard, evidence_slices; never CSVs/JSON; empty files dropped), `internal_doc_filename()` (percent-encoded, `_internal/{layer}/` prefixed), and `build_entity_aliases()` (deterministic CSV parse + dedupe keeping highest confidence). `RagBridge.sync_internal_layers()` does delete-then-push-then-aliases, aborting on delete failure so old/new sets never mix. Wired into `_run_generate_background` (errors merge into `rag_errors` → run verdict) and `/push-to-rag` (message includes internal counts; `last_rag_push_at` now requires zero errors, matching the generation path).
 - **Why this approach**: Wholesale delete-and-repush because removed groups are invisible to the visible-doc diff; discovery/alias-building are pure-filesystem service functions so the bridge owns transport only; default retrieval stays canonical-only via Slice 1 `source_layer` filtering with no retrieval-side change.
 - **Verification**: `/inspect` verdict WARN — finding 1 (unescaped SQL LIKE wildcard in destructive internal-delete filter) fixed in-session with `startswith(..., autoescape=True)` + compiled-SQL assertion; finding 2 (internal docs visible in admin document lists) logged as follow-up for a later slice. `/validate`: rag py_compile 6/6, rag pytest 353 passed, kb py_compile 5/5, kb pytest 627 passed. New coverage: delete-first ordering, delete-failure abort, partial push continuation, empty-tree no-op, `Training|Jasmijn` percent-encoding, CSV dedupe/sort, missing-CSV no-op, API-key 401s, alias replace per-project scoping.
+
+## Session: 2026-06-18
+
+### [Feature]: Reingestion Reliability Slice 3 -- normalized patch-first outcomes
+
+- **Files changed**: `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`, `knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py`, `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py`, `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py`, `knowledge_base/mcp-server/tests/test_services/test_auto_doc_update.py`, `knowledge_base/mcp-server/tests/test_services/test_git_diff_patcher.py`, `knowledge_base/mcp-server/tests/test_services/test_git_reingestion.py`, `knowledge_base/mcp-server/tests/test_services/test_rag_bridge.py`.
+- **Problem**: Git update summaries used legacy actions like `patched` and `skipped` without a normalized operator-facing outcome vocabulary, and RAG sync failure could be treated as weaker evidence than required for baseline SHA advancement.
+- **Root cause**: Patch, auto-doc, regeneration, and RAG bridge code each interpreted success locally. There was no shared persisted `outcome`/`reason_code` contract, RAG push success did not require every patched doc to be accepted, and the regeneration success path could leave baseline ownership ambiguous.
+- **Change**: Added normalized summary helpers for outcomes `skip`, `bounded_patch`, `targeted_regen`, `full_regen`, `manual_review`, and `failed` while preserving existing internal `action` values. Persisted `reason_code` and `decision_strategy` in patch and auto-doc summaries. Added strict RAG push success checking that requires the expected patched docs to be pushed with no errors; RAG errors or zero-pushed required docs now persist `outcome: failed`, `reason_code: rag_sync_failed`, restore docs, and preserve SHA. Targeted regeneration summaries now include `regen_result`. `run_git_reingestion()` now fills the `after_sha` baseline only after background generation leaves the project `ready` with no `error_message`, and skips the write if generation already recorded it. Inspection also fixed sanitized Git stderr handling and routed skip/no-op pulls through `pull_remote_ff_only()`.
+- **Why this approach**: It adds the operator contract without breaking existing internal actions or tests from Slices 1-2. The RAG helper makes the baseline gate explicit at the boundary where patch success is decided, and successful regeneration baseline advancement remains tied to generation plus RAG sync instead of webhook receipt alone.
+- **Verification**: `python3 -m py_compile` passed for all touched Slice 3 service and test files. Focused tests passed: `uv run pytest tests/test_services/test_auto_doc_update.py tests/test_services/test_git_diff_patcher.py tests/test_services/test_git_reingestion.py tests/test_services/test_rag_bridge.py -q` (`46 passed`). Full MCP server pytest passed: `uv run pytest -q` (`646 passed`). Inspection verdict: PASS.

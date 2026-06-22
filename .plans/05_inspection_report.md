@@ -1,36 +1,91 @@
 ---
-inspected_at: 2026-06-17
-verdict: WARN
+inspected_at: 2026-06-19
+verdict: PASS
 ---
+
+# Inspection Report - Slice 5 End-to-End Smoke Path and Minimal Operator Visibility
+
+Feature: Git webhook reingestion reliability and patch-first update flow
+Slice: Slice 5
+Sub-project: knowledge_base
+Critical area: MCP API routes
 
 ## Verdict Summary
 
-EP-006 Slice 4 conforms to the plan architecture contracts with two non-blocking warnings: a stale-data race condition in the project-change deselection logic, and the `useRuntimeIncidents` projectId wiring listed in the plan has no call site since no incident list view was added.
+PASS. The Slice 5 status endpoint and smoke path now give operators a compact,
+read-only way to confirm webhook receipt, matching, update decision, RAG result,
+SHA baseline, remote hygiene, and cache readiness. No remaining blocking or
+warning findings.
 
 ## Check Results
 
-| Check             | Result | Notes |
-|-------------------|--------|-------|
-| Plan conformance  | WARN   | All 7 steps delivered; 5 BFF routes + hooks + component + project filter + insight panel all present. Two deviations: (1) plan step 4 says pass `projectId` to `useRuntimeIncidents`, but that hook has no call site in the page — no incidents list view exists; (2) `handleProjectChange` deselection logic checks stale data |
-| Root cause        | PASS   | Frontend-only slice; no root-cause concern applies |
-| Generalized       | PASS   | All 5 BFF routes follow identical proxy pattern (`backendProxyHeaders`, `encodeURIComponent`, `res.status` preserved, `cache: "no-store"`); all hooks follow the shared `buildQuery` + Zod parse pattern; no one-off deviations |
-| Design patterns   | PASS   | React Query hooks + BFF proxy (Next.js route handler) pattern used consistently; `RuntimeInsightPanel` extracted per plan; `enabled` gates on all dependent hooks |
-| Contract respect  | PASS   | Browser never calls FastAPI directly; all 5 BFF routes are read-only GET proxies; status codes preserved end-to-end; Zod validates all successful shapes; TypeScript strict; project filter is UI narrowing-only — no browser-side authorization decision made |
-| No special-casing | PASS   | `SeverityChip` handles unknown severity values with a generic fallback (not a special branch); no compat shims; no feature flags |
-| Edge cases        | PASS   | Summary loading/404/error handled per section; no-incident → neutral Info message; evidence empty → explicit message; timeline empty → explicit message; all three states (loading/error/data) rendered per section independently |
-| RBAC              | PASS   | All RBAC enforcement is backend-side; `projectId` filter is explicitly narrowing UI state, not authorization; point lookups (summary, incident, evidence) are scoped by backend auth via forwarded cookies |
-| Credential safety | PASS   | No credentials in code; cookies forwarded via existing `backendProxyHeaders`; no log statements added |
+- Plan conformance: PASS
+- Root cause: PASS
+- Generalized fix: PASS
+- Design patterns: PASS
+- Contract respect: PASS
+- No special-casing: PASS
+- Edge cases: PASS
+- RBAC: PASS
+- Credential safety: PASS
 
 ## Findings
 
-1. **WARN** (`app/admin/logs/page.tsx:107`) — `handleProjectChange` checks against stale `executions.data` to decide whether to deselect `selectedId`. At call time, `executions.data` still holds the OLD unfiltered result. The check `executions.data.executions.some(e => e.execution_id === selectedId)` will almost always be `true` (the execution is in the old list), so `selectedId` is rarely cleared. A project filter change can therefore leave an execution panel open for an execution that belongs to the deselected project. The correct approach is to always reset `selectedId` on project change (the backend insight calls will return 404 and show a graceful degraded state, so user experience is safe either way).
+No remaining findings.
 
-2. **WARN** (`hooks/useRuntimeLogs.ts` — `useRuntimeIncidents`) — Plan step 4 lists `useRuntimeIncidents` as one of the hooks to receive the `projectId` filter. The hook is implemented and supports `IncidentFilters.projectId`, but it is not called anywhere in the logs page (there is no incidents list view). The hook's interface is correct; the gap is that the plan's filter-wiring step is only partially exercised. No functional regression — incident data enters the page via `useRuntimeIncident` (point lookup in `RuntimeInsightPanel`), which is correctly scoped by backend auth.
+## Fixed During Inspection
+
+1. Real GitHub signed deliveries would fail HMAC validation because the route and
+   tests used `X-GitHub-Signature-256`. GitHub sends `X-Hub-Signature-256`.
+   The route now accepts the standard header first and keeps the legacy header
+   as a compatibility fallback (`knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py:51`).
+   The smoke script now signs with `X-Hub-Signature-256`
+   (`knowledge_base/mcp-server/scripts/smoke_reingestion_webhook.py:43`).
+
+2. The smoke script tried to authenticate the final `/mcp/.../reingestion-status`
+   GET with a bearer token, but MCP project routes use the `access_token` cookie.
+   The script now sends `--auth-token` as `Cookie: access_token=...` and redacts
+   it in dry-run output
+   (`knowledge_base/mcp-server/scripts/smoke_reingestion_webhook.py:178`).
+
+## Evidence
+
+- `GET /mcp/projects/{project_id}/reingestion-status` is registered as a
+  project-scoped response model and only calls `inspect_reingestion_readiness()`;
+  it does not start scan, generation, patching, RAG sync, fetch, or pull work
+  (`knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py:638`).
+- The response builder sanitizes nested strings before returning webhook,
+  update, RAG, regeneration, and error payloads
+  (`knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py:133`).
+- The status response includes project status, webhook registration and last
+  observation, normalized last update fields, SHA baseline, remote hygiene, and
+  cache/rebaseline readiness
+  (`knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py:157`,
+  `knowledge_base/mcp-server/src/mcp_server/schemas.py:138`).
+- Focused tests prove status aggregation without workflow side effects and
+  prove signed webhook receipt with the standard GitHub signature header
+  (`knowledge_base/mcp-server/tests/test_api/test_projects.py:498`,
+  `knowledge_base/mcp-server/tests/test_api/test_webhook.py:22`).
+- `deploy/WEBHOOK-SETUP.md` now documents real GitHub smoke steps, local
+  simulated smoke steps, expected outcome states, reason codes, and auth/header
+  details.
 
 ## Required Actions
 
-**BLOCK:** None.
+None.
 
-**WARN — optional improvements:**
-1. In `handleProjectChange`, replace the stale-data check with `setSelectedId(null)` unconditionally (or defer the check to an effect that runs after `executions` refetches with the new filter). The current check is misleading and won't protect the user from a stale panel in practice.
-2. Document in `PROJECT_MEMORY.md` that `useRuntimeIncidents` exists for future use (incidents list view or filtering) but is not yet called from the logs page.
+## Validation Evidence
+
+- `python3 -m py_compile src/mcp_server/api/routes/projects.py src/mcp_server/api/routes/webhook.py src/mcp_server/schemas.py tests/test_api/test_projects.py tests/test_api/test_webhook.py scripts/smoke_reingestion_webhook.py`: PASS.
+- `python3 scripts/smoke_reingestion_webhook.py --help`: PASS.
+- `python3 scripts/smoke_reingestion_webhook.py --dry-run --base-url http://127.0.0.1:8002 --project-id smoke-proj --repo-url https://github.com/acme/repo.git --secret test-secret --auth-token test-jwt`: PASS.
+- `uv run pytest tests/test_api/test_projects.py tests/test_api/test_webhook.py -q`: 42 passed.
+- `uv run pytest -q`: 658 passed.
+- `git diff --check -- <Slice 5 files>`: PASS.
+
+## Residual Risk
+
+No live GitHub delivery or live MCP server smoke was run in this session. The
+local smoke script help/dry-run and API tests cover request signing, status
+shape, and side-effect boundaries; a real repository delivery remains an
+operator release smoke step.

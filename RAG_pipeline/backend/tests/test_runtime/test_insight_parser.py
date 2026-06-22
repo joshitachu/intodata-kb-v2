@@ -188,6 +188,35 @@ class TestCredentialRedaction:
         url = "jdbc:oracle:thin:@//db-prod-scan:1521/ORCLPDB1"
         assert redact_credentials(url) == url
 
+    def test_inline_userinfo_colon_form_redacted(self):
+        out = redact_credentials("jdbc:mysql://scott:tiger@db-prod:3306/sales")
+        assert "scott" not in out
+        assert "tiger" not in out
+        assert "<redacted>@" in out
+        assert "db-prod:3306/sales" in out
+
+    def test_inline_userinfo_slash_form_redacted(self):
+        out = redact_credentials("jdbc:oracle:thin:scott/tiger@//db-prod:1521/ORCLPDB1")
+        assert "scott" not in out
+        assert "tiger" not in out
+        assert "<redacted>@" in out
+        assert "db-prod:1521/ORCLPDB1" in out
+
+    def test_plain_host_port_without_userinfo_unchanged(self):
+        msg = "Opening connection to db-prod:1521 (pool=main)"
+        assert redact_credentials(msg) == msg
+
+    def test_endpoint_field_carries_no_inline_credential(self):
+        result = parse_runtime_log_message(
+            "[tOracleConnection_1] Opening connection "
+            "jdbc:oracle:thin:scott/tiger@//db-prod:1521/ORCLPDB1 (pool=main)"
+        )
+        assert result.endpoint is not None
+        assert "scott" not in result.endpoint
+        assert "tiger" not in result.endpoint
+        assert result.host == "db-prod"
+        assert result.database_name == "ORCLPDB1"
+
 
 class TestConfidence:
     def test_high_confidence_with_error_code_and_exception(self):

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.services.rag_support_package import inspect_generation_cache_readiness
 from mcp_server.services.scanner_service import ScannerService
+from mcp_server.utils.error_sanitizer import sanitize_git_error
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,34 @@ class ChangedFile:
     status: str
     path: str
     previous_path: str | None = None
+
+
+@dataclass(frozen=True)
+class IncrementalStagingResult:
+    """Outcome of restoring cached Phase 2 analyses for targeted regeneration."""
+
+    project_id: str
+    staged: bool
+    targeted_regen_ready: bool
+    requires_full_rebaseline: bool
+    reason_codes: list[str]
+    changed_groups: list[str]
+    staged_analysis_count: int = 0
+    removed_changed_groups: list[str] | None = None
+    cache_readiness: dict[str, object] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "staged": self.staged,
+            "targeted_regen_ready": self.targeted_regen_ready,
+            "requires_full_rebaseline": self.requires_full_rebaseline,
+            "reason_codes": list(self.reason_codes),
+            "changed_groups": list(self.changed_groups),
+            "staged_analysis_count": self.staged_analysis_count,
+            "removed_changed_groups": list(self.removed_changed_groups or []),
+            "cache_readiness": dict(self.cache_readiness or {}),
+        }
 
 
 async def run_git_reingestion(
@@ -48,31 +79,27 @@ async def run_git_reingestion(
         local_path = project.local_path
         platform = project.platform
         doc_generation_provider = project.doc_generation_provider
+        github_token_enc = getattr(project, "github_token_enc", None)
+        has_baseline = bool(project.last_ingested_commit_sha)
         run_id = run.id
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "pull",
-            cwd=local_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        await proc.wait()
+        await pull_remote_ff_only(local_path, github_token_enc)
     except Exception as e:
-        logger.warning("git pull failed for %s: %s", project_id, e)
+        logger.warning("git pull failed for %s: %s", project_id, sanitize_git_error(str(e)))
 
     is_first_push = before_sha == "0" * 40 or not before_sha
     file_changes: list[ChangedFile] = []
     if not is_first_push and before_sha and after_sha:
         try:
-            diff_proc = await asyncio.create_subprocess_exec(
-                "git", "diff", "--name-status", before_sha, after_sha,
-                cwd=local_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+            diff_output = await run_git(
+                local_path,
+                "diff",
+                "--name-status",
+                before_sha,
+                after_sha,
             )
-            stdout, _ = await diff_proc.communicate()
-            file_changes = parse_name_status_diff(stdout.decode())
+            file_changes = parse_name_status_diff(diff_output)
             logger.info(
                 "Git re-ingestion diff for %s: %d changed files",
                 project_id,
@@ -112,7 +139,32 @@ async def run_git_reingestion(
         return False
 
     changed_groups = resolve_changed_groups(project_id, file_changes, is_first_push)
-    setup_incremental_staging(project_id, changed_groups, is_first_push)
+    staging_result = setup_incremental_staging(
+        project_id,
+        changed_groups,
+        is_first_push,
+        has_baseline=has_baseline,
+    )
+    if not staging_result.staged:
+        reason = _full_rebaseline_reason(staging_result.reason_codes)
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            await registry.update_git_update_summary(
+                project_id,
+                _full_rebaseline_required_summary(
+                    project_id=project_id,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    triggered_by=triggered_by,
+                    reason=reason,
+                    staging_result=staging_result,
+                ),
+                error=reason,
+            )
+            await registry.update_status(project_id, "ready", error_message=reason)
+            await db.commit()
+        await log_mgr.emit(project_id, reason, level="warning")
+        return False
 
     from mcp_server.api.routes.projects import (
         _currently_generating,
@@ -148,7 +200,8 @@ async def run_git_reingestion(
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
         if project and project.status == "ready" and project.error_message is None:
-            await registry.update_last_ingested_commit(project_id, after_sha)
+            if project.last_ingested_commit_sha != after_sha:
+                await registry.update_last_ingested_commit(project_id, after_sha)
             await db.commit()
             return True
         await db.commit()
@@ -207,13 +260,29 @@ def setup_incremental_staging(
     project_id: str,
     changed_groups: set[str],
     is_first_push: bool,
-) -> None:
+    *,
+    has_baseline: bool | None = None,
+) -> IncrementalStagingResult:
     """Stage cached Phase 2 analyses for unchanged groups before generation."""
     output_dir = config.project_root / "output" / project_id
     analysis_cache = output_dir / "analysis_cache"
+    changed_group_names = sorted(group for group in changed_groups if group)
+    cache_readiness = inspect_generation_cache_readiness(
+        output_dir,
+        has_baseline=(not is_first_push if has_baseline is None else has_baseline),
+        changed_groups=changed_group_names,
+    )
 
-    if is_first_push or not analysis_cache.exists() or not changed_groups:
-        return
+    if not cache_readiness.targeted_regen_ready:
+        return IncrementalStagingResult(
+            project_id=project_id,
+            staged=False,
+            targeted_regen_ready=False,
+            requires_full_rebaseline=cache_readiness.requires_full_rebaseline,
+            reason_codes=cache_readiness.reason_codes,
+            changed_groups=changed_group_names,
+            cache_readiness=cache_readiness.to_dict(),
+        )
 
     staging_dir = output_dir / "docs_staging"
     staging_analysis = staging_dir / "_analysis"
@@ -231,3 +300,60 @@ def setup_incremental_staging(
 
     for f in staging_analysis.glob("_bundle_*.md"):
         f.unlink()
+
+    return IncrementalStagingResult(
+        project_id=project_id,
+        staged=True,
+        targeted_regen_ready=True,
+        requires_full_rebaseline=False,
+        reason_codes=[],
+        changed_groups=changed_group_names,
+        staged_analysis_count=len(list(staging_analysis.glob("*.md"))),
+        removed_changed_groups=changed_group_names,
+        cache_readiness=cache_readiness.to_dict(),
+    )
+
+
+def _full_rebaseline_reason(reason_codes: list[str]) -> str:
+    suffix = ", ".join(reason_codes) if reason_codes else "targeted_regen_not_ready"
+    return f"Full rebaseline required before targeted regeneration: {suffix}"
+
+
+def _full_rebaseline_required_summary(
+    *,
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    triggered_by: str,
+    reason: str,
+    staging_result: IncrementalStagingResult,
+) -> dict[str, object]:
+    return {
+        "trigger": triggered_by,
+        "mode": "git_reingestion",
+        "action": "manual_review",
+        "outcome": "manual_review",
+        "reason_code": "full_rebaseline_required",
+        "decision_strategy": "targeted_regen_preflight",
+        "project_id": project_id,
+        "before": before_sha,
+        "after": after_sha,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "manual_review_reason": reason,
+        "fallback_used": False,
+        "fallback_reason": reason,
+        "expensive_fallback_required": True,
+        "requires_full_rebaseline": staging_result.requires_full_rebaseline,
+        "targeted_regen_ready": staging_result.targeted_regen_ready,
+        "changed_groups": list(staging_result.changed_groups),
+        "reason_codes": list(staging_result.reason_codes),
+        "staging_result": staging_result.to_dict(),
+        "regen_result": {
+            "type": "targeted_regen",
+            "success": False,
+            "skipped": True,
+            "reason": "preflight_failed",
+            "reason_codes": list(staging_result.reason_codes),
+        },
+    }

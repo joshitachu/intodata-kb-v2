@@ -1,426 +1,297 @@
 ---
-feature: Smart Runtime Log Intelligence
+feature: Git webhook reingestion reliability and patch-first update flow
 pipeline_step: 2_prd
 ---
 
 ## Executive Summary
 
-IntoData already has the foundation for runtime logs: a held Postgres runtime
-store, project-scoped runtime tools, chat integration, and an `/admin/logs`
-dashboard. The next product step is to make logs useful at operational scale.
+Make GitHub push-triggered reingestion deterministic, observable, secure, and
+patch-first. A push to a registered GitHub project must leave enough durable
+evidence to answer: did the webhook arrive, did it match the right project, did
+Git diff inspection work, why was the update skipped/patched/regenerated/manual,
+did RAG sync complete, and was `last_ingested_commit_sha` advanced?
 
-This feature adds a smart runtime-log intelligence layer that converts raw log
-events into bounded, project-scoped insight records: enriched log fields,
-execution summaries, incidents, error signatures, timelines, and evidence
-references. Chat should use those records first, then fetch a small number of raw
-log lines only as evidence. The dashboard should show the same derived insights
-so users can see "what failed and why" without reading or waiting on raw logs.
-
-The core design principle is: raw logs are evidence, not the primary chat
-abstraction.
+The implementation should repair the current trust gaps without changing the
+core documentation quality goals. Small bounded changes should patch existing
+docs. Regeneration should be a last-case fallback because it can cost roughly
+2M-8M tokens. Existing projects also need a repair/rebaseline path because live
+inspection found authentication failures, tokenized remotes, missing baseline
+SHAs, and missing `_rag_support`/`analysis_cache` artifacts.
 
 ## Problem
 
-Raw runtime logs exist, but they are still too low-level. The system can store log
-lines, list executions, detect failures, and fetch logs, but users still have to
-interpret the operational meaning themselves.
+The current Git reingestion mechanism is not trusted in normal use. Webhooks are
+hard to set up, may not fire consistently, and no successful production-like
+patch update has been observed. Unit tests for the isolated services pass, but
+they do not prove real GitHub delivery, real private-repo auth behavior, or an
+end-to-end patch from GitHub push through RAG sync.
 
-This breaks down at realistic volume. A project may have hundreds of thousands or
-millions of log lines. Pushing large windows of those lines into an LLM would
-create token bloat, high latency, higher cost, and unreliable answers. It also
-increases the risk that the model overfits noise or presents guesses as facts.
+Observed issues from the 2026-06-18 analysis:
 
-The current runtime chat tools are useful for retrieval, but not yet for insight:
-they can answer "show me the logs" but not reliably "what broke, why did it
-break, has this happened before, and what should I check next?"
+- Some live Git projects have `auto_reingest_error=authentication_failed`.
+- Some live Git projects have no `last_ingested_commit_sha`, so incremental
+  patching cannot safely run on the next push.
+- Several existing Git remotes are persisted with embedded credentials, which is
+  both a reliability defect and a security defect.
+- Sampled generated-doc directories lack `_rag_support/phase2_analysis` and
+  `analysis_cache`, so targeted regeneration falls back to full generation.
+- The patch versus regenerate policy exists in code, but the operational
+  contract is not explicit enough to make cost and correctness predictable.
+- A partial success, especially docs updated but RAG stale, is hard to diagnose
+  from the current project state alone.
 
 ## Goals
 
-1. Convert raw runtime logs into bounded, structured insight records that are
-   useful for both chat and dashboard users.
-2. Let chat answer operational questions from derived insights first, not from
-   unbounded raw log windows.
-3. Preserve raw log lines as evidence that can be quoted or referenced when
-   supporting a finding.
-4. Surface smart-log insight in the dashboard: failed component, likely cause,
-   evidence, timeline, and next checks.
-5. Keep project isolation explicit and enforced across raw logs, enriched events,
-   summaries, incidents, signatures, dashboard views, and chat tools.
-6. Support high-volume log data by using indexed structured queries and bounded
-   records rather than vectorizing or embedding raw log lines.
-7. Provide a first implementation that works end to end on seeded/mock
-   Talend-style runtime data before the real TMC sync worker exists.
+- Make webhook setup and delivery easy to verify from project state, logs, and a
+  repeatable smoke test.
+- Persist one clear reingestion outcome per push in `git_update_summary`, with
+  the decision, reason, source SHA, target SHA, touched files, and RAG result.
+- Make patch the default for small, bounded, doc-relevant changes that can be
+  safely mapped to existing documentation.
+- Make skip/manual/targeted-regeneration/full-regeneration decisions explicit
+  and testable.
+- Prevent personal access tokens or other credentials from being persisted in
+  `.git/config`, project summaries, logs, or API responses.
+- Provide a repair/rebaseline path for existing Git projects with tokenized
+  remotes, auth failures, missing baseline SHAs, or missing support cache.
+- Preserve the current server-side RAG push contract: MCP pushes generated or
+  patched markdown through `RagBridge` and the RAG backend ingest APIs.
+- Keep old docs intact when generation fails, using the existing staging swap
+  behavior.
 
 ## Non-Goals
 
-- Building the real Talend TMC sync worker or any production ingestion worker.
-- Runtime write actions such as retry, acknowledge, resolve, rerun, or edit.
-- Full operational analytics dashboards such as SLA reporting, long-term
-  success-rate charts, or capacity planning.
-- Replacing raw log viewing. Raw logs remain available as detail/evidence.
-- Sending large raw log windows directly to the LLM as the main strategy.
-- Production-grade alert routing. Optional alert/email design hooks may be
-  included if cheap, but alert delivery is not the primary deliverable.
-- Reworking document ingestion, embeddings, chunking, or Qdrant retrieval.
+- Migrating from webhook secrets/PATs to a GitHub App.
+- Redesigning the dashboard beyond necessary webhook/reingestion visibility and
+  operator actions.
+- Changing generated documentation quality requirements.
+- Changing the RAG retrieval algorithm.
+- Changing auth/RBAC behavior except where needed to keep webhook and project
+  access checks intact.
+- Changing the core documentation generation prompt strategy except where needed
+  to reuse existing outputs and support incremental generation correctly.
 
 ## User Stories
 
-1. As a developer, I want to ask "why did job X fail?" and receive a short answer
-   with failed component, likely cause, key evidence, and next checks, so I can
-   diagnose faster than reading the full log stream.
-
-2. As an operator, I want the logs dashboard to show a smart failure summary for
-   a failed execution, so I can immediately see what matters before drilling into
-   raw log lines.
-
-3. As a developer, I want the bot to answer "has this happened before?" by
-   comparing the current failure signature to prior incidents, so I can
-   distinguish a new issue from a recurring one.
-
-4. As a user working on project A, I want chat and dashboard results to include
-   only project A runtime data, so unrelated customer/project logs never appear.
-
-5. As an admin, I want bounded and explainable runtime answers, so the system does
-   not waste tokens or latency by pushing excessive logs into the LLM.
-
-6. As a future operator, I want the architecture to leave room for alerting, so
-   repeated or severe incidents can later trigger email or notification flows.
+- As an operator, I can register or verify a GitHub webhook and see whether a
+  `ping` event reached the MCP server and matched the expected project.
+- As an operator, after pushing a small code or config change, I can see the
+  update classified as a bounded patch, with patched files and RAG sync status.
+- As an operator, after pushing a broad or unsafe change, I can see exactly why
+  the system selected targeted regeneration, full regeneration, or manual review.
+- As an operator, I can repair an existing project so its Git remote is clean,
+  Git auth works, baseline SHA is known, and support cache state is visible.
+- As a maintainer, I can run a local/smoke test that simulates or exercises a
+  GitHub push and proves the workflow from webhook receipt through SHA advance.
+- As a maintainer, I can audit logs and summaries without seeing raw credentials.
 
 ## Functional Requirements
 
-### Runtime Enrichment
+### Webhook Receipt and Matching
 
-1. The system must provide a deterministic enrichment step for runtime log events.
-   It must extract structured fields when present:
-   - component name, e.g. `tOracleConnection_1`
-   - error code, e.g. `ORA-12170`
-   - exception class, e.g. `SQLRecoverableException`
-   - retry attempt data, e.g. `3/3`
-   - duration/timeout values
-   - endpoint, queue, host, database, table, or connection identifiers when safely
-     available
-2. Enrichment must be deterministic and testable. Regex/parser extraction is the
-   first layer. LLM-generated enrichment is optional and must not be required on
-   the critical path.
-3. Enriched data must preserve project scope and execution id.
-4. Enriched records must never store unredacted credentials or secrets.
+- The GitHub webhook endpoint must verify HMAC signatures unless the explicit
+  development bypass is enabled.
+- `ping` events must return a clear matched/unmatched result and persist project
+  evidence such as `last_webhook_ping_at`, matched repository URL, and any
+  mismatch reason.
+- `push` events must persist durable run evidence before and after processing,
+  even when processing fails early.
+- Repository matching must handle canonical URL variants, including `.git`
+  suffix differences and sanitized URLs.
+- Unregistered repositories must be rejected or recorded as unmatched without
+  triggering scan, patch, generation, or RAG sync.
 
-### Execution Summary
+### Git Credential and Remote Handling
 
-5. The system must create or update one execution summary per runtime execution.
-6. The summary must include:
-   - project id
-   - execution id
-   - job name
-   - state
-   - start/end/duration
-   - warning count
-   - error count
-   - first warning timestamp when present
-   - first error timestamp when present
-   - final error timestamp when present
-   - detected failed component when present
-   - primary error code when present
-   - primary exception class when present
-   - short human-readable summary
-   - bounded evidence references
-7. The summary must be bounded and suitable for LLM context without including a
-   large raw log payload.
+- Clone, fetch, diff, poller, patcher, and reingestion paths must use credentials
+  only for the active Git operation and must restore the clean remote URL in a
+  `finally` path.
+- Newly registered Git projects must not persist tokenized remotes after clone.
+- Existing projects must have a repair routine that detects and cleans tokenized
+  remotes, then verifies fetch access using the stored credential.
+- Logs, errors, project summaries, and API responses must redact credentials.
+- Tests must cover clone/setup, fetch failure, fetch success, diff inspection,
+  patcher, poller, and reingestion remote restoration.
 
-### Incidents and Error Signatures
+### Reingestion State Machine
 
-8. The system must create an incident record for failed executions.
-9. Incident records must include:
-   - incident id
-   - project id
-   - execution id
-   - job name
-   - failed component when detectable
-   - error signature
-   - root-cause candidate
-   - confidence or certainty level
-   - symptom summary
-   - first bad timestamp
-   - last known healthy timestamp when derivable
-   - evidence references
-   - next-check suggestions
-10. Error signatures must normalize repeated failures across executions. At
-    minimum, a signature should combine available fields such as job name,
-    component, error code, exception class, and normalized message family.
-11. The system must support finding similar incidents by project scope and error
-    signature.
+- Every push must resolve to exactly one top-level outcome:
+  `skip`, `bounded_patch`, `targeted_regen`, `full_regen`, `manual_review`, or
+  `failed`.
+- Each outcome must include a machine-readable reason code and a human-readable
+  explanation in `git_update_summary`.
+- The state machine must record at least these stages:
+  `webhook_received`, `project_matched`, `git_fetch_started`,
+  `git_fetch_completed`, `diff_inspected`, `decision_made`,
+  `execution_started`, `rag_sync_started`, `rag_sync_completed`,
+  `sha_advanced`, and `failed`.
+- `last_ingested_commit_sha` must advance only after the selected update path
+  and required RAG sync finish successfully.
+- If RAG sync fails after docs are updated, the project must record a distinct
+  RAG error state and must not pretend the push is fully ingested.
 
-### Evidence Model
+### Patch-First Decision Policy
 
-12. Evidence references must point back to specific raw log events or bounded
-    excerpts.
-13. Evidence must be retrievable for dashboard and chat without exposing data
-    outside the caller's project scope.
-14. Chat answers must distinguish:
-    - evidence facts from logs
-    - inferred likely cause
-    - uncertainty or missing evidence
-    - recommended next checks
+- `skip` is valid only for ignored or clearly non-doc-impacting changes.
+- `bounded_patch` is valid only when all of these are true:
+  - The project has a known baseline SHA and existing docs.
+  - The diff is small enough for the configured patch thresholds.
+  - Changed files are doc-relevant and map to existing generated docs/sections.
+  - The patcher can produce bounded markdown changes without broad rewrites.
+  - Patch validation passes before RAG sync.
+- `manual_review` is required when there is no safe automated action, including
+  first push without baseline, missing docs, unregistered repo, auth failure,
+  unknown project match, no mapped docs, unsafe diff, or patch validation failure.
+- `targeted_regen` is valid when patching is unsafe but changed groups can be
+  resolved and required generation cache/support artifacts are usable.
+- `full_regen` is valid only when a baseline must be created, targeted cache is
+  missing or invalid, changed scope is too broad for targeted regeneration, or a
+  successful repair/rebaseline explicitly requires it.
+- Regeneration decisions must record an estimated cost or at least a clear
+  "expensive fallback" flag before running.
 
-### Runtime Intelligence Tools
+### Generation, Cache, and RAG Sync
 
-15. Add high-level runtime intelligence tools alongside the existing low-level
-    tools. Initial tools should include:
-    - `analyze_execution_failure(execution_id)`
-    - `get_execution_timeline(execution_id)`
-    - `find_similar_failures(execution_id | error_signature)`
-    - `get_runtime_incident(incident_id)`
-16. Existing low-level tools (`list_executions`, `detect_failures`,
-    `get_execution_details`, `get_execution_logs`) must remain available for raw
-    retrieval and evidence drilldown.
-17. Chat tool guidance must prefer high-level insight tools for failure-analysis
-    questions and use raw-log tools only for evidence/detail.
-18. Tool results must be redacted, bounded, and project-scoped.
+- Bounded patch must push only patched top-level markdown files to RAG.
+- Targeted/full regeneration must preserve the existing staging swap contract:
+  write to `docs_staging/`, swap to `docs/` only on success, and delete failed
+  staging output without losing old docs.
+- Regeneration must push canonical top-level markdown docs to RAG and sync any
+  supported internal layers through the existing server-side bridge.
+- Successful generation must rebuild or restore `analysis_cache` from
+  `_rag_support/phase2_analysis` when the support package exists.
+- If `_rag_support` or `analysis_cache` is missing, the system must record the
+  fallback reason and avoid presenting targeted regeneration as available.
+- Removed docs must be deleted from RAG when regeneration removes them.
 
-### Chat Behavior
+### Existing Project Repair and Rebaseline
 
-19. Chat must answer seeded failure-analysis questions using smart-log insight
-    records instead of unbounded raw log lines.
-20. Chat answers for runtime failures must follow this shape:
-    - finding
-    - evidence
-    - likely cause
-    - next checks
-    - uncertainty or missing data, when relevant
-21. Chat must not present inferred causes as proven facts. It must label likely
-    causes as likely/probable unless direct evidence proves them.
-22. Chat must preserve the existing docs+logs cross-reference behavior where
-    applicable: runtime insights may be combined with indexed documentation in
-    the same answer.
+- Provide an operator-safe repair flow for each Git project:
+  clean remote URL, verify stored credential fetch, inspect baseline SHA, inspect
+  docs/support-cache state, and report the next safe action.
+- The repair flow must not run expensive generation without an explicit operator
+  action or an approved plan step.
+- Projects with no `last_ingested_commit_sha` must be marked as needing baseline
+  rather than trying to patch an unknown diff.
+- Projects with missing `_rag_support`/`analysis_cache` must be marked as needing
+  full rebaseline before targeted regeneration can be trusted.
 
-### Dashboard Behavior
+### Verification and Observability
 
-23. The `/admin/logs` page must surface smart-log insight for failed executions.
-24. The failed execution drilldown must show:
-    - summary
-    - failed component
-    - likely cause
-    - evidence log lines
-    - timeline
-    - similar incidents count or list when available
-    - raw log lines as a detail panel
-25. Dashboard loading, error, and empty states must remain explicit.
-
-### Project Scope and Authorization
-
-26. Every new read path must derive scope from the authenticated user, not from
-    query params or LLM tool arguments.
-27. Optional `project_id` filters may narrow scope only. They must never widen it.
-28. Cross-project incident lookup by guessed id, execution id, or signature must
-    return 404 or empty results without revealing existence.
+- Add or update automated tests for webhook ping/push, repo matching,
+  token-safe remotes, patch decisioning, manual-review fallbacks, targeted/full
+  regen fallbacks, RAG sync success/failure, and SHA advancement.
+- Add a smoke script or documented runbook for a real or local GitHub-style push:
+  commit/push to test repo, webhook received, decision recorded, patch or regen
+  executed, RAG sync observed, and SHA advanced.
+- Minimal dashboard/API visibility must show webhook status, last ping, last push
+  outcome, last error, last ingested SHA, remote hygiene status, and cache
+  readiness.
 
 ## Non-Functional Requirements
 
-- Token efficiency: chat must not include more than a bounded summary plus a small
-  evidence set for a failure-analysis answer. Raw log context must be capped.
-- Latency: high-level insight reads should target sub-200ms p95 for normal
-  dashboard/API reads over indexed rows.
-- Scalability: data model and indexes must be suitable for high-volume logs. The
-  design must avoid full-table scans for common reads by project, execution,
-  incident, signature, and timestamp.
-- Security: credentials/secrets must be redacted before enrichment output,
-  dashboard display, or LLM context.
-- Reliability: deterministic parser tests must cover the seeded Talend-style
-  failure and representative non-matching log lines.
-- Explainability: every runtime answer must be traceable back to evidence or
-  explicitly marked as inference.
-- No new dependencies unless a later plan justifies them. Prefer Python stdlib
-  regex/parsing and existing SQLAlchemy/FastAPI patterns.
+- Security: no raw PATs or secrets in Git remotes, logs, summaries, test output,
+  or API responses.
+- Cost control: full regeneration must be explicitly justified and visible before
+  running whenever an operator path is involved.
+- Reliability: processing must be idempotent for duplicate GitHub deliveries and
+  must not run two conflicting reingestions for the same project/SHA.
+- Observability: every failure path must leave a specific reason code and enough
+  context to diagnose the next action without reading container internals first.
+- Performance: webhook handlers should acknowledge promptly and do long-running
+  scan/generation/RAG work in background tasks.
+- Compatibility: public and private GitHub repositories must remain supported.
+- Maintainability: duplicated Git token/remote logic should be centralized in a
+  small service or helper used by all Git paths.
+- Code quality: Python changes must keep type hints, async I/O boundaries, and
+  specific exception handling.
 
 ## Architecture Impact
 
-### Backend Runtime Store
-
-Add derived runtime intelligence models/tables, likely including:
-
-- `runtime_enriched_events`
-- `runtime_execution_summaries`
-- `runtime_incidents`
-- `runtime_error_signatures`
-- optional `runtime_incident_evidence`
-
-These should be additive migrations. Existing raw runtime tables remain the
-source of truth.
-
-### Runtime Repository and Services
-
-Add a service layer for enrichment and summarization, likely under
-`src/runtime/insights/` or `src/runtime/intelligence/`, while keeping raw store
-access in `RuntimeStoreRepository`.
-
-Expected responsibilities:
-
-- parse/enrich raw log events
-- build execution summaries
-- create incident records
-- compute normalized error signatures
-- fetch evidence windows
-- expose high-level query methods for tools and API routes
-
-### Runtime Tool Registry
-
-Extend `src/runtime/registry.py` and provider/tool execution with high-level
-insight tools. The `stored` provider should satisfy these from Postgres-derived
-insight tables. Low-level provider contracts remain intact.
-
-### Conversational RAG
-
-Update `agent_loop` runtime guidance so failure questions use high-level insight
-tools before raw logs. Existing `RequestScope` coupling must continue to thread
-the same authenticated project allow-list to docs and runtime tools.
-
-### Runtime API
-
-Add read-only endpoints for smart-log insights, for example:
-
-- `GET /api/v1/runtime/executions/{execution_id}/summary`
-- `GET /api/v1/runtime/incidents`
-- `GET /api/v1/runtime/incidents/{incident_id}`
-- `GET /api/v1/runtime/incidents/{incident_id}/evidence`
-- `GET /api/v1/runtime/incidents/{incident_id}/similar`
-
-Exact endpoint shape can be finalized in slices, but all endpoints must be
-project-scoped.
-
-### Frontend Dashboard
-
-Extend `/admin/logs` rather than creating a separate dashboard first. The page
-should show smart summaries and incidents beside raw execution/log detail.
-
-### Auth/RBAC
-
-This feature touches auth/RBAC because every derived artifact is project-scoped
-and must be protected with the same rigor as raw logs. Similar-failure queries
-are especially sensitive because signatures can accidentally reveal that another
-project has the same failure.
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py` will need
+  stronger durable event evidence, canonical project matching, and clearer early
+  failure summaries.
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` may need
+  updates for Git project registration, webhook status, repair/rebaseline
+  actions, and any background generation/RAG state reporting.
+- `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py` should
+  become the explicit decision/state-machine owner for skip, patch, regeneration,
+  manual review, and failure reason codes.
+- `knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py`,
+  `git_poller.py`, and `git_reingestion.py` should share centralized
+  credential-safe Git remote handling instead of each managing remotes directly.
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py` and the RAG
+  ingest endpoints may need tighter success/failure reporting, but RAG retrieval
+  behavior is not in scope.
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_support_package.py` and
+  generation background logic must keep the `_rag_support` to `analysis_cache`
+  contract visible to reingestion decisions.
+- Dashboard changes, if any, should be limited to operational status and repair
+  controls needed to validate webhook/reingestion health.
+- Deployment docs such as `deploy/WEBHOOK-SETUP.md` should be updated to match
+  the verified setup and smoke-test flow.
 
 ## Implementation Phases
 
-### Phase 1: Data Model and Deterministic Enrichment
-
-Deliver:
-
-- Add additive migration(s) for enriched events, execution summaries, incidents,
-  signatures, and evidence references.
-- Implement deterministic parser for seeded Talend-style logs.
-- Add enrichment/summarization service operating on existing raw log events.
-- Extend seed flow or add a developer command to build insights for seeded data.
-
-Validation:
-
-- Seeded rich Talend failure produces extracted component, error code,
-  exception class, retry information, and evidence references.
-- Parser handles non-matching lines without false positives or crashes.
-- Project scope columns exist on all derived tables.
-
-### Phase 2: Insight Repository and High-Level Tools
-
-Deliver:
-
-- Add repository methods for execution summary, incident detail, timeline,
-  evidence, and similar failures.
-- Add high-level runtime tools:
-  - `analyze_execution_failure`
-  - `get_execution_timeline`
-  - `find_similar_failures`
-  - `get_runtime_incident`
-- Update runtime tool guidance to prefer insight tools for failure analysis.
-
-Validation:
-
-- Chat/tool tests show the model can answer "why did this fail?" using
-  `analyze_execution_failure`.
-- Cross-project tests prove tool arguments cannot widen scope.
-- Tool payloads are bounded and do not include large raw logs.
-
-### Phase 3: Chat Answer Quality and Evidence Discipline
-
-Deliver:
-
-- Update runtime answer guidance to use Finding/Evidence/Likely Cause/Next Checks.
-- Ensure answers label inference and evidence separately.
-- Preserve docs+logs cross-reference behavior where project docs are relevant.
-
-Validation:
-
-- Seeded failed Talend run -> chat explains job, component, likely cause,
-  evidence lines, and next checks.
-- Answer includes no large raw log dump.
-- Answer does not claim certainty when only inferred evidence exists.
-
-### Phase 4: Dashboard Smart-Log UI
-
-Deliver:
-
-- Extend `/admin/logs` to show execution summary and incident insight.
-- Add incident/timeline/evidence panels.
-- Add similar-failure count/list when available.
-- Keep raw log drilldown available.
-
-Validation:
-
-- Dashboard displays the smart summary for seeded failure without requiring the
-  user to read raw logs.
-- Evidence panel links or shows bounded raw lines.
-- Loading, error, and empty states render cleanly.
-
-### Phase 5: Optional Alerting Groundwork
-
-Deliver only if cheap and non-disruptive:
-
-- Add fields that would later support alerting, such as severity, repeated count,
-  first_seen_at, last_seen_at, and notification eligibility.
-- Do not implement production email delivery unless explicitly reprioritized.
-
-Validation:
-
-- Incident data contains enough metadata for a future alerting slice.
+1. Git credential safety and repair foundation:
+   centralize clean/injected remote handling, stop future token persistence, add
+   detection/cleanup for existing tokenized remotes, and test all Git paths.
+2. Webhook observability and setup verification:
+   persist ping/push receipt evidence, normalize repository matching, expose
+   last delivery status, and document/setup smoke checks.
+3. Patch-first decision state machine:
+   make the outcome policy explicit, add reason codes, ensure manual review is
+   chosen for unsafe cases, and gate SHA advancement on successful execution and
+   RAG sync.
+4. Rebaseline and cache readiness:
+   inspect baseline SHA, docs, `_rag_support`, and `analysis_cache`; provide a
+   safe repair report/action path; make targeted/full regeneration fallback
+   reasons visible.
+5. End-to-end validation:
+   run focused MCP/RAG tests plus a real or locally simulated GitHub push smoke
+   test that proves webhook to decision to patch/regen to RAG to SHA advancement.
 
 ## Risks and Open Questions
 
-1. Regex may be too brittle for real customer logs. Mitigation: keep parser
-   modular, deterministic, and conservative; store confidence/unknown states
-   instead of overclaiming.
-2. Component names may not reliably join to indexed docs. Mitigation: first
-   version can correlate by component/job text; later slices may improve metadata
-   or entity aliases.
-3. Similar-failure clustering may leak cross-project existence if not scoped at
-   every query. Mitigation: project scope is mandatory on all signature queries.
-4. Incident summaries may become stale if raw logs are re-seeded or re-ingested.
-   Mitigation: derived rows should be rebuildable/idempotent per project/source/
-   execution.
-5. Root-cause candidates may be wrong. Mitigation: answer format separates
-   evidence from likely cause and includes uncertainty.
-6. High-volume performance depends on indexes and bounded queries. Migration and
-   repository design must be explicit about query paths.
-7. Real TMC log format is not confirmed in this feature. The design must not bake
-   in Talend-only assumptions beyond first parser modules.
+- Real GitHub delivery can fail outside code because of public URL, tunnel,
+  reverse proxy, secret mismatch, webhook event configuration, or GitHub repo
+  permissions.
+- Private repo auth may fail after cleaning remotes if token injection/restoration
+  is incomplete in any Git path.
+- Existing projects may require one expensive rebaseline before patch-first or
+  targeted regeneration can be trusted.
+- A patch policy that is too aggressive can corrupt docs; a policy that is too
+  conservative can trigger expensive regeneration too often.
+- RAG sync may need better partial-failure semantics if docs swap succeeds but
+  indexing fails.
+- Open question: should durable webhook/reingestion history stay in existing
+  JSON fields, or should a small run/event table be added for auditability?
+- Open question: what is the exact production webhook URL and is it stable
+  enough for GitHub delivery without a tunnel?
+- Open question: which existing projects should be rebaselined first after the
+  repair flow is available?
 
 ## Acceptance Criteria
 
-- [ ] A seeded rich Talend failure produces an execution summary with failed job,
-  failed component, error code, exception class, warning/error counts, and bounded
-  evidence references.
-- [ ] A failed execution produces an incident with root-cause candidate, symptom
-  summary, timeline fields, next checks, and an error signature.
-- [ ] Chat can answer "why did this job fail?" from the incident/summary without
-  dumping raw logs into the prompt.
-- [ ] Chat answer includes Finding, Evidence, Likely Cause, and Next Checks.
-- [ ] Chat answer references a small bounded evidence set and separates inference
-  from fact.
-- [ ] Dashboard shows smart failure insight for the seeded failed execution
-  alongside raw log drilldown.
-- [ ] Similar-failure lookup works for same-project seeded examples and does not
-  return cross-project matches.
-- [ ] A user scoped to project A cannot access project B summaries, incidents,
-  evidence, raw logs, signatures, or chat answers.
-- [ ] Parser tests cover component extraction, error code extraction, exception
-  extraction, retry extraction, and safe no-match behavior.
-- [ ] New API/tool payloads are bounded and redacted.
-- [ ] Relevant backend tests pass, and frontend typecheck/tests pass for dashboard
-  changes when those slices are implemented.
+- Focused MCP tests pass for webhook route, Git poller, auto-doc update, Git
+  reingestion, RAG support package, RAG bridge, and Git diff patcher.
+- Focused RAG ingest tests pass for markdown ingest/delete/internal-layer
+  behavior touched by this work.
+- No newly cloned or fetched Git project persists credentials in `.git/config`.
+- Existing sampled Git projects can be reported as clean or repaired without
+  exposing credentials.
+- A webhook `ping` records matched project evidence and is visible through the
+  project status path.
+- A simulated or real `push` for a small bounded change records
+  `bounded_patch`, patches only expected docs, pushes those docs to RAG, and
+  advances `last_ingested_commit_sha` only after RAG success.
+- A push with no baseline or missing docs records `manual_review` or
+  `full_regen_required` without silently running an expensive regeneration.
+- A push that cannot safely patch records a targeted/full regeneration reason,
+  cache readiness, and expected cost/fallback status before regeneration.
+- RAG sync failure is recorded distinctly and does not masquerade as a fully
+  ingested commit.
+- `deploy/WEBHOOK-SETUP.md` or an equivalent runbook contains the verified
+  webhook setup and end-to-end smoke-test procedure.
+- Because MCP API routes and harness-adjacent generation behavior are in scope,
+  `/inspect` is run before commit.

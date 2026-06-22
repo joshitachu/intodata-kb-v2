@@ -124,6 +124,7 @@ class StoredRuntimeProvider:
             symptom_summary=incident.symptom_summary if incident else None,
             root_cause_candidate=incident.root_cause_candidate if incident else None,
             confidence=incident.confidence if incident else None,
+            cause_origin=incident.cause_origin if incident else None,
             next_checks=incident.next_checks if incident else [],
             evidence=evidence,
         )

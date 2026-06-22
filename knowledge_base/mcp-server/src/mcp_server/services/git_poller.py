@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
+from mcp_server.services.git_remote_service import fetch_remote, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.utils.error_sanitizer import sanitize_git_error
@@ -38,33 +38,11 @@ async def run_webhook_diff_update(
 
 
 async def _git_output(local_path: str, *args: str) -> str:
-    from mcp_server.services.git_diff_patcher import _run_git
-    return await _run_git(local_path, *args, timeout=30.0, strip=True)
-
-
-async def _set_remote_url(local_path: str, url: str) -> None:
-    await _git_output(local_path, "remote", "set-url", "origin", url)
+    return await run_git(local_path, *args, timeout=30.0, strip=True)
 
 
 async def _fetch_remote(local_path: str, token_enc: str | None = None) -> None:
-    clean_url: str | None = None
-    if token_enc:
-        from mcp_server.utils.encryption import inject_token as _inject_token
-        try:
-            clean_url = await _git_output(local_path, "remote", "get-url", "origin")
-            authed_url = _inject_token(clean_url, token_enc)
-            await _set_remote_url(local_path, authed_url)
-        except Exception as exc:
-            logger.warning("Failed to inject token into remote URL for %s: %s", local_path, exc)
-            clean_url = None
-    try:
-        await _git_output(local_path, "fetch", "--quiet")
-    finally:
-        if clean_url:
-            try:
-                await _set_remote_url(local_path, clean_url)
-            except Exception as exc:
-                logger.warning("Failed to restore clean remote URL for %s: %s", local_path, exc)
+    await fetch_remote(local_path, token_enc, remote="origin", git_func=_git_output)
 
 
 async def _remote_head_sha(local_path: str) -> str:

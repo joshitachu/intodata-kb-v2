@@ -11,6 +11,7 @@ from mcp_server.services.rag_support_package import (
     build_entity_aliases,
     build_rag_support_package,
     collect_internal_artifacts,
+    inspect_generation_cache_readiness,
     internal_doc_filename,
     replace_analysis_cache_from_rag_support,
 )
@@ -147,6 +148,105 @@ def test_cache_restore_treats_empty_package_as_absent(tmp_path: Path) -> None:
         "an empty package must not leave an empty cache dir — "
         "incremental regen must fall back to full regeneration"
     )
+
+
+def test_cache_readiness_distinguishes_support_package_from_flat_cache(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output" / "proj"
+    docs = output_dir / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output_dir / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (support / "A.md").write_text("# A analysis", encoding="utf-8")
+    (cache / "A.md").write_text("# A analysis", encoding="utf-8")
+
+    readiness = inspect_generation_cache_readiness(
+        output_dir,
+        has_baseline=True,
+        changed_groups={"A"},
+    )
+
+    assert readiness.has_docs is True
+    assert readiness.has_rag_support is True
+    assert readiness.has_analysis_cache is True
+    assert readiness.rag_support_analysis_count == 1
+    assert readiness.analysis_cache_count == 1
+    assert readiness.targeted_regen_ready is True
+    assert readiness.requires_full_rebaseline is False
+    assert readiness.reason_codes == []
+
+
+def test_cache_readiness_requires_rebaseline_when_support_is_missing(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output" / "proj"
+    docs = output_dir / "docs"
+    cache = output_dir / "analysis_cache"
+    docs.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (cache / "A.md").write_text("# A cache", encoding="utf-8")
+
+    readiness = inspect_generation_cache_readiness(
+        output_dir,
+        has_baseline=True,
+        changed_groups={"A"},
+    )
+
+    assert readiness.has_docs is True
+    assert readiness.has_analysis_cache is True
+    assert readiness.has_rag_support is False
+    assert readiness.targeted_regen_ready is False
+    assert readiness.requires_full_rebaseline is True
+    assert readiness.reason_codes == ["missing_rag_support"]
+
+
+def test_cache_readiness_detects_stale_flat_cache(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output" / "proj"
+    docs = output_dir / "docs"
+    support = docs / "_rag_support" / "phase2_analysis"
+    cache = output_dir / "analysis_cache"
+    support.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (support / "A.md").write_text("# Fresh analysis", encoding="utf-8")
+    (cache / "A.md").write_text("# Stale analysis", encoding="utf-8")
+
+    readiness = inspect_generation_cache_readiness(
+        output_dir,
+        has_baseline=True,
+        changed_groups={"A"},
+    )
+
+    assert readiness.has_rag_support is True
+    assert readiness.has_analysis_cache is True
+    assert readiness.cache_support_match is False
+    assert readiness.targeted_regen_ready is False
+    assert readiness.requires_full_rebaseline is True
+    assert readiness.reason_codes == ["analysis_cache_rag_support_mismatch"]
+
+
+def test_cache_restore_makes_targeted_readiness_usable(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output" / "proj"
+    docs = output_dir / "docs"
+    package_dir = docs / "_rag_support" / "phase2_analysis"
+    package_dir.mkdir(parents=True)
+    (docs / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+    (package_dir / "A.md").write_text("# Group A analysis", encoding="utf-8")
+
+    assert replace_analysis_cache_from_rag_support(output_dir) is True
+
+    readiness = inspect_generation_cache_readiness(
+        output_dir,
+        has_baseline=True,
+        changed_groups={"A"},
+    )
+    assert readiness.targeted_regen_ready is True
+    assert readiness.analysis_cache_count == 1
+    assert readiness.rag_support_analysis_count == 1
 
 
 # ---------------------------------------------------------------------------

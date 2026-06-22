@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,7 +19,13 @@ from mcp_server.model_strategies.registry import create_model_provider, normaliz
 from mcp_server.providers.custom.models import ModelOptions
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
-from mcp_server.services.rag_bridge import RagBridge
+from mcp_server.services.rag_bridge import RagBridge, rag_push_succeeded
+from mcp_server.services.git_remote_service import (
+    fetch_remote,
+    git_subprocess_env,
+    pull_remote_ff_only,
+)
+from mcp_server.utils.error_sanitizer import sanitize_git_error
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,29 @@ GENERIC_IMPACT_TERMS = {
     "test",
     "tests",
     "validation",
+}
+
+OUTCOME_SKIP = "skip"
+OUTCOME_BOUNDED_PATCH = "bounded_patch"
+OUTCOME_TARGETED_REGEN = "targeted_regen"
+OUTCOME_FULL_REGEN = "full_regen"
+OUTCOME_MANUAL_REVIEW = "manual_review"
+OUTCOME_FAILED = "failed"
+NORMALIZED_OUTCOMES = {
+    OUTCOME_SKIP,
+    OUTCOME_BOUNDED_PATCH,
+    OUTCOME_TARGETED_REGEN,
+    OUTCOME_FULL_REGEN,
+    OUTCOME_MANUAL_REVIEW,
+    OUTCOME_FAILED,
+}
+_ACTION_OUTCOMES = {
+    "skipped": OUTCOME_SKIP,
+    "patched": OUTCOME_BOUNDED_PATCH,
+    "targeted_regen": OUTCOME_TARGETED_REGEN,
+    "full_regen": OUTCOME_FULL_REGEN,
+    "manual_review": OUTCOME_MANUAL_REVIEW,
+    "failed": OUTCOME_FAILED,
 }
 
 
@@ -104,6 +132,81 @@ class DocObligation:
             "source_paths": list(self.source_paths),
             "required": self.required,
         }
+
+
+def normalized_outcome(action: str) -> str:
+    """Map legacy internal actions to the operator-facing outcome vocabulary."""
+    return _ACTION_OUTCOMES.get(action, OUTCOME_FAILED)
+
+
+def reason_code_for(action: str, reason: str | None = None) -> str:
+    """Return a stable operator-facing reason code for Git update summaries."""
+    outcome = normalized_outcome(action)
+    lowered = (reason or "").lower()
+    if "first push" in lowered or "initial manual scan" in lowered:
+        return "missing_baseline"
+    if "only ignored" in lowered or "non-doc-impacting" in lowered:
+        return "non_doc_change"
+    if "no changed files" in lowered:
+        return "no_changed_files"
+    if "no relevant changed hunks" in lowered:
+        return "no_relevant_hunks"
+    if "no existing docs found" in lowered:
+        return "missing_docs"
+    if "could not be mapped" in lowered:
+        return "unmapped_diff"
+    if "could not be narrowed" in lowered:
+        return "unsafe_scope"
+    if "too large" in lowered or "max summarized patch" in lowered:
+        return "unsafe_scope"
+    if "validation failed" in lowered or "required obligations" in lowered:
+        return "validation_failed"
+    if "rag push failed" in lowered or "rag sync failed" in lowered:
+        return "rag_sync_failed"
+    if "invalid json" in lowered:
+        return "invalid_agent_output"
+    if "patch model failed" in lowered:
+        return "patch_model_failed"
+    if "confidence too low" in lowered:
+        return "low_confidence"
+    if "no doc edits" in lowered or "no applicable doc edits" in lowered:
+        return "no_doc_edits"
+    if "targeted regeneration failed" in lowered:
+        return "regen_failed"
+    if outcome == OUTCOME_SKIP:
+        return "skip"
+    if outcome == OUTCOME_BOUNDED_PATCH:
+        return "bounded_patch_succeeded"
+    if outcome == OUTCOME_TARGETED_REGEN:
+        return "targeted_regen_succeeded"
+    if outcome == OUTCOME_FULL_REGEN:
+        return "full_regen_succeeded"
+    if outcome == OUTCOME_MANUAL_REVIEW:
+        return "manual_review"
+    return "unexpected_error"
+
+
+def _summary_with_outcome(
+    summary: dict[str, Any],
+    *,
+    action: str,
+    reason: str | None = None,
+    decision_strategy: str | None = None,
+    reason_code: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    final = dict(summary)
+    final.update(extra)
+    final["action"] = action
+    final["outcome"] = normalized_outcome(action)
+    if decision_strategy:
+        final["decision_strategy"] = decision_strategy
+    else:
+        final.setdefault("decision_strategy", final.get("strategy") or final.get("mode"))
+    if reason is not None:
+        final["reason"] = reason
+    final["reason_code"] = reason_code or reason_code_for(action, final.get("reason"))
+    return final
 
 
 async def run_webhook_diff_update(
@@ -191,6 +294,9 @@ async def _run_diff_patch(
         "validation_errors": [],
         "repair_attempts": 0,
         "action": "unknown",
+        "outcome": "unknown",
+        "reason_code": None,
+        "decision_strategy": impact_plan.get("strategy") if impact_plan else "diff_patch",
     }
     if impact_plan:
         base_summary["affected_docs"] = _coerce_string_list(impact_plan.get("affected_docs"))
@@ -207,24 +313,7 @@ async def _run_diff_patch(
         if impact_plan and impact_plan.get("strategy") == "targeted_regen":
             return _manual(base_summary, str(impact_plan.get("reason") or "Impact agent requested targeted regeneration"))
 
-        clean_url: str | None = None
-        if github_token_enc:
-            try:
-                from mcp_server.utils.encryption import inject_token as _inject_token
-                clean_url = (await _git(local_path, "remote", "get-url", "origin")).strip()
-                authed_url = _inject_token(clean_url, github_token_enc)
-                await _git(local_path, "remote", "set-url", "origin", authed_url)
-            except Exception as exc:
-                logger.warning("Failed to inject token for fetch in %s: %s", local_path, exc)
-                clean_url = None
-        try:
-            await _git(local_path, "fetch", "--quiet", "origin")
-        finally:
-            if clean_url:
-                try:
-                    await _git(local_path, "remote", "set-url", "origin", clean_url)
-                except Exception as exc:
-                    logger.warning("Failed to restore clean remote URL for %s: %s", local_path, exc)
+        await fetch_remote(local_path, github_token_enc, git_func=_git)
         name_status = await _git(local_path, "diff", "--name-status", before_sha, after_sha)
         changes = parse_name_status(name_status)
         base_summary["changed_files"] = [c.path for c in changes]
@@ -232,7 +321,15 @@ async def _run_diff_patch(
 
         decision = _preflight(changes)
         if decision:
-            return await _manual_or_skip(project_id, local_path, after_sha, base_summary, decision, log_mgr)
+            return await _manual_or_skip(
+                project_id,
+                local_path,
+                after_sha,
+                base_summary,
+                decision,
+                log_mgr,
+                github_token_enc=github_token_enc,
+            )
 
         full_diff_text = await _git(
             local_path,
@@ -256,6 +353,7 @@ async def _run_diff_patch(
                 base_summary,
                 ("skipped", "No relevant changed hunks in push"),
                 log_mgr,
+                github_token_enc=github_token_enc,
             )
         obligations = _build_doc_obligations(changes, full_diff_text)
         base_summary["obligations"] = [obligation.to_prompt() for obligation in obligations]
@@ -430,7 +528,26 @@ async def _run_diff_patch(
         )
         if rag_result.get("errors"):
             _restore_docs(docs_dir, originals)
-            return _failed(base_summary, f"RAG push failed: {rag_result['errors']}")
+            return _failed(
+                {
+                    **base_summary,
+                    "patched_docs": patched_docs,
+                    "touched_docs": patched_docs,
+                    "rag_result": rag_result,
+                },
+                f"RAG push failed: {rag_result['errors']}",
+            )
+        if not rag_push_succeeded(rag_result, expected_count=len(patched_docs)):
+            _restore_docs(docs_dir, originals)
+            return _failed(
+                {
+                    **base_summary,
+                    "patched_docs": patched_docs,
+                    "touched_docs": patched_docs,
+                    "rag_result": rag_result,
+                },
+                "RAG sync failed: not all patched docs were pushed",
+            )
 
         await _git(local_path, "pull", "--ff-only")
         await log_mgr.emit(
@@ -438,8 +555,13 @@ async def _run_diff_patch(
             f"Patched docs from Git diff: {', '.join(patched_docs)}",
             "info",
         )
-        summary = {**base_summary, "action": "patched", "patched_docs": patched_docs}
-        summary["touched_docs"] = patched_docs
+        summary = _summary_with_outcome(
+            base_summary,
+            action="patched",
+            patched_docs=patched_docs,
+            touched_docs=patched_docs,
+            rag_result=rag_result,
+        )
         return DiffPatchResult(
             action="patched",
             summary=summary,
@@ -460,7 +582,7 @@ async def _run_git(local_path: str, *args: str, timeout: float = 60.0, strip: bo
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
+        env=git_subprocess_env(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -470,7 +592,7 @@ async def _run_git(local_path: str, *args: str, timeout: float = 60.0, strip: bo
         raise RuntimeError(f"git {' '.join(args)} timed out after {timeout:.0f}s")
     if proc.returncode != 0:
         detail = stderr.decode().strip() or stdout.decode().strip()
-        raise RuntimeError(detail or f"git {' '.join(args)} failed")
+        raise RuntimeError(sanitize_git_error(detail or f"git {' '.join(args)} failed"))
     result = stdout.decode()
     return result.strip() if strip else result
 
@@ -571,14 +693,15 @@ async def _manual_or_skip(
     summary: dict[str, Any],
     decision: tuple[str, str],
     log_mgr: LogManager,
+    github_token_enc: str | None = None,
 ) -> DiffPatchResult:
     action, reason = decision
     if action == "skipped":
-        await _git(local_path, "pull", "--ff-only")
+        await pull_remote_ff_only(local_path, github_token_enc, git_func=_git)
         await log_mgr.emit(project_id, f"Git diff skipped: {reason}", "info")
         return DiffPatchResult(
             action="skipped",
-            summary={**summary, "action": "skipped", "reason": reason},
+            summary=_summary_with_outcome(summary, action="skipped", reason=reason),
             advance_commit=True,
         )
     return _manual(summary, reason)
@@ -587,7 +710,7 @@ async def _manual_or_skip(
 def _manual(summary: dict[str, Any], reason: str) -> DiffPatchResult:
     return DiffPatchResult(
         action="manual_review",
-        summary={**summary, "action": "manual_review", "reason": reason},
+        summary=_summary_with_outcome(summary, action="manual_review", reason=reason),
         error=f"Manual review required: {reason}",
     )
 
@@ -595,7 +718,7 @@ def _manual(summary: dict[str, Any], reason: str) -> DiffPatchResult:
 def _failed(summary: dict[str, Any], reason: str) -> DiffPatchResult:
     return DiffPatchResult(
         action="failed",
-        summary={**summary, "action": "failed", "reason": reason},
+        summary=_summary_with_outcome(summary, action="failed", reason=reason),
         error=reason,
     )
 

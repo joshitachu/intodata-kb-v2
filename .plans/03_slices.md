@@ -1,112 +1,125 @@
 ---
-feature: Smart Runtime Log Intelligence
+feature: Git webhook reingestion reliability and patch-first update flow
 pipeline_step: 3_slices
 total_slices: 5
 current_slice: 0
 ---
 
-## Slice 1: Deterministic Enrichment + Insight Store
+## Slice 1: Credential-safe Git operations and repair report
 
-**Delivers**: Raw seeded runtime logs can be converted into project-scoped enriched events, execution summaries, and incident records without using the LLM or dumping raw logs into context.
+**Delivers**: Git project clone/fetch/diff paths no longer persist tokenized remotes, and operators can inspect/repair existing Git projects without running expensive generation.
 
 **Expected files**:
-- `RAG_pipeline/backend/alembic/versions/032_add_runtime_insights.py` (new) — additive tables for enriched events, execution summaries, incidents, error signatures, and evidence references.
-- `RAG_pipeline/backend/src/db/models/runtime_insights.py` (new) — SQLAlchemy models for the derived insight tables, all carrying `project_id`.
-- `RAG_pipeline/backend/src/db/models/__init__.py` — export new models.
-- `RAG_pipeline/backend/src/runtime/insights/__init__.py` (new)
-- `RAG_pipeline/backend/src/runtime/insights/parser.py` (new) — deterministic parser for component names, error codes, exception classes, retry attempts, durations/timeouts, and safe no-match behavior.
-- `RAG_pipeline/backend/src/runtime/insights/builder.py` (new) — builds summaries/incidents/evidence from raw `runtime_log_events`.
-- `RAG_pipeline/backend/src/runtime/store/repository.py` — add read helpers needed by the builder, or keep raw reads reused by the builder.
-- `RAG_pipeline/backend/src/runtime/store/seed.py` — optional developer flag/function to build insights after seeding rich logs.
-- `RAG_pipeline/backend/tests/test_runtime/test_insight_parser.py` (new) — parser extraction and no-match tests.
-- `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py` (new) — seeded rich Talend failure produces expected summary/incident/evidence.
+- `knowledge_base/mcp-server/src/mcp_server/services/git_remote_service.py` or equivalent centralized helper
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/project_registry.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/git_poller.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`
+- `knowledge_base/mcp-server/tests/test_services/test_git_remote_service.py`
+- Existing MCP tests for poller, patcher, reingestion, auto-doc update, and project routes
 
-**Critical area**: no — additive runtime schema/service work. It is security-sensitive because every derived row is project-scoped, but no `src/auth/` or `src/rbac/` changes are expected.
+**Critical area**: yes - MCP API routes (`knowledge_base/mcp-server/src/mcp_server/api/`)
 
 **Depends on**: none
 
----
+**Acceptance checkpoint**:
+- New clones store a clean `origin` URL.
+- Fetch/diff/reingestion paths restore clean remotes on success and failure.
+- Existing projects can be reported as clean, tokenized, auth-failing, missing baseline, or missing cache without exposing credentials.
+- Repair does not trigger scan, patch, generation, or RAG sync.
 
-## Slice 2: Scoped Insight Repository + REST API
+## Slice 2: Webhook receipt, matching, and setup observability
 
-**Delivers**: Authenticated clients can retrieve execution summaries, incidents, timelines, and evidence through bounded project-scoped API endpoints.
+**Delivers**: GitHub webhook `ping` and `push` deliveries become diagnosable from project state, with canonical repo matching and durable early failure evidence.
 
 **Expected files**:
-- `RAG_pipeline/backend/src/runtime/insights/repository.py` (new) — project-scoped queries for execution summary, incident detail, evidence, timeline, and incident lists.
-- `RAG_pipeline/backend/src/runtime/insights/models.py` (new) or `RAG_pipeline/backend/src/runtime/models.py` — Pydantic response/domain models for summaries, incidents, evidence, timelines.
-- `RAG_pipeline/backend/src/api/routes/runtime.py` — add read-only insight endpoints, likely:
-  - `GET /api/v1/runtime/executions/{execution_id}/summary`
-  - `GET /api/v1/runtime/incidents`
-  - `GET /api/v1/runtime/incidents/{incident_id}`
-  - `GET /api/v1/runtime/incidents/{incident_id}/evidence`
-- `RAG_pipeline/backend/tests/test_api/test_runtime_insight_endpoints.py` (new) — happy paths, empty states, 404 for cross-project guessed ids, and project-scope narrowing behavior.
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/webhook.py`
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/project_registry.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`
+- `knowledge_base/mcp-server/tests/test_api/test_webhook.py`
+- `knowledge_base/mcp-server/tests/test_api/test_projects.py` or nearest existing route tests
+- `deploy/WEBHOOK-SETUP.md`
 
-**Critical area**: yes — Auth/RBAC project-scope enforcement on new runtime API surface. Even if `src/auth/` and `src/rbac/` are not edited, `/inspect` is required because cross-project log leakage is the primary risk.
+**Critical area**: yes - MCP API routes (`knowledge_base/mcp-server/src/mcp_server/api/`)
 
 **Depends on**: Slice 1
 
----
+**Acceptance checkpoint**:
+- `ping` records matched/unmatched project evidence.
+- `push` records `webhook_received`, `project_matched`, and early failure reason codes before long-running work starts.
+- Repo matching handles clean URLs, `.git` suffix differences, and sanitized stored URLs.
+- Unregistered repos do not trigger scan, generation, patching, or RAG sync.
 
-## Slice 3: Runtime Intelligence Tools + Chat Answer Discipline
+## Slice 3: Patch-first decision state machine
 
-**Delivers**: Chat can answer "why did this job fail?" from bounded incident/summary data, with evidence and uncertainty separated from likely cause.
-
-**Expected files**:
-- `RAG_pipeline/backend/src/runtime/registry.py` — add high-level tool definitions:
-  - `analyze_execution_failure`
-  - `get_execution_timeline`
-  - `get_runtime_incident`
-- `RAG_pipeline/backend/src/runtime/client.py` — keep tool execution bounded/redacted for new tool result payloads.
-- `RAG_pipeline/backend/src/runtime/providers/stored.py` — implement high-level tools from the insight repository.
-- `RAG_pipeline/backend/src/runtime/providers/__init__.py` — extend provider protocol if needed.
-- `RAG_pipeline/backend/src/generation/agent_loop.py` — update runtime guidance to prefer insight tools for failure-analysis questions and answer in Finding/Evidence/Likely Cause/Next Checks format.
-- `RAG_pipeline/backend/src/generation/conversational_rag.py` — preserve existing `RequestScope` threading into runtime tools; no separate scope source.
-- `RAG_pipeline/backend/tests/test_runtime/test_client.py` — new tool validation, redaction, bounds.
-- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag_runtime_insights.py` (new) — chat/tool-loop tests for seeded failure answer, bounded evidence, uncertainty language, and cross-project isolation.
-
-**Critical area**: yes — chat/runtime tool behavior with Auth/RBAC project-scope enforcement. `/inspect` required because LLM tool calls must not widen runtime access and wrong answers are user-facing.
-
-**Depends on**: Slice 2
-
----
-
-## Slice 4: Smart Logs Dashboard Panels
-
-**Delivers**: `/admin/logs` shows smart failure insight beside raw logs: summary, failed component, likely cause, evidence lines, timeline, and clear empty/error states.
+**Delivers**: Every push resolves to one explicit outcome (`skip`, `bounded_patch`, `targeted_regen`, `full_regen`, `manual_review`, or `failed`) with reason codes, safe patch gating, RAG result, and SHA advancement only after success.
 
 **Expected files**:
-- `RAG_pipeline/frontend/types/runtime.ts` — add Zod schemas/types for execution summaries, incidents, evidence, and timelines.
-- `RAG_pipeline/frontend/hooks/useRuntimeLogs.ts` or `RAG_pipeline/frontend/hooks/useRuntimeInsights.ts` (new) — React Query hooks for insight endpoints.
-- `RAG_pipeline/frontend/app/api/runtime/executions/[id]/summary/route.ts` (new)
-- `RAG_pipeline/frontend/app/api/runtime/incidents/route.ts` (new)
-- `RAG_pipeline/frontend/app/api/runtime/incidents/[id]/route.ts` (new)
-- `RAG_pipeline/frontend/app/api/runtime/incidents/[id]/evidence/route.ts` (new)
-- `RAG_pipeline/frontend/app/admin/logs/page.tsx` — add smart summary, incident, timeline, and evidence panels while keeping raw log drilldown.
-- `RAG_pipeline/frontend/app/admin/logs/page.test.tsx` or existing frontend test location — loading/error/empty and seeded-data rendering tests if local patterns support page tests.
+- `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/git_diff_patcher.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py`
+- `knowledge_base/mcp-server/tests/test_services/test_auto_doc_update.py`
+- `knowledge_base/mcp-server/tests/test_services/test_git_diff_patcher.py`
+- `knowledge_base/mcp-server/tests/test_services/test_git_reingestion.py`
+- `knowledge_base/mcp-server/tests/test_services/test_rag_bridge.py`
 
-**Critical area**: no — frontend/BFF work; RBAC is enforced by Slice 2 API endpoints.
+**Critical area**: no - MCP service decisioning and RAG bridge only
 
-**Depends on**: Slice 2
+**Depends on**: Slice 1
 
----
+**Acceptance checkpoint**:
+- Small bounded doc-relevant diffs choose `bounded_patch` only when baseline, docs, mapping, thresholds, and validation pass.
+- Unsafe, unmapped, missing-baseline, missing-doc, auth-failed, or validation-failed changes choose `manual_review` or explicit regeneration-required outcomes instead of silently regenerating.
+- `last_ingested_commit_sha` advances only after patch/regen execution and required RAG sync succeed.
+- RAG sync failure is recorded distinctly and does not masquerade as a fully ingested commit.
 
-## Slice 5: Similar Failures + Alerting-Ready Metadata
+## Slice 4: Cache-aware targeted regeneration and safe rebaseline
 
-**Delivers**: Users can see whether a failure is recurring within their project, and incident records carry enough metadata for a later alert/email slice without implementing production alert delivery.
+**Delivers**: Regeneration is available as a controlled fallback with visible cache readiness, cost/fallback reasons, preserved staging swap behavior, and a safe path to rebaseline old projects.
 
 **Expected files**:
-- `RAG_pipeline/backend/src/runtime/insights/builder.py` — compute/maintain normalized error signatures and recurrence metadata.
-- `RAG_pipeline/backend/src/runtime/insights/repository.py` — scoped similar-failure lookup by execution id, incident id, or signature.
-- `RAG_pipeline/backend/src/api/routes/runtime.py` — add `GET /api/v1/runtime/incidents/{incident_id}/similar` or equivalent endpoint.
-- `RAG_pipeline/backend/src/runtime/registry.py` — add `find_similar_failures` tool definition.
-- `RAG_pipeline/backend/src/runtime/providers/stored.py` — implement `find_similar_failures`.
-- `RAG_pipeline/backend/src/generation/agent_loop.py` — guidance for "has this happened before?" questions.
-- `RAG_pipeline/frontend/types/runtime.ts` — similar-failure response schema.
-- `RAG_pipeline/frontend/hooks/useRuntimeLogs.ts` or `RAG_pipeline/frontend/hooks/useRuntimeInsights.ts` — hook for similar failures.
-- `RAG_pipeline/frontend/app/admin/logs/page.tsx` — show similar-failure count/list when available.
-- `RAG_pipeline/backend/tests/test_runtime/test_similar_failures.py` (new) — same-project recurrence and cross-project non-leak tests.
-- `RAG_pipeline/backend/tests/test_generation/test_conversational_rag_runtime_insights.py` — chat answers "has this happened before?" using scoped similar failures.
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_support_package.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py`
+- `knowledge_base/mcp-server/src/mcp_server/services/rag_bridge.py`
+- `knowledge_base/mcp-server/tests/test_services/test_git_reingestion.py`
+- `knowledge_base/mcp-server/tests/test_services/test_rag_support_package.py`
+- `knowledge_base/mcp-server/tests/test_services/test_auto_doc_update.py`
+- `knowledge_base/mcp-server/tests/test_api/test_projects.py` or nearest existing route tests
 
-**Critical area**: yes — Auth/RBAC project-scope enforcement for recurrence/signature queries. Similarity is a leakage risk because matching signatures could reveal another project's incident existence. `/inspect` required.
+**Critical area**: yes - MCP API routes (`knowledge_base/mcp-server/src/mcp_server/api/`) and harness-adjacent generation state
 
-**Depends on**: Slice 3 for chat tool integration; Slice 4 only for dashboard display of similar-failure UI.
+**Depends on**: Slices 1 and 3
+
+**Acceptance checkpoint**:
+- Projects with missing `_rag_support` or `analysis_cache` are marked as not targeted-regen-ready.
+- Targeted regeneration runs only when changed groups and cache/support artifacts are usable.
+- Full regeneration records an expensive-fallback reason before running.
+- Failed generation preserves old `docs/` through the existing staging behavior.
+- Successful regeneration restores `analysis_cache`, syncs RAG, and advances baseline SHA after success.
+
+## Slice 5: End-to-end smoke path and minimal operator visibility
+
+**Delivers**: A maintainer can prove the full workflow with a real or simulated GitHub push and see current webhook/reingestion health without reading container internals first.
+
+**Expected files**:
+- `deploy/WEBHOOK-SETUP.md`
+- `scripts/` or `knowledge_base/mcp-server/scripts/` smoke-test script, if a script is chosen
+- `knowledge_base/dashboard/src/` status components or existing project detail components, if dashboard visibility is needed
+- `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`, if a status endpoint needs additions
+- `knowledge_base/mcp-server/tests/test_api/test_webhook.py`
+- `knowledge_base/dashboard/src/**/*.test.tsx` or nearest existing dashboard tests, if dashboard UI changes are made
+
+**Critical area**: yes - MCP API routes if status endpoint additions are required
+
+**Depends on**: Slices 1, 2, 3, and 4
+
+**Acceptance checkpoint**:
+- Runbook or script covers commit/push to a test repo, webhook delivery, decision recording, patch or regeneration execution, RAG sync, and SHA advancement.
+- Operator-visible status includes last ping, last push outcome, last error, last ingested SHA, remote hygiene, and cache readiness.
+- Focused MCP/RAG tests and the documented smoke path pass before commit.

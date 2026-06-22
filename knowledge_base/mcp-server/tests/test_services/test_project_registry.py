@@ -96,6 +96,54 @@ async def test_update_status_with_error(db_session):
     assert p.error_message == "Something broke"
 
 
+async def test_record_webhook_observation_merges_with_existing_update_summary(db_session):
+    registry = ProjectRegistry(db_session)
+    await registry.add_project("webhook-proj", "/tmp/webhook")
+    await registry.update_git_update_summary(
+        "webhook-proj",
+        {"action": "patched", "touched_docs": ["01_ARCHITECTURE_MAP.md"]},
+    )
+    await db_session.commit()
+
+    await registry.record_webhook_observation(
+        "webhook-proj",
+        {
+            "event": "push",
+            "status": "queued",
+            "observations": ["webhook_received", "project_matched"],
+        },
+    )
+    await db_session.commit()
+
+    project = await registry.get_project("webhook-proj")
+    assert project is not None
+    assert project.git_update_summary["action"] == "patched"
+    assert project.git_update_summary["webhook"]["event"] == "push"
+    assert project.auto_reingest_last_checked_at is not None
+
+    await registry.update_git_update_summary(
+        "webhook-proj",
+        {"action": "manual_review", "reason": "needs operator"},
+    )
+    await db_session.commit()
+
+    project = await registry.get_project("webhook-proj")
+    assert project is not None
+    assert project.git_update_summary["action"] == "manual_review"
+    assert project.git_update_summary["webhook"]["status"] == "queued"
+
+    await registry.update_git_remote_metadata(
+        "webhook-proj",
+        summary={"action": "reingestion_readiness_repair", "repaired": True},
+    )
+    await db_session.commit()
+
+    project = await registry.get_project("webhook-proj")
+    assert project is not None
+    assert project.git_update_summary["action"] == "reingestion_readiness_repair"
+    assert project.git_update_summary["webhook"]["event"] == "push"
+
+
 async def test_update_scan_result(db_session):
     registry = ProjectRegistry(db_session)
     await registry.add_project("scan", "/tmp/scan")
