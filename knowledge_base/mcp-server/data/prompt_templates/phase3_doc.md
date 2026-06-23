@@ -1,3 +1,8 @@
+IMPORTANT: Do not echo this request. Do not write "Okay", "Sure", "I will", or any
+acknowledgement or meta-commentary. The first line of your output must be the document
+title (a `#` heading) or a `## Table of Contents` heading. Any response that starts with
+a filler word or an acknowledgement is INVALID and will be rejected.
+
 ${PREAMBLE}
 
 FACTUAL CONSTRAINTS (enforced):
@@ -6,6 +11,16 @@ FACTUAL CONSTRAINTS (enforced):
 - Cover or mention all canonical units where relevant to this document
 - If detail is absent for a unit, write "scanner detail is limited for this unit" -- never invent
 - Synthesize from the supplied validated analysis; do not re-extract from raw scanner data
+
+DOC-PACK TRACEABILITY RULE (enforced):
+- The preloaded `_analysis/_doc_pack_${DOC_NAME}.md` evidence pack is the primary evidence
+  source for this document. Every factual claim about a unit, flow, system, or rule must
+  trace to a specific section in the doc-pack.
+- If the doc-pack does not mention a unit that belongs to the canonical inventory, write the
+  unit's exact name and state that doc-pack evidence is absent -- do NOT omit the unit from
+  the Canonical Unit Inventory section or any inventory table.
+- A unit that was newly added to the codebase may appear in the doc-pack but not in earlier
+  documentation; always reflect the doc-pack state, not a prior document's state.
 
 NARRATIVE RULES (enforced):
 - Never summarize when you can enumerate
@@ -17,6 +32,8 @@ NARRATIVE RULES (enforced):
 - Schema docs: column-level detail (name, type, nullable)
 - Data flow docs: full tMap expressions with explanations
 - "Error handling is weak" is UNACCEPTABLE -- cite specific job names and counts
+- Each section must contain at least 3 enumerated items or a table with at least 2 data rows;
+  a section with only a heading or a single vague sentence is too thin
 
 FORMAT:
 - Start with a table of contents
@@ -38,7 +55,9 @@ FORMAT:
   in evidence/topic cells. Mark those topics as such instead of guessing.
 
 MANDATORY HEADINGS for ${DOC_NAME} -- your response MUST contain each of these as a `##` markdown
-heading, using exactly this wording (do not rename, merge, or omit any of them):
+heading, using exactly this wording (do not rename, merge, omit, or reorder any of them).
+A response that is missing any heading listed below is REJECTED -- write every heading even if
+evidence is thin; mark the section LOW confidence and state what evidence is absent:
 ${HEADINGS_BLOCK}
   ## Evidence Register
 

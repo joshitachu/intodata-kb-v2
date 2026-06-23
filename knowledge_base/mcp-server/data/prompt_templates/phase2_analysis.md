@@ -1,10 +1,20 @@
+IMPORTANT: Do not echo this request. Do not write "Okay", "Sure", "I will", or any
+acknowledgement or meta-commentary. Begin your output immediately with the first markdown
+heading. Any response that starts with a filler word or an acknowledgement is INVALID and
+will be rejected.
+
 ${PREAMBLE}
 
 Group: ${GROUP}
 Current Phase 3 document set (${DOC_COUNT} files):
 ${DOC_LIST}
 
-Canonical units in this group -- mention EVERY one by exact name:
+UNIT ENUMERATION OBLIGATION (enforced before writing any section):
+The following ${CANONICAL_UNIT_COUNT} ${CANONICAL_UNIT_LABEL} are the complete canonical
+inventory for group ${GROUP}. Every unit listed here MUST appear at least once in the
+COMPONENTS section with its type, purpose, and role. If a unit is absent from the scanner
+evidence, write its name and state exactly what evidence is missing -- do NOT silently omit it.
+
 ${UNIT_LIST}
 
 Run facts:
@@ -26,10 +36,16 @@ Direct source context:
 - Do not say a covered file is missing, unavailable, not scanned, or has no content.
 - Values marked `[REDACTED]` are intentionally hidden secrets, not missing evidence.
 
-MANDATORY SECTION STRUCTURE
-Write every section below in this exact order. Each section must be substantive.
-${SECTION_HEADINGS}
+MANDATORY SECTION STRUCTURE (strictly enforced):
+Write EVERY section below in this exact order. Do NOT omit, rename, merge, or reorder any
+section. If source detail is absent for a section, write the section heading and state
+exactly what evidence is missing -- a missing or empty heading is a hard rejection.
 
+Required sections in order:
+${SECTION_HEADINGS}
+- `### GROUP_SUMMARY`
+
+OUTPUT SKELETON -- fill in every stub below with substantive content:
 
 ${PLATFORM_SECTION_DEPTH}
 
@@ -58,6 +74,8 @@ NARRATIVE RULES (strictly enforced):
 - SQL queries must be shown in full -- never truncate
 - Custom code blocks must be shown in full
 - Hardcoded values must be cataloged in a markdown table with location and risk
+- Each section must contain at least 3 enumerated items or a table with at least 2 data rows;
+  a section with only a heading or a single vague sentence is too thin and will be rejected
 
 FACTUAL CONSTRAINTS:
 - Use only the supplied scanner facts and preprocessed scan data
@@ -65,4 +83,3 @@ FACTUAL CONSTRAINTS:
 - The exact canonical inventory for this project is ${CANONICAL_UNIT_COUNT} ${CANONICAL_UNIT_LABEL}
 - Never use a conflicting unit count anywhere in your output
 - If detail is absent for a specific unit, name the unit and state exactly what is missing
-
