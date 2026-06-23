@@ -139,6 +139,16 @@ class MCPServerConfig(BaseSettings):
     git_diff_patch_output_tokens_large: int = 32_000
     git_diff_patch_max_obligations: int = 24
 
+    # Deterministic reingestion routing (Slice 3). The affected-doc set is
+    # computed in Python; a change touching more than this many docs routes to a
+    # full regeneration rather than a scoped one.
+    reingestion_full_regen_doc_threshold: int = 8  # MCP_REINGESTION_FULL_REGEN_DOC_THRESHOLD
+    # Optional expand-only, non-blocking LLM semantic pass. Disabled by default
+    # so routing is fully deterministic (no model call on the floor path). When
+    # enabled it may only ADD docs to Python's authoritative set; it can never
+    # remove a doc, downgrade to skip, or change the chosen strategy.
+    reingestion_llm_expand_enabled: bool = False  # MCP_REINGESTION_LLM_EXPAND_ENABLED
+
     # Abandoned docs_staging/ dirs older than this are GC'd at startup. Active
     # resumes bump mtime so in-flight work is safe.
     staging_gc_days: int = 7

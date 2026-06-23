@@ -5,11 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 
 from mcp_server.providers.custom.models import FactsManifest, UnitFact
+from mcp_server.services.group_doc_dependency import GroupDocDependency
 from mcp_server.services.reingestion_gate import (
     THIN_FLOOR_BYTES,
     CorrectnessGate,
     load_facts_manifest,
 )
+
+
+def _dependency(
+    group_to_docs: dict[str, set[str]],
+    cross_cutting: set[str] | None = None,
+) -> GroupDocDependency:
+    doc_to_groups: dict[str, set[str]] = {}
+    for group, docs in group_to_docs.items():
+        for doc in docs:
+            doc_to_groups.setdefault(doc, set()).add(group)
+    return GroupDocDependency(
+        {g: set(d) for g, d in group_to_docs.items()},
+        doc_to_groups,
+        set(cross_cutting or set()),
+    )
 
 
 def _facts(units: list[UnitFact]) -> FactsManifest:
@@ -140,6 +156,67 @@ def test_gate_reads_legacy_analysis_dir_fallback(tmp_path: Path) -> None:
     (legacy / "A.md").write_text(_substantive("A"), encoding="utf-8")
 
     outcome = CorrectnessGate(changed_groups={"A"}).evaluate(staging, facts)
+
+    assert outcome.passed is True
+
+
+# --- Slice 3: mapped-doc tightening -------------------------------------------
+
+
+def test_gate_mapped_doc_fails_when_unit_only_in_unrelated_doc(tmp_path: Path) -> None:
+    """Tightened: a changed unit present only in a NON-mapped doc fails the gate."""
+    staging = tmp_path / "docs_staging"
+    facts = _facts([UnitFact(name="job_alpha", group="A")])
+    # Group A maps to 01_MAPPED; the unit name only appears in 02_OTHER.
+    _write_doc(staging, "01_MAPPED.md", "Mapped doc with no unit mention.")
+    _write_doc(staging, "02_OTHER.md", "Unrelated doc that names job_alpha.")
+    _write_analysis(staging, "A", _substantive("A"))
+    dep = _dependency({"A": {"01_MAPPED"}})
+
+    outcome = CorrectnessGate(changed_groups={"A"}, dependency=dep).evaluate(staging, facts)
+
+    assert outcome.passed is False
+    assert outcome.missing_units == ["job_alpha"]
+
+
+def test_gate_mapped_doc_passes_when_unit_in_its_mapped_doc(tmp_path: Path) -> None:
+    staging = tmp_path / "docs_staging"
+    facts = _facts([UnitFact(name="job_alpha", group="A")])
+    _write_doc(staging, "01_MAPPED.md", "Mapped doc documents job_alpha fully.")
+    _write_doc(staging, "02_OTHER.md", "Unrelated doc.")
+    _write_analysis(staging, "A", _substantive("A"))
+    dep = _dependency({"A": {"01_MAPPED"}})
+
+    outcome = CorrectnessGate(changed_groups={"A"}, dependency=dep).evaluate(staging, facts)
+
+    assert outcome.passed is True
+    assert outcome.missing_units == []
+
+
+def test_gate_mapped_doc_credits_cross_cutting_doc(tmp_path: Path) -> None:
+    """A cross-cutting doc is always part of a unit's mapped set."""
+    staging = tmp_path / "docs_staging"
+    facts = _facts([UnitFact(name="job_alpha", group="A")])
+    _write_doc(staging, "01_MAPPED.md", "Mapped doc with no unit mention.")
+    _write_doc(staging, "02_INVENTORY.md", "Inventory lists job_alpha.")
+    _write_analysis(staging, "A", _substantive("A"))
+    dep = _dependency({"A": {"01_MAPPED"}}, cross_cutting={"02_INVENTORY"})
+
+    outcome = CorrectnessGate(changed_groups={"A"}, dependency=dep).evaluate(staging, facts)
+
+    assert outcome.passed is True
+
+
+def test_gate_loose_fallback_when_no_dependency(tmp_path: Path) -> None:
+    """Without a provenance map the loose 'unit in some doc' check applies."""
+    staging = tmp_path / "docs_staging"
+    facts = _facts([UnitFact(name="job_alpha", group="A")])
+    _write_doc(staging, "01_MAPPED.md", "No mention here.")
+    _write_doc(staging, "02_OTHER.md", "But job_alpha appears in this doc.")
+    _write_analysis(staging, "A", _substantive("A"))
+
+    # dependency=None -> loose: presence in ANY doc is enough to pass.
+    outcome = CorrectnessGate(changed_groups={"A"}, dependency=None).evaluate(staging, facts)
 
     assert outcome.passed is True
 

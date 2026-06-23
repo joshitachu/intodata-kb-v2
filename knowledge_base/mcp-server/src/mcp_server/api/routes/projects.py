@@ -1043,6 +1043,7 @@ async def _run_generate_background(
     partial_rag_sync: bool = False,
     enterprise_mode: bool = True,
     pre_swap_gate: "Callable[[Path], GateOutcome] | None" = None,
+    scoped_docs: set[str] | None = None,
 ):
     """Background task: spawn Claude Code for doc generation.
 
@@ -1067,6 +1068,7 @@ async def _run_generate_background(
             doc_generation_provider=doc_generation_provider,
             instruction_pack_dir=instruction_pack_dir,
             enterprise_mode=enterprise_mode,
+            scoped_docs=scoped_docs,
         )
     except asyncio.CancelledError:
         await log_mgr.emit(project_id, "Generation cancelled by user.", level="warning")

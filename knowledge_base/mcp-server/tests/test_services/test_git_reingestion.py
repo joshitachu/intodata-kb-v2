@@ -427,6 +427,83 @@ async def test_run_git_reingestion_advances_sha_when_retry_passes(
         assert project.last_ingested_commit_sha == "b" * 40, "SHA advanced after retry passed"
 
 
+async def test_run_git_reingestion_threads_targeted_docs_as_scoped(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """Slice 3: targeted_docs reach _run_generate_background as scoped_docs."""
+    projects_mod = await _common_reingestion_setup(monkeypatch, tmp_path, session_factory)
+    output_dir = tmp_path / "output" / "proj"
+    seen: dict[str, object] = {}
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        seen["scoped_docs"] = kwargs.get("scoped_docs")
+        _write_staging(
+            output_dir, doc_body="Documents job_alpha fully.", analysis_body=_good_analysis()
+        )
+        gate = kwargs.get("pre_swap_gate")
+        outcome = gate(output_dir / "docs_staging") if gate else None
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            if outcome is not None and not outcome.passed:
+                await registry.update_status(
+                    project_id, "error", error_message=f"manual_review: {outcome.reason}"
+                )
+            else:
+                await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+
+    ok = await run_git_reingestion(
+        "proj",
+        "a" * 40,
+        "b" * 40,
+        triggered_by="webhook",
+        log_mgr=log_manager,
+        targeted_docs=["01_ARCHITECTURE_MAP"],
+    )
+
+    assert ok is True
+    assert seen["scoped_docs"] == {"01_ARCHITECTURE_MAP"}
+
+
+async def test_run_git_reingestion_full_regen_passes_no_scoped_docs(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    projects_mod = await _common_reingestion_setup(monkeypatch, tmp_path, session_factory)
+    output_dir = tmp_path / "output" / "proj"
+    seen: dict[str, object] = {"set": False}
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        seen["scoped_docs"] = kwargs.get("scoped_docs")
+        seen["set"] = True
+        _write_staging(
+            output_dir, doc_body="Documents job_alpha fully.", analysis_body=_good_analysis()
+        )
+        gate = kwargs.get("pre_swap_gate")
+        outcome = gate(output_dir / "docs_staging") if gate else None
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+
+    ok = await run_git_reingestion(
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+    )
+
+    assert ok is True
+    assert seen["set"] is True
+    assert seen["scoped_docs"] is None
+
+
 async def test_run_git_reingestion_advances_sha_when_gate_passes_first_try(
     session_factory,
     monkeypatch,

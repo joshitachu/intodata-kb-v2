@@ -1148,6 +1148,11 @@ Fallback plan example:
             execution_plan = await self._prepare_execution_plan(ctx, state, facts_path, log_cb)
             self._required_docs = list(execution_plan.required_docs)
 
+        # Doc-targeted Phase 3 (Slice 3): narrow the required-doc set to the
+        # scoped subset and preserve all unaffected baseline docs byte-stable.
+        if ctx.scoped_docs is not None:
+            await self._apply_scoped_docs(ctx, log_cb)
+
         # ── Resolve investigation and analysis policies ───────────────────────
         investigation_policy = self._phase_policy("investigation")
         analysis_policy = self._phase_policy("analysis")
@@ -2513,6 +2518,42 @@ Fallback plan example:
             for section, body in selected:
                 parts.append(f"#### {section}\n\n{body.strip()}")
         return "\n\n".join(parts).rstrip(), manifest
+
+    async def _apply_scoped_docs(self, ctx: DocGenContext, log_cb: LogCallback) -> None:
+        """Restrict Phase 3 to the scoped doc subset; preserve the rest.
+
+        For doc-targeted reingestion (Slice 3) only the docs in
+        ``ctx.scoped_docs`` are regenerated. Every other doc in the required set
+        is copied byte-for-byte from the prior published baseline (``docs/``)
+        into the staging tree so the atomic swap preserves it unchanged. A
+        scoped doc that has no baseline copy (e.g. a newly added catalog doc) is
+        still regenerated. Phase 2 cache reuse for unchanged groups is
+        unaffected (handled by resume state).
+        """
+        scoped = ctx.scoped_docs or set()
+        baseline_docs_dir = config.project_root / "output" / ctx.project_id / "docs"
+        preserved: list[str] = []
+        regenerated: list[str] = []
+        for doc in self._required_docs:
+            if doc in scoped:
+                regenerated.append(doc)
+                continue
+            baseline = baseline_docs_dir / f"{doc}.md"
+            staged = ctx.staging_dir / f"{doc}.md"
+            if baseline.is_file():
+                shutil.copy2(baseline, staged)
+                preserved.append(doc)
+            else:
+                # No prior baseline copy -> cannot preserve; regenerate to stay
+                # safe (never silently drop a required doc).
+                regenerated.append(doc)
+        self._required_docs = [d for d in self._required_docs if d in regenerated]
+        await log_cb(
+            ctx.project_id,
+            f"[custom] scoped Phase 3: regenerating {len(regenerated)} doc(s), "
+            f"preserving {len(preserved)} from baseline",
+            "info",
+        )
 
     async def _phase3_docs(
         self,

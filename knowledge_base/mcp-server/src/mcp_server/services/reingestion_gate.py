@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from mcp_server.providers.custom.models import FactsManifest
 from mcp_server.providers.custom.pipeline.evidence_quality_gate import EvidenceQualityGate
 from mcp_server.providers.custom.validators import group_analysis_is_complete
+from mcp_server.services.group_doc_dependency import GroupDocDependency
 from mcp_server.services.rag_support_package import (
     PHASE2_ANALYSIS_SUBDIR,
     RAG_SUPPORT_DIRNAME,
@@ -67,9 +68,19 @@ class CorrectnessGate:
     no-op pass: this slice does not gate the onboarding full-baseline path.
     """
 
-    def __init__(self, *, changed_groups: set[str], require_sections: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        changed_groups: set[str],
+        require_sections: bool = True,
+        dependency: GroupDocDependency | None = None,
+    ) -> None:
         self._changed_groups = {g for g in changed_groups if g}
         self._require_sections = require_sections
+        # When a provenance map is present (Slice 3), a changed unit must appear
+        # in its MAPPED doc(s), not just SOME doc. Without a map, fall back to the
+        # loose "unit in some published doc" check (Slice 1 behavior).
+        self._dependency = dependency
 
     def evaluate(self, staging_dir: Path, facts: FactsManifest) -> GateOutcome:
         if not self._changed_groups:
@@ -114,13 +125,48 @@ class CorrectnessGate:
         changed_units = [u for u in facts.units if u.group in self._changed_groups]
         if not changed_units:
             return []
-        published_text = self._published_doc_text(staging_dir)
-        missing = [
-            unit.name
-            for unit in changed_units
-            if not re.search(r"\b" + re.escape(unit.name) + r"\b", published_text, re.IGNORECASE)
-        ]
+        if self._dependency is None:
+            # Loose fallback: a changed unit is covered if it appears in ANY doc.
+            published_text = self._published_doc_text(staging_dir)
+            missing = [
+                unit.name
+                for unit in changed_units
+                if not self._name_present(unit.name, published_text)
+            ]
+            return sorted(set(missing))
+
+        # Tightened: a changed unit must appear in one of its MAPPED docs
+        # (the docs its group feeds, plus the always-regenerated cross-cutting
+        # set). A unit appearing only in some unrelated doc is NOT credited.
+        cross_cutting = self._dependency.cross_cutting_docs()
+        doc_text_cache: dict[str, str] = {}
+        missing: list[str] = []
+        for unit in changed_units:
+            mapped = self._dependency.docs_for_group(unit.group) | cross_cutting
+            mapped_text = self._mapped_doc_text(staging_dir, mapped, doc_text_cache)
+            if not self._name_present(unit.name, mapped_text):
+                missing.append(unit.name)
         return sorted(set(missing))
+
+    @staticmethod
+    def _name_present(name: str, text: str) -> bool:
+        return bool(re.search(r"\b" + re.escape(name) + r"\b", text, re.IGNORECASE))
+
+    @staticmethod
+    def _mapped_doc_text(
+        staging_dir: Path, doc_names: set[str], cache: dict[str, str]
+    ) -> str:
+        parts: list[str] = []
+        for doc in sorted(doc_names):
+            if doc not in cache:
+                path = staging_dir / f"{doc}.md"
+                cache[doc] = (
+                    path.read_text(encoding="utf-8", errors="replace")
+                    if path.is_file()
+                    else ""
+                )
+            parts.append(cache[doc])
+        return "\n".join(parts)
 
     def _empty_analysis_groups(self, staging_dir: Path, platform: str) -> list[str]:
         empty: list[str] = []

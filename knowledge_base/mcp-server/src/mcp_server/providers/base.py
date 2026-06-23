@@ -69,6 +69,10 @@ class DocGenContext:
     analysis_guide_file: str
     enterprise_mode: bool = True
     resume_state: dict | None = None
+    # Doc-targeted Phase 3 (Slice 3). When set, only these document names
+    # (no ``.md`` suffix) are regenerated; all other baseline docs are preserved
+    # byte-stable. ``None`` => regenerate the full required-doc set.
+    scoped_docs: set[str] | None = None
 
 
 # Type alias for the log callback passed to providers

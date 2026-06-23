@@ -75,8 +75,14 @@ async def run_git_reingestion(
     after_sha: str,
     triggered_by: str,
     log_mgr: LogManager,
+    targeted_docs: list[str] | None = None,
 ) -> bool:
-    """Pull latest code, scan, regenerate docs, sync RAG, then record after SHA."""
+    """Pull latest code, scan, regenerate docs, sync RAG, then record after SHA.
+
+    ``targeted_docs`` (Slice 3) restricts Phase 3 to exactly those documents
+    (names without ``.md``); unaffected docs are preserved byte-stable from the
+    prior baseline. ``None`` means full regeneration (no Phase 3 doc filter).
+    """
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -152,10 +158,14 @@ async def run_git_reingestion(
 
     changed_groups = resolve_changed_groups(project_id, file_changes, is_first_push)
 
-    # Compute affected-doc preview from the persisted provenance map. Read-only;
-    # does not change regen behavior. None when no baseline manifest exists yet.
+    # Load the persisted provenance map once: it drives both the affected-doc
+    # preview and the tightened (mapped-doc) correctness gate.
     output_dir = config.project_root / "output" / project_id
-    affected_docs_preview = _compute_affected_docs_preview(output_dir, changed_groups)
+    dependency = GroupDocDependency.load(
+        output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
+    )
+    affected_docs_preview = _affected_docs_from_dependency(dependency, changed_groups)
+    scoped_docs: set[str] | None = set(targeted_docs) if targeted_docs else None
 
     staging_result = setup_incremental_staging(
         project_id,
@@ -205,7 +215,7 @@ async def run_git_reingestion(
         await db.commit()
         gen_run_id = gen_run.id
 
-    gate = CorrectnessGate(changed_groups=set(changed_groups))
+    gate = CorrectnessGate(changed_groups=set(changed_groups), dependency=dependency)
     last_outcome: list[GateOutcome] = []
 
     def pre_swap_gate(staging_dir: Path) -> GateOutcome:
@@ -233,6 +243,7 @@ async def run_git_reingestion(
         doc_generation_provider=doc_generation_provider,
         partial_rag_sync=not is_first_push,
         pre_swap_gate=pre_swap_gate,
+        scoped_docs=scoped_docs,
     )
 
     gate_held = bool(last_outcome and not last_outcome[0].passed)
@@ -263,6 +274,7 @@ async def run_git_reingestion(
             doc_generation_provider=doc_generation_provider,
             partial_rag_sync=not is_first_push,
             pre_swap_gate=pre_swap_gate,
+            scoped_docs=scoped_docs,
         )
         gate_held = bool(last_outcome and not last_outcome[0].passed)
 
@@ -469,14 +481,27 @@ def _compute_affected_docs_preview(
         output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
     )
     dep = GroupDocDependency.load(manifest_path)
-    if dep is None:
+    return _affected_docs_from_dependency(dep, changed_groups)
+
+
+def _affected_docs_from_dependency(
+    dependency: GroupDocDependency | None,
+    changed_groups: set[str],
+) -> list[str] | None:
+    """Map changed groups to their docs (+ cross-cutting) via the provenance map.
+
+    Returns None when no manifest exists (pre-baseline) so callers know the
+    preview is unavailable rather than empty; an empty list when groups resolve
+    but map to no docs.
+    """
+    if dependency is None:
         return None
     if not changed_groups:
         return []
     affected: set[str] = set()
     for group in changed_groups:
-        affected |= dep.docs_for_group(group)
-    affected |= dep.cross_cutting_docs()
+        affected |= dependency.docs_for_group(group)
+    affected |= dependency.cross_cutting_docs()
     return sorted(affected)
 
 
