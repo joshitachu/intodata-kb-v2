@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ from mcp_server.schemas import (
     UpdateProjectRequest,
 )
 from mcp_server.services.atomic_swap import swap_docs
+from mcp_server.services.reingestion_gate import GateOutcome
 from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
@@ -205,6 +207,9 @@ def _build_reingestion_status_response(
             "requires_full_rebaseline": summary.get("requires_full_rebaseline")
             if isinstance(summary.get("requires_full_rebaseline"), bool)
             else None,
+            "held": summary.get("held")
+            if isinstance(summary.get("held"), bool)
+            else None,
             "touched_docs": _summary_string_list(summary, "touched_docs"),
             "patched_docs": _summary_string_list(summary, "patched_docs"),
             "matched_docs": _summary_string_list(summary, "matched_docs"),
@@ -213,6 +218,9 @@ def _build_reingestion_status_response(
             else None,
             "regen_result": _sanitize_status_value(summary.get("regen_result"))
             if isinstance(summary.get("regen_result"), dict)
+            else None,
+            "gate": _sanitize_status_value(summary.get("gate"))
+            if isinstance(summary.get("gate"), dict)
             else None,
         },
         remote_hygiene={
@@ -1031,11 +1039,18 @@ async def _run_generate_background(
     instruction_pack_dir: str | None = None,
     partial_rag_sync: bool = False,
     enterprise_mode: bool = True,
+    pre_swap_gate: "Callable[[Path], GateOutcome] | None" = None,
 ):
     """Background task: spawn Claude Code for doc generation.
 
     Uses a staging directory (docs_staging/) so that existing docs survive
     if generation fails.  Only on success is the staging dir swapped in.
+
+    ``pre_swap_gate`` (reingestion only) runs blocking correctness gates against
+    the staging tree before the swap. If it returns a failed ``GateOutcome`` the
+    swap is skipped, ``docs/`` is left intact, the project is marked ``error``
+    with a ``manual_review`` reason, and the SHA is not advanced. Manual and
+    onboarding generate paths pass no hook and are unaffected.
     """
     claude = DocGenerationCoordinator(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
@@ -1076,6 +1091,50 @@ async def _run_generate_background(
         # Count docs produced in staging
         doc_count = len(list(staging_dir.glob("*.md"))) if staging_dir.exists() else 0
         gate_results = _load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None
+
+        gate_outcome: GateOutcome | None = (
+            pre_swap_gate(staging_dir) if pre_swap_gate is not None and doc_count > 0 else None
+        )
+        if gate_outcome is not None and not gate_outcome.passed:
+            # Blocking correctness gate held the swap. Keep docs_staging/ intact
+            # (existing keep-old-docs mechanism) so the previous good docs in
+            # docs/ remain published and the SHA is not advanced.
+            reason = gate_outcome.reason or "blocking correctness gate failed"
+            manual_review_reason = f"manual_review: {reason}"
+            await log_mgr.emit(
+                project_id,
+                f"Reingestion held by correctness gate: {reason}",
+                level="error",
+            )
+            async with async_session_factory() as db:
+                registry = ProjectRegistry(db)
+                await registry.update_status(
+                    project_id, "error", error_message=manual_review_reason
+                )
+                await registry.complete_generate_run(
+                    run_id,
+                    status="failed",
+                    cost_usd=result.get("cost_usd"),
+                    duration_ms=result.get("duration_ms"),
+                    duration_api_ms=result.get("duration_api_ms"),
+                    input_tokens=result.get("input_tokens"),
+                    output_tokens=result.get("output_tokens"),
+                    num_turns=result.get("num_turns"),
+                    session_id=result.get("session_id"),
+                    doc_count=0,
+                    model_name=result.get("model_name"),
+                    write_model_name=result.get("write_model_name"),
+                    quality_score=None,
+                    error_message=manual_review_reason,
+                    log_file=log_file,
+                    run_verdict="held_manual_review",
+                    gate_results=_load_enterprise_gate_results(staging_dir) if staging_dir.exists() else None,
+                )
+                await db.commit()
+            _currently_generating.discard(project_id)
+            _generation_tasks.pop(project_id, None)
+            await log_mgr.emit_done(project_id)
+            return
 
         if doc_count > 0:
             changed_rag_docs: set[str] | None = None

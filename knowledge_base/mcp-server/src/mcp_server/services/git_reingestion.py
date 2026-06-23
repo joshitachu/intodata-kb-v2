@@ -14,6 +14,11 @@ from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.rag_support_package import inspect_generation_cache_readiness
+from mcp_server.services.reingestion_gate import (
+    CorrectnessGate,
+    GateOutcome,
+    load_facts_manifest,
+)
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 
@@ -186,6 +191,25 @@ async def run_git_reingestion(
         await db.commit()
         gen_run_id = gen_run.id
 
+    gate = CorrectnessGate(changed_groups=set(changed_groups))
+    last_outcome: list[GateOutcome] = []
+
+    def pre_swap_gate(staging_dir: Path) -> GateOutcome:
+        facts = load_facts_manifest(staging_dir)
+        if facts is None:
+            # The harness always writes facts_manifest.json on the normal path;
+            # treat its absence as non-blocking telemetry loss rather than a hold.
+            outcome = GateOutcome(
+                passed=True,
+                evaluated=False,
+                reason="facts manifest unavailable; gate skipped",
+            )
+        else:
+            outcome = gate.evaluate(staging_dir, facts)
+        last_outcome.clear()
+        last_outcome.append(outcome)
+        return outcome
+
     _currently_generating.add(project_id)
     await _run_generate_background(
         project_id,
@@ -194,7 +218,58 @@ async def run_git_reingestion(
         resume=True,
         doc_generation_provider=doc_generation_provider,
         partial_rag_sync=not is_first_push,
+        pre_swap_gate=pre_swap_gate,
     )
+
+    gate_held = bool(last_outcome and not last_outcome[0].passed)
+    if gate_held:
+        # Retry the failing analysis + docs exactly ONCE before holding the
+        # commit. The resume re-run regenerates the absent/empty group analyses
+        # and re-writes their docs; the gate then re-evaluates the fresh output.
+        await log_mgr.emit(
+            project_id,
+            "Correctness gate failed; retrying generation once before holding the commit",
+            level="warning",
+        )
+        last_outcome.clear()
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            await registry.update_status(project_id, "generating")
+            retry_run = await registry.create_generate_run(
+                project_id, triggered_by=f"{triggered_by}:gate_retry"
+            )
+            await db.commit()
+            retry_run_id = retry_run.id
+        _currently_generating.add(project_id)
+        await _run_generate_background(
+            project_id,
+            retry_run_id,
+            log_mgr,
+            resume=True,
+            doc_generation_provider=doc_generation_provider,
+            partial_rag_sync=not is_first_push,
+            pre_swap_gate=pre_swap_gate,
+        )
+        gate_held = bool(last_outcome and not last_outcome[0].passed)
+
+    if gate_held:
+        held = last_outcome[0]
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            await registry.update_git_update_summary(
+                project_id,
+                _held_summary(
+                    project_id=project_id,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    triggered_by=triggered_by,
+                    changed_groups=sorted(changed_groups),
+                    outcome=held,
+                ),
+                error=held.reason or "Reingestion held by correctness gate",
+            )
+            await db.commit()
+        return False
 
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
@@ -312,6 +387,42 @@ def setup_incremental_staging(
         removed_changed_groups=changed_group_names,
         cache_readiness=cache_readiness.to_dict(),
     )
+
+
+def _held_summary(
+    *,
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    triggered_by: str,
+    changed_groups: list[str],
+    outcome: GateOutcome,
+) -> dict[str, object]:
+    """Build the git-update summary for a commit held by the correctness gate."""
+    reason = outcome.reason or "Reingestion held by correctness gate"
+    return {
+        "trigger": triggered_by,
+        "mode": "git_reingestion",
+        "action": "manual_review",
+        "outcome": "manual_review",
+        "reason_code": "correctness_gate_failed",
+        "decision_strategy": "blocking_correctness_gate",
+        "project_id": project_id,
+        "before": before_sha,
+        "after": after_sha,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "manual_review_reason": reason,
+        "held": True,
+        "changed_groups": list(changed_groups),
+        "gate": outcome.to_summary(),
+        "regen_result": {
+            "type": "targeted_regen",
+            "success": False,
+            "held": True,
+            "reason": "correctness_gate_failed",
+        },
+    }
 
 
 def _full_rebaseline_reason(reason_codes: list[str]) -> str:

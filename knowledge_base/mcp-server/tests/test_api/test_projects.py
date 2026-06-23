@@ -540,6 +540,128 @@ async def test_reingestion_status_aggregates_operator_evidence_without_workflow_
         assert project.git_update_summary == summary
 
 
+async def test_reingestion_status_surfaces_held_and_gate_fields(client, session_factory, tmp_path):
+    """Slice 1: a held commit exposes additive `held` + `gate` fields."""
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+
+    project_id = "status-held"
+    output_dir = config.project_root / "output" / project_id
+    (output_dir / "docs").mkdir(parents=True)
+    (output_dir / "docs" / "01_X.md").write_text("# X", encoding="utf-8")
+
+    summary = {
+        "trigger": "webhook",
+        "mode": "git_reingestion",
+        "action": "manual_review",
+        "outcome": "manual_review",
+        "reason_code": "correctness_gate_failed",
+        "reason": "1 changed unit(s) absent from generated docs: job_alpha",
+        "manual_review_reason": "1 changed unit(s) absent from generated docs: job_alpha",
+        "before": "a" * 40,
+        "after": "b" * 40,
+        "held": True,
+        "gate": {
+            "passed": False,
+            "evaluated": True,
+            "missing_units": ["job_alpha"],
+            "empty_analysis_groups": [],
+            "failing_groups": ["A"],
+            "reason": "1 changed unit(s) absent from generated docs: job_alpha",
+        },
+    }
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            project_id,
+            str(tmp_path / "repo-held"),
+            repo_url="https://github.com/acme/held.git",
+            platform="generic",
+            source_type="git",
+        )
+        project.status = "error"
+        project.last_ingested_commit_sha = "a" * 40
+        project.git_update_summary = summary
+        await session.commit()
+
+    resp = await client.get(f"/mcp/projects/{project_id}/reingestion-status")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    last = data["last_update"]
+    assert last["held"] is True
+    assert last["reason_code"] == "correctness_gate_failed"
+    assert last["manual_review_reason"].endswith("job_alpha")
+    assert last["gate"]["missing_units"] == ["job_alpha"]
+    assert last["gate"]["passed"] is False
+    # SHA held at the prior commit.
+    assert data["last_ingested_commit_sha"] == "a" * 40
+
+
+async def test_run_generate_background_gate_fail_skips_swap_and_holds(
+    client, session_factory, tmp_path, monkeypatch
+):
+    """A failed pre-swap gate must not swap docs and must mark error+manual_review."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import mcp_server.api.routes.projects as projects_mod
+    from mcp_server.config import config
+    from mcp_server.services.project_registry import ProjectRegistry
+    from mcp_server.services.reingestion_gate import GateOutcome
+
+    project_id = "gate-fail"
+    output_dir = config.project_root / "output" / project_id
+    staging = output_dir / "docs_staging"
+    docs = output_dir / "docs"
+    staging.mkdir(parents=True)
+    docs.mkdir(parents=True)
+    (staging / "01_X.md").write_text("# new staging doc", encoding="utf-8")
+    (docs / "01_X.md").write_text("# OLD published doc", encoding="utf-8")
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        await registry.add_project(
+            project_id, str(tmp_path / "repo-gf"), source_type="git"
+        )
+        run = await registry.create_generate_run(project_id, triggered_by="webhook")
+        await session.commit()
+        run_id = run.id
+
+    async def fake_generate_docs(*args, **kwargs):
+        return {"success": True, "model_name": "stub", "write_model_name": "stub"}
+
+    monkeypatch.setattr(
+        projects_mod.DocGenerationCoordinator, "generate_docs", fake_generate_docs
+    )
+    swap_spy = MagicMock()
+    monkeypatch.setattr(projects_mod, "swap_docs", swap_spy)
+
+    def failing_gate(_staging_dir):
+        return GateOutcome(
+            passed=False, evaluated=True, missing_units=["job_alpha"], failing_groups=["A"],
+            reason="1 changed unit(s) absent from generated docs: job_alpha",
+        )
+
+    from mcp_server.api.app import app as _app
+
+    projects_mod._currently_generating.add(project_id)
+    await projects_mod._run_generate_background(
+        project_id, run_id, _app.state.log_manager,
+        resume=True, pre_swap_gate=failing_gate,
+    )
+
+    swap_spy.assert_not_called()
+    # Old published docs untouched; staging preserved for revisit.
+    assert (docs / "01_X.md").read_text(encoding="utf-8") == "# OLD published doc"
+    assert (staging / "01_X.md").exists()
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project(project_id)
+        assert project is not None
+        assert project.status == "error"
+        assert project.error_message.startswith("manual_review:")
+
+
 # --- Logs ---
 
 
