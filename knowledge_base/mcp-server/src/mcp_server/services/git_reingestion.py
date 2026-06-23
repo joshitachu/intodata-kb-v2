@@ -13,7 +13,14 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
-from mcp_server.services.rag_support_package import inspect_generation_cache_readiness
+from mcp_server.services.group_doc_dependency import (
+    DOC_PACK_MANIFEST_FILENAME,
+    GroupDocDependency,
+)
+from mcp_server.services.rag_support_package import (
+    RAG_SUPPORT_DIRNAME,
+    inspect_generation_cache_readiness,
+)
 from mcp_server.services.reingestion_gate import (
     CorrectnessGate,
     GateOutcome,
@@ -144,6 +151,12 @@ async def run_git_reingestion(
         return False
 
     changed_groups = resolve_changed_groups(project_id, file_changes, is_first_push)
+
+    # Compute affected-doc preview from the persisted provenance map. Read-only;
+    # does not change regen behavior. None when no baseline manifest exists yet.
+    output_dir = config.project_root / "output" / project_id
+    affected_docs_preview = _compute_affected_docs_preview(output_dir, changed_groups)
+
     staging_result = setup_incremental_staging(
         project_id,
         changed_groups,
@@ -163,6 +176,7 @@ async def run_git_reingestion(
                     triggered_by=triggered_by,
                     reason=reason,
                     staging_result=staging_result,
+                    affected_docs_preview=affected_docs_preview,
                 ),
                 error=reason,
             )
@@ -265,6 +279,7 @@ async def run_git_reingestion(
                     triggered_by=triggered_by,
                     changed_groups=sorted(changed_groups),
                     outcome=held,
+                    affected_docs_preview=affected_docs_preview,
                 ),
                 error=held.reason or "Reingestion held by correctness gate",
             )
@@ -277,6 +292,17 @@ async def run_git_reingestion(
         if project and project.status == "ready" and project.error_message is None:
             if project.last_ingested_commit_sha != after_sha:
                 await registry.update_last_ingested_commit(project_id, after_sha)
+            if affected_docs_preview is not None:
+                # Augment the summary written by auto_doc_update with the preview.
+                existing_summary: dict[str, object] = (
+                    project.git_update_summary
+                    if isinstance(project.git_update_summary, dict)
+                    else {}
+                )
+                await registry.update_git_update_summary(
+                    project_id,
+                    {**existing_summary, "affected_docs_preview": affected_docs_preview},
+                )
             await db.commit()
             return True
         await db.commit()
@@ -397,10 +423,11 @@ def _held_summary(
     triggered_by: str,
     changed_groups: list[str],
     outcome: GateOutcome,
+    affected_docs_preview: list[str] | None = None,
 ) -> dict[str, object]:
     """Build the git-update summary for a commit held by the correctness gate."""
     reason = outcome.reason or "Reingestion held by correctness gate"
-    return {
+    summary: dict[str, object] = {
         "trigger": triggered_by,
         "mode": "git_reingestion",
         "action": "manual_review",
@@ -423,6 +450,34 @@ def _held_summary(
             "reason": "correctness_gate_failed",
         },
     }
+    if affected_docs_preview is not None:
+        summary["affected_docs_preview"] = affected_docs_preview
+    return summary
+
+
+def _compute_affected_docs_preview(
+    output_dir: Path,
+    changed_groups: set[str],
+) -> list[str] | None:
+    """Read the persisted provenance map and return docs affected by changed_groups.
+
+    Returns None when no manifest exists yet (pre-baseline) so callers know the
+    preview is unavailable rather than empty. Returns an empty list when groups
+    are resolved but map to no docs.
+    """
+    manifest_path = (
+        output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
+    )
+    dep = GroupDocDependency.load(manifest_path)
+    if dep is None:
+        return None
+    if not changed_groups:
+        return []
+    affected: set[str] = set()
+    for group in changed_groups:
+        affected |= dep.docs_for_group(group)
+    affected |= dep.cross_cutting_docs()
+    return sorted(affected)
 
 
 def _full_rebaseline_reason(reason_codes: list[str]) -> str:
@@ -438,8 +493,9 @@ def _full_rebaseline_required_summary(
     triggered_by: str,
     reason: str,
     staging_result: IncrementalStagingResult,
+    affected_docs_preview: list[str] | None = None,
 ) -> dict[str, object]:
-    return {
+    summary: dict[str, object] = {
         "trigger": triggered_by,
         "mode": "git_reingestion",
         "action": "manual_review",
@@ -468,3 +524,6 @@ def _full_rebaseline_required_summary(
             "reason_codes": list(staging_result.reason_codes),
         },
     }
+    if affected_docs_preview is not None:
+        summary["affected_docs_preview"] = affected_docs_preview
+    return summary

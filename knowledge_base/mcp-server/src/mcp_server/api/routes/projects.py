@@ -222,6 +222,9 @@ def _build_reingestion_status_response(
             "gate": _sanitize_status_value(summary.get("gate"))
             if isinstance(summary.get("gate"), dict)
             else None,
+            "affected_docs_preview": _summary_string_list(summary, "affected_docs_preview")
+            if isinstance(summary.get("affected_docs_preview"), list)
+            else None,
         },
         remote_hygiene={
             "status": readiness.status,

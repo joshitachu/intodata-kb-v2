@@ -162,6 +162,7 @@ class ReingestionLastUpdateStatus(BaseModel):
     rag_result: dict[str, object] | None = None
     regen_result: dict[str, object] | None = None
     gate: dict[str, object] | None = None
+    affected_docs_preview: list[str] | None = None
 
 
 class ReingestionRemoteHygieneStatus(BaseModel):
