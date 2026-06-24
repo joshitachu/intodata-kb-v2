@@ -2936,7 +2936,11 @@ async def test_core_generation_debug_flag_writes_full_model_input_snapshot(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_core_generation_uses_complete_with_tools_for_tool_capable_phase3_provider(tmp_path):
+async def test_core_generation_uses_complete_with_tools_for_tool_capable_phase3_provider(tmp_path, monkeypatch):
+    # First-pass phase3 is single-shot by default; opt back into the tool loop to
+    # exercise the agentic dispatch path that this test covers.
+    from mcp_server.config import config
+    monkeypatch.setattr(config, "agent_phase3_first_pass_tools", True)
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     context_file = staging / "group.md"
@@ -4341,7 +4345,11 @@ def test_incomplete_failure_kind_not_retryable_with_fallback():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_force_conclude_fires_and_succeeds_on_incomplete(tmp_path):
+async def test_force_conclude_fires_and_succeeds_on_incomplete(tmp_path, monkeypatch):
+    # Force-conclude only applies on the tool path; phase3 is single-shot by default,
+    # so opt back into tools to exercise the incomplete->force-conclude fallback.
+    from mcp_server.config import config
+    monkeypatch.setattr(config, "agent_phase3_first_pass_tools", True)
     staging = tmp_path / "docs_staging"
     staging.mkdir()
     facts = build_facts_manifest_from_units("proj", ["Unit A"])
@@ -5625,8 +5633,14 @@ async def _noop_log_cb(pid: str, message: str, level: str = "info") -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_core_generation_tool_path_injects_starter_pack(tmp_path):
-    """Tool-capable Phase 3: doc pack <= 100 KB is injected into system_prompt."""
+async def test_complete_core_generation_tool_path_injects_starter_pack(tmp_path, monkeypatch):
+    """Tool-capable Phase 3: doc pack <= 100 KB is injected into system_prompt.
+
+    First-pass phase3 is single-shot by default; opt into the tool loop to exercise
+    the system_prompt injection path that only runs when tools are enabled.
+    """
+    from mcp_server.config import config
+    monkeypatch.setattr(config, "agent_phase3_first_pass_tools", True)
     staging = tmp_path / "docs_staging"
     (staging / "_analysis").mkdir(parents=True)
     facts = build_facts_manifest_from_units("proj", ["Unit A"])

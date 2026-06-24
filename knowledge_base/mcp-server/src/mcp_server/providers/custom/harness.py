@@ -726,7 +726,14 @@ class CustomHarnessProvider(DocGenerationProvider):
             return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
         if self._plugin_mode and phase.startswith(("phase2", "phase3")):
             return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
-        # Phase 3 and other tool-capable phases
+        # First-pass Phase 3 runs single-shot by default: the targeted doc pack reaches
+        # the model via context_files and is primary/sufficient, so token cost scales
+        # with pack size instead of an accumulating tool conversation. Repair phases
+        # ("repair" in phase) are handled above and keep tools regardless. Set
+        # agent_phase3_first_pass_tools=True to restore the agentic loop for first-pass docs.
+        if phase.startswith("phase3") and not config.agent_phase3_first_pass_tools:
+            return ToolPolicy(enabled=False, max_input_tokens=0, max_calls=0)
+        # Phase 3 (tools opted back in) and other tool-capable phases
         return ToolPolicy(
             enabled=True,
             max_input_tokens=config.agent_phase3_tool_input_token_cap,
