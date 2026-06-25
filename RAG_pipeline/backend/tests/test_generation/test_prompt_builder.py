@@ -4,6 +4,7 @@ from src.generation.prompt_builder import (
     MAX_CONTEXT_TOKENS,
     build_messages,
     build_no_results_messages,
+    build_role_aware_context,
     _build_context,
     should_use_code_assistant,
 )
@@ -89,6 +90,52 @@ def test_build_context_with_reference_numbers():
     assert "[Reference 1: test.pdf]" in context
     assert "[Reference 2: other.pdf]" in context
     assert "[Source:" not in context
+
+
+def test_build_role_aware_context_separates_source_and_auxiliary_sections():
+    source = _make_source("Project fact", document_id=1)
+    reference = _make_source("Manual background", document_id=2)
+    reference.document_role = "reference"
+    guidance = _make_source("Answer guidance", document_id=3)
+    guidance.document_role = "guidance"
+
+    context = build_role_aware_context(
+        [source],
+        [reference, guidance],
+        reference_numbers={1: 1, 2: 2, 3: 3},
+    )
+
+    assert "## Project Evidence" in context
+    assert "Project fact" in context
+    assert "## Supporting Reference" in context
+    assert "Manual background" in context
+    assert "## Guidance, Standards, and Policies" in context
+    assert "Answer guidance" in context
+    assert "non-source" not in context.lower()
+    assert "Project-specific factual claims must be based on Project Evidence" in context
+
+
+def test_build_role_aware_context_marks_missing_source_evidence():
+    guidance = _make_source("Use this checklist", document_id=3)
+    guidance.document_role = "policy"
+
+    context = build_role_aware_context([], [guidance], reference_numbers={3: 1})
+
+    assert "No source project evidence was retrieved" in context
+    assert "Use this checklist" in context
+    assert "do not prove project-specific facts" in context
+
+
+def test_build_role_aware_context_keeps_template_structure_only():
+    template = _make_source("Template: Finding, Evidence, Next Steps", document_id=4)
+    template.document_role = "template"
+
+    context = build_role_aware_context([], [template], reference_numbers={4: 1})
+
+    assert "## Template Context" in context
+    assert "Template: Finding, Evidence, Next Steps" in context
+    assert "structure only" in context
+    assert "Do not use templates as factual project evidence" in context
 
 
 def test_build_context_truncates_per_source():

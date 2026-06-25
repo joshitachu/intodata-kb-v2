@@ -5,6 +5,16 @@ import { FileText, Trash2, Loader2 } from "lucide-react";
 import { DocumentUpload } from "@/components/DocumentUpload";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useDocuments, useDeleteDocument } from "@/hooks/useDocuments";
+import type { DocumentRole } from "@/types";
+
+const ROLE_LABELS: Record<DocumentRole, string> = {
+  source: "Source",
+  reference: "Reference",
+  guidance: "Guidance",
+  standard: "Standard",
+  template: "Template",
+  policy: "Policy",
+};
 
 export default function DocumentsPage() {
   const { data, isLoading, error } = useDocuments();
@@ -61,10 +71,15 @@ export default function DocumentsPage() {
                 <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate">{doc.filename}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {doc.file_type.toUpperCase()} &middot; {doc.chunk_count} chunks
-                    {doc.author && ` \u00b7 ${doc.author}`}
-                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span>
+                      {doc.file_type.toUpperCase()} &middot; {doc.chunk_count} chunks
+                      {doc.author && ` \u00b7 ${doc.author}`}
+                    </span>
+                    <span className="rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-foreground">
+                      {ROLE_LABELS[doc.document_role]}
+                    </span>
+                  </div>
                 </div>
                 <button
                   onClick={() => setDeleteTarget({ id: doc.id, filename: doc.filename })}

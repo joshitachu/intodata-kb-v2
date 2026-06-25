@@ -13,6 +13,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, DocGapEvent, QueryUsage
+from src.document_roles import AUXILIARY_DOCUMENT_ROLES, TEMPLATE_DOCUMENT_ROLES, has_template_intent
 from src.generation.agent_loop import build_runtime_tool_summary, run_runtime_tool_loop
 from src.generation.agent_orchestrator import AgentStep, AgentTool, AgentTrace
 from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
@@ -26,6 +27,7 @@ from src.generation.prompt_builder import (
     build_correction_extraction_messages,
     build_metadata_messages,
     build_no_results_messages,
+    build_role_aware_context,
     should_use_code_assistant,
 )
 from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
@@ -441,6 +443,7 @@ def build_conversational_messages(
     memory_context: str | None = None,
     answer_style: str = "assistant",
     context_first: bool = False,
+    auxiliary_sources: list[Source] | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages with system prompt, context, history, and current query.
 
@@ -470,8 +473,15 @@ def build_conversational_messages(
         messages.append({"role": "system", "content": memory_context})
 
     # 3. Context from sources
-    if sources:
-        context = _build_context(sources, reference_numbers=reference_numbers)
+    if sources or auxiliary_sources:
+        if auxiliary_sources:
+            context = build_role_aware_context(
+                sources,
+                auxiliary_sources,
+                reference_numbers=reference_numbers,
+            )
+        else:
+            context = _build_context(sources, reference_numbers=reference_numbers)
         messages.append({
             "role": "system",
             "content": f"Retrieved context:\n{context}",
@@ -485,6 +495,57 @@ def build_conversational_messages(
     messages.append({"role": "user", "content": query})
 
     return messages
+
+
+async def _search_qa_sources(
+    qdrant: AsyncQdrantClient,
+    query: str,
+    user_groups: list[str],
+    top_k: int,
+    threshold: float,
+    project_ids: list[str] | None,
+    document_roles: list[str],
+) -> list[Source]:
+    """Run the configured QA search path with a narrowing document-role filter."""
+    if settings.query_expansion_enabled:
+        return await search_multi_query(
+            client=qdrant,
+            query=query,
+            user_groups=user_groups,
+            top_k=top_k,
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=document_roles,
+        )
+    if settings.reranker_enabled:
+        return await search_and_rerank(
+            client=qdrant,
+            query=query,
+            user_groups=user_groups,
+            top_k=top_k,
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=document_roles,
+        )
+    if settings.hybrid_search_enabled:
+        return await search_similar_hybrid(
+            client=qdrant,
+            query=query,
+            user_groups=user_groups,
+            top_k=top_k,
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=document_roles,
+        )
+    return await search_similar(
+        client=qdrant,
+        query=query,
+        user_groups=user_groups,
+        top_k=top_k,
+        threshold=threshold,
+        project_ids=project_ids,
+        document_roles=document_roles,
+    )
 
 
 def _add_doc_gap_event(
@@ -840,41 +901,35 @@ async def _prepare_rag_context(
     if not previous_doc_sources:
         # Search path (first message, or LLM requested search)
         trace.complete(AgentTool.SEARCH_DOCUMENTS)
-        if settings.query_expansion_enabled:
-            sources = await search_multi_query(
-                client=qdrant,
-                query=analysis.cleaned_query,
-                user_groups=user_groups,
-                top_k=top_k,
-                threshold=threshold,
-                project_ids=project_ids,
-            )
-        elif settings.reranker_enabled:
-            sources = await search_and_rerank(
-                client=qdrant,
-                query=analysis.cleaned_query,
-                user_groups=user_groups,
-                top_k=top_k,
-                threshold=threshold,
-                project_ids=project_ids,
-            )
-        elif settings.hybrid_search_enabled:
-            sources = await search_similar_hybrid(
-                client=qdrant,
-                query=analysis.cleaned_query,
-                user_groups=user_groups,
-                top_k=top_k,
-                threshold=threshold,
-                project_ids=project_ids,
-            )
-        else:
-            sources = await search_similar(
-                client=qdrant,
-                query=analysis.cleaned_query,
-                user_groups=user_groups,
-                top_k=top_k,
-                threshold=threshold,
-                project_ids=project_ids,
+        sources = await _search_qa_sources(
+            qdrant=qdrant,
+            query=analysis.cleaned_query,
+            user_groups=user_groups,
+            top_k=top_k,
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=["source"],
+        )
+        auxiliary_sources = await _search_qa_sources(
+            qdrant=qdrant,
+            query=analysis.cleaned_query,
+            user_groups=user_groups,
+            top_k=max(1, min(4, top_k)),
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+        )
+        if has_template_intent(query):
+            auxiliary_sources.extend(
+                await _search_qa_sources(
+                    qdrant=qdrant,
+                    query=analysis.cleaned_query,
+                    user_groups=user_groups,
+                    top_k=max(1, min(2, top_k)),
+                    threshold=threshold,
+                    project_ids=project_ids,
+                    document_roles=list(TEMPLATE_DOCUMENT_ROLES),
+                )
             )
 
         # --- Retrieval ladder rung 1: default corpus partition ---
@@ -920,12 +975,15 @@ async def _prepare_rag_context(
             )
 
             document_sources = merge_sources_by_document(sources)
+            if auxiliary_sources:
+                document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
             rung1_messages = build_conversational_messages(
                 query, sources, existing_messages, reference_numbers=ref_map,
                 memory_context=memory_context,
                 answer_style=answer_style,
                 context_first=True,
+                auxiliary_sources=auxiliary_sources,
             )
             # The ladder gate needs the rung-1 answer to judge sufficiency, so
             # it is generated here even on the streaming path (emitted as a
@@ -1006,6 +1064,29 @@ async def _prepare_rag_context(
                         ],
                     },
                 )
+
+        if insufficiency == "no_sources" and auxiliary_sources:
+            document_sources = merge_sources_by_document(auxiliary_sources)
+            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+            llm_messages = build_conversational_messages(
+                query,
+                [],
+                existing_messages,
+                reference_numbers=ref_map,
+                memory_context=memory_context,
+                answer_style=answer_style,
+                context_first=True,
+                auxiliary_sources=auxiliary_sources,
+            )
+            answer = await generate_answer(llm_messages, images=images) if precompute else None
+            return RAGContext(
+                llm_messages=llm_messages,
+                document_sources=document_sources,
+                precomputed_answer=answer,
+                analysis=analysis,
+                agent_steps=trace.steps,
+                fallback_used=True,
+            )
 
         # Rung 2 unsupported — refuse cleanly, no doc-gap event
         history = truncate_history(existing_messages) if has_history else None

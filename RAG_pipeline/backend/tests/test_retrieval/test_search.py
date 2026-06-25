@@ -340,6 +340,7 @@ class TestSourceFromPayload:
         assert src.document_id == 1
         assert src.filename == "doc.md"
         assert src.score == 0.8
+        assert src.document_role == "source"
         assert src.source_layer is None
         assert src.section is None
         assert src.unit is None
@@ -351,12 +352,14 @@ class TestSourceFromPayload:
             "filename": "proj/api.md",
             "chunk_index": 3,
             "text": "API text",
+            "document_role": "guidance",
             "source_layer": "canonical_docs",
             "section": "proj > API Contracts > Auth",
             "unit": "Auth",
             "group": "Nexus",
         }
         src = _source_from_payload(payload, 0.92)
+        assert src.document_role == "guidance"
         assert src.source_layer == "canonical_docs"
         assert src.section == "proj > API Contracts > Auth"
         assert src.unit == "Auth"
@@ -450,6 +453,37 @@ class TestLayerFilter:
         assert group_conds
         # Should have __none__ to block all results
         assert group_conds[0].match.any == ["__none__"]
+
+    def test_source_role_filter_includes_legacy_is_empty(self) -> None:
+        """document_roles=['source'] includes missing role payloads for legacy chunks."""
+        from qdrant_client.models import Filter as QFilter, IsEmptyCondition
+
+        f = _build_search_filter([], source_layers=[], document_roles=["source"])
+
+        assert f is not None
+        role_condition = next((c for c in f.must if isinstance(c, QFilter)), None)
+        assert role_condition is not None
+        should_types = {type(c) for c in role_condition.should}
+        assert IsEmptyCondition in should_types
+
+    def test_non_source_role_filter_is_exact(self) -> None:
+        """Auxiliary roles must not include legacy chunks."""
+        from qdrant_client.models import FieldCondition, Filter as QFilter
+
+        f = _build_search_filter(
+            ["engineering"],
+            source_layers=[],
+            document_roles=["guidance", "policy"],
+        )
+
+        assert f is not None
+        assert not any(isinstance(c, QFilter) for c in f.must)
+        role_conds = [
+            c for c in f.must
+            if isinstance(c, FieldCondition) and c.key == "document_role"
+        ]
+        assert role_conds
+        assert role_conds[0].match.any == ["guidance", "policy"]
 
 
 # --- Tests for layer metadata in merge_sources_by_document ---
@@ -732,4 +766,11 @@ class TestEnsureCollectionIndexes:
             await ensure_collection(client)
 
         indexed = {c.kwargs["field_name"] for c in client.create_payload_index.await_args_list}
-        assert {"allowed_groups", "document_id", "source_layer", "unit", "section"} <= indexed
+        assert {
+            "allowed_groups",
+            "document_id",
+            "source_layer",
+            "document_role",
+            "unit",
+            "section",
+        } <= indexed

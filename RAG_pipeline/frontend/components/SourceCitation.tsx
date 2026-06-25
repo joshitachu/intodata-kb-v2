@@ -10,6 +10,15 @@ interface SourceCitationProps {
   index: number;
 }
 
+const ROLE_LABELS: Record<DocumentSource["document_role"], string> = {
+  source: "Source",
+  reference: "Reference",
+  guidance: "Guidance",
+  standard: "Standard",
+  template: "Template",
+  policy: "Policy",
+};
+
 export function SourceCitation({ source, index }: SourceCitationProps) {
   const [expanded, setExpanded] = useState(false);
   const displayNumber = source.reference_number;
@@ -41,6 +50,11 @@ export function SourceCitation({ source, index }: SourceCitationProps) {
         </span>
         <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="font-medium truncate">{source.display_name ?? source.filename}</span>
+        {source.document_role !== "source" && (
+          <span className="rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground shrink-0">
+            {ROLE_LABELS[source.document_role]}
+          </span>
+        )}
         <span className="text-muted-foreground ml-auto shrink-0">
           {(source.score * 100).toFixed(0)}% match
         </span>

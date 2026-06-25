@@ -47,6 +47,7 @@ def _deserialize_sources(raw: list[dict]) -> list[DocumentSource]:
             text=s["text"],
             reference_number=s.get("reference_number", i),
             chunk_indexes=s.get("chunk_indexes", []),
+            document_role=s.get("document_role", "source"),
             source_layer=s.get("source_layer"),
             section=s.get("section"),
             unit=s.get("unit"),

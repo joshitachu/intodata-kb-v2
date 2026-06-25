@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DocumentListResponse, IngestResponse } from "@/types";
+import type { DocumentListResponse, DocumentRole, IngestResponse } from "@/types";
 
 async function fetchDocuments(): Promise<DocumentListResponse> {
   const res = await fetch("/api/documents");
@@ -23,13 +23,16 @@ async function deleteDocument(id: number): Promise<void> {
 async function uploadDocument({
   file,
   project_id,
+  document_role,
 }: {
   file: File;
   project_id: string;
+  document_role: DocumentRole;
 }): Promise<IngestResponse> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("project_id", project_id);
+  formData.append("document_role", document_role);
 
   const res = await fetch("/api/ingest", {
     method: "POST",

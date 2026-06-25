@@ -285,3 +285,10 @@ intodata-kb/
 - **DocGapEvent is written only when rung 2 actually supplies an answer** — clean refusals are not gaps. The event's purpose is repeated-omission analysis per project; do not start logging refusals or rung-1 successes into it.
 - **`friendly_display_name()` in `retrieval/search.py` is the single place internal filenames become human-readable.** Raw `{project}/_internal/...` paths must never reach chat citations or LLM context headers; context builders use `display_name or legacy-format(filename)` for stored legacy sources.
 - **`merge_sources_by_document` must propagate every new Source field** — forgetting it silently nulls metadata on DocumentSource (bit us with `run_id`/`project_id` in this slice; the doc-gap event then loses its run linkage).
+
+### Document roles (2026-06-25)
+
+- **`document_role` is independent from `source_layer`**: `source_layer` partitions generated/internal artifact layers; `document_role` describes how an uploaded document may be used in answers. Keep both filters additive with RBAC/project filters, never substitutive.
+- **Missing or blank `document_role` means `source`** for backwards compatibility. This is intentional for legacy chunks and generated knowledge-base markdown pushed through `/ingest/md`, so they remain project evidence unless a caller explicitly tags them otherwise.
+- **Only `source` is project evidence.** `reference`, `guidance`, `standard`, and `policy` may shape interpretation, terminology, constraints, or compliance checks, but they cannot prove project-specific facts. `template` is structure-only and is retrieved only when `has_template_intent(query)` is true.
+- **Role-aware query parity matters**: conversational QA, `/query`, and `/query/stream` should all use the same source-first + auxiliary/template context contract. If adding a new query entry point, do not call the old flat search path for QA without role splitting.

@@ -76,6 +76,11 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
     )
     await client.create_payload_index(
         collection_name=COLLECTION_NAME,
+        field_name="document_role",
+        field_schema=PayloadSchemaType.KEYWORD,
+    )
+    await client.create_payload_index(
+        collection_name=COLLECTION_NAME,
         field_name="unit",
         field_schema=PayloadSchemaType.KEYWORD,
     )

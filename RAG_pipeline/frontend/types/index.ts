@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+export const DocumentRoleSchema = z.enum([
+  "source",
+  "reference",
+  "guidance",
+  "standard",
+  "template",
+  "policy",
+]);
+
+export type DocumentRole = z.infer<typeof DocumentRoleSchema>;
+
+export const DOCUMENT_ROLES: DocumentRole[] = [
+  "source",
+  "reference",
+  "guidance",
+  "standard",
+  "template",
+  "policy",
+];
+
 // --- Sources ---
 
 export const DocumentSourceSchema = z.object({
@@ -9,6 +29,7 @@ export const DocumentSourceSchema = z.object({
   text: z.string(),
   reference_number: z.number(),
   chunk_indexes: z.array(z.number()).optional().default([]),
+  document_role: DocumentRoleSchema.optional().default("source"),
   source_layer: z.string().nullable().optional(),
   display_name: z.string().nullable().optional(),
   visibility: z.string().nullable().optional(),
@@ -23,6 +44,7 @@ export const DocumentResponseSchema = z.object({
   id: z.number(),
   filename: z.string(),
   file_type: z.string(),
+  document_role: DocumentRoleSchema.optional().default("source"),
   source: z.string().nullable(),
   author: z.string().nullable(),
   department: z.string().nullable(),

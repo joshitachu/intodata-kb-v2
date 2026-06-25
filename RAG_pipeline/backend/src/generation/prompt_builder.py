@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_TOKENS = 16000
 ENCODING_NAME = "cl100k_base"
+CONTEXT_FOOTER = (
+    "\n\n---\n"
+    "The above is ALL available information. Do NOT add details beyond what is shown."
+)
 
 SYSTEM_PROMPT = (
     "You are Nexus, IntoData's knowledge-base assistant. "
@@ -203,9 +207,17 @@ def build_messages(
     memory_context: str | None = None,
     system_knowledge: str | None = None,
     answer_style: str = "assistant",
+    auxiliary_sources: list[Source] | None = None,
 ) -> list[dict[str, str]]:
     """Build the chat messages list: system prompt + knowledge + memory context + context + user query."""
-    context = _build_context(sources, reference_numbers=reference_numbers)
+    if auxiliary_sources:
+        context = build_role_aware_context(
+            sources,
+            auxiliary_sources,
+            reference_numbers=reference_numbers,
+        )
+    else:
+        context = _build_context(sources, reference_numbers=reference_numbers)
     system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT if answer_style == "code" else SYSTEM_PROMPT
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if system_knowledge:
@@ -279,8 +291,70 @@ def _build_context(
         f"{truncated_sources} truncated, {len(sources) - len(parts)} dropped"
     )
     context = "\n".join(parts)
-    context += "\n\n---\nThe above is ALL available information. Do NOT add details beyond what is shown."
+    context += CONTEXT_FOOTER
     return context
+
+
+def _context_body(
+    sources: list[Source],
+    reference_numbers: dict[int, int] | None = None,
+) -> str:
+    """Build context without the global footer for composing multiple sections."""
+    return _build_context(sources, reference_numbers=reference_numbers).removesuffix(CONTEXT_FOOTER)
+
+
+def build_role_aware_context(
+    source_sources: list[Source],
+    auxiliary_sources: list[Source],
+    reference_numbers: dict[int, int] | None = None,
+) -> str:
+    """Build source-first context with non-source material in separate sections."""
+    parts: list[str] = []
+
+    if source_sources:
+        parts.append("## Project Evidence")
+        parts.append(_context_body(source_sources, reference_numbers=reference_numbers))
+    else:
+        parts.append("## Project Evidence")
+        parts.append("No source project evidence was retrieved for this question.")
+
+    reference_sources = [s for s in auxiliary_sources if s.document_role == "reference"]
+    guidance_sources = [
+        s for s in auxiliary_sources
+        if s.document_role in {"guidance", "standard", "policy"}
+    ]
+    template_sources = [s for s in auxiliary_sources if s.document_role == "template"]
+
+    if reference_sources:
+        parts.append("## Supporting Reference")
+        parts.append(_context_body(reference_sources, reference_numbers=reference_numbers))
+
+    if guidance_sources:
+        parts.append("## Guidance, Standards, and Policies")
+        parts.append(_context_body(guidance_sources, reference_numbers=reference_numbers))
+        parts.append(
+            "Use policy material as constraints or compliance context. "
+            "Use guidance and standards to shape interpretation. Do not treat this section "
+            "as proof of project-specific facts."
+        )
+
+    if template_sources:
+        parts.append("## Template Context")
+        parts.append(_context_body(template_sources, reference_numbers=reference_numbers))
+        parts.append(
+            "Use Template Context only for response structure, outline, formatting, or "
+            "deliverable shape. Do not use templates as factual project evidence."
+        )
+
+    parts.append(
+        "---\n"
+        "Project-specific factual claims must be based on Project Evidence. "
+        "Supporting Reference, Guidance, Standards, and Policies may shape interpretation "
+        "or constraints, and Template Context may shape structure only. These sections do "
+        "not prove project-specific facts when Project Evidence is missing. Do NOT add "
+        "details beyond what is shown."
+    )
+    return "\n\n".join(part for part in parts if part)
 
 
 def build_no_results_messages(

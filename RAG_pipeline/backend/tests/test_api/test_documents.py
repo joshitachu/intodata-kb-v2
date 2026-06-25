@@ -26,6 +26,7 @@ def _mock_document(id: int = 1):
     doc.id = id
     doc.filename = "test.pdf"
     doc.file_type = "pdf"
+    doc.document_role = "guidance"
     doc.source = None
     doc.author = "Alice"
     doc.department = "Engineering"
@@ -74,6 +75,7 @@ async def test_list_documents(mock_deps):
     assert data["total"] == 1
     assert len(data["documents"]) == 1
     assert data["documents"][0]["filename"] == "test.pdf"
+    assert data["documents"][0]["document_role"] == "guidance"
 
 
 async def test_delete_document_success(mock_deps):
@@ -174,9 +176,12 @@ async def test_soft_deleted_document_not_in_list(db_session):
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    filenames = [d["filename"] for d in resp.json()["documents"]]
+    documents = resp.json()["documents"]
+    filenames = [d["filename"] for d in documents]
     assert "live.pdf" in filenames
     assert "deleted.pdf" not in filenames
+    live_response = next(d for d in documents if d["filename"] == "live.pdf")
+    assert live_response["document_role"] == "source"
 
 
 async def test_soft_deleted_document_returns_404_on_delete(db_session):

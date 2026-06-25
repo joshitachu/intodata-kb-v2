@@ -17,6 +17,9 @@ class Document(Base):
     source: Mapped[str | None] = mapped_column(String(500))  # origin path/URL
     author: Mapped[str | None] = mapped_column(String(255))
     department: Mapped[str | None] = mapped_column(String(255))
+    document_role: Mapped[str] = mapped_column(
+        String(20), default="source", server_default="source"
+    )
     chunk_count: Mapped[int] = mapped_column(default=0)
     project_id: Mapped[str | None] = mapped_column(String(255), index=True)
     deleted_at: Mapped[datetime.datetime | None] = mapped_column(

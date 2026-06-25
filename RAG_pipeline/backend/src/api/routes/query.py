@@ -23,7 +23,7 @@ from src.generation.prompt_builder import (
     should_use_code_assistant,
 )
 from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
-from src.generation.rag_chain import run_rag_query
+from src.generation.rag_chain import _execute_role_aware_search, run_rag_query
 from src.memory.hindsight_client import (
     ensure_corrections_bank,
     ensure_quality_bank,
@@ -37,10 +37,7 @@ from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.retrieval.embedder import embed_text, get_last_embed_tokens
 from src.retrieval.search import (
     merge_sources_by_document,
-    search_and_rerank,
-    search_multi_query,
     search_similar,
-    search_similar_hybrid,
 )
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import (
@@ -242,34 +239,12 @@ async def query_stream(
         return StreamingResponse(_non_stream(), media_type="text/event-stream")
     else:
         # 2. Search (with project-level RBAC)
-        doc_ids = body.document_ids
-        if settings.query_expansion_enabled:
-            sources = await search_multi_query(
-                qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold,
-                document_ids=doc_ids, project_ids=project_ids,
-            )
-        elif settings.reranker_enabled:
-            sources = await search_and_rerank(
-                qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold,
-                document_ids=doc_ids, project_ids=project_ids,
-            )
-        elif settings.hybrid_search_enabled:
-            sources = await search_similar_hybrid(
-                qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold,
-                document_ids=doc_ids, project_ids=project_ids,
-            )
-        else:
-            sources = await search_similar(
-                qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold,
-                document_ids=doc_ids, project_ids=project_ids,
-            )
+        sources, auxiliary_sources = await _execute_role_aware_search(
+            analysis, body, user_groups, qdrant, project_ids,
+        )
 
-        if sources:
-            document_sources = merge_sources_by_document(sources)
+        if sources or auxiliary_sources:
+            document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
             messages = build_messages(
                 body.query,
@@ -278,6 +253,7 @@ async def query_stream(
                 memory_context=memory_context,
                 system_knowledge=system_knowledge,
                 answer_style=answer_style,
+                auxiliary_sources=auxiliary_sources,
             )
             sources_data = [s.model_dump() for s in document_sources]
         else:

@@ -126,9 +126,52 @@ async def test_rag_query_greeting_goes_through_search(mock_qdrant, mock_db):
             db=mock_db,
         )
 
-    # Search WAS called (greetings now go through search)
-    mock_search.assert_called_once()
+    # Search WAS called (source evidence first, then bounded auxiliary context)
+    assert mock_search.await_count == 2
+    assert mock_search.await_args_list[0].kwargs["document_roles"] == ["source"]
+    assert mock_search.await_args_list[1].kwargs["document_roles"] == [
+        "reference", "guidance", "standard", "policy",
+    ]
     # LLM was called with no-results prompt
     mock_gen.assert_called_once()
     assert len(response.sources) == 0
     assert response.answer == "Hello! How can I help you find information today?"
+
+
+async def test_rag_query_template_intent_retrieves_template_context(mock_qdrant, mock_db):
+    request = QueryRequest(query="Create a report outline using the template")
+
+    search_analysis = QueryAnalysis(
+        action=Action.SEARCH,
+        query_type=QueryType.QA,
+        cleaned_query="Create a report outline using the template",
+    )
+    template_source = Source(
+        document_id=9,
+        filename="report-template.docx",
+        chunk_index=0,
+        score=0.8,
+        text="Template sections: Summary, Evidence, Risks.",
+        document_role="template",
+    )
+
+    with (
+        patch("src.generation.rag_chain.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+        patch("src.generation.rag_chain.search_similar", new_callable=AsyncMock) as mock_search,
+        patch("src.generation.rag_chain.generate_answer", new_callable=AsyncMock) as mock_gen,
+    ):
+        mock_search.side_effect = [[], [], [template_source]]
+        mock_gen.return_value = "Use this outline structure."
+
+        response = await run_rag_query(
+            request=request,
+            user_groups=["engineering"],
+            user_id=1,
+            qdrant=mock_qdrant,
+            db=mock_db,
+        )
+
+    assert mock_search.await_count == 3
+    assert mock_search.await_args_list[2].kwargs["document_roles"] == ["template"]
+    assert len(response.sources) == 1
+    assert response.sources[0].document_role == "template"
