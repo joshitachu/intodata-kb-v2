@@ -107,7 +107,9 @@ jobs:
 
       - name: Install dependencies
         working-directory: knowledge_base/mcp-server
-        run: pip install -e ".[dev]"
+        run: |
+          pip install -e ../intodoc
+          pip install -e ".[dev]"
 
       - name: Run tests
         working-directory: knowledge_base/mcp-server

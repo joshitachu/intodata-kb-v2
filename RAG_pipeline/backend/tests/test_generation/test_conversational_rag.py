@@ -357,10 +357,12 @@ class TestConversationalRagIntentRouting:
         with (
             patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             # Search returns no results for "hello"
             mock_search.return_value = []
+            mock_layered.return_value = []
             mock_gen.return_value = "Hello! How can I help you?"
 
             response = await run_conversational_rag(
@@ -384,9 +386,11 @@ class TestConversationalRagIntentRouting:
         """When search returns no results, LLM generates a helpful response."""
         with (
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             mock_search.return_value = []
+            mock_layered.return_value = []
             mock_gen.return_value = "Could you provide more details about what you're looking for?"
 
             response = await run_conversational_rag(
@@ -576,9 +580,11 @@ class TestContextFirstFlow:
         """[NEED_SEARCH] is never present in the response returned to the user."""
         with (
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             mock_search.return_value = []
+            mock_layered.return_value = []
             # LLM accidentally includes [NEED_SEARCH] in a final answer
             mock_gen.return_value = "I don't know. [NEED_SEARCH]"
 
