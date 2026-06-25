@@ -6,11 +6,21 @@ import { useUploadDocument } from "@/hooks/useDocuments";
 import { useDocsProjects } from "@/hooks/useDocsProjects";
 import { useChatContext } from "@/contexts/ChatContext";
 import { cn } from "@/lib/utils";
+import { DOCUMENT_ROLES, type DocumentRole } from "@/types";
 
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".pptx", ".xlsx"];
+const ROLE_LABELS: Record<DocumentRole, string> = {
+  source: "Source",
+  reference: "Reference",
+  guidance: "Guidance",
+  standard: "Standard",
+  template: "Template",
+  policy: "Policy",
+};
 
 export function DocumentUpload() {
   const { selectedProject, setSelectedProject } = useChatContext();
+  const [documentRole, setDocumentRole] = useState<DocumentRole>("source");
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const upload = useUploadDocument();
@@ -23,9 +33,9 @@ export function DocumentUpload() {
       if (!ALLOWED_EXTENSIONS.includes(ext)) {
         return;
       }
-      upload.mutate({ file, project_id: selectedProject });
+      upload.mutate({ file, project_id: selectedProject, document_role: documentRole });
     },
-    [upload, selectedProject],
+    [upload, selectedProject, documentRole],
   );
 
   function handleDrop(e: DragEvent) {
@@ -48,37 +58,68 @@ export function DocumentUpload() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <label
-          htmlFor="project-select"
-          className="text-sm font-medium text-muted-foreground"
-        >
-          Project
-        </label>
-        <div className="relative inline-block">
-          <select
-            id="project-select"
-            value={selectedProject}
-            onChange={(e) => setSelectedProject(e.target.value)}
-            disabled={projectsLoading}
-            className={cn(
-              "appearance-none cursor-pointer",
-              "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
-              "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
-              "focus:outline-none focus:ring-1 focus:ring-ring",
-              "transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-            )}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="project-select"
+            className="text-sm font-medium text-muted-foreground"
           >
-            <option value="">
-              {projectsLoading ? "Loading..." : "Select a project"}
-            </option>
-            {projectsData?.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.display_name} ({p.platform})
+            Project
+          </label>
+          <div className="relative inline-block">
+            <select
+              id="project-select"
+              value={selectedProject}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              disabled={projectsLoading}
+              className={cn(
+                "appearance-none cursor-pointer",
+                "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
+                "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
+                "focus:outline-none focus:ring-1 focus:ring-ring",
+                "transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+              )}
+            >
+              <option value="">
+                {projectsLoading ? "Loading..." : "Select a project"}
               </option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+              {projectsData?.projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.display_name} ({p.platform})
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="document-role-select"
+            className="text-sm font-medium text-muted-foreground"
+          >
+            Role
+          </label>
+          <div className="relative inline-block">
+            <select
+              id="document-role-select"
+              value={documentRole}
+              onChange={(e) => setDocumentRole(e.target.value as DocumentRole)}
+              className={cn(
+                "appearance-none cursor-pointer",
+                "rounded-full border border-input bg-muted/40 pl-3 pr-7 py-1",
+                "text-xs text-muted-foreground hover:text-foreground hover:bg-muted",
+                "focus:outline-none focus:ring-1 focus:ring-ring transition-colors",
+              )}
+            >
+              {DOCUMENT_ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {ROLE_LABELS[role]}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+          </div>
         </div>
       </div>
 

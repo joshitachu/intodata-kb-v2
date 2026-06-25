@@ -11,6 +11,7 @@ from src.config import settings
 from src.db.models.document import Document
 from src.db.models.entity_alias import EntityAlias
 from src.db.models.user import ProjectAssignment
+from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole, normalize_document_role
 from src.ingestion.pipeline import ingest_document, ingest_text
 from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
@@ -59,6 +60,7 @@ async def ingest(
     qdrant: QdrantClient,
     user: CurrentUser,
     project_id: str = Form(...),
+    document_role: DocumentRole = Form(DEFAULT_DOCUMENT_ROLE),
 ) -> IngestResponse:
     """Upload a document and trigger the ingestion pipeline."""
     if not file.filename:
@@ -89,6 +91,7 @@ async def ingest(
             db=db,
             qdrant=qdrant,
             project_id=project_id,
+            document_role=document_role,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
@@ -284,7 +287,12 @@ async def delete_project_document(
     return {"deleted": True, "project_id": project_id, "filename": filename}
 
 
-@router.post("/ingest/md", response_model=IngestResponse, dependencies=[Depends(verify_ingest_api_key)], summary="Ingest pre-rendered markdown content")
+@router.post(
+    "/ingest/md",
+    response_model=IngestResponse,
+    dependencies=[Depends(verify_ingest_api_key)],
+    summary="Ingest pre-rendered markdown content",
+)
 async def ingest_markdown(
     request: MarkdownIngestRequest,
     db: DBSession,
@@ -295,13 +303,22 @@ async def ingest_markdown(
     Used by the MCP server to push generated documentation into the RAG pipeline.
     Idempotent: re-ingesting the same filename replaces the previous version.
     """
+    metadata = dict(request.metadata)
+    raw_role = metadata.get("document_role") or request.document_role
+    try:
+        document_role = normalize_document_role(raw_role)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    metadata["document_role"] = document_role
+
     try:
         doc, job = await ingest_text(
             text=request.text,
             filename=request.filename,
             source=request.source,
             project_id=request.project_id,
-            metadata=request.metadata,
+            metadata=metadata,
+            document_role=document_role,
             db=db,
             qdrant=qdrant,
         )

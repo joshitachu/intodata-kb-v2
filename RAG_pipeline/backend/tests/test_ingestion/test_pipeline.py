@@ -8,6 +8,7 @@ from src.ingestion.pipeline import (
     _replace_existing_document,
     _scoped_filename,
     ingest_document,
+    ingest_text,
 )
 from src.ingestion.markdown_chunker import MarkdownChunk
 
@@ -83,8 +84,11 @@ async def test_ingest_document_success(mock_db, mock_qdrant):
 
     assert doc_record.filename == "test.docx"
     assert doc_record.file_type == "docx"
+    assert doc_record.document_role == "source"
     assert job.status == "completed"
     assert job.chunks_created >= 1
+    chunk_metadatas = mock_upsert.await_args.kwargs["chunk_metadatas"]
+    assert chunk_metadatas[0]["document_role"] == "source"
 
 
 async def test_ingest_document_failure(mock_db, mock_qdrant):
@@ -124,17 +128,32 @@ class TestBuildChunkMetadatas:
         assert metas[0]["source_layer"] == "canonical_docs"
         assert metas[0]["visibility"] == "public"
         assert metas[0]["artifact_type"] == "final_doc"
+        assert metas[0]["document_role"] == "source"
 
     def test_caller_overrides_layer_and_type(self) -> None:
         chunks = ["chunk"]
         metas = _build_chunk_metadatas(
             chunks,
-            {"source_layer": "technical_analysis", "artifact_type": "group_analysis"},
+            {
+                "source_layer": "technical_analysis",
+                "artifact_type": "group_analysis",
+                "document_role": "guidance",
+            },
             default_source_layer="canonical_docs",
             default_artifact_type="final_doc",
         )
         assert metas[0]["source_layer"] == "technical_analysis"
         assert metas[0]["artifact_type"] == "group_analysis"
+        assert metas[0]["document_role"] == "guidance"
+
+    def test_invalid_document_role_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid document_role"):
+            _build_chunk_metadatas(
+                ["chunk"],
+                {"document_role": "manual"},
+                default_source_layer="canonical_docs",
+                default_artifact_type="final_doc",
+            )
 
     def test_markdown_chunk_section_unit_included(self) -> None:
         md_chunks = [
@@ -184,6 +203,60 @@ class TestBuildChunkMetadatas:
             default_artifact_type="uploaded_file",
         )
         assert metas[0]["artifact_type"] == "uploaded_file"
+
+
+async def test_ingest_text_defaults_document_role_to_source(mock_db, mock_qdrant):
+    with (
+        patch("src.ingestion.pipeline.embed_texts", new_callable=AsyncMock) as mock_embed,
+        patch("src.ingestion.pipeline.embed_texts_sparse") as mock_sparse,
+        patch("src.ingestion.pipeline.ensure_collection", new_callable=AsyncMock),
+        patch("src.ingestion.pipeline.upsert_chunks", new_callable=AsyncMock) as mock_upsert,
+        patch("src.ingestion.pipeline.settings") as mock_settings,
+    ):
+        mock_settings.hybrid_search_enabled = True
+        mock_embed.return_value = [[0.1] * 768]
+        mock_sparse.return_value = [MagicMock(indices=[1], values=[0.5])]
+
+        doc_record, job = await ingest_text(
+            text="# Guide\n\nGenerated source content.",
+            filename="01_GUIDE.md",
+            source="intodoc:test",
+            project_id="proj",
+            metadata={},
+            db=mock_db,
+            qdrant=mock_qdrant,
+        )
+
+    assert doc_record.document_role == "source"
+    assert job.status == "completed"
+    chunk_metadatas = mock_upsert.await_args.kwargs["chunk_metadatas"]
+    assert chunk_metadatas[0]["document_role"] == "source"
+
+
+async def test_ingest_text_stores_explicit_document_role(mock_db, mock_qdrant):
+    with (
+        patch("src.ingestion.pipeline.embed_texts", new_callable=AsyncMock) as mock_embed,
+        patch("src.ingestion.pipeline.ensure_collection", new_callable=AsyncMock),
+        patch("src.ingestion.pipeline.upsert_chunks", new_callable=AsyncMock) as mock_upsert,
+        patch("src.ingestion.pipeline.settings") as mock_settings,
+    ):
+        mock_settings.hybrid_search_enabled = False
+        mock_embed.return_value = [[0.1] * 768]
+
+        doc_record, job = await ingest_text(
+            text="# Handleiding\n\nUse this as guidance.",
+            filename="handleiding.md",
+            source="manual",
+            project_id="proj",
+            metadata={"document_role": "guidance"},
+            db=mock_db,
+            qdrant=mock_qdrant,
+        )
+
+    assert doc_record.document_role == "guidance"
+    assert job.status == "completed"
+    chunk_metadatas = mock_upsert.await_args.kwargs["chunk_metadatas"]
+    assert chunk_metadatas[0]["document_role"] == "guidance"
 
 
 class TestReplaceExistingDocument:

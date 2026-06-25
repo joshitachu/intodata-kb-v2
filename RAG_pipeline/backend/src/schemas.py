@@ -4,6 +4,8 @@ import datetime
 
 from pydantic import BaseModel, Field
 
+from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole
+
 
 # --- Query ---
 
@@ -27,6 +29,7 @@ class Source(BaseModel):
     chunk_index: int
     score: float
     text: str
+    document_role: DocumentRole = DEFAULT_DOCUMENT_ROLE
     source_layer: str | None = None
     section: str | None = None
     unit: str | None = None
@@ -46,6 +49,7 @@ class DocumentSource(BaseModel):
     text: str
     reference_number: int
     chunk_indexes: list[int] = Field(default_factory=list)
+    document_role: DocumentRole = DEFAULT_DOCUMENT_ROLE
     source_layer: str | None = None
     section: str | None = None
     unit: str | None = None
@@ -92,6 +96,7 @@ class DocumentResponse(BaseModel):
     id: int
     filename: str
     file_type: str
+    document_role: DocumentRole = DEFAULT_DOCUMENT_ROLE
     source: str | None = None
     author: str | None = None
     department: str | None = None
@@ -120,6 +125,10 @@ class MarkdownIngestRequest(BaseModel):
     filename: str = Field(..., min_length=1, description="e.g. job_001_payment_loader.md")
     source: str = Field(default="", description="e.g. intodoc:vaxxinova")
     project_id: str = Field(default="", description="Project identifier")
+    document_role: DocumentRole = Field(
+        default=DEFAULT_DOCUMENT_ROLE,
+        description="How the assistant should use this document",
+    )
     metadata: dict = Field(default_factory=dict)
 
 

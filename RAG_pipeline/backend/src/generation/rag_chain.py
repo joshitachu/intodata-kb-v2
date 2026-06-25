@@ -9,6 +9,7 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import QueryLog
+from src.document_roles import AUXILIARY_DOCUMENT_ROLES, TEMPLATE_DOCUMENT_ROLES, has_template_intent
 from src.generation.conversational_rag import _build_memory_context
 from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
 from src.generation.llm_client import generate_answer, get_last_usage
@@ -96,6 +97,7 @@ async def _execute_search(
     threshold: float,
     document_ids: list[int] | None,
     project_ids: list[str] | None,
+    document_roles: list[str] | None = None,
 ) -> list[Source]:
     """Select and run the search strategy based on feature flags."""
     query = analysis.cleaned_query
@@ -104,24 +106,72 @@ async def _execute_search(
             client=qdrant, query=query, user_groups=user_groups,
             top_k=top_k, threshold=threshold,
             document_ids=document_ids, project_ids=project_ids,
+            document_roles=document_roles,
         )
     if settings.reranker_enabled:
         return await search_and_rerank(
             client=qdrant, query=query, user_groups=user_groups,
             top_k=top_k, threshold=threshold,
             document_ids=document_ids, project_ids=project_ids,
+            document_roles=document_roles,
         )
     if settings.hybrid_search_enabled:
         return await search_similar_hybrid(
             client=qdrant, query=query, user_groups=user_groups,
             top_k=top_k, threshold=threshold,
             document_ids=document_ids, project_ids=project_ids,
+            document_roles=document_roles,
         )
     return await search_similar(
         client=qdrant, query=query, user_groups=user_groups,
         top_k=top_k, threshold=threshold,
         document_ids=document_ids, project_ids=project_ids,
+        document_roles=document_roles,
     )
+
+
+async def _execute_role_aware_search(
+    analysis,
+    request: QueryRequest,
+    user_groups: list[str],
+    qdrant: AsyncQdrantClient,
+    project_ids: list[str] | None,
+) -> tuple[list[Source], list[Source]]:
+    """Run source-first retrieval plus bounded auxiliary/template context."""
+    source_sources = await _execute_search(
+        analysis,
+        user_groups,
+        qdrant,
+        request.top_k,
+        request.threshold,
+        request.document_ids,
+        project_ids,
+        document_roles=["source"],
+    )
+    auxiliary_sources = await _execute_search(
+        analysis,
+        user_groups,
+        qdrant,
+        max(1, min(4, request.top_k)),
+        request.threshold,
+        request.document_ids,
+        project_ids,
+        document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+    )
+    if has_template_intent(request.query):
+        auxiliary_sources.extend(
+            await _execute_search(
+                analysis,
+                user_groups,
+                qdrant,
+                max(1, min(2, request.top_k)),
+                request.threshold,
+                request.document_ids,
+                project_ids,
+                document_roles=list(TEMPLATE_DOCUMENT_ROLES),
+            )
+        )
+    return source_sources, auxiliary_sources
 
 
 async def _persist_query(
@@ -206,6 +256,7 @@ async def run_rag_query(
         f"| Type: {analysis.query_type.value} | Cleaned: {analysis.cleaned_query[:80]!r}"
     )
     sources: list[Source] = []
+    document_sources: list[DocumentSource] = []
 
     system_knowledge: str | None = None
     if settings.system_knowledge_injection:
@@ -278,13 +329,11 @@ async def run_rag_query(
             answer = await generate_answer(messages)
 
     else:
-        sources = await _execute_search(
-            analysis, user_groups, qdrant,
-            request.top_k, request.threshold,
-            request.document_ids, project_ids,
+        sources, auxiliary_sources = await _execute_role_aware_search(
+            analysis, request, user_groups, qdrant, project_ids,
         )
 
-        if sources:
+        if sources or auxiliary_sources:
             logger.info(f"Search returned {len(sources)} sources, building prompt")
             logger.info("--- Retrieved Chunks ---")
             for i, s in enumerate(sources, 1):
@@ -302,7 +351,7 @@ async def run_rag_query(
                 f"Threshold {request.threshold} met; Sending ~{total_context_tokens} context tokens to LLM"
             )
 
-            document_sources = merge_sources_by_document(sources)
+            document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
             ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
             messages = build_messages(
                 request.query, sources,
@@ -310,6 +359,7 @@ async def run_rag_query(
                 memory_context=memory_context,
                 system_knowledge=system_knowledge,
                 answer_style=answer_style,
+                auxiliary_sources=auxiliary_sources,
             )
             answer = await generate_answer(messages)
         else:
@@ -323,10 +373,6 @@ async def run_rag_query(
             answer = await generate_answer(messages)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
-
-    # METADATA path sets document_sources explicitly; all other paths with no sources get []
-    if analysis.action != Action.METADATA and not sources:
-        document_sources = []
 
     logger.info(f"Completed in {latency_ms}ms | {len(document_sources)} document sources returned")
 

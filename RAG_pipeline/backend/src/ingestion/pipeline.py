@@ -19,6 +19,7 @@ from src.config import settings
 from src.retrieval.embedder import embed_texts
 from src.retrieval.sparse_embedder import embed_texts_sparse
 from src.retrieval.vector_store import delete_document_points, ensure_collection, upsert_chunks
+from src.document_roles import DEFAULT_DOCUMENT_ROLE, normalize_document_role
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ def _build_chunk_metadatas(
     source_layer = request_metadata.get("source_layer") or default_source_layer
     visibility = request_metadata.get("visibility") or "public"
     artifact_type = request_metadata.get("artifact_type") or default_artifact_type
+    document_role = normalize_document_role(request_metadata.get("document_role"))
 
     doc_level: dict = {
         k: v
@@ -53,6 +55,7 @@ def _build_chunk_metadatas(
             "source_layer": source_layer,
             "visibility": visibility,
             "artifact_type": artifact_type,
+            "document_role": document_role,
             "project_id": request_metadata.get("project_id"),
             "doc_name": request_metadata.get("doc_name"),
             "group": request_metadata.get("group"),
@@ -112,6 +115,7 @@ async def ingest_document(
     qdrant: AsyncQdrantClient,
     project_id: str | None = None,
     metadata: dict | None = None,
+    document_role: str | None = DEFAULT_DOCUMENT_ROLE,
 ) -> tuple[Document, IngestionJob]:
     """Full ingestion pipeline: parse → metadata → chunk → embed → store.
 
@@ -122,7 +126,10 @@ async def ingest_document(
     """
     filename = _scoped_filename(filename, project_id)
     ext = Path(filename).suffix.lower().lstrip(".")
-    request_metadata = metadata or {}
+    request_metadata = dict(metadata or {})
+    if document_role is not None:
+        request_metadata["document_role"] = document_role
+    normalized_role = normalize_document_role(request_metadata.get("document_role"))
 
     # 0. Replace existing document if same filename exists
     await _replace_existing_document(filename, db, qdrant)
@@ -134,6 +141,7 @@ async def ingest_document(
         file_type=ext,
         author=meta.get("author"),
         department=meta.get("department"),
+        document_role=normalized_role,
         uploaded_by=uploaded_by,
         project_id=project_id,
     )
@@ -226,6 +234,7 @@ async def ingest_text(
     metadata: dict,
     db: AsyncSession,
     qdrant: AsyncQdrantClient,
+    document_role: str | None = None,
 ) -> tuple[Document, IngestionJob]:
     """Ingest raw text (markdown) — no file parsing needed.
 
@@ -233,6 +242,10 @@ async def ingest_text(
     Idempotent: replaces existing document with same filename.
     """
     filename = _scoped_filename(filename, project_id)
+    request_metadata = dict(metadata)
+    if document_role is not None:
+        request_metadata["document_role"] = document_role
+    normalized_role = normalize_document_role(request_metadata.get("document_role"))
 
     # 0. Replace existing document if same filename exists
     await _replace_existing_document(filename, db, qdrant)
@@ -242,8 +255,9 @@ async def ingest_text(
         filename=filename,
         file_type="md",
         source=source or None,
-        author=metadata.get("author"),
-        department=metadata.get("department"),
+        author=request_metadata.get("author"),
+        department=request_metadata.get("department"),
+        document_role=normalized_role,
         project_id=project_id or None,
     )
     db.add(doc)
@@ -260,14 +274,14 @@ async def ingest_text(
 
     try:
         # 3. Chunk — always md; use structure-aware heading-path chunker.
-        doc_name = metadata.get("doc_name") or Path(filename).stem
+        doc_name = request_metadata.get("doc_name") or Path(filename).stem
         md_chunks = chunk_markdown(text, doc_name=doc_name)
         if not md_chunks:
             raise ValueError(f"No chunks produced from {filename}")
         chunk_texts = [c.text for c in md_chunks]
         chunk_metadatas = _build_chunk_metadatas(
             md_chunks,
-            metadata,
+            request_metadata,
             default_source_layer="canonical_docs",
             default_artifact_type="final_doc",
         )

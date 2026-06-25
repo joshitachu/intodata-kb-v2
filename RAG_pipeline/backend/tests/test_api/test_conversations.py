@@ -166,6 +166,16 @@ class TestGetConversation:
         conv = _mock_conversation(id=1, user_id=1)
         msg1 = _mock_message(id=1, role="user", content="Question")
         msg2 = _mock_message(id=2, role="assistant", content="Answer")
+        msg2.sources = [
+            {
+                "document_id": 1,
+                "filename": "policy.pdf",
+                "score": 0.8,
+                "text": "Policy context",
+                "reference_number": 1,
+                "document_role": "policy",
+            }
+        ]
         conv.messages = [msg1, msg2]
 
         result = MagicMock()
@@ -180,6 +190,7 @@ class TestGetConversation:
         data = resp.json()
         assert data["id"] == 1
         assert len(data["messages"]) == 2
+        assert data["messages"][1]["sources"][0]["document_role"] == "policy"
 
     async def test_get_not_found(self, mock_deps):
         mock_db = mock_deps["db"]

@@ -357,10 +357,12 @@ class TestConversationalRagIntentRouting:
         with (
             patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             # Search returns no results for "hello"
             mock_search.return_value = []
+            mock_layered.return_value = []
             mock_gen.return_value = "Hello! How can I help you?"
 
             response = await run_conversational_rag(
@@ -371,8 +373,12 @@ class TestConversationalRagIntentRouting:
                 db=mock_db,
             )
 
-        # Search WAS called (greetings now go through search)
-        mock_search.assert_called_once()
+        # Search WAS called (source evidence first, then bounded auxiliary context)
+        assert mock_search.await_count == 2
+        assert mock_search.await_args_list[0].kwargs["document_roles"] == ["source"]
+        assert mock_search.await_args_list[1].kwargs["document_roles"] == [
+            "reference", "guidance", "standard", "policy",
+        ]
         mock_gen.assert_called_once()
         assert response.content == "Hello! How can I help you?"
 
@@ -380,9 +386,11 @@ class TestConversationalRagIntentRouting:
         """When search returns no results, LLM generates a helpful response."""
         with (
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             mock_search.return_value = []
+            mock_layered.return_value = []
             mock_gen.return_value = "Could you provide more details about what you're looking for?"
 
             response = await run_conversational_rag(
@@ -393,7 +401,11 @@ class TestConversationalRagIntentRouting:
                 db=mock_db,
             )
 
-        mock_search.assert_called_once()
+        assert mock_search.await_count == 2
+        assert mock_search.await_args_list[0].kwargs["document_roles"] == ["source"]
+        assert mock_search.await_args_list[1].kwargs["document_roles"] == [
+            "reference", "guidance", "standard", "policy",
+        ]
         mock_gen.assert_called_once()
         call_messages = mock_gen.call_args[0][0]
         assert "no relevant documents" in call_messages[0]["content"].lower()
@@ -514,7 +526,11 @@ class TestContextFirstFlow:
                 db=mock_db,
             )
 
-        mock_search.assert_called_once()
+        assert mock_search.await_count == 2
+        assert mock_search.await_args_list[0].kwargs["document_roles"] == ["source"]
+        assert mock_search.await_args_list[1].kwargs["document_roles"] == [
+            "reference", "guidance", "standard", "policy",
+        ]
         assert mock_gen.call_count == 2
         assert response.content.startswith("The salary range is $50k-$100k [1].")
         assert response.sources is not None
@@ -548,7 +564,11 @@ class TestContextFirstFlow:
                 db=mock_db,
             )
 
-        mock_search.assert_called_once()
+        assert mock_search.await_count == 2
+        assert mock_search.await_args_list[0].kwargs["document_roles"] == ["source"]
+        assert mock_search.await_args_list[1].kwargs["document_roles"] == [
+            "reference", "guidance", "standard", "policy",
+        ]
         # Only 1 generate_answer call (the rung-1 precompute); the runtime loop uses
         # generate_answer_with_runtime_tools, which is separate and patched out here.
         mock_gen.assert_called_once()
@@ -560,9 +580,11 @@ class TestContextFirstFlow:
         """[NEED_SEARCH] is never present in the response returned to the user."""
         with (
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
             mock_search.return_value = []
+            mock_layered.return_value = []
             # LLM accidentally includes [NEED_SEARCH] in a final answer
             mock_gen.return_value = "I don't know. [NEED_SEARCH]"
 
@@ -676,6 +698,15 @@ class TestRetrievalLadder:
             display_name="Technical Analysis: Item (Project: phase2)",
         )
 
+    @staticmethod
+    def _guidance_source() -> Source:
+        return Source(
+            document_id=21, filename="phase2/failure-guidance.pdf", chunk_index=0,
+            score=0.7, text="Explain failure behavior against operational guidance.",
+            document_role="guidance", source_layer="canonical_docs", project_id="phase2",
+            display_name="failure-guidance.pdf (Project: phase2)",
+        )
+
     async def test_rung1_sufficient_answer_skips_rung2(
         self, mock_conversation, mock_db, disable_new_features
     ):
@@ -686,7 +717,7 @@ class TestRetrievalLadder:
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
-            mock_search.return_value = [self._canonical_source()]
+            mock_search.side_effect = [[self._canonical_source()], [self._guidance_source()]]
             mock_gen.return_value = "The job continues because DIE_ON_ERROR is false [1]."
 
             response = await run_conversational_rag(
@@ -696,6 +727,10 @@ class TestRetrievalLadder:
             )
 
         mock_layered.assert_not_awaited()
+        assert mock_search.await_args_list[0].kwargs["document_roles"] == ["source"]
+        assert mock_search.await_args_list[1].kwargs["document_roles"] == [
+            "reference", "guidance", "standard", "policy",
+        ]
         assert mock_gen.await_count == 1, "happy path pays exactly one LLM call"
         assert response.fallback_used is False
         assert response.doc_gap is False

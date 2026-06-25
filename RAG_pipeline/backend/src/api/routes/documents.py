@@ -50,6 +50,7 @@ async def list_documents(
                 id=d.id,
                 filename=d.filename,
                 file_type=d.file_type,
+                document_role=d.document_role,
                 source=d.source,
                 author=d.author,
                 department=d.department,
