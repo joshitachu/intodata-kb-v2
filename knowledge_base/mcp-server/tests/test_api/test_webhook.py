@@ -11,6 +11,8 @@ import pytest
 
 from mcp_server.api.routes.webhook import (
     ChangedFile,
+    _find_plugin_pack_by_clone_url,
+    _github_ref_branch,
     _parse_name_status_diff,
     _resolve_changed_groups,
 )
@@ -29,6 +31,55 @@ def _signed_headers(secret: str, payload: bytes, event: str) -> dict[str, str]:
 
 def _repo_payload(clone_url: str) -> bytes:
     return json.dumps({"repository": {"clone_url": clone_url}}).encode()
+
+
+def test_github_ref_branch_extracts_branch_name() -> None:
+    assert _github_ref_branch("refs/heads/main") == "main"
+    assert _github_ref_branch("refs/heads/feature/custom") == "feature/custom"
+    assert _github_ref_branch("refs/tags/v1") is None
+
+
+async def test_find_plugin_pack_by_clone_url_prefers_matching_branch(session_factory) -> None:
+    from mcp_server.db.models import PluginPack
+
+    async with session_factory() as session:
+        legacy = PluginPack(
+            name="legacy-pack",
+            manifest_name="pack",
+            version="1.0.0",
+            path="/tmp/legacy",
+            repo_url="https://github.com/example/swap-pack",
+            repo_branch=None,
+            auto_update=True,
+        )
+        feature = PluginPack(
+            name="feature-pack",
+            manifest_name="pack",
+            version="1.0.0",
+            path="/tmp/feature",
+            repo_url="https://github.com/example/swap-pack",
+            repo_branch="feature/custom",
+            auto_update=True,
+        )
+        session.add_all([legacy, feature])
+        await session.commit()
+
+        assert (
+            await _find_plugin_pack_by_clone_url(
+                session,
+                "https://github.com/example/swap-pack.git",
+                "feature/custom",
+            )
+            == feature.id
+        )
+        assert (
+            await _find_plugin_pack_by_clone_url(
+                session,
+                "https://github.com/example/swap-pack.git",
+                "main",
+            )
+            == legacy.id
+        )
 
 
 async def test_signed_ping_registered_repo_returns_ping_received_and_logs(

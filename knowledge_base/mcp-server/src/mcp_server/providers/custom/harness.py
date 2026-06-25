@@ -2392,8 +2392,10 @@ Fallback plan example:
         coverage_note = source_coverage.relative_to(ctx.staging_dir).as_posix() if source_coverage.exists() else "No direct source coverage file"
         pack = (
             f"# Document Evidence Pack: {doc_name}\n\n"
-            "This is the primary Phase 3 evidence context for this document. "
-            "Use tools only for drill-down or targeted repair, not for first-pass rediscovery.\n\n"
+            "This evidence pack is your PRIMARY and SUFFICIENT source for writing this document. "
+            "Write directly from the evidence below. Do NOT call tools to re-read analysis, source "
+            "files, or artifacts that are already included in this pack — that content is here. "
+            "Use a tool only to fill a specific, named gap you genuinely cannot answer from this pack.\n\n"
             "## Shared Project Scope\n\n"
             f"- Platform: {facts.platform}\n"
             f"- Canonical inventory: {facts.unit_count} {facts.canonical_unit_label}\n"

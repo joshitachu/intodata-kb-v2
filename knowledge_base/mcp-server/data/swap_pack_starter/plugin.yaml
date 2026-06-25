@@ -1,0 +1,40 @@
+name: swap-pack-starter
+version: 0.1.0
+description: Starter Swap Pack for customizing IntoData documentation output with local AI tools.
+
+phases:
+  investigation: run
+  analysis: run
+  scorecard: run
+  doc_bundles: run
+
+docs:
+  - name: 01_SYSTEM_OVERVIEW
+    required_sections:
+      - Purpose
+      - Main Components
+      - Integration Flow
+      - Evidence Notes
+  - name: 02_INTEGRATION_INVENTORY
+    required_sections:
+      - Inventory
+      - Interfaces
+      - Data Objects
+      - Evidence Notes
+  - name: 03_OPERATIONS_PLAYBOOK
+    required_sections:
+      - Runtime Behavior
+      - Failure Modes
+      - Operational Checks
+      - Evidence Notes
+
+quality_gates:
+  mode: blocking
+  min_doc_bytes:
+    01_SYSTEM_OVERVIEW: 1200
+    02_INTEGRATION_INVENTORY: 1200
+    03_OPERATIONS_PLAYBOOK: 1200
+
+steps:
+  - id: generate_docs
+    type: harness

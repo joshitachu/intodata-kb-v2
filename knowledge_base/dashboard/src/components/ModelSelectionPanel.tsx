@@ -179,7 +179,8 @@ export default function ModelSelectionPanel({
           <option value="">— none (use default harness) —</option>
           {(pluginPacks ?? []).map((pack) => (
             <option key={pack.id} value={pack.id}>
-              {pack.name} v{pack.version}
+              {pack.manifest_name ?? pack.name} v{pack.version}
+              {pack.repo_branch ? ` [${pack.repo_branch}]` : ""}
               {pack.last_commit_sha ? ` (${pack.last_commit_sha.slice(0, 7)})` : ""}
             </option>
           ))}
@@ -189,7 +190,12 @@ export default function ModelSelectionPanel({
           return selected ? (
             <p className="mt-1 text-xs text-slate-600">
               {selected.repo_url
-                ? <>Auto-updates from <span className="font-mono">{selected.repo_url}</span></>
+                ? (
+                  <>
+                    Auto-updates from <span className="font-mono">{selected.repo_url}</span>
+                    {selected.repo_branch ? <> branch <span className="font-mono">{selected.repo_branch}</span></> : null}
+                  </>
+                )
                 : "Local pack — no auto-update"}
               {selected.last_commit_sha && (
                 <> · SHA <span className="font-mono">{selected.last_commit_sha.slice(0, 7)}</span></>

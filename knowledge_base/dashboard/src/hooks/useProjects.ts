@@ -119,6 +119,14 @@ export function usePluginPacks() {
   });
 }
 
+export function useStarterPack() {
+  return useQuery({
+    queryKey: ["starter-pack"],
+    queryFn: api.getStarterPack,
+    staleTime: 300_000,
+  });
+}
+
 export function useAssignPluginPack() {
   const qc = useQueryClient();
   return useMutation({
@@ -131,8 +139,52 @@ export function useAssignPluginPack() {
 export function useRegisterPluginPack() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { path?: string; repo_url?: string }) => api.registerPluginPack(body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["plugin-packs"] }),
+    mutationFn: (body: { path?: string; repo_url?: string; repo_branch?: string }) =>
+      api.registerPluginPack(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugin-packs"] });
+      qc.invalidateQueries({ queryKey: ["plugin-pack-branches"] });
+    },
+  });
+}
+
+export function usePluginPackBranches(repoUrl: string | null | undefined) {
+  return useQuery({
+    queryKey: ["plugin-pack-branches", repoUrl],
+    queryFn: () => api.discoverPluginPackBranches(repoUrl!),
+    enabled: !!repoUrl,
+    staleTime: 30_000,
+  });
+}
+
+export function useDiscoverPluginPackBranches() {
+  return useMutation({
+    mutationFn: (repoUrl: string) => api.discoverPluginPackBranches(repoUrl),
+  });
+}
+
+export function usePluginPackBranchFiles(
+  repoUrl: string | null | undefined,
+  repoBranch: string | null | undefined,
+) {
+  return useQuery({
+    queryKey: ["plugin-pack-branch-files", repoUrl, repoBranch],
+    queryFn: () => api.getPluginPackBranchFiles(repoUrl!, repoBranch!),
+    enabled: !!repoUrl && !!repoBranch,
+    staleTime: 30_000,
+  });
+}
+
+export function usePluginPackBranchFile(
+  repoUrl: string | null | undefined,
+  repoBranch: string | null | undefined,
+  filePath: string | null,
+) {
+  return useQuery({
+    queryKey: ["plugin-pack-branch-file", repoUrl, repoBranch, filePath],
+    queryFn: () => api.getPluginPackBranchFile(repoUrl!, repoBranch!, filePath!),
+    enabled: !!repoUrl && !!repoBranch && !!filePath,
+    staleTime: 30_000,
   });
 }
 
@@ -148,7 +200,10 @@ export function usePullPluginPack() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (packId: number) => api.pullPluginPack(packId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["plugin-packs"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugin-packs"] });
+      qc.invalidateQueries({ queryKey: ["plugin-pack-branches"] });
+    },
   });
 }
 
@@ -158,6 +213,7 @@ export function useDeletePluginPack() {
     mutationFn: (packId: number) => api.deletePluginPack(packId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugin-packs"] });
+      qc.invalidateQueries({ queryKey: ["plugin-pack-branches"] });
       qc.invalidateQueries({ queryKey: ["projects"] });
     },
   });

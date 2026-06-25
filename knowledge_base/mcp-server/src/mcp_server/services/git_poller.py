@@ -182,6 +182,7 @@ async def poll_plugin_packs_once() -> None:
                     from mcp_server.services.plugin_schema import load_plugin_manifest
                     try:
                         manifest = load_plugin_manifest(Path(p.path))
+                        p.manifest_name = manifest.name
                         p.version = manifest.version
                         p.description = manifest.description or p.description
                     except Exception:

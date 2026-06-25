@@ -31,12 +31,42 @@ export interface Project {
 export interface PluginPack {
   id: number;
   name: string;
+  manifest_name: string | null;
   version: string;
   path: string;
   description: string | null;
   repo_url: string | null;
+  repo_branch: string | null;
   last_commit_sha: string | null;
   auto_update: boolean;
+}
+
+export interface StarterPack {
+  zip_url: string;
+  repo_url: string | null;
+  clone_command: string | null;
+}
+
+export interface PluginPackBranch {
+  branch: string;
+  commit_sha: string | null;
+  has_pack: boolean;
+  valid: boolean;
+  name: string | null;
+  version: string | null;
+  description: string | null;
+  registered_pack_id: number | null;
+  error: string | null;
+}
+
+export interface PluginPackBranchDiscovery {
+  repo_url: string;
+  branches: PluginPackBranch[];
+}
+
+export interface PluginPackFileContent {
+  path: string;
+  content: string;
 }
 
 export interface ProjectListResponse {

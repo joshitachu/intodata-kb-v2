@@ -40,6 +40,18 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     tmp.rename(path)
 
 
+_BLOCKED_ARTIFACT_PATHS: frozenset[str] = frozenset({
+    "_facts/engineering_facts.json",
+    "_evidence_registry/evidence_registry.json",
+    "_facts/usage_index.csv",
+    "_facts/entity_index.csv",
+})
+
+
+def _normalize_blocklist_key(path: str) -> str:
+    return path.replace("\\", "/").lstrip("/")
+
+
 class ToolBudget(BaseModel):
     max_calls: int = 12
     max_bytes: int = 80_000
@@ -252,6 +264,13 @@ class ScopedEvidenceTools:
         target = (self.staging_dir / path).resolve()
         if not str(target).startswith(str(self.staging_dir.resolve())):
             return "ERROR: path outside staging directory"
+        if _normalize_blocklist_key(path) in _BLOCKED_ARTIFACT_PATHS:
+            return (
+                f"ERROR: {path} is a raw index file. "
+                "Use the curated evidence slice (read_artifact on "
+                "_evidence_registry/doc_slices/<doc>.md or evidence_brief.md) "
+                "or call search_evidence / get_fact_table for structured queries."
+            )
         if not target.exists():
             return f"ERROR: not found: {path}"
         if not target.is_file():

@@ -269,6 +269,14 @@
   5. After success, confirm `provider_calls.json` includes phase `investigation` entries. `_preprocess/` and `_analysis/` are cleaned; `_investigation/` is kept as audit evidence.
 - Full `pytest` in `mcp-server` currently has an unrelated SQLite fixture blocker: PostgreSQL `JSONB` column `generate_runs.template_snapshot` cannot compile under SQLite. The provider test file passes independently.
 
+### Phase 3 token economics (2026-06-24)
+- **`retries=N` in Phase 3 `usage.json` / `ModelResult` is NOT HTTP retries — it is `turn` in the agentic tool loop (N+1 turns = N tool calls).** See `providers.py:1142` (`retries=turn`). When diagnosing token bloat, a "retries=4" doc made ~4 tool calls; each turn re-sends the accumulating conversation. Do not read it as transient network retries.
+- First-pass Phase 3 runs **single-shot by default** (`_tool_policy` returns `enabled=False` for `phase3`), routing to `provider.complete()` with the `_doc_pack_*.md` in `context_files`. Token use scales with pack size. `MCP_AGENT_PHASE3_FIRST_PASS_TOOLS=true` restores the agentic loop. Repair and `phase3.consistency`/`critic` always keep tools.
+- **Pack-completeness is load-bearing.** On the single-shot path the model cannot tool-fetch missing evidence; a thin `_doc_pack_*.md` yields a thinner doc, and Phase 3 obligation gates are advisory (warn, do not fail). If a doc regresses, fix Phase 2.8 pack assembly, not the tool policy.
+- The doc-pack-into-`system_prompt` injection lives **inside** the `if use_tools:` block in `_complete_core_generation`; on the single-shot path the pack travels via `context_files` (every provider `complete()` reads them through `_read_context`). `_doc_pack_*.md` is not in `LARGE_CONTEXT_ARTIFACTS`, so `_bounded_context_files` keeps it.
+- Phase 3 obligation gates (`_assistant_doc_contract_errors`) check the **generated output text**, not the input pack, and match terms tolerantly (`_term_satisfied`, singular/plural). There is **no `phase3.repair` dispatcher** (removed 2026-06-11) — `phase3.repair` appears only in `_tool_policy` docstrings; the in-doc retry loop (`AgentTaskRuntime.run`) re-dispatches with `phase="phase3"`, so retries stay single-shot.
+- The phase-3.5 critic expander (`harness.py` `_phase35_critic_expander`) calls `complete_with_tools` **directly**, bypassing `_tool_policy` — it is unaffected by the single-shot flag and remains a possible secondary token source.
+
 ### Scanner
 - Workato file discovery uses content-based classification (`_classify_json_content`), NOT filename patterns
 - The asset registry is built once from `walk_repo()` output -- no extra filesystem walk, no rglob

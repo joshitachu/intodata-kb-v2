@@ -342,6 +342,8 @@ def _tool_loop_cap_result(
     conversation_trace: list[dict[str, Any]],
     tool_ledger: list[dict[str, Any]],
     cap: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> ModelResult:
     detail = (
         "tool input token cap exceeded"
@@ -355,6 +357,8 @@ def _tool_loop_cap_result(
         model_name=model_name,
         input_tokens=total_in,
         output_tokens=total_out,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         latency_ms=int((time.monotonic() - start) * 1000),
         retries=turn - 1,
         raw_error=detail,
@@ -1009,7 +1013,14 @@ class OpenAICompatibleProvider:
         opts = options or ModelOptions()
         if opts.json_mode:
             _log_json_mode_ignored(self.provider_name)
-        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        # Seed the conversation with the system prompt as a STABLE PREFIX so it is
+        # not re-fetched via tools (which would re-accumulate the whole growing
+        # conversation every turn) and so providers with server-side prefix caching
+        # (e.g. DeepSeek) can cache it across all turns of the loop.
+        messages: list[dict[str, Any]] = []
+        if opts.system_prompt:
+            messages.append({"role": "system", "content": opts.system_prompt})
+        messages.append({"role": "user", "content": prompt})
         start = time.monotonic()
         total_in = total_out = 0
         total_cache_hit = 0
@@ -1089,6 +1100,7 @@ class OpenAICompatibleProvider:
                         conversation_trace=conversation_trace,
                         tool_ledger=tool_ledger,
                         cap=opts.tool_input_token_cap,
+                        cache_read_tokens=total_cache_hit,
                     )
 
                 if finish_reason == "length":
@@ -1689,6 +1701,7 @@ class AnthropicProvider:
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         start = time.monotonic()
         total_in = total_out = 0
+        total_cache_read = total_cache_creation = 0
         tool_call_count = 0
         tool_result_bytes = 0
         finish_reasons: list[str] = []
@@ -1696,24 +1709,41 @@ class AnthropicProvider:
         tool_ledger: list[dict[str, Any]] = []
         last_error: str | None = None
 
+        # The system prompt (per-doc evidence pack + guides) is a stable prefix
+        # across every turn of the loop. Send it as a cache-controlled block so
+        # Anthropic prompt-caching bills the repeated prefix at cache-read rates
+        # instead of re-charging it on each tool turn.
+        extra_headers: dict[str, str] = {}
+        system_blocks: list[dict[str, Any]] | None = None
+        if opts.system_prompt:
+            system_blocks = [
+                {"type": "text", "text": opts.system_prompt, "cache_control": {"type": "ephemeral"}}
+            ]
+            extra_headers["anthropic-beta"] = "prompt-caching-2024-07-31"
+
         for turn in range(max_turns):
             try:
-                payload = _validated_payload(
-                    AnthropicMessagePayload,
-                    {
-                        "model": self.model_name,
-                        "max_tokens": opts.max_tokens,
-                        "messages": messages,
-                        "tools": STAGING_TOOLS_ANTHROPIC,
-                        **opts.provider_options,
-                    },
-                )
-                response = await self._client(opts.timeout_s).messages.create(**payload)
+                anthropic_payload: dict[str, Any] = {
+                    "model": self.model_name,
+                    "max_tokens": opts.max_tokens,
+                    "messages": messages,
+                    "tools": STAGING_TOOLS_ANTHROPIC,
+                    **opts.provider_options,
+                }
+                if system_blocks is not None:
+                    anthropic_payload["system"] = system_blocks
+                payload = _validated_payload(AnthropicMessagePayload, anthropic_payload)
+                create_kwargs: dict[str, Any] = dict(payload)
+                if extra_headers:
+                    create_kwargs["extra_headers"] = extra_headers
+                response = await self._client(opts.timeout_s).messages.create(**create_kwargs)
                 data = response.model_dump()
 
                 usage = data.get("usage") or {}
                 total_in += int(usage.get("input_tokens") or 0)
                 total_out += int(usage.get("output_tokens") or 0)
+                total_cache_read += int(usage.get("cache_read_input_tokens") or 0)
+                total_cache_creation += int(usage.get("cache_creation_input_tokens") or 0)
 
                 content_blocks = data.get("content") or []
                 stop_reason = data.get("stop_reason", "")
@@ -1750,6 +1780,8 @@ class AnthropicProvider:
                         conversation_trace=conversation_trace,
                         tool_ledger=tool_ledger,
                         cap=opts.tool_input_token_cap,
+                        cache_read_tokens=total_cache_read,
+                        cache_creation_tokens=total_cache_creation,
                     )
 
                 if stop_reason == "max_tokens":
@@ -1762,6 +1794,8 @@ class AnthropicProvider:
                         model_name=self.model_name,
                         input_tokens=total_in or _estimate_tokens(prompt),
                         output_tokens=total_out or _estimate_tokens(final_text),
+                        cache_read_tokens=total_cache_read,
+                        cache_creation_tokens=total_cache_creation,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         retries=turn,
                         raw_error="incomplete: provider stopped because max tokens were reached",
@@ -1789,6 +1823,8 @@ class AnthropicProvider:
                         model_name=self.model_name,
                         input_tokens=total_in or _estimate_tokens(prompt),
                         output_tokens=total_out or _estimate_tokens(final_text),
+                        cache_read_tokens=total_cache_read,
+                        cache_creation_tokens=total_cache_creation,
                         latency_ms=int((time.monotonic() - start) * 1000),
                         retries=turn,
                         metadata={
@@ -1854,6 +1890,8 @@ class AnthropicProvider:
             model_name=self.model_name,
             input_tokens=total_in,
             output_tokens=total_out,
+            cache_read_tokens=total_cache_read,
+            cache_creation_tokens=total_cache_creation,
             latency_ms=int((time.monotonic() - start) * 1000),
             retries=max_turns,
             raw_error=last_error or "max_turns exceeded",

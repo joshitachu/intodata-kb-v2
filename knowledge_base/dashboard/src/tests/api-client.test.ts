@@ -121,6 +121,68 @@ describe("API client", () => {
     );
   });
 
+  it("getStarterPack returns public clone metadata", async () => {
+    const mockData = {
+      zip_url: "/mcp/plugins/starter.zip",
+      repo_url: "https://github.com/example/swap-pack-starter",
+      clone_command: "git clone https://github.com/example/swap-pack-starter",
+    };
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mockData), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const result = await api.getStarterPack();
+    expect(result.clone_command).toBe("git clone https://github.com/example/swap-pack-starter");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/mcp/plugins/starter",
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
+
+  it("discoverPluginPackBranches sends repo URL and parses branch packs", async () => {
+    const mockData = {
+      repo_url: "https://github.com/example/swap-pack-starter",
+      branches: [
+        {
+          branch: "main",
+          commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          has_pack: true,
+          valid: true,
+          name: "swap-pack-starter",
+          version: "0.1.0",
+          description: "Starter",
+          registered_pack_id: null,
+          error: null,
+        },
+      ],
+    };
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mockData), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const result = await api.discoverPluginPackBranches(
+      "https://github.com/example/swap-pack-starter"
+    );
+
+    expect(result.branches[0].branch).toBe("main");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/mcp/plugins/discover",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        body: JSON.stringify({ repo_url: "https://github.com/example/swap-pack-starter" }),
+      })
+    );
+  });
+
   it("throws on non-OK response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("Server Error", { status: 500 })

@@ -34,6 +34,7 @@ class MCPServerConfig(BaseSettings):
 
     # Base data directory for logs, uploads, repos
     data_dir: Path = Path(__file__).resolve().parent.parent.parent / "data"
+    swap_pack_starter_repo_url: str = "https://github.com/joshitachu/swap-pack-starter"
 
     # intodoc default output directory
     intodoc_output_dir: Path = Path(__file__).resolve().parent.parent.parent.parent / "intodoc-output"

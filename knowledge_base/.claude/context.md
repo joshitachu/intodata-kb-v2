@@ -1,6 +1,33 @@
 # KB Sub-project Context
 
-## Last Completed (2026-06-19) -- Reingestion Reliability Slice 5 (uncommitted)
+## Last Completed (2026-06-24) -- Phase 3 token-bloat fix (committed)
+
+Diagnosed and fixed the Phase 3 token bloat (a ~9 KB project burned ~1.3M tokens).
+Root cause: first-pass Phase 3 ran the agentic tool loop, and a weak local model
+made 3-5 tool calls per doc even with a complete pack, re-sending the accumulating
+conversation each turn. Two committed slices:
+- Slice A (`06b8029`): `_term_satisfied` makes the doc-obligation gate tolerant of
+  singular/plural, fixing the false-negative "missing External Systems" that blocked
+  `client_ready` and triggered re-work.
+- Slice B (`25e907e`): `_tool_policy` runs first-pass `phase3` single-shot by default
+  (writes from the complete `_doc_pack_*.md` in `context_files`); repair/consistency
+  keep tools; opt-in `MCP_AGENT_PHASE3_FIRST_PASS_TOOLS` restores the loop. No flat
+  cap — spend scales with pack size.
+Both /inspect PASS, 760 tests pass, mcp-server rebuilt and healthy. NOT YET proven by
+a measured generation run -- pack-completeness is now load-bearing.
+
+## Immediate Next Steps
+
+1. Run a measured generation on `reingest-drill-ds` to confirm the token drop
+   (Phase 3 input far below ~1M) and that quality holds (overall >= 4.0, no per-doc
+   regression vs run 241). This is the acceptance gate for Slice B (task #26).
+2. If a doc regresses, the pack for that doc is thin -- fix Phase 2.8 pack completeness
+   (not a revert); `MCP_AGENT_PHASE3_FIRST_PASS_TOOLS=true` is the per-run fallback.
+3. Note: the phase-3.5 critic expander (`harness.py:2739`) still calls
+   `complete_with_tools` directly, bypassing `_tool_policy` -- a possible secondary
+   token source to analyse later.
+
+## Previous (2026-06-19) -- Reingestion Reliability Slice 5 (uncommitted)
 
 Slice 5 end-to-end smoke path and minimal operator visibility is implemented,
 inspected, and validated for MCP server API/webhook behavior. New
