@@ -371,3 +371,32 @@ def test_build_entity_aliases_missing_csvs_is_noop(tmp_path: Path) -> None:
     docs = tmp_path / "docs"
     docs.mkdir()
     assert build_entity_aliases(docs) == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 2: _doc_pack_manifest.json persistence
+# ---------------------------------------------------------------------------
+
+def test_build_copies_doc_pack_manifest(tmp_path: Path) -> None:
+    staging = _make_staging(tmp_path)
+    doc_pack_data = {"source_analyses": ["A.md"], "doc_packs": {"01_ARCH": {"path": "_doc_pack_01_ARCH.md"}}}
+    (staging / "_analysis" / "_doc_pack_manifest.json").write_text(
+        json.dumps(doc_pack_data), encoding="utf-8"
+    )
+
+    build_rag_support_package(staging, ["A", "B"], project_id="proj", platform="talend")
+
+    dest = staging / "_rag_support" / "_doc_pack_manifest.json"
+    assert dest.is_file(), "_doc_pack_manifest.json must be copied into _rag_support/"
+    assert json.loads(dest.read_text(encoding="utf-8")) == doc_pack_data
+
+
+def test_build_ignores_missing_doc_pack_manifest(tmp_path: Path) -> None:
+    # Phase 2.8 may not run on every resume; the copy is optional.
+    staging = _make_staging(tmp_path)
+    assert not (staging / "_analysis" / "_doc_pack_manifest.json").exists()
+
+    # Must succeed without error.
+    build_rag_support_package(staging, ["A", "B"], project_id="proj", platform="talend")
+
+    assert not (staging / "_rag_support" / "_doc_pack_manifest.json").exists()

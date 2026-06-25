@@ -139,6 +139,16 @@ class MCPServerConfig(BaseSettings):
     git_diff_patch_output_tokens_large: int = 32_000
     git_diff_patch_max_obligations: int = 24
 
+    # Deterministic reingestion routing (Slice 3). The affected-doc set is
+    # computed in Python; a change touching more than this many docs routes to a
+    # full regeneration rather than a scoped one.
+    reingestion_full_regen_doc_threshold: int = 8  # MCP_REINGESTION_FULL_REGEN_DOC_THRESHOLD
+    # Optional expand-only, non-blocking LLM semantic pass. Disabled by default
+    # so routing is fully deterministic (no model call on the floor path). When
+    # enabled it may only ADD docs to Python's authoritative set; it can never
+    # remove a doc, downgrade to skip, or change the chosen strategy.
+    reingestion_llm_expand_enabled: bool = False  # MCP_REINGESTION_LLM_EXPAND_ENABLED
+
     # Abandoned docs_staging/ dirs older than this are GC'd at startup. Active
     # resumes bump mtime so in-flight work is safe.
     staging_gc_days: int = 7
@@ -184,6 +194,11 @@ class MCPServerConfig(BaseSettings):
     agent_max_tool_result_bytes: int = 50_000  # MCP_AGENT_MAX_TOOL_RESULT_BYTES
     agent_phase2_tool_input_token_cap: int = 180_000  # MCP_AGENT_PHASE2_TOOL_INPUT_TOKEN_CAP
     agent_phase3_tool_input_token_cap: int = 600_000  # MCP_AGENT_PHASE3_TOOL_INPUT_TOKEN_CAP
+    # First-pass Phase 3 doc generation runs single-shot (no tool loop) by default:
+    # the targeted doc pack is primary and sufficient, so token use scales with pack
+    # size instead of an accumulating tool conversation. Set True to restore the
+    # agentic tool loop for first-pass docs (repair phases keep tools regardless).
+    agent_phase3_first_pass_tools: bool = False  # MCP_AGENT_PHASE3_FIRST_PASS_TOOLS
     agent_max_task_attempts: int = 2         # MCP_AGENT_MAX_TASK_ATTEMPTS
     agent_max_repair_attempts: int = 3       # MCP_AGENT_MAX_REPAIR_ATTEMPTS
     agent_max_split_depth: int = 2           # MCP_AGENT_MAX_SPLIT_DEPTH

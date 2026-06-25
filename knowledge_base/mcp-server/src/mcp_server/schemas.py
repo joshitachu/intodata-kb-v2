@@ -155,11 +155,14 @@ class ReingestionLastUpdateStatus(BaseModel):
     fallback_used: bool | None = None
     targeted_regen_ready: bool | None = None
     requires_full_rebaseline: bool | None = None
+    held: bool | None = None
     touched_docs: list[str] = Field(default_factory=list)
     patched_docs: list[str] = Field(default_factory=list)
     matched_docs: list[str] = Field(default_factory=list)
     rag_result: dict[str, object] | None = None
     regen_result: dict[str, object] | None = None
+    gate: dict[str, object] | None = None
+    affected_docs_preview: list[str] | None = None
 
 
 class ReingestionRemoteHygieneStatus(BaseModel):

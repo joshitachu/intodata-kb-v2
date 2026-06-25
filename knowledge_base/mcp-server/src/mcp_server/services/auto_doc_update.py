@@ -10,7 +10,6 @@ from typing import Any
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
-from mcp_server.services.doc_impact_agent import DocImpactAgent, DocImpactPlan
 from mcp_server.services.git_diff_patcher import (
     DiffPatchResult,
     _chunk_diff,
@@ -29,6 +28,7 @@ from mcp_server.services.git_reingestion import (
 )
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
+from mcp_server.services.reingestion_router import ReingestionRouter, RoutingDecision
 from mcp_server.services.rag_support_package import (
     GenerationCacheReadiness,
     inspect_generation_cache_readiness,
@@ -100,11 +100,11 @@ class AutoDocAgentRuntime:
         self,
         *,
         log_mgr: LogManager,
-        impact_agent: DocImpactAgent | None = None,
+        router: ReingestionRouter | None = None,
         quick_scanner: QuickChangeScanner | None = None,
     ) -> None:
         self.log_mgr = log_mgr
-        self.impact_agent = impact_agent or DocImpactAgent()
+        self.router = router or ReingestionRouter()
         self.quick_scanner = quick_scanner or QuickChangeScanner()
         self._tool_calls: list[dict[str, Any]] = []
         self._tool_bytes = 0
@@ -126,6 +126,7 @@ class AutoDocAgentRuntime:
             summary.update(inspect_result)
             quick_scan: QuickScanReport = inspect_result["_quick_scan"]
             summary.pop("_quick_scan", None)
+            summary.pop("_changed_files", None)
 
             if not quick_scan.doc_relevant_files:
                 return await self._skip(
@@ -135,43 +136,38 @@ class AutoDocAgentRuntime:
                     "Only ignored/non-doc-impacting files changed",
                 )
 
-            plan = await self._decide(
+            decision = await self._decide(
+                ctx,
                 quick_scan=quick_scan,
+                changed_files=inspect_result["_changed_files"],
                 diff_chunks=inspect_result["diff_chunks"],
-                doc_generation_provider=ctx.doc_generation_provider,
+                generated_docs=inspect_result["generated_docs"],
             )
-            summary.update(plan.to_dict())
-            summary["touched_docs"] = list(plan.affected_docs)
+            impact = decision.to_impact_dict()
+            summary.update(impact)
+            summary["routing"] = decision.model_dump()
+            summary["touched_docs"] = list(impact["affected_docs"])
 
-            if len(plan.affected_docs) > config.git_diff_patch_max_docs:
-                return self._manual(
-                    summary,
-                    f"Agent requested {len(plan.affected_docs)} docs; max auto edit scope is {config.git_diff_patch_max_docs}",
-                )
-
-            if plan.strategy == "skip":
+            if decision.strategy == "skip":
                 return await self._skip(
                     ctx,
                     after_sha,
                     summary,
-                    plan.reason or "Agent determined no doc update is needed",
+                    decision.reason or "No documentation update required",
                 )
-            if plan.strategy == "manual_review":
-                return self._manual(summary, plan.reason or "Agent requested manual review")
-            if plan.strategy == "targeted_regen":
-                return await self._targeted_regen(
+            if decision.strategy in {"scoped_regen", "full_regen"}:
+                targeted = (
+                    list(decision.affected_docs) if decision.strategy == "scoped_regen" else None
+                )
+                return await self._scoped_regen(
                     ctx,
                     before_sha,
                     after_sha,
                     trigger,
                     summary,
-                    plan,
-                    plan.reason or "Agent requested targeted regeneration",
-                )
-            if plan.confidence < config.git_diff_patch_min_confidence and plan.strategy != "bounded_patch":
-                return self._manual(
-                    summary,
-                    f"Agent confidence too low for automatic action ({plan.confidence:.2f})",
+                    decision,
+                    decision.reason or "Deterministic router requested regeneration",
+                    targeted_docs=targeted,
                 )
 
             return await self._edit_validate_and_sync(
@@ -180,7 +176,7 @@ class AutoDocAgentRuntime:
                 after_sha=after_sha,
                 trigger=trigger,
                 summary=summary,
-                plan=plan,
+                decision=decision,
             )
         except AutoDocToolBudgetExceeded as exc:
             return self._manual(summary, str(exc))
@@ -241,19 +237,16 @@ class AutoDocAgentRuntime:
                 *changed_files,
             )
         quick_scan = self.quick_scanner.scan(changes, full_diff_text)
-        changed_groups = sorted(
-            resolve_changed_groups(
-                ctx.project_id,
-                [
-                    ChangedFile(
-                        status=change.status,
-                        path=change.path,
-                        previous_path=change.previous_path,
-                    )
-                    for change in changes
-                ],
-                False,
+        changed_file_list = [
+            ChangedFile(
+                status=change.status,
+                path=change.path,
+                previous_path=change.previous_path,
             )
+            for change in changes
+        ]
+        changed_groups = sorted(
+            resolve_changed_groups(ctx.project_id, changed_file_list, False)
         )
         chunks = _chunk_diff(full_diff_text, changes)
         chunk_summary = [
@@ -284,6 +277,7 @@ class AutoDocAgentRuntime:
             "generated_docs": generated_docs,
             "changed_groups": changed_groups,
             "_quick_scan": quick_scan,
+            "_changed_files": changed_file_list,
         }
 
     async def _generated_doc_names(self, docs_dir: Path) -> list[str]:
@@ -300,26 +294,40 @@ class AutoDocAgentRuntime:
 
     async def _decide(
         self,
+        ctx: AutoDocUpdateContext,
         *,
         quick_scan: QuickScanReport,
+        changed_files: list[ChangedFile],
         diff_chunks: list[dict[str, Any]],
-        doc_generation_provider: str | None,
-    ) -> DocImpactPlan:
-        plan = await self.impact_agent.plan(
+        generated_docs: list[str],
+    ) -> RoutingDecision:
+        output_dir = config.project_root / "output" / ctx.project_id
+        decision = self.router.decide(
+            project_id=ctx.project_id,
+            changed_files=changed_files,
             quick_scan=quick_scan,
+            output_dir=output_dir,
+        )
+        # Expand-only, non-blocking semantic pass. Disabled by default; on any
+        # failure it returns the deterministic decision unchanged. It can only
+        # ADD docs, never shrink the set or change the strategy.
+        all_docs = [name[:-3] if name.endswith(".md") else name for name in generated_docs]
+        decision = await self.router.expand(
+            decision,
             diff_chunks=diff_chunks,
-            doc_generation_provider=doc_generation_provider,
+            all_docs=all_docs,
+            doc_generation_provider=ctx.doc_generation_provider,
         )
         self._record_tool(
             "finish_decision",
             {
-                "action": plan.strategy,
-                "affected_docs": plan.affected_docs,
-                "confidence": plan.confidence,
-                "reason": plan.reason,
+                "action": decision.strategy,
+                "affected_docs": decision.affected_docs,
+                "expanded_docs": decision.expanded_docs,
+                "reason": decision.reason,
             },
         )
-        return plan
+        return decision
 
     async def _edit_validate_and_sync(
         self,
@@ -329,7 +337,7 @@ class AutoDocAgentRuntime:
         after_sha: str,
         trigger: str,
         summary: dict[str, Any],
-        plan: DocImpactPlan,
+        decision: RoutingDecision,
     ) -> DiffPatchResult:
         max_repairs = max(0, min(config.agent_max_repair_attempts, 2))
         last_result: DiffPatchResult | None = None
@@ -345,7 +353,7 @@ class AutoDocAgentRuntime:
                 log_mgr=self.log_mgr,
                 trigger=trigger,
                 github_token_enc=ctx.github_token_enc,
-                impact_plan={**plan.to_dict(), "mode": "tool_loop_agent"},
+                impact_plan={**decision.to_impact_dict(), "mode": "tool_loop_agent"},
             )
             last_result = patch_result
             validation_errors = _coerce_validation_errors(patch_result.summary)
@@ -383,14 +391,15 @@ class AutoDocAgentRuntime:
         reason = last_result.error or merged.get("reason") or "Doc edit did not complete"
         clean_reason = str(reason).removeprefix("Manual review required: ")
         if _should_targeted_regen_after_patch_failure(clean_reason):
-            return await self._targeted_regen(
+            return await self._scoped_regen(
                 ctx,
                 before_sha,
                 after_sha,
                 trigger,
                 merged,
-                plan,
+                decision,
                 clean_reason,
+                targeted_docs=list(decision.affected_docs) or None,
             )
         if last_result.action == "failed":
             return _failed(
@@ -432,17 +441,25 @@ class AutoDocAgentRuntime:
             advance_commit=True,
         )
 
-    async def _targeted_regen(
+    async def _scoped_regen(
         self,
         ctx: AutoDocUpdateContext,
         before_sha: str,
         after_sha: str,
         trigger: str,
         summary: dict[str, Any],
-        plan: DocImpactPlan,
+        decision: RoutingDecision,
         reason: str,
+        *,
+        targeted_docs: list[str] | None,
     ) -> DiffPatchResult:
-        self._record_tool("targeted_regen_needed", {"reason": reason, "affected_docs": plan.affected_docs})
+        # targeted_docs None => full regeneration (no Phase 3 doc filter);
+        # a non-empty list => scoped regeneration of exactly those docs.
+        action_label = "targeted_regen" if targeted_docs else "full_regen"
+        self._record_tool(
+            f"{action_label}_needed",
+            {"reason": reason, "affected_docs": decision.affected_docs, "targeted_docs": targeted_docs},
+        )
         cache_readiness = self._targeted_regen_cache_readiness(ctx, before_sha, summary)
         if not cache_readiness.targeted_regen_ready:
             rebaseline_reason = _full_rebaseline_reason(cache_readiness.reason_codes)
@@ -450,7 +467,7 @@ class AutoDocAgentRuntime:
             return self._manual(
                 {
                     **summary,
-                    **plan.to_dict(),
+                    **decision.to_impact_dict(),
                     "targeted_regen_ready": False,
                     "requires_full_rebaseline": cache_readiness.requires_full_rebaseline,
                     "reason_codes": cache_readiness.reason_codes,
@@ -459,7 +476,7 @@ class AutoDocAgentRuntime:
                     "fallback_reason": rebaseline_reason,
                     "expensive_fallback_required": True,
                     "regen_result": {
-                        "type": "targeted_regen",
+                        "type": action_label,
                         "success": False,
                         "skipped": True,
                         "reason": "preflight_failed",
@@ -470,36 +487,40 @@ class AutoDocAgentRuntime:
                 reason_code="full_rebaseline_required",
             )
 
-        await self.log_mgr.emit(ctx.project_id, f"Auto-doc targeted regeneration: {reason}", "warning")
+        await self.log_mgr.emit(
+            ctx.project_id, f"Auto-doc {action_label} regeneration: {reason}", "warning"
+        )
         ok = await run_git_reingestion(
             ctx.project_id,
             before_sha,
             after_sha,
             triggered_by=trigger,
             log_mgr=self.log_mgr,
+            targeted_docs=targeted_docs,
         )
         final_summary = self._finalize_summary(
             {
                 **summary,
-                **plan.to_dict(),
+                **decision.to_impact_dict(),
                 "targeted_regen_ready": True,
                 "requires_full_rebaseline": False,
                 "targeted_regen_preflight": cache_readiness.to_dict(),
                 "fallback_used": True,
                 "fallback_reason": reason,
                 "regen_result": {
-                    "type": "targeted_regen",
+                    "type": action_label,
                     "success": ok,
+                    "targeted_docs": targeted_docs,
                     "baseline_source": "generation_rag_sync",
                 },
             },
-            action="targeted_regen" if ok else "manual_review",
-            reason=reason if ok else f"Targeted regeneration failed: {reason}",
-            touched_docs=plan.affected_docs,
+            action=action_label if ok else "manual_review",
+            reason=reason if ok else f"Regeneration failed: {reason}",
+            touched_docs=list(decision.affected_docs),
         )
         if ok:
-            return DiffPatchResult(action="targeted_regen", summary=final_summary, advance_commit=False)
-        return _manual(final_summary, f"Targeted regeneration failed after agent request: {reason}")
+            return DiffPatchResult(action=action_label, summary=final_summary, advance_commit=False)
+        return _manual(final_summary, f"Regeneration failed after router decision: {reason}")
 
     def _targeted_regen_cache_readiness(
         self,
@@ -603,11 +624,11 @@ class AutoDocUpdateService:
         self,
         *,
         log_mgr: LogManager,
-        impact_agent: DocImpactAgent | None = None,
+        router: ReingestionRouter | None = None,
         quick_scanner: QuickChangeScanner | None = None,
     ) -> None:
         self.log_mgr = log_mgr
-        self.impact_agent = impact_agent or DocImpactAgent()
+        self.router = router or ReingestionRouter()
         self.quick_scanner = quick_scanner or QuickChangeScanner()
 
     async def run(
@@ -657,109 +678,9 @@ class AutoDocUpdateService:
     ) -> DiffPatchResult:
         return await AutoDocAgentRuntime(
             log_mgr=self.log_mgr,
-            impact_agent=self.impact_agent,
+            router=self.router,
             quick_scanner=self.quick_scanner,
         ).run(ctx, before_sha=before_sha, after_sha=after_sha, trigger=trigger)
-
-    async def _skip(
-        self,
-        project_id: str,
-        local_path: str,
-        after_sha: str,
-        summary: dict[str, Any],
-        reason: str,
-        github_token_enc: str | None = None,
-    ) -> DiffPatchResult:
-        await pull_remote_ff_only(local_path, github_token_enc, git_func=_git)
-        await self.log_mgr.emit(project_id, f"Git update skipped: {reason}", "info")
-        return DiffPatchResult(
-            action="skipped",
-            summary=_summary_with_outcome(summary, action="skipped", reason=reason),
-            advance_commit=True,
-        )
-
-    async def _targeted_regen(
-        self,
-        ctx: AutoDocUpdateContext,
-        before_sha: str,
-        after_sha: str,
-        trigger: str,
-        summary: dict[str, Any],
-        plan: DocImpactPlan,
-        reason: str,
-    ) -> DiffPatchResult:
-        await self.log_mgr.emit(ctx.project_id, f"Auto-doc fallback: {reason}", "warning")
-        cache_readiness = inspect_generation_cache_readiness(
-            config.project_root / "output" / ctx.project_id,
-            has_baseline=bool(
-                ctx.last_ingested_commit_sha and before_sha and before_sha != "0" * 40
-            ),
-            changed_groups=[
-                str(group).strip()
-                for group in summary.get("changed_groups", [])
-                if str(group).strip()
-            ],
-        )
-        if not cache_readiness.targeted_regen_ready:
-            rebaseline_reason = _full_rebaseline_reason(cache_readiness.reason_codes)
-            final_summary = {
-                **summary,
-                **plan.to_dict(),
-                "targeted_regen_ready": False,
-                "requires_full_rebaseline": cache_readiness.requires_full_rebaseline,
-                "reason_codes": cache_readiness.reason_codes,
-                "targeted_regen_preflight": cache_readiness.to_dict(),
-                "fallback_used": False,
-                "fallback_reason": rebaseline_reason,
-                "expensive_fallback_required": True,
-                "regen_result": {
-                    "type": "targeted_regen",
-                    "success": False,
-                    "skipped": True,
-                    "reason": "preflight_failed",
-                    "reason_codes": cache_readiness.reason_codes,
-                },
-            }
-            return DiffPatchResult(
-                action="manual_review",
-                summary=_summary_with_outcome(
-                    final_summary,
-                    action="manual_review",
-                    reason=rebaseline_reason,
-                    decision_strategy=str(plan.strategy),
-                    reason_code="full_rebaseline_required",
-                ),
-                error=f"Manual review required: {rebaseline_reason}",
-            )
-        ok = await run_git_reingestion(
-            ctx.project_id,
-            before_sha,
-            after_sha,
-            triggered_by=trigger,
-            log_mgr=self.log_mgr,
-        )
-        final_summary = {
-            **summary,
-            **plan.to_dict(),
-            "fallback_used": True,
-            "fallback_reason": reason,
-        }
-        if ok:
-            return DiffPatchResult(
-                action="targeted_regen",
-                summary=_summary_with_outcome(
-                    final_summary,
-                    action="targeted_regen",
-                    reason=reason,
-                    decision_strategy=str(plan.strategy),
-                    regen_result={"type": "targeted_regen", "success": True},
-                ),
-                advance_commit=False,
-            )
-        return _manual(
-            {**final_summary, "action": "manual_review"},
-            f"Targeted regeneration failed after bounded update issue: {reason}",
-        )
 
     async def _persist_result(
         self,
@@ -773,7 +694,7 @@ class AutoDocUpdateService:
             if result.advance_commit and result.error is None:
                 await registry.update_last_ingested_commit(project_id, after_sha)
                 await registry.update_status(project_id, "ready", error_message=None)
-            elif result.action in {"skipped", "targeted_regen"} and result.error is None:
+            elif result.action in {"skipped", "targeted_regen", "full_regen"} and result.error is None:
                 await registry.update_status(project_id, "ready", error_message=None)
             elif result.action == "manual_review":
                 await registry.update_status(project_id, "ready", error_message=result.error)

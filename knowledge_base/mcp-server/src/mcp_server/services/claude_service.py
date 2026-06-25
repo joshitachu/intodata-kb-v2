@@ -982,6 +982,7 @@ Required sections:
         doc_generation_provider: str | None = None,
         instruction_pack_dir: str | None = None,
         enterprise_mode: bool | None = None,
+        scoped_docs: set[str] | None = None,
     ) -> dict:
         """Spawn Claude Code CLI to generate docs for a project.
 
@@ -1198,6 +1199,7 @@ Required sections:
             analysis_guide_file=analysis_guide_file,
             enterprise_mode=config.doc_generation_enterprise_mode_default if enterprise_mode is None else enterprise_mode,
             resume_state=resume_state,
+            scoped_docs=scoped_docs,
         )
 
         provider = get_provider(

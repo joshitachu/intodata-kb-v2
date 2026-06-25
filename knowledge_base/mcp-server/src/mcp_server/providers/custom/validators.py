@@ -799,6 +799,28 @@ def build_documentation_obligation_map(facts: FactsManifest, required_docs: list
     }
 
 
+def _term_satisfied(term: str, text: str) -> bool:
+    """Return True if ``term`` is present in ``text``, tolerant of singular/plural.
+
+    A correct doc may phrase an obligation as "External System Dependencies" while the
+    obligation literally lists "External Systems". An exact ``\\bExternal Systems\\b``
+    match produces a false negative on such semantically-correct prose. To avoid that
+    without loosening into arbitrary fuzzy matching, each significant word of the term
+    is matched in order, separated by whitespace, with an optional trailing "s" so a
+    required plural is satisfied by its singular and vice versa. Words must still appear
+    adjacent and in order, so a doc that genuinely omits the concept still fails.
+    """
+    words = [w for w in re.split(r"\s+", term) if w]
+    if not words:
+        return True
+    word_patterns: list[str] = []
+    for word in words:
+        stem = word[:-1] if len(word) > 1 and word.lower().endswith("s") else word
+        word_patterns.append(rf"{re.escape(stem)}s?")
+    pattern = r"\b" + r"\s+".join(word_patterns) + r"\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> list[str]:
     errors: list[str] = []
     texts: dict[str, str] = {}
@@ -809,7 +831,7 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
 
     def require_terms(doc: str, terms: list[str], label: str) -> None:
         text = texts.get(doc, "")
-        missing = [term for term in terms if not re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE)]
+        missing = [term for term in terms if not _term_satisfied(term, text)]
         if missing:
             errors.append(f"Generated doc {doc}.md missing {label}: {', '.join(missing)}")
 
@@ -860,7 +882,7 @@ def _assistant_doc_contract_errors(staging_dir: Path, facts: FactsManifest) -> l
     for category, terms in platform_terms.items():
         if not terms:
             continue
-        if not any(re.search(rf"\b{re.escape(term)}\b", all_text, re.IGNORECASE) for term in terms):
+        if not any(_term_satisfied(term, all_text) for term in terms):
             errors.append(
                 f"Generated docs missing platform-specific evidence category "
                 f"{facts.platform}.{category}: expected one of {', '.join(terms[:6])}"

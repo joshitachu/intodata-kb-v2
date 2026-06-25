@@ -238,6 +238,14 @@ def build_rag_support_package(
     (support_dir / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
+
+    # Carry the doc-pack provenance manifest into _rag_support/ so it survives
+    # Phase 4 cleanup and the atomic swap into docs/. Absent on non-Phase-2.8
+    # runs (e.g. resumed partial runs); skip silently in that case.
+    doc_pack_manifest_src = analysis_dir / "_doc_pack_manifest.json"
+    if doc_pack_manifest_src.is_file():
+        shutil.copy2(doc_pack_manifest_src, support_dir / "_doc_pack_manifest.json")
+
     return manifest
 
 

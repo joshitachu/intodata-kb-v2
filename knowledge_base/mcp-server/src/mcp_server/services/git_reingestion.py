@@ -13,7 +13,19 @@ from mcp_server.db.session import async_session_factory
 from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
-from mcp_server.services.rag_support_package import inspect_generation_cache_readiness
+from mcp_server.services.group_doc_dependency import (
+    DOC_PACK_MANIFEST_FILENAME,
+    GroupDocDependency,
+)
+from mcp_server.services.rag_support_package import (
+    RAG_SUPPORT_DIRNAME,
+    inspect_generation_cache_readiness,
+)
+from mcp_server.services.reingestion_gate import (
+    CorrectnessGate,
+    GateOutcome,
+    load_facts_manifest,
+)
 from mcp_server.services.scanner_service import ScannerService
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 
@@ -63,8 +75,14 @@ async def run_git_reingestion(
     after_sha: str,
     triggered_by: str,
     log_mgr: LogManager,
+    targeted_docs: list[str] | None = None,
 ) -> bool:
-    """Pull latest code, scan, regenerate docs, sync RAG, then record after SHA."""
+    """Pull latest code, scan, regenerate docs, sync RAG, then record after SHA.
+
+    ``targeted_docs`` (Slice 3) restricts Phase 3 to exactly those documents
+    (names without ``.md``); unaffected docs are preserved byte-stable from the
+    prior baseline. ``None`` means full regeneration (no Phase 3 doc filter).
+    """
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -139,6 +157,16 @@ async def run_git_reingestion(
         return False
 
     changed_groups = resolve_changed_groups(project_id, file_changes, is_first_push)
+
+    # Load the persisted provenance map once: it drives both the affected-doc
+    # preview and the tightened (mapped-doc) correctness gate.
+    output_dir = config.project_root / "output" / project_id
+    dependency = GroupDocDependency.load(
+        output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
+    )
+    affected_docs_preview = _affected_docs_from_dependency(dependency, changed_groups)
+    scoped_docs: set[str] | None = set(targeted_docs) if targeted_docs else None
+
     staging_result = setup_incremental_staging(
         project_id,
         changed_groups,
@@ -158,6 +186,7 @@ async def run_git_reingestion(
                     triggered_by=triggered_by,
                     reason=reason,
                     staging_result=staging_result,
+                    affected_docs_preview=affected_docs_preview,
                 ),
                 error=reason,
             )
@@ -186,6 +215,25 @@ async def run_git_reingestion(
         await db.commit()
         gen_run_id = gen_run.id
 
+    gate = CorrectnessGate(changed_groups=set(changed_groups), dependency=dependency)
+    last_outcome: list[GateOutcome] = []
+
+    def pre_swap_gate(staging_dir: Path) -> GateOutcome:
+        facts = load_facts_manifest(staging_dir)
+        if facts is None:
+            # The harness always writes facts_manifest.json on the normal path;
+            # treat its absence as non-blocking telemetry loss rather than a hold.
+            outcome = GateOutcome(
+                passed=True,
+                evaluated=False,
+                reason="facts manifest unavailable; gate skipped",
+            )
+        else:
+            outcome = gate.evaluate(staging_dir, facts)
+        last_outcome.clear()
+        last_outcome.append(outcome)
+        return outcome
+
     _currently_generating.add(project_id)
     await _run_generate_background(
         project_id,
@@ -194,7 +242,61 @@ async def run_git_reingestion(
         resume=True,
         doc_generation_provider=doc_generation_provider,
         partial_rag_sync=not is_first_push,
+        pre_swap_gate=pre_swap_gate,
+        scoped_docs=scoped_docs,
     )
+
+    gate_held = bool(last_outcome and not last_outcome[0].passed)
+    if gate_held:
+        # Retry the failing analysis + docs exactly ONCE before holding the
+        # commit. The resume re-run regenerates the absent/empty group analyses
+        # and re-writes their docs; the gate then re-evaluates the fresh output.
+        await log_mgr.emit(
+            project_id,
+            "Correctness gate failed; retrying generation once before holding the commit",
+            level="warning",
+        )
+        last_outcome.clear()
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            await registry.update_status(project_id, "generating")
+            retry_run = await registry.create_generate_run(
+                project_id, triggered_by=f"{triggered_by}:gate_retry"
+            )
+            await db.commit()
+            retry_run_id = retry_run.id
+        _currently_generating.add(project_id)
+        await _run_generate_background(
+            project_id,
+            retry_run_id,
+            log_mgr,
+            resume=True,
+            doc_generation_provider=doc_generation_provider,
+            partial_rag_sync=not is_first_push,
+            pre_swap_gate=pre_swap_gate,
+            scoped_docs=scoped_docs,
+        )
+        gate_held = bool(last_outcome and not last_outcome[0].passed)
+
+    if gate_held:
+        held = last_outcome[0]
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            await registry.update_git_update_summary(
+                project_id,
+                _held_summary(
+                    project_id=project_id,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    triggered_by=triggered_by,
+                    changed_groups=sorted(changed_groups),
+                    outcome=held,
+                    affected_docs_preview=affected_docs_preview,
+                ),
+                error=held.reason or "Reingestion held by correctness gate",
+            )
+            await db.commit()
+        return False
 
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
@@ -202,6 +304,17 @@ async def run_git_reingestion(
         if project and project.status == "ready" and project.error_message is None:
             if project.last_ingested_commit_sha != after_sha:
                 await registry.update_last_ingested_commit(project_id, after_sha)
+            if affected_docs_preview is not None:
+                # Augment the summary written by auto_doc_update with the preview.
+                existing_summary: dict[str, object] = (
+                    project.git_update_summary
+                    if isinstance(project.git_update_summary, dict)
+                    else {}
+                )
+                await registry.update_git_update_summary(
+                    project_id,
+                    {**existing_summary, "affected_docs_preview": affected_docs_preview},
+                )
             await db.commit()
             return True
         await db.commit()
@@ -314,6 +427,84 @@ def setup_incremental_staging(
     )
 
 
+def _held_summary(
+    *,
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    triggered_by: str,
+    changed_groups: list[str],
+    outcome: GateOutcome,
+    affected_docs_preview: list[str] | None = None,
+) -> dict[str, object]:
+    """Build the git-update summary for a commit held by the correctness gate."""
+    reason = outcome.reason or "Reingestion held by correctness gate"
+    summary: dict[str, object] = {
+        "trigger": triggered_by,
+        "mode": "git_reingestion",
+        "action": "manual_review",
+        "outcome": "manual_review",
+        "reason_code": "correctness_gate_failed",
+        "decision_strategy": "blocking_correctness_gate",
+        "project_id": project_id,
+        "before": before_sha,
+        "after": after_sha,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason,
+        "manual_review_reason": reason,
+        "held": True,
+        "changed_groups": list(changed_groups),
+        "gate": outcome.to_summary(),
+        "regen_result": {
+            "type": "targeted_regen",
+            "success": False,
+            "held": True,
+            "reason": "correctness_gate_failed",
+        },
+    }
+    if affected_docs_preview is not None:
+        summary["affected_docs_preview"] = affected_docs_preview
+    return summary
+
+
+def _compute_affected_docs_preview(
+    output_dir: Path,
+    changed_groups: set[str],
+) -> list[str] | None:
+    """Read the persisted provenance map and return docs affected by changed_groups.
+
+    Returns None when no manifest exists yet (pre-baseline) so callers know the
+    preview is unavailable rather than empty. Returns an empty list when groups
+    are resolved but map to no docs.
+    """
+    manifest_path = (
+        output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
+    )
+    dep = GroupDocDependency.load(manifest_path)
+    return _affected_docs_from_dependency(dep, changed_groups)
+
+
+def _affected_docs_from_dependency(
+    dependency: GroupDocDependency | None,
+    changed_groups: set[str],
+) -> list[str] | None:
+    """Map changed groups to their docs (+ cross-cutting) via the provenance map.
+
+    Returns None when no manifest exists (pre-baseline) so callers know the
+    preview is unavailable rather than empty; an empty list when groups resolve
+    but map to no docs.
+    """
+    if dependency is None:
+        return None
+    if not changed_groups:
+        return []
+    affected: set[str] = set()
+    for group in changed_groups:
+        affected |= dependency.docs_for_group(group)
+    affected |= dependency.cross_cutting_docs()
+    return sorted(affected)
+
+
 def _full_rebaseline_reason(reason_codes: list[str]) -> str:
     suffix = ", ".join(reason_codes) if reason_codes else "targeted_regen_not_ready"
     return f"Full rebaseline required before targeted regeneration: {suffix}"
@@ -327,8 +518,9 @@ def _full_rebaseline_required_summary(
     triggered_by: str,
     reason: str,
     staging_result: IncrementalStagingResult,
+    affected_docs_preview: list[str] | None = None,
 ) -> dict[str, object]:
-    return {
+    summary: dict[str, object] = {
         "trigger": triggered_by,
         "mode": "git_reingestion",
         "action": "manual_review",
@@ -357,3 +549,6 @@ def _full_rebaseline_required_summary(
             "reason_codes": list(staging_result.reason_codes),
         },
     }
+    if affected_docs_preview is not None:
+        summary["affected_docs_preview"] = affected_docs_preview
+    return summary
