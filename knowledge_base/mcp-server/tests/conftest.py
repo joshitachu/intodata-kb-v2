@@ -116,6 +116,7 @@ async def client(session_factory, monkeypatch, tmp_path):
     # Monkeypatch session factory in all modules
     import mcp_server.api.routes.projects as projects_mod
     import mcp_server.api.routes.generate_runs as generate_runs_mod
+    import mcp_server.api.routes.plugins as plugins_mod
     import mcp_server.api.routes.webhook as webhook_mod
     import mcp_server.api.permissions as permissions_mod
     import mcp_server.db.session as session_mod
@@ -126,6 +127,7 @@ async def client(session_factory, monkeypatch, tmp_path):
     monkeypatch.setattr(session_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(projects_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(generate_runs_mod, "async_session_factory", session_factory)
+    monkeypatch.setattr(plugins_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(webhook_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(permissions_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(git_poller_mod, "async_session_factory", session_factory)

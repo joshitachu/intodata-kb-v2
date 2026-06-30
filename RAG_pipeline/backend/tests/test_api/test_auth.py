@@ -525,6 +525,15 @@ class TestTOTPEnrollment:
 
 
 class TestAccessRequestsAndInvites:
+    @pytest.fixture(autouse=True)
+    async def _reset_rate_limiter(self):
+        """Reset slowapi between tests so 5/min doesn't bleed across cases."""
+        from src.api.routes.auth import limiter
+
+        limiter.reset()
+        yield
+        limiter.reset()
+
     async def test_request_access_creates_pending_and_duplicate_is_idempotent(self, db_session):
         from src.api.dependencies import get_db
 
@@ -550,6 +559,147 @@ class TestAccessRequestsAndInvites:
         rows = (await db_session.execute(select(AccessRequest))).scalars().all()
         assert len(rows) == 1
         assert rows[0].email == "person@example.com"
+
+    async def test_request_access_emails_each_active_superadmin(self, db_session):
+        from src.api.dependencies import get_db
+
+        superadmin = User(
+            username="root",
+            email="root@example.com",
+            password_hash="x",
+            is_superadmin=True,
+            is_active=True,
+        )
+        inactive_superadmin = User(
+            username="off",
+            email="off@example.com",
+            password_hash="x",
+            is_superadmin=True,
+            is_active=False,
+        )
+        non_admin = User(
+            username="plain",
+            email="plain@example.com",
+            password_hash="x",
+            is_superadmin=False,
+            is_active=True,
+        )
+        db_session.add_all([superadmin, inactive_superadmin, non_admin])
+        await db_session.commit()
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        try:
+            with patch(
+                "src.api.routes.auth.send_admin_access_request_email"
+            ) as send_email:
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    resp = await client.post(
+                        "/api/v1/auth/request-access",
+                        json={"email": "newbie@example.com", "full_name": "New Bie"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        send_email.assert_called_once_with(
+            to_email="root@example.com",
+            requester_email="newbie@example.com",
+            requester_name="New Bie",
+        )
+
+    async def test_request_access_swallows_email_send_errors(self, db_session):
+        from src.api.dependencies import get_db
+        from src.services.email_service import EmailSendError
+
+        superadmin = User(
+            username="root",
+            email="root@example.com",
+            password_hash="x",
+            is_superadmin=True,
+            is_active=True,
+        )
+        db_session.add(superadmin)
+        await db_session.commit()
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        try:
+            with patch(
+                "src.api.routes.auth.send_admin_access_request_email",
+                side_effect=EmailSendError("smtp down"),
+            ):
+                transport = ASGITransport(app=app)
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    resp = await client.post(
+                        "/api/v1/auth/request-access",
+                        json={"email": "newbie@example.com"},
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "submitted"
+
+    async def test_request_access_active_user_gets_friendly_redirect(self, db_session):
+        from src.api.dependencies import get_db
+
+        db_session.add(
+            User(
+                username="existing",
+                email="existing@example.com",
+                password_hash="x",
+                is_active=True,
+                is_superadmin=False,
+            )
+        )
+        await db_session.commit()
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/request-access",
+                    json={"email": "Existing@Example.com"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "already_active"
+        assert body["login_url"] == "/login"
+        assert "sign in" in body["message"].lower()
+
+    async def test_request_access_inactive_user_gets_generic_message(self, db_session):
+        from src.api.dependencies import get_db
+
+        db_session.add(
+            User(
+                username="deactivated",
+                email="deact@example.com",
+                password_hash="x",
+                is_active=False,
+                is_superadmin=False,
+            )
+        )
+        await db_session.commit()
+
+        app.dependency_overrides[get_db] = lambda: db_session
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/auth/request-access",
+                    json={"email": "deact@example.com"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "submitted"
+        assert "sign in" not in body["message"].lower()
 
     async def test_accept_invite_creates_user_onboarding_and_invalidates_token(self, db_session):
         from datetime import datetime, timedelta, timezone

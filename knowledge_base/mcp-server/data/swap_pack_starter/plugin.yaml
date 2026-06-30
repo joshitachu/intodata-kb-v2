@@ -1,0 +1,23 @@
+name: swap-pack-starter
+version: 0.1.0
+description: Starter Swap Pack for tuning IntoData documentation output.
+
+phases:
+  investigation: skip
+  analysis: bounded
+  scorecard: skip
+  doc_bundles: skip
+
+docs:
+  - name: SINGLE_SUMMARY
+    required_sections:
+      - Project Summary
+      - Systems And Data
+      - Operational Notes
+      - Evidence Register
+    required_evidence:
+      - source-backed facts
+
+steps:
+  - id: generate-docs
+    type: harness

@@ -155,6 +155,52 @@ def send_rejection_email(to_email: str, reason: str | None = None) -> None:
     _send(message, "rejection", to_email)
 
 
+def send_admin_access_request_email(
+    to_email: str, requester_email: str, requester_name: str | None
+) -> None:
+    """Notify a superadmin that someone has submitted an access request.
+
+    The access request itself is already persisted and the in-app
+    notification row is created before this is called; this email is a
+    best-effort push so an admin who isn't logged in still learns about
+    the request. SMTP failures are logged at the call site and must not
+    fail the access request.
+    """
+    review_url = f"{settings.public_app_url.rstrip('/')}/admin/access-requests"
+    subject = f"New access request for {settings.smtp_from_name}"
+
+    if not _configured():
+        logger.warning(
+            "SMTP is not configured. Access request notification for %s from %s: %s",
+            to_email,
+            requester_email,
+            review_url,
+        )
+        return
+
+    who = requester_email
+    if requester_name:
+        who = f"{requester_name} <{requester_email}>"
+
+    message = _base_message(to_email, subject)
+    message.set_content(
+        f"Account {who} has requested access to {settings.smtp_from_name}.\n\n"
+        f"Review and approve or reject the request here:\n{review_url}\n\n"
+        "If you weren't expecting this, you can ignore this email.\n"
+    )
+    message.add_alternative(
+        f"<p>Account <strong>{who}</strong> has requested access to "
+        f"<strong>{settings.smtp_from_name}</strong>.</p>"
+        f"<p><a href=\"{review_url}\" style=\"display:inline-block;padding:10px 20px;"
+        f"background:#1d4ed8;color:#fff;text-decoration:none;border-radius:6px;"
+        f"font-weight:600\">Review request</a></p>"
+        "<p style=\"color:#6b7280;font-size:13px\">If you weren't expecting this, "
+        "you can ignore this email.</p>",
+        subtype="html",
+    )
+    _send(message, "admin access request", to_email)
+
+
 def send_test_email(to_email: str) -> None:
     if not _configured():
         if settings.app_env == "production":

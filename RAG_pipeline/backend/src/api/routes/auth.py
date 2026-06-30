@@ -32,7 +32,12 @@ from src.config import settings
 from src.db.models import AccessRequest, EmailOTPCode, Notification, Role, User, UserInvite, UserOnboarding
 from src.rbac.permissions import get_user_permissions
 from src.services.audit_service import AuditService
-from src.services.email_service import EmailSendError, send_invite_otp_email, send_login_otp_email
+from src.services.email_service import (
+    EmailSendError,
+    send_admin_access_request_email,
+    send_invite_otp_email,
+    send_login_otp_email,
+)
 
 MFA_TOKEN_TTL_SECONDS = 300  # 5 minutes between login and MFA verify
 EMAIL_OTP_TTL_MINUTES = 10
@@ -340,7 +345,13 @@ async def request_access(request: Request, body: RequestAccessBody, db: DBSessio
     existing_user = (
         await db.execute(select(User).where(User.email == email))
     ).scalar_one_or_none()
-    if existing_user is not None:
+    if existing_user is not None and existing_user.is_active:
+        return {
+            "status": "already_active",
+            "message": "You already have an account. Please sign in.",
+            "login_url": "/login",
+        }
+    if existing_user is not None and not existing_user.is_active:
         return {
             "status": "submitted",
             "message": "If access is needed, an administrator will review the request.",
@@ -383,6 +394,22 @@ async def request_access(request: Request, body: RequestAccessBody, db: DBSessio
         )
 
     await db.commit()
+
+    for admin in admins:
+        try:
+            send_admin_access_request_email(
+                to_email=admin.email,
+                requester_email=email,
+                requester_name=access_request.full_name,
+            )
+        except EmailSendError as exc:
+            logger.warning(
+                "Failed to email superadmin %s about access request id=%s: %s",
+                admin.email,
+                access_request.id,
+                exc,
+            )
+
     logger.info(
         "Access request submitted id=%s email=%s ip=%s",
         access_request.id,

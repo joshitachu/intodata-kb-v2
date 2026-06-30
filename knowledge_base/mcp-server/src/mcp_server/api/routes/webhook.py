@@ -72,6 +72,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
 
     event = request.headers.get("X-GitHub-Event", "")
     delivery_id = request.headers.get("X-GitHub-Delivery")
+    repo_branch = _branch_from_ref(body.get("ref"))
 
     if event == "ping":
         async with async_session_factory() as db:
@@ -133,10 +134,14 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
 
         if not project:
             # Check if this is a plugin pack repo
-            pack_id = await _find_plugin_pack_by_clone_url(db, clone_url)
+            pack_id = await _find_plugin_pack_by_clone_url(db, clone_url, repo_branch)
             if pack_id is not None and event == "push":
                 background_tasks.add_task(_pull_plugin_pack_background, pack_id)
-                return {"status": "pack_update_triggered", "plugin_pack_id": pack_id}
+                return {
+                    "status": "pack_update_triggered",
+                    "plugin_pack_id": pack_id,
+                    "branch": repo_branch,
+                }
             return {
                 "status": "ignored",
                 "reason": "unregistered_repo",
@@ -209,7 +214,11 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "webhook_triggered", "project_id": project_id}
 
 
-async def _find_plugin_pack_by_clone_url(db, clone_url: str) -> int | None:
+async def _find_plugin_pack_by_clone_url(
+    db,
+    clone_url: str,
+    repo_branch: str | None = None,
+) -> int | None:
     """Return the id of a plugin pack whose repo_url matches clone_url, or None."""
     from sqlalchemy import select
     from mcp_server.db.models import PluginPack
@@ -217,6 +226,14 @@ async def _find_plugin_pack_by_clone_url(db, clone_url: str) -> int | None:
     clone_key = canonical_remote_key(clone_url)
     result = await db.execute(select(PluginPack).where(PluginPack.repo_url.isnot(None)))
     packs = result.scalars().all()
+    if repo_branch:
+        for pack in packs:
+            if (
+                pack.repo_url
+                and canonical_remote_key(pack.repo_url) == clone_key
+                and (pack.repo_branch or "main") == repo_branch
+            ):
+                return pack.id
     for pack in packs:
         if pack.repo_url and canonical_remote_key(pack.repo_url) == clone_key:
             return pack.id
@@ -233,6 +250,15 @@ def _parse_github_payload(raw_body: bytes) -> dict:
         if payload:
             return json.loads(payload)
         raise
+
+
+def _branch_from_ref(ref: object) -> str | None:
+    if not isinstance(ref, str):
+        return None
+    prefix = "refs/heads/"
+    if ref.startswith(prefix):
+        return ref.removeprefix(prefix)
+    return None
 
 
 async def _pull_plugin_pack_background(pack_id: int) -> None:
@@ -255,6 +281,7 @@ async def _pull_plugin_pack_background(pack_id: int) -> None:
 
             try:
                 manifest = _load(_Path(pack.path))
+                pack.manifest_name = manifest.name
                 pack.version = manifest.version
                 pack.description = manifest.description or pack.description
             except Exception:

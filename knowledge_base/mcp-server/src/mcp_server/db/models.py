@@ -160,9 +160,11 @@ class PluginPack(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    manifest_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     path: Mapped[str] = mapped_column(String(1000), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    repo_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     auto_update: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

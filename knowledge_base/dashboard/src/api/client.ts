@@ -11,6 +11,7 @@ import {
   LogFileListResponseSchema,
   ModelListResponseSchema,
   PlatformListResponseSchema,
+  PluginPackBranchDiscoverySchema,
   PluginPackFileSchema,
   PluginPackFilesSchema,
   PluginPackListSchema,
@@ -25,6 +26,7 @@ import {
   ScanRunListResponseSchema,
   ScanStatusResponseSchema,
   StatusResponseSchema,
+  StarterPackSchema,
   SubmitReviewResponseSchema,
   WebhookStatusSchema,
 } from "./schemas";
@@ -190,6 +192,19 @@ export const api = {
   listPluginPacks: () =>
     request<import("../types").PluginPack[]>("/mcp/plugins", {}, PluginPackListSchema),
 
+  getStarterPack: () =>
+    request<import("../types").StarterPack>("/mcp/plugins/starter", {}, StarterPackSchema),
+
+  discoverPluginPackBranches: (repoUrl?: string | null) =>
+    request<import("../types").PluginPackBranchDiscovery>(
+      "/mcp/plugins/discover",
+      {
+        method: "POST",
+        body: JSON.stringify({ repo_url: repoUrl ?? undefined }),
+      },
+      PluginPackBranchDiscoverySchema
+    ),
+
   assignPluginPack: (projectId: string, pluginPackId: number | null) =>
     request<{ project_id: string; plugin_pack_id: number | null }>(
       `/mcp/projects/${projectId}/plugin`,
@@ -200,7 +215,7 @@ export const api = {
       AssignPluginPackResponseSchema
     ),
 
-  registerPluginPack: (body: { path?: string; repo_url?: string }) =>
+  registerPluginPack: (body: { path?: string; repo_url?: string; repo_branch?: string }) =>
     request<import("../types").PluginPack>("/mcp/plugins", {
       method: "POST",
       body: JSON.stringify(body),
@@ -226,6 +241,18 @@ export const api = {
 
   getPluginPackFiles: (packId: number) =>
     request<string[]>(`/mcp/plugins/${packId}/files`, {}, PluginPackFilesSchema),
+
+  getPluginPackBranchFiles: (repoUrl: string, repoBranch: string) =>
+    request<string[]>("/mcp/plugins/branch-files", {
+      method: "POST",
+      body: JSON.stringify({ repo_url: repoUrl, repo_branch: repoBranch }),
+    }, PluginPackFilesSchema),
+
+  getPluginPackBranchFile: (repoUrl: string, repoBranch: string, filePath: string) =>
+    request<import("../types").PluginPackFileContent>("/mcp/plugins/branch-file", {
+      method: "POST",
+      body: JSON.stringify({ repo_url: repoUrl, repo_branch: repoBranch, file_path: filePath }),
+    }, PluginPackFileSchema),
 
   getPluginPackFile: (packId: number, filePath: string) =>
     request<{ path: string; content: string }>(

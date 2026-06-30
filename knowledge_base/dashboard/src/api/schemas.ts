@@ -275,14 +275,42 @@ export const InstructionPackMetadataSchema = z.object({
 export const PluginPackSchema = z.object({
   id: z.number(),
   name: z.string(),
+  manifest_name: z.string().nullable(),
   version: z.string(),
   path: z.string(),
   description: z.string().nullable(),
   repo_url: z.string().nullable(),
+  repo_branch: z.string().nullable(),
   last_commit_sha: z.string().nullable(),
   auto_update: z.boolean(),
 });
 export const PluginPackListSchema = z.array(PluginPackSchema);
+
+export const StarterPackSchema = z.object({
+  repo_url: z.string(),
+  clone_url: z.string(),
+  zip_url: z.string(),
+  name: z.string().nullable(),
+  version: z.string().nullable(),
+  description: z.string().nullable(),
+});
+
+export const PluginPackBranchSchema = z.object({
+  branch: z.string(),
+  name: z.string(),
+  manifest_name: z.string(),
+  version: z.string(),
+  description: z.string().nullable(),
+  repo_url: z.string(),
+  commit_sha: z.string(),
+  registered: z.boolean(),
+  registered_pack_id: z.number().nullable(),
+});
+
+export const PluginPackBranchDiscoverySchema = z.object({
+  repo_url: z.string(),
+  branches: z.array(PluginPackBranchSchema),
+});
 
 export const WebhookStatusSchema = z.object({
   project_id: z.string(),
