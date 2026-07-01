@@ -1,6 +1,6 @@
 """Add project_group_scan_hashes table for fingerprint-based dirty detection.
 
-Revision ID: 017_add_project_group_scan_hashes
+Revision ID: 017_scan_hashes
 Revises: 016_plugin_pack_branch_metadata
 Create Date: 2026-06-30
 
@@ -11,7 +11,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "017_add_project_group_scan_hashes"
+revision: str = "017_scan_hashes"
 down_revision: Union[str, None] = "016_plugin_pack_branch_metadata"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

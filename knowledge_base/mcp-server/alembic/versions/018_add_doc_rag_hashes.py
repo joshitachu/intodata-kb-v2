@@ -1,7 +1,7 @@
 """Add project_doc_rag_hashes table for content-hash-based RAG push skip.
 
 Revision ID: 018_add_doc_rag_hashes
-Revises: 017_add_project_group_scan_hashes
+Revises: 017_scan_hashes
 Create Date: 2026-06-30
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "018_add_doc_rag_hashes"
-down_revision: Union[str, None] = "017_add_project_group_scan_hashes"
+down_revision: Union[str, None] = "017_scan_hashes"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
