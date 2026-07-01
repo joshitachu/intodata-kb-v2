@@ -1355,6 +1355,20 @@ async def _run_generate_background(
                 head_sha = await _current_git_head(project.local_path)
                 if head_sha:
                     await registry.update_last_ingested_commit(project_id, head_sha)
+                # Prime the reingestion baseline (fingerprint hashes + prev_scan)
+                # so the first push after a manual generation can be diffed
+                # instead of forcing a full regen. Same helper the webhook
+                # reingestion path uses; best-effort, must not fail the run.
+                try:
+                    from mcp_server.services.git_reingestion import (
+                        prime_reingestion_baseline,
+                    )
+                    await prime_reingestion_baseline(db, project_id, output_dir)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to prime reingestion baseline for %s: %s",
+                        project_id, e,
+                    )
             final_status = (
                 "completed_warnings"
                 if result.get("has_warnings")

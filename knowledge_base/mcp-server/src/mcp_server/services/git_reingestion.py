@@ -440,15 +440,11 @@ async def run_git_reingestion(
                         "delta_classifications": delta_cls_summary,
                     },
                 )
-            # --- Slice 1: write fingerprint baseline on successful generation ---
-            # Slice 3: persist current scan JSON as prev-baseline for next push.
-            from mcp_server.services.scan_fingerprint_service import ScanFingerprintService
-
-            fp_svc = ScanFingerprintService(db)
-            now = datetime.now(timezone.utc)
-            await fp_svc.persist_baseline(db, project_id, current_hashes, now)
-            persist_group_prev_scans(project_id, output_dir)
-            # --- end Slice 1/Slice 3 ---
+            # Establish the reingestion baseline (fingerprint hashes + prev_scan)
+            # via the shared helper so both generation paths behave identically.
+            await prime_reingestion_baseline(
+                db, project_id, output_dir, current_hashes=current_hashes
+            )
             await db.commit()
             return True
         await db.commit()
@@ -544,6 +540,38 @@ def classify_dirty_groups(
             )
 
     return result
+
+
+async def prime_reingestion_baseline(
+    db,
+    project_id: str,
+    output_dir: Path,
+    *,
+    current_hashes: "dict[str, str] | None" = None,
+) -> None:
+    """Establish the reingestion baseline after a successful generation + swap.
+
+    Writes the per-group scan fingerprint baseline (drives dirty-set detection)
+    and persists the current scan JSON as the prev-baseline (drives delta
+    classification). BOTH generation entry points must call this -- webhook
+    reingestion (``run_git_reingestion``) and the manual generate flow
+    (``_run_generate_background``) -- so a project's first push after either can
+    be diffed instead of being forced into a full regen.
+
+    The caller owns the transaction (this does not commit). When ``current_hashes``
+    is not supplied it is computed from the segmented scan output. prev_scan
+    persistence is best-effort and never raises.
+    """
+    from mcp_server.services.scan_fingerprint_service import ScanFingerprintService
+
+    if current_hashes is None:
+        scan_jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+        current_hashes = ScanFingerprintService.compute_project_hashes(scan_jobs_dir)
+    fp_svc = ScanFingerprintService(db)
+    await fp_svc.persist_baseline(
+        db, project_id, current_hashes, datetime.now(timezone.utc)
+    )
+    persist_group_prev_scans(project_id, output_dir)
 
 
 def persist_group_prev_scans(project_id: str, output_dir: Path) -> None:
