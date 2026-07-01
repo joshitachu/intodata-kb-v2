@@ -233,6 +233,7 @@ class RagBridge:
         output_dir: str | None = None,
         filenames: set[str] | list[str] | None = None,
         extra_doc_names: set[str] | list[str] | None = None,
+        force: bool = False,
     ) -> dict:
         """Push multiple docs to RAG.
 
@@ -243,8 +244,10 @@ class RagBridge:
         standard numbered enterprise docs (e.g. TABLE_INVENTORY.md).
 
         When MCP_INCREMENTAL_HASH_SKIP_ENABLED is True, docs whose SHA-256 matches
-        the last successfully pushed hash are silently skipped.  The result dict
-        always includes a `skipped` counter (0 when the flag is off).
+        the last successfully pushed hash are skipped.  Pass `force=True` to bypass
+        the skip and re-embed every doc unconditionally (operator recovery path for
+        out-of-band vector-store drift); fresh hashes are still recorded afterwards.
+        The result dict always includes a `skipped` counter (0 when skipping is off).
 
         Returns: {pushed: int, skipped: int, errors: list[str]}
         """
@@ -261,12 +264,17 @@ class RagBridge:
             return result
 
         hash_enabled = config.incremental_hash_skip_enabled
-        # Open a DB session only when hash skip is active; otherwise use a
+        # Hash-skip is bypassed on a forced push: a forced push always re-embeds
+        # every doc so out-of-band vector-store drift can be repaired, while still
+        # refreshing the stored hashes.
+        skip_enabled = hash_enabled and not force
+        # Open a DB session only when hash tracking is active; otherwise use a
         # no-op context so the loop body stays identical for both paths.
         db_ctx = async_session_factory() if hash_enabled else nullcontext(None)
 
         async with db_ctx as _db:
             repo = DocRagHashRepository(_db) if _db is not None else None
+            hashes_staged = False
 
             for doc in items:
                 filename = doc.get("filename", "")
@@ -280,7 +288,7 @@ class RagBridge:
                 # Compute hash once; reused for both skip check and post-push upsert.
                 doc_hash = _sha256_hex(content) if hash_enabled else None
 
-                if repo is not None and doc_hash is not None:
+                if repo is not None and doc_hash is not None and skip_enabled:
                     stored = await repo.get_hash(project_id, filename)
                     if stored == doc_hash:
                         result["skipped"] += 1
@@ -298,23 +306,41 @@ class RagBridge:
                         filename=filename,
                         content=content,
                     )
-                    result["pushed"] += 1
-                    if self.log_manager:
-                        await self.log_manager.emit(
-                            project_id,
-                            f"Pushed to RAG: {filename}",
-                            level="info",
-                        )
-                    # Record hash only after a confirmed successful push.
-                    if repo is not None and doc_hash is not None:
-                        await repo.upsert_hash(project_id, filename, doc_hash)
-                        await _db.commit()
                 except Exception as e:
                     error_msg = f"Failed to push {filename}: {e}"
                     result["errors"].append(error_msg)
                     logger.error(error_msg)
                     if self.log_manager:
                         await self.log_manager.emit(project_id, error_msg, level="error")
+                    continue
+
+                # Push confirmed successful.
+                result["pushed"] += 1
+                if self.log_manager:
+                    await self.log_manager.emit(
+                        project_id,
+                        f"Pushed to RAG: {filename}",
+                        level="info",
+                    )
+
+                # Stage the hash in the session (committed once after the loop).
+                # A hash-tracking failure must NOT mark the doc as a failed push --
+                # the doc is already in the vector store.
+                if repo is not None and doc_hash is not None:
+                    await repo.upsert_hash(project_id, filename, doc_hash)
+                    hashes_staged = True
+
+            # Single commit for all staged hashes.  A commit failure means only
+            # that hash tracking lagged; every counted doc is already in RAG, so
+            # we log a warning rather than corrupting the push result.
+            if repo is not None and hashes_staged:
+                try:
+                    await _db.commit()
+                except Exception as e:
+                    logger.warning(
+                        "RAG hash commit failed for %s (docs pushed OK): %s",
+                        project_id, e,
+                    )
 
         if self.log_manager:
             await self.log_manager.emit(

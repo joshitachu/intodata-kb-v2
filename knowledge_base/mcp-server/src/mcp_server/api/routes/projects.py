@@ -1450,6 +1450,9 @@ async def push_to_rag(req: PushToRagRequest, request: Request):
             project_id=req.project_id,
             output_dir=str(docs_dir),
             extra_doc_names=pack_docs or None,
+            # Manual push is the operator recovery path: force a full re-embed so
+            # any out-of-band vector-store drift is repaired regardless of hashes.
+            force=True,
         )
         internal_sync = await bridge.sync_internal_layers(req.project_id, docs_dir)
         total_errors = len(result["errors"]) + len(internal_sync["errors"])
