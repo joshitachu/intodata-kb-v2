@@ -543,3 +543,164 @@ async def test_run_git_reingestion_advances_sha_when_gate_passes_first_try(
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
         assert project.last_ingested_commit_sha == "b" * 40
+
+
+# ---------------------------------------------------------------------------
+# Slice 0 — infra-only push early-exit
+# ---------------------------------------------------------------------------
+
+
+async def test_run_git_reingestion_skips_when_all_changes_are_infra(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """Infra-only push (Dockerfile, .env) must advance SHA and return True without generation."""
+    import mcp_server.api.routes.projects as projects_mod
+    import mcp_server.services.git_reingestion as git_reingestion
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
+    monkeypatch.setattr(git_reingestion, "async_session_factory", session_factory)
+    monkeypatch.setattr(projects_mod, "async_session_factory", session_factory)
+
+    async def pull_stub(local_path: str, github_token_enc: str | None = None) -> str:
+        return ""
+
+    async def run_git_stub(local_path: str, *args: str, **kwargs) -> str:
+        if args[:2] == ("diff", "--name-status"):
+            return "M\tDockerfile\nM\t.env.production\n"
+        return ""
+
+    class ScannerStub:
+        def __init__(self, log_manager=None):
+            self.log_manager = log_manager
+
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+            return {
+                "success": True,
+                "scan_result_path": str(tmp_path / "scan_result.json"),
+                "output_dir": str(tmp_path / "intodoc-output" / project_id),
+                "job_count": 1,
+            }
+
+    generation_called: list[str] = []
+
+    async def generate_background_stub(*args, **kwargs) -> None:
+        generation_called.append("called")
+
+    monkeypatch.setattr(git_reingestion, "pull_remote_ff_only", pull_stub)
+    monkeypatch.setattr(git_reingestion, "run_git", run_git_stub)
+    monkeypatch.setattr(git_reingestion, "ScannerService", ScannerStub)
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+    projects_mod._currently_generating.discard("proj")
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "proj",
+            str(tmp_path / "repo"),
+            repo_url="https://github.com/example/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = "a" * 40
+        await session.commit()
+    _make_cache(tmp_path, "proj")
+    scan_group = tmp_path / "intodoc-output" / "proj" / "scan" / "jobs" / "A"
+    scan_group.mkdir(parents=True)
+
+    ok = await run_git_reingestion(
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+    )
+
+    assert ok is True, "infra-only push must return True (skip = success)"
+    assert generation_called == [], "generation must NOT be triggered on infra-only push"
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("proj")
+        assert project is not None
+        assert project.last_ingested_commit_sha == "b" * 40, "SHA must advance on infra-only skip"
+
+
+async def test_run_git_reingestion_proceeds_on_mixed_infra_and_source_push(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """Mixed push (one infra file + one source file) must NOT trigger the early exit."""
+    import mcp_server.api.routes.projects as projects_mod
+    import mcp_server.services.git_reingestion as git_reingestion
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    monkeypatch.setattr(config, "intodoc_output_dir", tmp_path / "intodoc-output")
+    monkeypatch.setattr(git_reingestion, "async_session_factory", session_factory)
+    monkeypatch.setattr(projects_mod, "async_session_factory", session_factory)
+
+    async def pull_stub(local_path: str, github_token_enc: str | None = None) -> str:
+        return ""
+
+    async def run_git_stub(local_path: str, *args: str, **kwargs) -> str:
+        if args[:2] == ("diff", "--name-status"):
+            # One infra file + one integration source file
+            return "M\tDockerfile\nM\tjobs/A/file.xml\n"
+        return ""
+
+    class ScannerStub:
+        def __init__(self, log_manager=None):
+            self.log_manager = log_manager
+
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+            return {
+                "success": True,
+                "scan_result_path": str(tmp_path / "scan_result.json"),
+                "output_dir": str(tmp_path / "intodoc-output" / project_id),
+                "job_count": 1,
+            }
+
+    generation_called: list[str] = []
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        generation_called.append("called")
+        output_dir = tmp_path / "output" / project_id
+        _write_staging(
+            output_dir, doc_body="Documents job_alpha fully.", analysis_body=_good_analysis()
+        )
+        gate = kwargs.get("pre_swap_gate")
+        outcome = gate(output_dir / "docs_staging") if gate else None
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            if outcome is not None and not outcome.passed:
+                await registry.update_status(
+                    project_id, "error", error_message=f"manual_review: {outcome.reason}"
+                )
+            else:
+                await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(git_reingestion, "pull_remote_ff_only", pull_stub)
+    monkeypatch.setattr(git_reingestion, "run_git", run_git_stub)
+    monkeypatch.setattr(git_reingestion, "ScannerService", ScannerStub)
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+    projects_mod._currently_generating.discard("proj")
+
+    async with session_factory() as session:
+        registry = ProjectRegistry(session)
+        project = await registry.add_project(
+            "proj",
+            str(tmp_path / "repo"),
+            repo_url="https://github.com/example/repo.git",
+            source_type="git",
+        )
+        project.last_ingested_commit_sha = "a" * 40
+        await session.commit()
+    _make_cache(tmp_path, "proj")
+    scan_group = tmp_path / "intodoc-output" / "proj" / "scan" / "jobs" / "A"
+    scan_group.mkdir(parents=True)
+
+    ok = await run_git_reingestion(
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+    )
+
+    assert ok is True
+    assert generation_called == ["called"], "mixed push must proceed to generation"

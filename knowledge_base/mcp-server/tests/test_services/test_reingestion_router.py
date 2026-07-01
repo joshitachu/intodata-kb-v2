@@ -1,4 +1,8 @@
-"""Tests for the deterministic + hybrid reingestion router (Slice 3)."""
+"""Tests for the deterministic + hybrid reingestion router (Slice 3).
+
+Also covers the per-group delta classifier routing integration added in
+Smart Reingestion Slice 3: classify_dirty_groups + lane partitioning.
+"""
 
 from __future__ import annotations
 
@@ -277,3 +281,172 @@ async def test_expand_upgrades_bounded_to_scoped_when_set_outgrows_bound(monkeyp
 
     assert out.strategy == "scoped_regen"  # upgraded, never downgraded
     assert sorted(out.affected_docs) == ["A", "B", "C"]
+
+
+# ---------------------------------------------------------------------------
+# Slice 3 -- per-group delta classifier routing integration
+# Tests for classify_dirty_groups() + scoped/patch partition.
+# ---------------------------------------------------------------------------
+
+
+def _make_scan_jobs(tmp_path: Path, project_id: str, group: str, jobs: list[dict]) -> None:
+    """Write synthetic scan JSON files for a group into the intodoc-output tree."""
+    jobs_dir = tmp_path / "intodoc-output" / project_id / "scan" / "jobs" / group
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    for job in jobs:
+        name = job.get("name", "job")
+        (jobs_dir / f"{name}.json").write_text(
+            json.dumps(job), encoding="utf-8"
+        )
+
+
+def _make_prev_scan(tmp_path: Path, project_id: str, group: str, jobs: list[dict]) -> None:
+    """Write a prev_scan baseline JSON for a group."""
+    prev_dir = tmp_path / "output" / project_id / "prev_scan"
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    (prev_dir / f"{group}.json").write_text(
+        json.dumps(jobs), encoding="utf-8"
+    )
+
+
+def _make_job(name: str, comp_type: str = "tFileInput", n_params: int = 5) -> dict:
+    params = [
+        {"name": f"p{i}", "value": f"v_{name}_{i}", "field_type": "TEXT"}
+        for i in range(n_params)
+    ]
+    return {
+        "name": name,
+        "components": [
+            {"unique_name": "comp_0", "component_type": comp_type, "params": params}
+        ],
+        "group": "grp",
+    }
+
+
+def test_classify_dirty_groups_no_prev_baseline_returns_new_unit(tmp_path: Path) -> None:
+    """No prev_scan file -> NEW_UNIT -> routes to scoped_regen."""
+    from mcp_server.services.git_reingestion import classify_dirty_groups
+
+    jobs = [_make_job("job_A")]
+    _make_scan_jobs(tmp_path, "proj", "grp_1", jobs)
+
+    output_dir = tmp_path / "output" / "proj"
+    result = classify_dirty_groups("proj", {"grp_1"}, output_dir)
+
+    assert result["grp_1"].kind == "NEW_UNIT"
+    assert result["grp_1"].changed_fraction == 0.0
+
+
+def test_classify_dirty_groups_structural_change_routes_scoped(tmp_path: Path) -> None:
+    """NEW_UNIT classification routes to scoped_regen, not patch lane."""
+    from mcp_server.services.git_reingestion import classify_dirty_groups
+
+    prev_jobs = [_make_job("job_A")]
+    curr_jobs = [_make_job("job_A"), _make_job("job_B")]
+
+    _make_prev_scan(tmp_path, "proj", "grp_1", prev_jobs)
+    _make_scan_jobs(tmp_path, "proj", "grp_1", curr_jobs)
+
+    output_dir = tmp_path / "output" / "proj"
+    result = classify_dirty_groups("proj", {"grp_1"}, output_dir)
+
+    assert result["grp_1"].kind == "NEW_UNIT"
+    # Partition: scoped_groups includes grp_1, patch_groups is empty
+    patch_groups = {
+        g for g, cls in result.items()
+        if cls.kind == "FIELD_EDIT" and cls.changed_fraction < 0.20
+    }
+    scoped_groups = {"grp_1"} - patch_groups
+    assert "grp_1" in scoped_groups
+    assert "grp_1" not in patch_groups
+
+
+def test_classify_dirty_groups_small_field_edit_routes_patch(tmp_path: Path) -> None:
+    """1 of 5 fields changed (0.20 fraction) -> at threshold -> scoped.
+    Use 1 of 10 fields instead: fraction 0.10 < 0.20 -> patch lane."""
+    import copy
+    from mcp_server.services.git_reingestion import classify_dirty_groups
+
+    # 2 jobs, 1 component, 5 params each = 10 fields total
+    prev_jobs = [_make_job("job_A", n_params=5), _make_job("job_B", n_params=5)]
+    curr_jobs = copy.deepcopy(prev_jobs)
+    # Change 1 of 10 fields -> fraction = 0.10 < 0.20 -> patch
+    curr_jobs[0]["components"][0]["params"][0]["value"] = "CHANGED"
+
+    _make_prev_scan(tmp_path, "proj", "grp_1", prev_jobs)
+    _make_scan_jobs(tmp_path, "proj", "grp_1", curr_jobs)
+
+    output_dir = tmp_path / "output" / "proj"
+    result = classify_dirty_groups("proj", {"grp_1"}, output_dir)
+
+    cls = result["grp_1"]
+    assert cls.kind == "FIELD_EDIT"
+    assert cls.changed_fraction == pytest.approx(1 / 10)
+    # Partition: grp_1 goes to patch lane
+    patch_groups = {
+        g for g, c in result.items()
+        if c.kind == "FIELD_EDIT" and c.changed_fraction < 0.20
+    }
+    assert "grp_1" in patch_groups
+
+
+def test_classify_dirty_groups_large_field_edit_routes_scoped(tmp_path: Path) -> None:
+    """3 of 5 fields changed -> fraction 0.60 >= 0.20 -> scoped_regen."""
+    import copy
+    from mcp_server.services.git_reingestion import classify_dirty_groups
+
+    prev_jobs = [_make_job("job_A", n_params=5)]
+    curr_jobs = copy.deepcopy(prev_jobs)
+    # Change 3 of 5 fields
+    for i in range(3):
+        curr_jobs[0]["components"][0]["params"][i]["value"] = f"CHANGED_{i}"
+
+    _make_prev_scan(tmp_path, "proj", "grp_1", prev_jobs)
+    _make_scan_jobs(tmp_path, "proj", "grp_1", curr_jobs)
+
+    output_dir = tmp_path / "output" / "proj"
+    result = classify_dirty_groups("proj", {"grp_1"}, output_dir)
+
+    cls = result["grp_1"]
+    assert cls.kind == "FIELD_EDIT"
+    assert cls.changed_fraction >= 0.20
+    # Not patch-eligible
+    patch_groups = {
+        g for g, c in result.items()
+        if c.kind == "FIELD_EDIT" and c.changed_fraction < 0.20
+    }
+    assert "grp_1" not in patch_groups
+
+
+def test_multi_group_mixed_routing(tmp_path: Path) -> None:
+    """Mixed push: grp_structural (NEW_UNIT) -> scoped; grp_small (FIELD_EDIT 0.10) -> patch."""
+    import copy
+    from mcp_server.services.git_reingestion import classify_dirty_groups
+
+    # grp_structural: add a job -> NEW_UNIT -> scoped
+    prev_structural = [_make_job("job_A", n_params=5)]
+    curr_structural = prev_structural + [_make_job("job_B", n_params=5)]
+    _make_prev_scan(tmp_path, "proj", "grp_structural", prev_structural)
+    _make_scan_jobs(tmp_path, "proj", "grp_structural", curr_structural)
+
+    # grp_small: change 1 of 10 fields -> FIELD_EDIT 0.10 -> patch
+    prev_small = [_make_job("job_X", n_params=5), _make_job("job_Y", n_params=5)]
+    curr_small = copy.deepcopy(prev_small)
+    curr_small[0]["components"][0]["params"][0]["value"] = "CHANGED"
+    _make_prev_scan(tmp_path, "proj", "grp_small", prev_small)
+    _make_scan_jobs(tmp_path, "proj", "grp_small", curr_small)
+
+    output_dir = tmp_path / "output" / "proj"
+    result = classify_dirty_groups("proj", {"grp_structural", "grp_small"}, output_dir)
+    threshold = config.reingestion_patch_field_edit_threshold
+
+    patch_groups = {
+        g for g, c in result.items()
+        if c.kind == "FIELD_EDIT" and c.changed_fraction < threshold
+    }
+    scoped_groups = {"grp_structural", "grp_small"} - patch_groups
+
+    assert "grp_structural" in scoped_groups, "NEW_UNIT must route to scoped_regen"
+    assert "grp_small" in patch_groups, "small FIELD_EDIT must route to patch lane"
+    # Gate receives scoped subset (only grp_structural), not the full dirty set
+    assert "grp_small" not in scoped_groups

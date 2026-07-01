@@ -1,13 +1,17 @@
-"""RAG bridge — POSTs generated docs to the RAG pipeline's /ingest/md endpoint."""
+"""RAG bridge -- POSTs generated docs to the RAG pipeline's /ingest/md endpoint."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 import httpx
 
 from mcp_server.config import config
+from mcp_server.db.session import async_session_factory
+from mcp_server.repositories.doc_rag_hash_repository import DocRagHashRepository
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.rag_support_package import (
     build_entity_aliases,
@@ -17,12 +21,23 @@ from mcp_server.services.rag_support_package import (
 logger = logging.getLogger(__name__)
 
 
+def _sha256_hex(text: str) -> str:
+    """Return the SHA-256 hex digest of text encoded as UTF-8."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def rag_push_succeeded(result: dict, *, expected_count: int | None = None) -> bool:
-    """Return True only when a required RAG push completed without errors."""
+    """Return True only when a required RAG push completed without errors.
+
+    When expected_count is given, skipped (unchanged) docs count towards the
+    effective total so an all-skip second push is not falsely reported as failed.
+    """
     if result.get("errors"):
         return False
-    if expected_count is not None and int(result.get("pushed") or 0) < expected_count:
-        return False
+    if expected_count is not None:
+        effective = int(result.get("pushed") or 0) + int(result.get("skipped") or 0)
+        if effective < expected_count:
+            return False
     return True
 
 
@@ -111,6 +126,11 @@ class RagBridge:
         internal set is always deleted wholesale and re-pushed from the
         current `docs/` tree. Canonical doc push behavior is unaffected.
 
+        After a successful wholesale delete, all hash rows for the project are
+        invalidated so the subsequent push_docs call re-establishes baselines.
+        The internal push loop itself does NOT use the skip predicate -- internal
+        layers are always repushed unconditionally.
+
         Returns: {pushed: int, aliases: int, errors: list[str]}
         """
         result: dict = {"pushed": 0, "aliases": 0, "errors": []}
@@ -122,10 +142,25 @@ class RagBridge:
             await self.delete_internal_documents(project_id)
         except Exception as e:
             # Without a clean delete, a re-push could leave stale internal
-            # docs from removed groups — stop rather than mix old and new.
+            # docs from removed groups -- stop rather than mix old and new.
             result["errors"].append(f"Internal-layer delete failed: {e}")
             logger.error("Internal-layer delete failed for %s: %s", project_id, e)
             return result
+
+        # Invalidate all project hash rows: the wholesale internal delete means
+        # any stored hashes are potentially stale.  The next push_docs call will
+        # re-populate them.  Errors here are non-fatal (hash rows are advisory).
+        if config.incremental_hash_skip_enabled:
+            try:
+                async with async_session_factory() as _db:
+                    await DocRagHashRepository(_db).delete_all_for_project(project_id)
+                    await _db.commit()
+            except Exception as e:
+                logger.warning(
+                    "Hash invalidation failed for %s after internal delete: %s",
+                    project_id,
+                    e,
+                )
 
         for artifact in artifacts:
             try:
@@ -207,9 +242,13 @@ class RagBridge:
         `extra_doc_names` lists non-numbered pack doc filenames to include alongside
         standard numbered enterprise docs (e.g. TABLE_INVENTORY.md).
 
-        Returns: {pushed: int, errors: list[str]}
+        When MCP_INCREMENTAL_HASH_SKIP_ENABLED is True, docs whose SHA-256 matches
+        the last successfully pushed hash are silently skipped.  The result dict
+        always includes a `skipped` counter (0 when the flag is off).
+
+        Returns: {pushed: int, skipped: int, errors: list[str]}
         """
-        result = {"pushed": 0, "errors": []}
+        result: dict = {"pushed": 0, "skipped": 0, "errors": []}
         filename_filter = set(filenames) if filenames is not None else None
         extra_set = set(extra_doc_names) if extra_doc_names else None
 
@@ -221,39 +260,67 @@ class RagBridge:
             result["errors"].append("No docs or output_dir provided")
             return result
 
-        for doc in items:
-            filename = doc.get("filename", "")
-            content = doc.get("content", "")
-            if filename_filter is not None and filename not in filename_filter:
-                continue
-            if not filename or not content:
-                result["errors"].append(f"Skipped empty doc: {filename}")
-                continue
+        hash_enabled = config.incremental_hash_skip_enabled
+        # Open a DB session only when hash skip is active; otherwise use a
+        # no-op context so the loop body stays identical for both paths.
+        db_ctx = async_session_factory() if hash_enabled else nullcontext(None)
 
-            try:
-                await self.push_markdown(
-                    project_id=project_id,
-                    filename=filename,
-                    content=content,
-                )
-                result["pushed"] += 1
-                if self.log_manager:
-                    await self.log_manager.emit(
-                        project_id,
-                        f"Pushed to RAG: {filename}",
-                        level="info",
+        async with db_ctx as _db:
+            repo = DocRagHashRepository(_db) if _db is not None else None
+
+            for doc in items:
+                filename = doc.get("filename", "")
+                content = doc.get("content", "")
+                if filename_filter is not None and filename not in filename_filter:
+                    continue
+                if not filename or not content:
+                    result["errors"].append(f"Skipped empty doc: {filename}")
+                    continue
+
+                # Compute hash once; reused for both skip check and post-push upsert.
+                doc_hash = _sha256_hex(content) if hash_enabled else None
+
+                if repo is not None and doc_hash is not None:
+                    stored = await repo.get_hash(project_id, filename)
+                    if stored == doc_hash:
+                        result["skipped"] += 1
+                        if self.log_manager:
+                            await self.log_manager.emit(
+                                project_id,
+                                f"Hash skip (unchanged): {filename}",
+                                level="info",
+                            )
+                        continue
+
+                try:
+                    await self.push_markdown(
+                        project_id=project_id,
+                        filename=filename,
+                        content=content,
                     )
-            except Exception as e:
-                error_msg = f"Failed to push {filename}: {e}"
-                result["errors"].append(error_msg)
-                logger.error(error_msg)
-                if self.log_manager:
-                    await self.log_manager.emit(project_id, error_msg, level="error")
+                    result["pushed"] += 1
+                    if self.log_manager:
+                        await self.log_manager.emit(
+                            project_id,
+                            f"Pushed to RAG: {filename}",
+                            level="info",
+                        )
+                    # Record hash only after a confirmed successful push.
+                    if repo is not None and doc_hash is not None:
+                        await repo.upsert_hash(project_id, filename, doc_hash)
+                        await _db.commit()
+                except Exception as e:
+                    error_msg = f"Failed to push {filename}: {e}"
+                    result["errors"].append(error_msg)
+                    logger.error(error_msg)
+                    if self.log_manager:
+                        await self.log_manager.emit(project_id, error_msg, level="error")
 
         if self.log_manager:
             await self.log_manager.emit(
                 project_id,
                 f"RAG push complete: {result['pushed']} docs pushed, "
+                f"{result.get('skipped', 0)} skipped (unchanged), "
                 f"{len(result['errors'])} errors",
                 level="info",
             )

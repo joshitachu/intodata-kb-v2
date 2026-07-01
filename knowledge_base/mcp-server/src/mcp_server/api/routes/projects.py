@@ -24,8 +24,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select, text
 
+from contextlib import nullcontext
+
 from mcp_server.api.permissions import require_project_access
 from mcp_server.config import config
+from mcp_server.repositories.doc_rag_hash_repository import DocRagHashRepository
 from mcp_server.db.session import async_session_factory
 from mcp_server.db.models import GenerateRun, Project
 from mcp_server.schemas import (
@@ -1162,20 +1165,33 @@ async def _run_generate_background(
 
             # Push new docs to RAG server-side
             bridge = RagBridge(log_manager=log_mgr)
-            for filename in sorted(removed_rag_docs):
-                try:
-                    await bridge.delete_document(project_id, filename)
-                    await log_mgr.emit(
-                        project_id,
-                        f"Deleted stale RAG doc: {filename}",
-                        level="info",
-                    )
-                except Exception as e:
-                    await log_mgr.emit(
-                        project_id,
-                        f"Failed to delete stale RAG doc {filename}: {e}",
-                        level="error",
-                    )
+            # Open a DB session for hash-row cleanup only when the flag is on
+            # and there are actually docs to delete.
+            _hash_del_ctx = (
+                async_session_factory()
+                if removed_rag_docs and config.incremental_hash_skip_enabled
+                else nullcontext(None)
+            )
+            async with _hash_del_ctx as _hdb:
+                _hash_repo = DocRagHashRepository(_hdb) if _hdb is not None else None
+                for filename in sorted(removed_rag_docs):
+                    try:
+                        await bridge.delete_document(project_id, filename)
+                        if _hash_repo is not None:
+                            await _hash_repo.delete_hash(project_id, filename)
+                        await log_mgr.emit(
+                            project_id,
+                            f"Deleted stale RAG doc: {filename}",
+                            level="info",
+                        )
+                    except Exception as e:
+                        await log_mgr.emit(
+                            project_id,
+                            f"Failed to delete stale RAG doc {filename}: {e}",
+                            level="error",
+                        )
+                if _hdb is not None:
+                    await _hdb.commit()
             # Pack-generated docs use non-numeric names (e.g. TABLE_INVENTORY.md).
             # Include them explicitly so they aren't filtered out by the digit-prefix gate.
             pack_doc_names = {

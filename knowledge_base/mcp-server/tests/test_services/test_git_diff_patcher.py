@@ -987,3 +987,60 @@ async def test_webhook_diff_update_rolls_back_when_stale_count_remains(
         assert project.last_ingested_commit_sha == "a" * 40
         assert project.git_update_summary["action"] == "manual_review"
         assert "Stale numeric claim" in "; ".join(project.git_update_summary["validation_errors"])
+
+
+# ---------------------------------------------------------------------------
+# _is_ignored_path — new infra/build patterns (Slice 0)
+# ---------------------------------------------------------------------------
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize(
+    "path",
+    [
+        # pre-existing patterns still work
+        ".github/workflows/ci.yml",
+        "README.md",
+        "package-lock.json",
+        "tests/unit/test_foo.py",
+        "src/module.test.ts",
+        "CHANGELOG.txt",
+        # new infra / build patterns
+        "Dockerfile",
+        "path/to/Dockerfile",
+        "Dockerfile.prod",
+        "docker-compose.yml",
+        "docker-compose.override.yaml",
+        "deploy/docker-compose.staging.yml",
+        ".env",
+        ".env.production",
+        ".env.production.template",
+        "config/.env.local",
+        "Makefile",
+        "pyproject.toml",
+        "setup.toml",
+        "build.sh",
+        "scripts/deploy.sh",
+    ],
+)
+def test_is_ignored_path_returns_true_for_infra(path: str) -> None:
+    import mcp_server.services.git_diff_patcher as patcher
+
+    assert patcher._is_ignored_path(path), f"Expected {path!r} to be ignored"
+
+
+@_pytest.mark.parametrize(
+    "path",
+    [
+        "jobs/etl/job.xml",
+        "connections/db.properties",
+        "src/module.py",
+        "talend/src/jobs/GroupA/transform.xml",
+        "workato/recipes/recipe.json",
+    ],
+)
+def test_is_ignored_path_returns_false_for_integration_source(path: str) -> None:
+    import mcp_server.services.git_diff_patcher as patcher
+
+    assert not patcher._is_ignored_path(path), f"Expected {path!r} NOT to be ignored"

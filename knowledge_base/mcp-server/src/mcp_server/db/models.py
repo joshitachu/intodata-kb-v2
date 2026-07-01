@@ -72,6 +72,12 @@ class Project(Base):
     generate_runs: Mapped[list[GenerateRun]] = relationship(
         back_populates="project", passive_deletes=True
     )
+    group_scan_hashes: Mapped[list[ProjectGroupScanHash]] = relationship(
+        back_populates="project", passive_deletes=True
+    )
+    doc_rag_hashes: Mapped[list[ProjectDocRagHash]] = relationship(
+        back_populates="project", passive_deletes=True
+    )
 
 
 class ScanRun(Base):
@@ -146,6 +152,46 @@ class GenerateRun(Base):
 
     # Relationships
     project: Mapped[Project] = relationship(back_populates="generate_runs")
+
+
+class ProjectGroupScanHash(Base):
+    """Per-group scan content hash baseline for fingerprint-based dirty detection."""
+
+    __tablename__ = "project_group_scan_hashes"
+
+    project_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    group_name: Mapped[str] = mapped_column(String(255), primary_key=True, nullable=False)
+    scan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scanned_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="group_scan_hashes")
+
+
+class ProjectDocRagHash(Base):
+    """Per-doc SHA-256 content hash baseline for vector-store push skip (Slice 2)."""
+
+    __tablename__ = "project_doc_rag_hashes"
+
+    project_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    doc_filename: Mapped[str] = mapped_column(String(500), primary_key=True, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hex
+    pushed_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="doc_rag_hashes")
 
 
 class PluginPack(Base):

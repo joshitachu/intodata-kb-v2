@@ -1659,26 +1659,8 @@ Fallback plan example:
     def _parse_phase2_sections(
         text: str, extra_section_names: frozenset[str] = frozenset()
     ) -> dict[str, str]:
-        section_names = set(PHASE2_SECTION_NAMES) | extra_section_names
-        sections: dict[str, list[str]] = {name: [] for name in section_names}
-        current = ADDITIONAL_FINDINGS_SECTION
-        heading_re = re.compile(r"^### ([A-Z][A-Z0-9_ ]+)\s*$")
-        for line in text.splitlines():
-            match = heading_re.match(line.strip())
-            if match:
-                candidate = re.sub(r"[^A-Z0-9_]+", "_", match.group(1).strip().upper()).strip("_")
-                if candidate == "ADDITIONAL_FINDINGS":
-                    candidate = ADDITIONAL_FINDINGS_SECTION
-                if candidate in section_names:
-                    current = candidate
-                    continue
-                current = ADDITIONAL_FINDINGS_SECTION
-            sections.setdefault(current, []).append(line)
-        return {
-            name: "\n".join(lines).strip()
-            for name, lines in sections.items()
-            if "\n".join(lines).strip()
-        }
+        from mcp_server.providers.custom.analysis_parser import parse_phase2_sections
+        return parse_phase2_sections(text, extra_section_names)
 
     async def _phase2_merge_agent(
         self,

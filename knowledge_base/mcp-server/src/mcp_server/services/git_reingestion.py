@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +12,7 @@ from pathlib import Path
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.services.git_diff_patcher import _is_ignored_path
 from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
@@ -156,7 +159,79 @@ async def run_git_reingestion(
     if not result["success"]:
         return False
 
-    changed_groups = resolve_changed_groups(project_id, file_changes, is_first_push)
+    # --- Scan fingerprint dirty-set detection (Slice 1) ---
+    # Compute current hashes AFTER confirming the scan succeeded (critique Lens 2).
+    from mcp_server.services.scan_fingerprint_service import ScanFingerprintService
+
+    scan_jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+    try:
+        current_hashes = ScanFingerprintService.compute_project_hashes(scan_jobs_dir)
+        async with async_session_factory() as db:
+            fp_service = ScanFingerprintService(db)
+            dirty_groups, fp_is_first_push = await fp_service.diff_against_baseline(
+                project_id, current_hashes
+            )
+    except Exception as fp_exc:
+        # Fingerprint service failure MUST fail loud — do NOT fall through to the
+        # legacy resolver, as that would silently produce an unreliable dirty set.
+        # (critique Lens 3)
+        logger.error(
+            "Scan fingerprint service failed for %s: %s — aborting reingestion",
+            project_id,
+            fp_exc,
+        )
+        await log_mgr.emit(
+            project_id,
+            f"Fingerprint service error: {fp_exc}",
+            level="error",
+        )
+        return False
+
+    if not dirty_groups and not fp_is_first_push:
+        # Empty dirty set with an established baseline: scan output unchanged.
+        # Advance commit marker and write hash baseline in one atomic transaction.
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            fp_svc = ScanFingerprintService(db)
+            now = datetime.now(timezone.utc)
+            await fp_svc.persist_baseline(db, project_id, current_hashes, now)
+            await registry.update_last_ingested_commit(project_id, after_sha)
+            await registry.update_git_update_summary(
+                project_id,
+                _skip_summary(project_id, before_sha, after_sha, triggered_by),
+            )
+            await registry.update_status(project_id, "ready")
+            await db.commit()
+        await log_mgr.emit(
+            project_id,
+            "Fingerprint diff: no scan groups changed; skipping regeneration",
+            level="info",
+        )
+        return True
+
+    changed_groups = dirty_groups
+
+    # Filter out infrastructure / CI / build files before group resolution.
+    # Mirrors the QuickChangeScanner.scan() path used by AutoDocAgentRuntime.
+    doc_relevant_changes = [c for c in file_changes if not _is_ignored_path(c.path)]
+    if not is_first_push and file_changes and not doc_relevant_changes:
+        # All changed files are infra/ignore-listed; advance SHA and stop.
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            project = await registry.get_project(project_id)
+            if project and project.last_ingested_commit_sha != after_sha:
+                await registry.update_last_ingested_commit(project_id, after_sha)
+            await db.commit()
+        await log_mgr.emit(
+            project_id,
+            "Git re-ingestion skipped: all changed files are ignored (infra/docs/CI)",
+            level="info",
+        )
+        return True
+
+    # NOTE(S1): resolve_changed_groups superseded by ScanFingerprintService;
+    # callee preserved for Slice 3 audit before removal.
+    resolve_changed_groups(project_id, doc_relevant_changes, is_first_push)
 
     # Load the persisted provenance map once: it drives both the affected-doc
     # preview and the tightened (mapped-doc) correctness gate.
@@ -164,15 +239,50 @@ async def run_git_reingestion(
     dependency = GroupDocDependency.load(
         output_dir / "docs" / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
     )
+    # affected_docs_preview is computed over the FULL dirty set for reporting.
     affected_docs_preview = _affected_docs_from_dependency(dependency, changed_groups)
     scoped_docs: set[str] | None = set(targeted_docs) if targeted_docs else None
 
+    # --- Slice 3: classify dirty groups and partition into scoped/patch lanes ---
+    group_delta_classifications = classify_dirty_groups(
+        project_id, dirty_groups, output_dir
+    )
+    threshold = config.reingestion_patch_field_edit_threshold
+    patch_groups: set[str] = {
+        g for g, cls in group_delta_classifications.items()
+        if cls.kind == "FIELD_EDIT" and cls.changed_fraction < threshold
+    }
+    scoped_groups: set[str] = dirty_groups - patch_groups
+    logger.info(
+        "Slice 3 delta classification for %s: %d scoped, %d patch | %s",
+        project_id,
+        len(scoped_groups),
+        len(patch_groups),
+        {g: f"{cls.kind}({cls.changed_fraction:.3f})" for g, cls in group_delta_classifications.items()},  # type: ignore[attr-defined]
+    )
+    # --- end Slice 3 ---
+
     staging_result = setup_incremental_staging(
         project_id,
-        changed_groups,
+        scoped_groups,  # Slice 3: only scoped groups need analysis-cache eviction
         is_first_push,
         has_baseline=has_baseline,
     )
+    # Slice 3: if scoped_groups is empty (all patch-eligible) and staging fails,
+    # fall back conservatively to treating all dirty groups as scoped_regen.
+    if not staging_result.staged and not scoped_groups:
+        logger.warning(
+            "Slice 3: staging preflight failed with empty scoped set for %s "
+            "(all groups were patch-eligible); falling back to full dirty set "
+            "as scoped_regen. Reason: %s",
+            project_id,
+            staging_result.reason_codes,
+        )
+        scoped_groups = dirty_groups
+        patch_groups = set()
+        staging_result = setup_incremental_staging(
+            project_id, scoped_groups, is_first_push, has_baseline=has_baseline
+        )
     if not staging_result.staged:
         reason = _full_rebaseline_reason(staging_result.reason_codes)
         async with async_session_factory() as db:
@@ -215,7 +325,10 @@ async def run_git_reingestion(
         await db.commit()
         gen_run_id = gen_run.id
 
-    gate = CorrectnessGate(changed_groups=set(changed_groups), dependency=dependency)
+    # Slice 3 Lens-4 fix: gate receives SCOPED subset only. Patch groups preserve
+    # their analysis from cache and must NOT be checked for fresh analysis presence
+    # (that would fire REASON_CACHE_SUPPORT_MISMATCH spuriously).
+    gate = CorrectnessGate(changed_groups=set(scoped_groups), dependency=dependency)
     last_outcome: list[GateOutcome] = []
 
     def pre_swap_gate(staging_dir: Path) -> GateOutcome:
@@ -305,20 +418,195 @@ async def run_git_reingestion(
             if project.last_ingested_commit_sha != after_sha:
                 await registry.update_last_ingested_commit(project_id, after_sha)
             if affected_docs_preview is not None:
-                # Augment the summary written by auto_doc_update with the preview.
+                # Augment the summary written by auto_doc_update with the preview
+                # and Slice 3 delta classification telemetry.
                 existing_summary: dict[str, object] = (
                     project.git_update_summary
                     if isinstance(project.git_update_summary, dict)
                     else {}
                 )
+                delta_cls_summary: dict[str, object] = {
+                    g: {
+                        "kind": cls.kind,  # type: ignore[attr-defined]
+                        "changed_fraction": cls.changed_fraction,  # type: ignore[attr-defined]
+                    }
+                    for g, cls in group_delta_classifications.items()
+                }
                 await registry.update_git_update_summary(
                     project_id,
-                    {**existing_summary, "affected_docs_preview": affected_docs_preview},
+                    {
+                        **existing_summary,
+                        "affected_docs_preview": affected_docs_preview,
+                        "delta_classifications": delta_cls_summary,
+                    },
                 )
+            # --- Slice 1: write fingerprint baseline on successful generation ---
+            # Slice 3: persist current scan JSON as prev-baseline for next push.
+            from mcp_server.services.scan_fingerprint_service import ScanFingerprintService
+
+            fp_svc = ScanFingerprintService(db)
+            now = datetime.now(timezone.utc)
+            await fp_svc.persist_baseline(db, project_id, current_hashes, now)
+            persist_group_prev_scans(project_id, output_dir)
+            # --- end Slice 1/Slice 3 ---
             await db.commit()
             return True
         await db.commit()
     return False
+
+
+def _read_group_jobs_from_scan(intodoc_output_dir: Path, project_id: str, group: str) -> list[dict]:
+    """Read current scan job list for a group directly from the segmented scan output.
+
+    Returns an empty list when the group directory does not exist or contains no
+    JSON files. Never raises (file errors are surfaced to the caller).
+    """
+    jobs_dir = intodoc_output_dir / project_id / "scan" / "jobs" / group
+    if not jobs_dir.is_dir():
+        return []
+    jobs: list[dict] = []
+    for f in sorted(jobs_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                jobs.append(data)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "_read_group_jobs_from_scan: cannot read %s: %s", f, exc
+            )
+    return jobs
+
+
+def classify_dirty_groups(
+    project_id: str,
+    dirty_set: set[str],
+    output_dir: Path,
+) -> "dict[str, object]":
+    """Classify each dirty group by its delta kind.
+
+    For each group in ``dirty_set``:
+    - If ``output_dir/prev_scan/{group}.json`` exists: load it and the current
+      scan JSON, call ``classify_group_delta``.
+    - If absent: no baseline available -> return NEW_UNIT (routes to scoped_regen).
+
+    Returns a dict mapping group name -> DeltaClassification.
+    All errors per group are caught and logged; the group is conservatively
+    classified as NEW_UNIT on read failure.
+    """
+    from mcp_server.services.group_delta_classifier import (
+        DeltaClassification,
+        classify_group_delta,
+    )
+
+    result: dict[str, DeltaClassification] = {}
+    prev_scan_dir = output_dir / "prev_scan"
+
+    for group in dirty_set:
+        prev_path = prev_scan_dir / f"{group}.json"
+
+        if prev_path.is_file():
+            try:
+                prev_raw = json.loads(prev_path.read_text(encoding="utf-8"))
+                prev_jobs: list[dict] = prev_raw if isinstance(prev_raw, list) else []
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "classify_dirty_groups: cannot read prev scan for group %s: %s",
+                    group,
+                    exc,
+                )
+                prev_jobs = []
+
+            try:
+                curr_jobs = _read_group_jobs_from_scan(
+                    config.intodoc_output_dir, project_id, group
+                )
+            except OSError as exc:
+                logger.warning(
+                    "classify_dirty_groups: cannot read curr scan for group %s: %s",
+                    group,
+                    exc,
+                )
+                curr_jobs = []
+
+            if not prev_jobs:
+                result[group] = DeltaClassification(
+                    kind="NEW_UNIT",
+                    changed_fraction=0.0,
+                    detail="no prior baseline (empty or unreadable prev scan)",
+                )
+            else:
+                result[group] = classify_group_delta(prev_jobs, curr_jobs)
+        else:
+            result[group] = DeltaClassification(
+                kind="NEW_UNIT",
+                changed_fraction=0.0,
+                detail="no prior baseline",
+            )
+
+    return result
+
+
+def persist_group_prev_scans(project_id: str, output_dir: Path) -> None:
+    """Write the current scan output as the prev-baseline per group (Slice 3).
+
+    Location: ``output_dir/prev_scan/{group}.json`` (same project tree as
+    ``analysis_cache/``, ``docs/``, and ``docs_staging/``).
+
+    Write is atomic: temp file -> os.replace. Failures are logged per-group
+    and never propagate. A partial write (crash between tmp-write and replace)
+    leaves a ``.json.tmp`` file which is ignored on the next read.
+
+    Called from ``run_git_reingestion`` at the Slice 1 reserved seam, inside
+    the ``project.status == "ready"`` guard, immediately after the fingerprint
+    baseline is persisted and before ``db.commit()``.
+    """
+    scan_jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+    if not scan_jobs_dir.is_dir():
+        logger.warning(
+            "persist_group_prev_scans: scan jobs dir not found for %s: %s",
+            project_id,
+            scan_jobs_dir,
+        )
+        return
+
+    prev_scan_dir = output_dir / "prev_scan"
+    try:
+        prev_scan_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "persist_group_prev_scans: cannot create prev_scan dir for %s: %s",
+            project_id,
+            exc,
+        )
+        return
+
+    for group_dir in sorted(scan_jobs_dir.iterdir()):
+        if not group_dir.is_dir():
+            continue
+        group = group_dir.name
+        try:
+            jobs = _read_group_jobs_from_scan(
+                config.intodoc_output_dir, project_id, group
+            )
+            dest = prev_scan_dir / f"{group}.json"
+            tmp = prev_scan_dir / f"{group}.json.tmp"
+            tmp.write_text(
+                json.dumps(jobs, ensure_ascii=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(tmp, dest)
+        except OSError as exc:
+            logger.warning(
+                "persist_group_prev_scans: failed to write prev scan for group %s: %s",
+                group,
+                exc,
+            )
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "persist_group_prev_scans: serialization error for group %s: %s",
+                group,
+                exc,
+            )
 
 
 def parse_name_status_diff(diff_output: str) -> list[ChangedFile]:
@@ -366,7 +654,7 @@ def resolve_changed_groups(
                     changed_groups.add(group)
                     break
 
-    return changed_groups if changed_groups else scan_groups
+    return changed_groups
 
 
 def setup_incremental_staging(
@@ -425,6 +713,28 @@ def setup_incremental_staging(
         removed_changed_groups=changed_group_names,
         cache_readiness=cache_readiness.to_dict(),
     )
+
+
+def _skip_summary(
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    triggered_by: str,
+) -> dict[str, object]:
+    """Build the git-update summary for a fingerprint-identical (skipped) push."""
+    return {
+        "trigger": triggered_by,
+        "mode": "git_reingestion",
+        "action": "skip",
+        "outcome": "skip",
+        "reason_code": "fingerprint_no_change",
+        "decision_strategy": "scan_fingerprint",
+        "project_id": project_id,
+        "before": before_sha,
+        "after": after_sha,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "reason": "Scan output unchanged; no regeneration needed",
+    }
 
 
 def _held_summary(

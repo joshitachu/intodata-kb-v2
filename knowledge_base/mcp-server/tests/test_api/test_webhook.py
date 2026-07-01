@@ -543,7 +543,8 @@ def test_resolve_changed_groups_uses_current_and_previous_paths(tmp_path, monkey
     assert groups == {"GroupA", "GroupB"}
 
 
-def test_resolve_changed_groups_falls_back_to_all_when_unmapped(tmp_path, monkeypatch):
+def test_resolve_changed_groups_returns_empty_when_unmapped(tmp_path, monkeypatch):
+    """When files change but none map to a scan group, result is empty (skip)."""
     from mcp_server.config import config
 
     monkeypatch.setattr(config, "intodoc_output_dir", tmp_path)
@@ -557,4 +558,4 @@ def test_resolve_changed_groups_falls_back_to_all_when_unmapped(tmp_path, monkey
         is_first_push=False,
     )
 
-    assert groups == {"GroupA", "GroupB"}
+    assert groups == set()

@@ -20,6 +20,7 @@ from mcp_server.services.git_diff_patcher import (
     _summary_with_outcome,
     parse_name_status,
 )
+from mcp_server.services.true_patch_executor import TruePatchExecutor
 from mcp_server.services.git_remote_service import fetch_remote, pull_remote_ff_only
 from mcp_server.services.git_reingestion import (
     ChangedFile,
@@ -339,6 +340,10 @@ class AutoDocAgentRuntime:
         summary: dict[str, Any],
         decision: RoutingDecision,
     ) -> DiffPatchResult:
+        if decision.strategy == "bounded_patch":
+            return await self._true_patch(
+                ctx, before_sha, after_sha, trigger, summary, decision
+            )
         max_repairs = max(0, min(config.agent_max_repair_attempts, 2))
         last_result: DiffPatchResult | None = None
         for attempt in range(max_repairs + 1):
@@ -416,6 +421,100 @@ class AutoDocAgentRuntime:
             clean_reason,
             repair_attempts=int(merged.get("repair_attempts") or 0),
         )
+
+    async def _true_patch(
+        self,
+        ctx: AutoDocUpdateContext,
+        before_sha: str,
+        after_sha: str,
+        trigger: str,
+        summary: dict[str, Any],
+        decision: RoutingDecision,
+    ) -> DiffPatchResult:
+        """Execute Slice 4 true patch mode for the bounded_patch lane.
+
+        Runs TruePatchExecutor for each group in decision.changed_groups.
+        On success: returns advance_commit=True DiffPatchResult.
+        On scoped_regen_fallback: delegates to self._scoped_regen.
+        On hard failure: returns _failed(...).
+        """
+        output_dir = config.project_root / "output" / ctx.project_id
+        platform = await self._project_platform(ctx.project_id)
+        executor = TruePatchExecutor(
+            doc_generation_provider=ctx.doc_generation_provider
+        )
+        self._record_tool("true_patch_start", {
+            "changed_groups": decision.changed_groups,
+            "platform": platform,
+        })
+        result = await executor.run(
+            project_id=ctx.project_id,
+            output_dir=output_dir,
+            changed_groups=decision.changed_groups,
+            platform=platform,
+            log_mgr=self.log_mgr,
+            before_sha=before_sha,
+            after_sha=after_sha,
+            trigger=trigger,
+        )
+        self._record_tool("true_patch_done", {
+            "action": result.action,
+            "patched_groups": result.patched_groups,
+            "patched_docs": result.patched_docs,
+            "error": result.error,
+        })
+        if result.action == "true_patch":
+            merged = self._merge_patch_summary(summary, result.summary)
+            return DiffPatchResult(
+                action="true_patch",
+                summary=self._finalize_summary(
+                    merged,
+                    action="true_patch",
+                    touched_docs=result.patched_docs,
+                    reason_code="true_patch_succeeded",
+                ),
+                patched_docs=result.patched_docs,
+                advance_commit=True,
+            )
+        if result.action == "scoped_regen_fallback":
+            fallback_reason = result.error or "True patch validation failed; scoped_regen fallback"
+            await self.log_mgr.emit(
+                ctx.project_id,
+                f"TruePatch fallback -> scoped_regen: {fallback_reason}",
+                "warning",
+            )
+            return await self._scoped_regen(
+                ctx,
+                before_sha,
+                after_sha,
+                trigger,
+                {**summary, **result.summary, "true_patch_fallback": True},
+                decision,
+                fallback_reason,
+                targeted_docs=list(decision.affected_docs) or None,
+            )
+        # Hard failure -- no docs written
+        err = result.error or "True patch executor failed"
+        return _failed(
+            self._finalize_summary(
+                {**summary, **result.summary},
+                action="failed",
+                reason=err,
+            ),
+            err,
+        )
+
+    async def _project_platform(self, project_id: str) -> str:
+        """Return the platform string for a project (default 'talend')."""
+        try:
+            async with async_session_factory() as db:
+                registry = ProjectRegistry(db)
+                project = await registry.get_project(project_id)
+                if project and project.platform:
+                    return project.platform.lower()
+        except Exception:
+            pass
+        return "talend"
 
     def _merge_patch_summary(self, base: dict[str, Any], patch_summary: dict[str, Any]) -> dict[str, Any]:
         merged = {**base, **patch_summary}

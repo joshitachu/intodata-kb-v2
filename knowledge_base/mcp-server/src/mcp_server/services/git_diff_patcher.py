@@ -33,10 +33,18 @@ IGNORED_PATH_PATTERNS = (
     re.compile(r"(^|/)\.github/"),
     re.compile(r"(^|/)README(\.[^/]*)?$", re.IGNORECASE),
     re.compile(r"(^|/)readme(\.[^/]*)?$", re.IGNORECASE),
-    re.compile(r"(^|/)(package-lock|pnpm-lock|yarn.lock|uv.lock|poetry.lock)$"),
+    re.compile(r"\.lock$", re.IGNORECASE),
+    re.compile(r"(^|/)(package-lock\.json|pnpm-lock\.yaml)$", re.IGNORECASE),
     re.compile(r"(^|/)(test|tests|__tests__|spec)/"),
     re.compile(r"\.(test|spec)\.[A-Za-z0-9]+$"),
     re.compile(r"\.(md|txt)$", re.IGNORECASE),
+    # Infrastructure / build files — never contain integration source
+    re.compile(r"(^|/)Dockerfile(\.[^/]*)?$"),
+    re.compile(r"(^|/)docker-compose[^/]*\.ya?ml$", re.IGNORECASE),
+    re.compile(r"(^|/)\.env[^/]*$"),
+    re.compile(r"(^|/)Makefile$"),
+    re.compile(r"\.(toml)$", re.IGNORECASE),
+    re.compile(r"(^|/)[^/]*\.sh$"),
 )
 
 DOC_SECTION_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*$", re.MULTILINE)
@@ -75,6 +83,7 @@ NORMALIZED_OUTCOMES = {
 _ACTION_OUTCOMES = {
     "skipped": OUTCOME_SKIP,
     "patched": OUTCOME_BOUNDED_PATCH,
+    "true_patch": OUTCOME_BOUNDED_PATCH,
     "targeted_regen": OUTCOME_TARGETED_REGEN,
     "full_regen": OUTCOME_FULL_REGEN,
     "manual_review": OUTCOME_MANUAL_REVIEW,
@@ -173,6 +182,8 @@ def reason_code_for(action: str, reason: str | None = None) -> str:
         return "no_doc_edits"
     if "targeted regeneration failed" in lowered:
         return "regen_failed"
+    if "true_patch_succeeded" in lowered:
+        return "true_patch_succeeded"
     if outcome == OUTCOME_SKIP:
         return "skip"
     if outcome == OUTCOME_BOUNDED_PATCH:

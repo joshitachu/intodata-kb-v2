@@ -120,14 +120,15 @@ async def test_auto_doc_update_skip_advances_commit_and_persists_summary(
         assert project.git_update_summary["reason_code"] == "non_doc_change"
 
 
-async def test_auto_doc_update_repairs_validation_failure_once(
+async def test_auto_doc_update_true_patch_success(
     session_factory,
     monkeypatch,
     tmp_path,
     log_manager,
 ):
+    """Slice 4 true patch: TruePatchExecutor returns action='true_patch' -> commit advances."""
     import mcp_server.services.auto_doc_update as auto_doc_update
-    from mcp_server.services.git_diff_patcher import DiffPatchResult
+    from mcp_server.services.true_patch_executor import PatchResult
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
 
@@ -153,31 +154,26 @@ async def test_auto_doc_update_repairs_validation_failure_once(
         )
     )
 
-    results = [
-        DiffPatchResult(
-            action="manual_review",
-            summary={
-                "action": "manual_review",
-                "validation_errors": ["Required obligations not satisfied: obl-01"],
-                "patched_docs": ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
-            },
-            error="Manual review required: validation failed",
-        ),
-        DiffPatchResult(
-            action="patched",
-            summary={
-                "action": "patched",
-                "patched_docs": ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
-            },
-            patched_docs=["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
-            advance_commit=True,
-        ),
-    ]
+    class _StubExecutor:
+        def __init__(self, **kwargs):
+            pass
 
-    async def patch_stub(**kwargs):
-        return results.pop(0)
+        async def run(self, **kwargs):
+            return PatchResult(
+                action="true_patch",
+                patched_groups=["src"],
+                patched_docs=["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
+                summary={
+                    "true_patch": True,
+                    "patched_groups": ["src"],
+                    "patched_docs": ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"],
+                    "fallback_groups": [],
+                    "reason_code": "true_patch_succeeded",
+                },
+                advance_commit=True,
+            )
 
-    monkeypatch.setattr(auto_doc_update, "_run_diff_patch", patch_stub)
+    monkeypatch.setattr(auto_doc_update, "TruePatchExecutor", _StubExecutor)
 
     async with session_factory() as session:
         registry = ProjectRegistry(session)
@@ -203,10 +199,14 @@ async def test_auto_doc_update_repairs_validation_failure_once(
     async with session_factory() as session:
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
+        # advance_commit=True -> SHA advances
         assert project.last_ingested_commit_sha == "b" * 40
-        assert project.git_update_summary["action"] == "patched"
+        assert project.git_update_summary["action"] == "true_patch"
+        # true_patch is the successor to the legacy "patched" action in the
+        # patch lane, so it normalizes to the bounded_patch operator outcome;
+        # the finer detail is carried by reason_code "true_patch_succeeded".
         assert project.git_update_summary["outcome"] == "bounded_patch"
-        assert project.git_update_summary["repair_attempts"] == 1
+        assert project.git_update_summary["reason_code"] == "true_patch_succeeded"
         assert project.git_update_summary["touched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
 
 
@@ -439,14 +439,16 @@ async def test_auto_doc_update_scoped_regen_missing_cache_requires_rebaseline(
         assert project.git_update_summary["regen_result"]["skipped"] is True
 
 
-async def test_auto_doc_update_prompt_too_large_does_not_regenerate(
+async def test_auto_doc_update_true_patch_scoped_regen_fallback_gates_reingestion(
     session_factory,
     monkeypatch,
     tmp_path,
     log_manager,
 ):
+    """Slice 4 true patch fallback: scoped_regen_fallback from TruePatchExecutor routes to
+    _scoped_regen; without a cache/support tree the preflight gates run_git_reingestion."""
     import mcp_server.services.auto_doc_update as auto_doc_update
-    from mcp_server.services.git_diff_patcher import DiffPatchResult
+    from mcp_server.services.true_patch_executor import PatchResult
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
 
@@ -468,20 +470,25 @@ async def test_auto_doc_update_prompt_too_large_does_not_regenerate(
         )
     )
 
-    async def patch_stub(**kwargs):
-        return DiffPatchResult(
-            action="manual_review",
-            summary={
-                "action": "manual_review",
-                "reason": "Patch prompts too large (40929 estimated tokens)",
-            },
-            error="Manual review required: Patch prompts too large (40929 estimated tokens)",
-        )
+    class _StubExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self, **kwargs):
+            return PatchResult(
+                action="scoped_regen_fallback",
+                patched_groups=[],
+                patched_docs=[],
+                summary={"reason": "all groups failed G3 validation", "fallback_groups": ["src"]},
+                advance_commit=False,
+                error="All patch groups failed validation; scoped_regen required",
+            )
+
+    monkeypatch.setattr(auto_doc_update, "TruePatchExecutor", _StubExecutor)
 
     async def regen_stub(*args, **kwargs):
-        raise AssertionError("oversized patch prompts should not launch heavy regeneration")
+        raise AssertionError("_scoped_regen preflight must gate reingestion when cache is absent")
 
-    monkeypatch.setattr(auto_doc_update, "_run_diff_patch", patch_stub)
     monkeypatch.setattr(auto_doc_update, "run_git_reingestion", regen_stub)
 
     async with session_factory() as session:
@@ -510,6 +517,9 @@ async def test_auto_doc_update_prompt_too_large_does_not_regenerate(
         assert project is not None
         assert project.git_update_summary["action"] == "manual_review"
         assert project.git_update_summary["outcome"] == "manual_review"
-        assert project.git_update_summary["reason_code"] == "unsafe_scope"
+        # _scoped_regen preflight fails -> full_rebaseline_required (no docs/cache on disk)
+        assert project.git_update_summary["reason_code"] == "full_rebaseline_required"
+        assert project.git_update_summary["targeted_regen_ready"] is False
+        assert project.git_update_summary["requires_full_rebaseline"] is True
         assert project.git_update_summary["fallback_used"] is False
-        assert "Patch prompts too large" in project.git_update_summary["reason"]
+        assert project.git_update_summary["regen_result"]["skipped"] is True

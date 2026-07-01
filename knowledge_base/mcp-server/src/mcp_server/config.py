@@ -130,7 +130,7 @@ class MCPServerConfig(BaseSettings):
     auto_reingest_poll_hours: str = "0,12"
     git_diff_patch_max_files: int = 5
     git_diff_patch_max_chars: int = 50_000
-    git_diff_patch_max_docs: int = 3
+    git_diff_patch_max_docs: int = 10
     git_diff_patch_max_input_tokens: int = 80_000
     git_diff_patch_context_lines: int = 80
     git_diff_patch_max_chunks: int = 4
@@ -151,6 +151,10 @@ class MCPServerConfig(BaseSettings):
     # enabled it may only ADD docs to Python's authoritative set; it can never
     # remove a doc, downgrade to skip, or change the chosen strategy.
     reingestion_llm_expand_enabled: bool = False  # MCP_REINGESTION_LLM_EXPAND_ENABLED
+    # Slice 3 -- Group-delta classifier threshold.
+    # Fraction of a group's fields (param values) that may change while still
+    # qualifying for patch mode. At or above this fraction, scoped regen is used.
+    reingestion_patch_field_edit_threshold: float = 0.20  # MCP_REINGESTION_PATCH_FIELD_EDIT_THRESHOLD
 
     # Abandoned docs_staging/ dirs older than this are GC'd at startup. Active
     # resumes bump mtime so in-flight work is safe.
@@ -256,6 +260,12 @@ class MCPServerConfig(BaseSettings):
     rag_push_timeout_s: float = 60.0         # MCP_RAG_PUSH_TIMEOUT_S
     rag_delete_timeout_s: float = 60.0       # MCP_RAG_DELETE_TIMEOUT_S
     rag_usage_timeout_s: float = 10.0        # MCP_RAG_USAGE_TIMEOUT_S
+
+    # Vector-store content-hash skip (Slice 2).
+    # When enabled, push_docs() skips re-embedding docs whose SHA-256 matches
+    # the last successfully pushed hash. Default False so existing deployments
+    # can bootstrap baselines before activation.
+    incremental_hash_skip_enabled: bool = False  # MCP_INCREMENTAL_HASH_SKIP_ENABLED
 
     @property
     def logs_dir(self) -> Path:
