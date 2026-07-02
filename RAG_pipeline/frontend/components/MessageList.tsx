@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { AlertTriangle, ArrowDown, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MessageBubble } from "./MessageBubble";
 import { DeepDiveChatBubble } from "./DeepDiveChatBubble";
@@ -95,16 +95,19 @@ export function MessageList({
             Start a conversation by typing a message below, or try a suggestion:
           </p>
           <div className="flex flex-wrap justify-center gap-2">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => onSuggestionClick?.(s)}
-                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border bg-card hover:bg-muted/60 transition-colors text-muted-foreground hover:text-foreground"
-              >
-                <Sparkles className="h-3 w-3 text-primary/60" />
-                {s}
-              </button>
-            ))}
+            {SUGGESTIONS.map((s) => {
+              const Icon = s.icon;
+              return (
+                <button
+                  key={s.label}
+                  onClick={() => onSuggestionClick?.(s.label)}
+                  className="group inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border bg-card hover:bg-muted/60 transition-colors text-muted-foreground hover:text-foreground"
+                >
+                  <Icon className="h-3 w-3 text-primary/60 transition-colors group-hover:text-primary" />
+                  {s.label}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

@@ -1,5 +1,38 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-07-02
+
+> UI/UX refresh: modernized the app introduction (Perplexity-style centered home) and
+> rewrote the outdated in-app user guide, aligning both to the app's indigo/slate design
+> language. Presentational only — no schema, retrieval, auth, or API changes. Frontend
+> `tsc --noEmit` clean; `npm test` = **62 passed (12 files)**. Uncommitted.
+> NOTE: this working copy also carries unrelated uncommitted `knowledge_base/` changes
+> (dashboard `ActionButtons`/`ProjectCard`/`useProjects`/`client.ts`, mcp-server
+> `projects.py`/`schemas.py`/`claude_service.py`, `.plans/template.md`) from separate
+> work — NOT part of this session and not logged here.
+
+### [Feature]: Perplexity-style app introduction (centered welcome hero)
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/components/ChatWindow.tsx` — rebuilt the welcome/empty state: ambient brand glow, branded gradient mark + tenant wordmark + `EnvironmentBadge`, gradient headline ("What would you like to know?"), the `ChatInput` **moved from the bottom into the vertical center**, suggestion **pills** (icon + label) replacing the 2-col card grid, staggered `animate-hero-enter` entrances via inline `animation-delay`. Added imports: `EnvironmentBadge` (from `./TenantMark`), `useTenantContext`.
+  - `RAG_pipeline/frontend/lib/constants.ts` — `SUGGESTIONS` retyped from `string[]` to `Suggestion[]` (`{ icon: LucideIcon; label: string }`) with per-item lucide icons (FolderOpen/FileText/Network/Waypoints).
+  - `RAG_pipeline/frontend/components/MessageList.tsx` — updated the empty-conversation suggestion chips to the new `{icon,label}` shape; removed now-unused `Sparkles` import.
+  - `RAG_pipeline/frontend/app/globals.css` — added `@keyframes hero-enter` + `.animate-hero-enter` utility with a `prefers-reduced-motion: reduce` guard.
+- **Problem**: The intro (chat empty state) was a small left-of-center card ("Nexus" + tagline + 4 bordered suggestion cards) with the input pinned at the bottom — not the clean, enterprise, centered-search feel requested.
+- **Change**: Reworked purely the welcome branch of `ChatWindow`; the conversation/loading branches are untouched. Everything uses existing design tokens so it adapts to light/dark and per-tenant branding.
+- **Why this approach**: Contained, token-driven, reuses the shared `ChatInput` in place (no prop/behavior changes) so send/mode/project/image flows are unchanged.
+- **Verification**: `node_modules/.bin/tsc --noEmit` clean; `npm test` 62 passed (incl. `MessageList.test.tsx`, affected by the `SUGGESTIONS` shape change).
+
+### [Feature]: Modernized + corrected in-app user guide
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/public/guide/index.html` — full redesign to the app's indigo/slate palette (was amber): glassy cards, elevation shadows, scroll-spy sidebar (IntersectionObserver), reading-progress bar, smooth-scroll anchors, `prefers-color-scheme` dark mode. Content fixes below.
+  - `RAG_pipeline/frontend/components/UserGuideDialog.tsx` — dialog chrome retokenized (`bg-card`/`border`/`shadow-elevation-lg` + backdrop blur), backdrop-click closes, added `BookOpen` header mark.
+- **Problem**: Guide was stale (v3.0, Apr 2026) and contained an **inaccurate data-flow claim**: "No external APIs are used — all data stays local", which is wrong for the current provider chain (Voyage AI embeddings/rerank, cloud LLM).
+- **Change**: Corrected the AI-models/architecture sections to describe a **configurable provider chain** (cloud default: Voyage + cloud LLM; local-only: Ollama) with an explicit **data-residency note** advising users to confirm the active config and validate regulatory (GDPR) requirements with compliance. Bumped to v4.0 (Jul 2026). Added brief, accurate coverage of MFA/Security, document roles on upload, and the Admin → Logs runtime view. Kept existing screenshots/logo asset references.
+- **Why this approach**: The "all data stays local" statement is a data-governance misstatement for a data consultancy's client-facing guide; the fix states the truth without over-claiming a specific deployment's config.
+- **Verification**: Static HTML; renders in the guide iframe. Frontend `tsc`/tests unaffected and green.
+
 ## Session: 2026-06-18
 
 > Feature: **Generalize and harden the runtime log intelligence mechanism** (4 slices,

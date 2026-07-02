@@ -5,178 +5,267 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexus Knowledge Base - User Guide</title>
     <style>
+        :root {
+            --bg: #f7f8fb;
+            --surface: #ffffff;
+            --surface-2: #f1f5f9;
+            --text: #0f172a;
+            --text-soft: #334155;
+            --text-muted: #64748b;
+            --border: #e5e9f0;
+            --border-soft: #eef1f6;
+            /* Indigo — matches the Nexus app primary */
+            --accent: #2f47c9;
+            --accent-strong: #1e2f8f;
+            --accent-soft: #eef1ff;
+            --accent-ring: rgba(47, 71, 201, 0.14);
+            --code: #b4245e;
+            --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
+            --shadow-md: 0 2px 6px -1px rgba(15, 23, 42, 0.08), 0 10px 24px -8px rgba(15, 23, 42, 0.10);
+            --shadow-lg: 0 12px 40px -12px rgba(30, 47, 143, 0.28);
+            --radius: 14px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0b1020;
+                --surface: #111730;
+                --surface-2: #171e3a;
+                --text: #eef2ff;
+                --text-soft: #cbd5e1;
+                --text-muted: #94a3b8;
+                --border: #232c4d;
+                --border-soft: #1b2340;
+                --accent: #8ea2ff;
+                --accent-strong: #b7c2ff;
+                --accent-soft: #1a2246;
+                --accent-ring: rgba(142, 162, 255, 0.20);
+                --code: #ff8bb0;
+                --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+                --shadow-md: 0 2px 6px -1px rgba(0, 0, 0, 0.5), 0 12px 28px -10px rgba(0, 0, 0, 0.6);
+                --shadow-lg: 0 20px 50px -14px rgba(0, 0, 0, 0.7);
+            }
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
+        html { scroll-behavior: smooth; }
+
         body {
-            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: #1e293b;
-            background: #f8fafc;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, Helvetica, Arial, sans-serif;
+            color: var(--text-soft);
+            background: var(--bg);
             line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
         }
 
-        /* -- Sidebar navigation -- */
+        ::selection { background: var(--accent-ring); }
+
+        /* ── Reading progress bar ─────────────────────────────── */
+        .progress-bar {
+            position: fixed;
+            top: 0; left: 0;
+            height: 3px;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+            z-index: 200;
+            transition: width 0.1s linear;
+        }
+
+        /* ── Sidebar ──────────────────────────────────────────── */
         .sidebar {
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 280px;
+            top: 0; left: 0;
+            width: 288px;
             height: 100vh;
-            background: #0f172a;
-            color: #cbd5e1;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
             overflow-y: auto;
-            padding: 24px 0;
+            padding: 22px 0 32px;
             z-index: 100;
         }
-        .sidebar-logo {
-            text-align: center;
-            padding: 0 24px 24px;
-            border-bottom: 1px solid #1e293b;
-            margin-bottom: 16px;
-        }
-        .sidebar-logo img {
-            height: 40px;
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 4px 22px 20px;
             margin-bottom: 8px;
+            border-bottom: 1px solid var(--border-soft);
         }
-        .sidebar-logo h2 {
-            color: #f1f5f9;
-            font-size: 16px;
-            font-weight: 600;
+        .brand-mark {
+            width: 40px; height: 40px;
+            border-radius: 11px;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: var(--shadow-sm);
+            flex-shrink: 0;
         }
-        .sidebar-logo p {
-            color: #64748b;
-            font-size: 12px;
-        }
+        .brand-mark svg { width: 20px; height: 20px; color: #fff; }
+        .brand-text h2 { color: var(--text); font-size: 15px; font-weight: 650; line-height: 1.2; }
+        .brand-text p { color: var(--text-muted); font-size: 12px; }
+
         .sidebar nav a {
-            display: block;
-            padding: 10px 24px;
-            color: #94a3b8;
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 1px 12px;
+            padding: 8px 14px;
+            color: var(--text-muted);
             text-decoration: none;
-            font-size: 14px;
-            transition: all 0.2s;
-            border-left: 3px solid transparent;
+            font-size: 13.5px;
+            font-weight: 500;
+            border-radius: 9px;
+            transition: color 0.15s, background 0.15s;
         }
-        .sidebar nav a:hover, .sidebar nav a.active {
-            color: #f1f5f9;
-            background: #1e293b;
-            border-left-color: #f59e0b;
-        }
-        .sidebar nav .section-label {
-            padding: 16px 24px 6px;
+        .sidebar nav a .idx {
             font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            color: var(--text-muted);
+            opacity: 0.6;
+            min-width: 16px;
+        }
+        .sidebar nav a:hover {
+            color: var(--text);
+            background: var(--surface-2);
+        }
+        .sidebar nav a.active {
+            color: var(--accent-strong);
+            background: var(--accent-soft);
+            font-weight: 650;
+        }
+        .sidebar nav a.active .idx { color: var(--accent); opacity: 1; }
+        .sidebar nav .section-label {
+            padding: 18px 26px 6px;
+            font-size: 10.5px;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #475569;
+            letter-spacing: 1.4px;
+            color: var(--text-muted);
             font-weight: 700;
         }
 
-        /* -- Main content -- */
-        .main {
-            margin-left: 280px;
-            min-height: 100vh;
-        }
+        /* ── Main ─────────────────────────────────────────────── */
+        .main { margin-left: 288px; min-height: 100vh; }
 
-        /* -- Hero header -- */
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 90;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 60px;
+            background: color-mix(in srgb, var(--bg) 82%, transparent);
+            -webkit-backdrop-filter: blur(10px);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .topbar .crumb { font-size: 13px; font-weight: 600; color: var(--text); }
+        .topbar .crumb span { color: var(--text-muted); font-weight: 500; }
+        .topbar .ver { font-size: 12px; color: var(--text-muted); }
+
+        /* ── Hero ─────────────────────────────────────────────── */
         .hero {
-            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
-            color: white;
-            padding: 80px 60px 60px;
+            position: relative;
+            overflow: hidden;
+            background:
+                radial-gradient(120% 120% at 85% -10%, rgba(47,71,201,0.55) 0%, transparent 55%),
+                linear-gradient(135deg, #0e1533 0%, #1b2a6b 52%, #2f47c9 120%);
+            color: #fff;
+            padding: 72px 60px 60px;
         }
-        .hero h1 {
-            font-size: 42px;
-            font-weight: 800;
-            margin-bottom: 12px;
+        .hero::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background-image: radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px);
+            background-size: 22px 22px;
+            mask-image: linear-gradient(180deg, rgba(0,0,0,0.6), transparent 70%);
+            -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,0.6), transparent 70%);
         }
-        .hero h1 span { color: #f59e0b; }
-        .hero p {
-            font-size: 18px;
-            color: #94a3b8;
-            max-width: 600px;
+        .hero-inner { position: relative; z-index: 1; max-width: 720px; }
+        .hero .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            color: #c7d2fe;
+            margin-bottom: 18px;
         }
+        .hero .eyebrow span {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: #8ea2ff;
+            box-shadow: 0 0 12px 2px rgba(142,162,255,0.8);
+        }
+        .hero h1 { font-size: 44px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.08; margin-bottom: 16px; }
+        .hero h1 em { font-style: normal; background: linear-gradient(90deg, #c7d2fe, #a5b4fc); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .hero p { font-size: 18px; color: #c3cbe6; max-width: 620px; }
         .hero .badge {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 6px 16px;
-            background: rgba(245, 158, 11, 0.15);
-            border: 1px solid rgba(245, 158, 11, 0.3);
-            border-radius: 20px;
-            color: #f59e0b;
-            font-size: 13px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 26px;
+            padding: 7px 16px;
+            background: rgba(255,255,255,0.10);
+            border: 1px solid rgba(199,210,254,0.30);
+            border-radius: 999px;
+            color: #e0e7ff;
+            font-size: 12.5px;
             font-weight: 600;
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
         }
 
-        /* -- Sections -- */
-        .content {
-            max-width: 900px;
-            padding: 40px 60px 80px;
-        }
+        /* ── Content ──────────────────────────────────────────── */
+        .content { max-width: 920px; padding: 48px 60px 96px; }
+        section { margin-bottom: 68px; scroll-margin-top: 80px; }
 
-        section {
-            margin-bottom: 64px;
+        .sec-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+        .sec-num {
+            flex-shrink: 0;
+            width: 40px; height: 40px;
+            border-radius: 11px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 15px;
+            border: 1px solid var(--accent-ring);
         }
+        h2 { font-size: 27px; font-weight: 750; color: var(--text); letter-spacing: -0.01em; }
 
-        h2 {
-            font-size: 28px;
-            font-weight: 700;
-            color: #0f172a;
-            margin-bottom: 8px;
-            padding-bottom: 12px;
-            border-bottom: 3px solid #f59e0b;
-            display: inline-block;
-        }
-        h2 .number {
-            color: #f59e0b;
-            margin-right: 8px;
-        }
+        h3 { font-size: 19px; font-weight: 650; color: var(--text); margin: 30px 0 12px; letter-spacing: -0.01em; }
+        h4 { font-size: 15.5px; font-weight: 650; color: var(--text-soft); margin: 22px 0 8px; }
+        p { margin-bottom: 14px; color: var(--text-soft); }
+        strong { color: var(--text); font-weight: 650; }
 
-        h3 {
-            font-size: 20px;
-            font-weight: 600;
-            color: #1e293b;
-            margin: 28px 0 12px;
-        }
-
-        h4 {
-            font-size: 16px;
-            font-weight: 600;
-            color: #334155;
-            margin: 20px 0 8px;
-        }
-
-        p { margin-bottom: 14px; color: #475569; }
-
-        /* -- Screenshots -- */
+        /* ── Screenshots ──────────────────────────────────────── */
         .screenshot-container {
             margin: 24px 0;
-            border-radius: 12px;
+            border-radius: var(--radius);
             overflow: hidden;
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
-            border: 1px solid #e2e8f0;
-            background: #f1f5f9;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border);
+            background: var(--surface-2);
         }
-        .screenshot-container img {
-            width: 100%;
-            display: block;
-        }
+        .screenshot-container img { width: 100%; display: block; }
         .screenshot-caption {
             padding: 12px 16px;
-            background: #f8fafc;
-            font-size: 13px;
-            color: #64748b;
+            background: var(--surface);
+            font-size: 12.5px;
+            color: var(--text-muted);
             text-align: center;
-            font-style: italic;
-            border-top: 1px solid #e2e8f0;
+            border-top: 1px solid var(--border-soft);
         }
 
-        /* -- Steps -- */
-        .steps {
-            counter-reset: step;
-            list-style: none;
-            padding: 0;
-        }
+        /* ── Steps ────────────────────────────────────────────── */
+        .steps { counter-reset: step; list-style: none; padding: 0; }
         .steps li {
             position: relative;
-            padding: 16px 0 16px 56px;
-            border-left: 2px solid #e2e8f0;
+            padding: 14px 0 14px 52px;
+            border-left: 2px solid var(--border);
             margin-left: 16px;
         }
         .steps li:last-child { border-left-color: transparent; }
@@ -184,284 +273,238 @@
             counter-increment: step;
             content: counter(step);
             position: absolute;
-            left: -15px;
-            top: 14px;
-            width: 30px;
-            height: 30px;
-            background: #f59e0b;
-            color: white;
+            left: -15px; top: 12px;
+            width: 30px; height: 30px;
+            background: var(--surface);
+            color: var(--accent);
+            border: 1.5px solid var(--accent-ring);
             border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 14px;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 13px;
+            box-shadow: var(--shadow-sm);
         }
-        .steps li strong {
-            color: #1e293b;
-            display: block;
-            margin-bottom: 4px;
-        }
+        .steps li strong { display: block; margin-bottom: 4px; }
         .steps li p { margin: 0; font-size: 14px; }
+        .steps li ul { margin-top: 8px; padding-left: 20px; font-size: 14px; color: var(--text-soft); }
+        .steps li ul li { margin: 0; padding: 2px 0; border: 0; }
+        .steps li ul li::before { content: none; }
 
-        /* -- Info boxes -- */
+        /* ── Info boxes ───────────────────────────────────────── */
         .info-box {
-            padding: 16px 20px;
-            border-radius: 8px;
-            margin: 16px 0;
+            position: relative;
+            padding: 15px 18px 15px 20px;
+            border-radius: 11px;
+            margin: 18px 0;
             font-size: 14px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            box-shadow: var(--shadow-sm);
         }
-        .info-box.tip {
-            background: #f0fdf4;
-            border-left: 4px solid #22c55e;
-            color: #166534;
-        }
-        .info-box.warning {
-            background: #fefce8;
-            border-left: 4px solid #eab308;
-            color: #854d0e;
-        }
-        .info-box.important {
-            background: #eff6ff;
-            border-left: 4px solid #3b82f6;
-            color: #1e40af;
-        }
+        .info-box::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 11px 0 0 11px; }
         .info-box strong { display: block; margin-bottom: 4px; }
+        .info-box.tip::before { background: #10b981; }
+        .info-box.warning::before { background: #f59e0b; }
+        .info-box.important::before { background: var(--accent); }
 
-        /* -- Tables -- */
+        /* ── Tables ───────────────────────────────────────────── */
         table {
             width: 100%;
-            border-collapse: collapse;
-            margin: 16px 0;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin: 18px 0;
             font-size: 14px;
+            border: 1px solid var(--border);
+            border-radius: 11px;
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
         }
-        th {
-            background: #0f172a;
-            color: white;
-            padding: 12px 16px;
-            text-align: left;
-            font-weight: 600;
-        }
-        td {
-            padding: 10px 16px;
-            border-bottom: 1px solid #e2e8f0;
-            color: #475569;
-        }
-        tr:hover td { background: #f8fafc; }
+        th { background: var(--surface-2); color: var(--text); padding: 12px 16px; text-align: left; font-weight: 650; font-size: 13px; }
+        td { padding: 11px 16px; border-top: 1px solid var(--border-soft); color: var(--text-soft); }
+        tr:hover td { background: var(--surface-2); }
         code {
-            background: #f1f5f9;
+            background: var(--surface-2);
             padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 13px;
-            color: #e11d48;
-            font-family: 'SF Mono', 'Fira Code', monospace;
+            border-radius: 5px;
+            font-size: 12.5px;
+            color: var(--code);
+            font-family: 'SF Mono', ui-monospace, 'Fira Code', Menlo, monospace;
         }
 
-        /* -- Comparison card -- */
-        .comparison {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin: 20px 0;
-        }
-        .comparison .card {
-            border-radius: 12px;
-            padding: 24px;
-            border: 1px solid #e2e8f0;
-        }
-        .comparison .card.search { background: #eff6ff; border-color: #93c5fd; }
-        .comparison .card.chat { background: #f0fdf4; border-color: #86efac; }
-        .comparison .card h4 {
-            margin: 0 0 12px;
-            font-size: 18px;
-        }
-        .comparison .card ul { padding-left: 20px; font-size: 14px; color: #475569; }
+        /* ── Comparison ───────────────────────────────────────── */
+        .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 20px 0; }
+        .comparison .card { border-radius: var(--radius); padding: 22px; border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-sm); }
+        .comparison .card.search { border-top: 3px solid var(--accent); }
+        .comparison .card.chat { border-top: 3px solid #10b981; }
+        .comparison .card h4 { margin: 0 0 12px; font-size: 17px; }
+        .comparison .card ul { padding-left: 20px; font-size: 14px; color: var(--text-soft); }
         .comparison .card ul li { margin-bottom: 6px; }
 
-        /* -- Feature grid -- */
-        .feature-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin: 20px 0;
-        }
+        /* ── Feature grid ─────────────────────────────────────── */
+        .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0; }
         .feature-card {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            border: 1px solid #e2e8f0;
-            transition: box-shadow 0.2s;
+            background: var(--surface);
+            border-radius: var(--radius);
+            padding: 18px 20px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-sm);
+            transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
         }
-        .feature-card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        }
-        .feature-card .icon {
-            font-size: 28px;
-            margin-bottom: 8px;
-            display: block;
-        }
+        .feature-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--accent-ring); }
+        .feature-card .icon { font-size: 24px; margin-bottom: 8px; display: block; }
         .feature-card h4 { margin: 0 0 6px; font-size: 15px; }
-        .feature-card p { margin: 0; font-size: 13px; }
+        .feature-card p { margin: 0; font-size: 13px; color: var(--text-muted); }
 
-        /* -- Architecture diagram -- */
-        .arch-diagram {
-            background: #0f172a;
-            border-radius: 12px;
-            padding: 32px;
-            margin: 24px 0;
-            color: #e2e8f0;
-            overflow-x: auto;
-        }
-        .arch-diagram pre {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 13px;
-            line-height: 1.6;
-            white-space: pre;
-            color: #94a3b8;
-        }
-        .arch-diagram .highlight { color: #f59e0b; }
-        .arch-diagram .blue { color: #60a5fa; }
-        .arch-diagram .green { color: #4ade80; }
+        /* ── Architecture diagram ─────────────────────────────── */
+        .arch-diagram { background: #0c1330; border: 1px solid #1c274f; border-radius: var(--radius); padding: 28px; margin: 24px 0; color: #cdd6f4; overflow-x: auto; box-shadow: var(--shadow-md); }
+        .arch-diagram pre { font-family: 'SF Mono', ui-monospace, 'Fira Code', Menlo, monospace; font-size: 13px; line-height: 1.6; white-space: pre; color: #8b95c9; }
+        .arch-diagram .highlight { color: #8ea2ff; }
+        .arch-diagram .blue { color: #7dd3fc; }
+        .arch-diagram .green { color: #6ee7b7; }
 
-        /* -- Doc table -- */
+        /* ── Doc rows ─────────────────────────────────────────── */
         .doc-table { margin: 20px 0; }
         .doc-row {
-            display: flex;
-            align-items: center;
+            display: flex; align-items: center;
             padding: 12px 16px;
-            background: white;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 11px;
             margin-bottom: 8px;
-            transition: box-shadow 0.2s;
+            transition: transform 0.15s, box-shadow 0.15s;
         }
-        .doc-row:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .doc-row:hover { transform: translateX(2px); box-shadow: var(--shadow-sm); }
         .doc-row .doc-icon {
-            width: 36px;
-            height: 36px;
-            background: #eff6ff;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-right: 14px;
-            flex-shrink: 0;
-            font-size: 16px;
+            width: 36px; height: 36px;
+            background: var(--accent-soft);
+            border-radius: 9px;
+            display: flex; align-items: center; justify-content: center;
+            margin-right: 14px; flex-shrink: 0; font-size: 16px;
         }
-        .doc-row .doc-info h5 {
-            font-size: 14px;
-            color: #1e293b;
-            margin-bottom: 2px;
-        }
-        .doc-row .doc-info p {
-            font-size: 12px;
-            color: #94a3b8;
-            margin: 0;
-        }
+        .doc-row .doc-info h5 { font-size: 13.5px; color: var(--text); margin-bottom: 2px; font-weight: 600; }
+        .doc-row .doc-info p { font-size: 12px; color: var(--text-muted); margin: 0; }
 
-        /* -- Footer -- */
-        .footer {
-            padding: 32px 60px;
-            background: #0f172a;
-            color: #64748b;
-            font-size: 13px;
-            text-align: center;
-        }
+        /* ── Footer ───────────────────────────────────────────── */
+        .footer { padding: 30px 60px; background: var(--surface); border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; text-align: center; }
+        .footer strong { color: var(--text); }
 
-        /* -- Print styles -- */
+        /* ── Print ────────────────────────────────────────────── */
         @media print {
-            .sidebar { display: none; }
+            .sidebar, .topbar, .progress-bar { display: none; }
             .main { margin-left: 0; }
             .hero { padding: 40px; }
             .content { padding: 20px 40px; }
             .screenshot-container { box-shadow: none; border: 1px solid #ccc; }
         }
 
-        /* -- Responsive -- */
+        /* ── Responsive ───────────────────────────────────────── */
         @media (max-width: 900px) {
             .sidebar { display: none; }
             .main { margin-left: 0; }
-            .hero { padding: 40px 24px; }
-            .hero h1 { font-size: 28px; }
-            .content { padding: 24px; }
+            .topbar { padding: 12px 24px; }
+            .hero { padding: 48px 24px 40px; }
+            .hero h1 { font-size: 30px; }
+            .content { padding: 28px 24px 64px; }
             .comparison, .feature-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
 
+<div class="progress-bar" id="progress"></div>
+
 <!-- SIDEBAR -->
 <aside class="sidebar">
-    <div class="sidebar-logo">
-        <img src="screenshots/intodata-logo.png" alt="IntoData Logo">
-        <h2>Nexus User Guide</h2>
-        <p>Knowledge Base Platform</p>
+    <div class="sidebar-brand">
+        <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 3l1.9 4.7L18.5 9l-4.6 1.3L12 15l-1.9-4.7L5.5 9l4.6-1.3L12 3z" fill="currentColor"/>
+                <path d="M18.5 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1z" fill="currentColor" opacity="0.85"/>
+            </svg>
+        </div>
+        <div class="brand-text">
+            <h2>Nexus User Guide</h2>
+            <p>Knowledge Base Platform</p>
+        </div>
     </div>
     <nav>
         <div class="section-label">Getting Started</div>
-        <a href="#login">Login</a>
-        <a href="#navigation">Navigation &amp; Layout</a>
+        <a href="#login"><span class="idx">01</span> Login</a>
+        <a href="#navigation"><span class="idx">02</span> Navigation &amp; Layout</a>
 
         <div class="section-label">Features</div>
-        <a href="#chat">Chat</a>
-        <a href="#documents">Documents</a>
-        <a href="#project-docs">Project Docs</a>
-        <a href="#topology">Topology</a>
+        <a href="#chat"><span class="idx">03</span> Chat</a>
+        <a href="#documents"><span class="idx">04</span> Documents</a>
+        <a href="#project-docs"><span class="idx">05</span> Project Docs</a>
+        <a href="#topology"><span class="idx">06</span> Topology</a>
 
-        <div class="section-label">Other</div>
-        <a href="#settings">Settings &amp; Admin</a>
-        <a href="#dashboard">Nexus Dashboard</a>
-        <a href="#architecture">Architecture</a>
-        <a href="#faq">FAQ</a>
+        <div class="section-label">Administration</div>
+        <a href="#settings"><span class="idx">07</span> Settings &amp; Admin</a>
+        <a href="#dashboard"><span class="idx">08</span> Nexus Dashboard</a>
+
+        <div class="section-label">Reference</div>
+        <a href="#architecture"><span class="idx">09</span> Architecture</a>
+        <a href="#faq"><span class="idx">10</span> FAQ</a>
     </nav>
 </aside>
 
 <!-- MAIN -->
 <div class="main">
 
+    <!-- Topbar -->
+    <div class="topbar">
+        <div class="crumb">Nexus <span>/ User Guide</span></div>
+        <div class="ver">Version 4.0 &mdash; July 2026</div>
+    </div>
+
     <!-- Hero -->
     <header class="hero">
-        <img src="screenshots/intodata-logo.png" alt="IntoData" style="height:50px; margin-bottom:20px; filter: brightness(0) invert(1);">
-        <h1>Nexus <span>Knowledge Base</span></h1>
-        <p>The complete user guide for the IntoData Nexus platform. Learn how to upload documents, chat with AI about your projects, and generate documentation.</p>
-        <div class="badge">Version 3.0 &mdash; April 2026</div>
+        <div class="hero-inner">
+            <div class="eyebrow"><span></span> Integration Intelligence Platform</div>
+            <h1>Nexus <em>Knowledge Base</em></h1>
+            <p>Your complete guide to the Nexus platform &mdash; upload documents, chat with AI about your integration projects, explore topology, and turn source code into searchable documentation.</p>
+            <div class="badge">Version 4.0 &mdash; July 2026</div>
+        </div>
     </header>
 
     <div class="content">
 
         <!-- 1. LOGIN -->
         <section id="login">
-            <h2><span class="number">01</span> Login</h2>
-            <p>When you open Nexus in your browser, you will see the login screen. Enter your username and password to get started.</p>
+            <div class="sec-head"><div class="sec-num">01</div><h2>Login</h2></div>
+            <p>When you open Nexus in your browser you will see the login screen. Enter your username and password to get started.</p>
 
             <ol class="steps">
                 <li>
                     <strong>Open Nexus in your browser</strong>
-                    <p>Navigate to the URL provided by your administrator (e.g. <code>https://nexus.yourcompany.com</code>)</p>
+                    <p>Navigate to the URL provided by your administrator (e.g. <code>https://nexus.yourcompany.com</code>).</p>
                 </li>
                 <li>
                     <strong>Enter your username and password</strong>
-                    <p>We will provide a password and admin role for your organisation's domain.</p>
+                    <p>Your administrator provisions your account and role for your organisation's domain.</p>
+                </li>
+                <li>
+                    <strong>Complete two-factor authentication (if enabled)</strong>
+                    <p>If multi-factor authentication is required, enter the 6-digit code from your authenticator app, or use a backup code. You can set this up under <strong>Settings &rarr; Security</strong>.</p>
                 </li>
                 <li>
                     <strong>Click "Login"</strong>
-                    <p>After a successful login, you will be redirected to the Chat page.</p>
+                    <p>After a successful login you are redirected to the Chat page.</p>
                 </li>
             </ol>
 
             <div class="info-box tip">
                 <strong>Good to know</strong>
-                Your session stays active for 60 minutes. After 7 days, you will need to log in again. Don't have an account yet? Ask an admin to create one for you.
+                Your session stays active for 60 minutes and refreshes automatically for up to 7 days. After that you will need to log in again. Don't have an account yet? Ask an admin to create one for you.
             </div>
         </section>
 
         <!-- 2. NAVIGATION -->
         <section id="navigation">
-            <h2><span class="number">02</span> Navigation &amp; Layout</h2>
-            <p>On the left side of the screen you will find the <strong>sidebar</strong>, which lets you quickly navigate between all sections of Nexus.</p>
+            <div class="sec-head"><div class="sec-num">02</div><h2>Navigation &amp; Layout</h2></div>
+            <p>On the left side of the screen you will find the <strong>sidebar</strong>, which lets you move quickly between all sections of Nexus.</p>
 
             <div class="screenshot-container" style="max-width:300px;">
-                <img src="screenshots/sidebar.png" alt="Nexus Sidebar navigation">
+                <img src="screenshots/sidebar.png" alt="Nexus sidebar navigation">
                 <div class="screenshot-caption">The sidebar with all navigation items: Chat, Documents, Project Docs, Topology, Settings and Admin</div>
             </div>
 
@@ -474,7 +517,7 @@
                 <div class="feature-card">
                     <span class="icon">&#128196;</span>
                     <h4>Documents</h4>
-                    <p>Upload and manage PDF, Word, PowerPoint and Excel files</p>
+                    <p>Upload and manage PDF, Word, PowerPoint, Excel and Markdown files</p>
                 </div>
                 <div class="feature-card">
                     <span class="icon">&#128214;</span>
@@ -489,21 +532,26 @@
                 <div class="feature-card">
                     <span class="icon">&#9881;</span>
                     <h4>Settings &amp; Admin</h4>
-                    <p>System health, usage dashboard, benchmarks, user management</p>
+                    <p>System health, security, usage, logs, benchmarks and user management</p>
+                </div>
+                <div class="feature-card">
+                    <span class="icon">&#128100;</span>
+                    <h4>Account</h4>
+                    <p>Your profile and a logout button at the bottom of the sidebar</p>
                 </div>
             </div>
 
-            <p>The sidebar can be <strong>collapsed</strong> using the button at the top to give you more screen space. Below the navigation items you will find your <strong>conversation history</strong> &mdash; click on any previous conversation to reopen it. At the bottom of the sidebar you will see your username and a logout button.</p>
+            <p>The sidebar can be <strong>collapsed</strong> with the button at the top to give you more screen space. Below the navigation items you will find your <strong>conversation history</strong> &mdash; click any previous conversation to reopen it.</p>
         </section>
 
         <!-- 3. CHAT -->
         <section id="chat">
-            <h2><span class="number">03</span> Chat</h2>
-            <p>The Chat page is the <strong>landing page</strong> of Nexus and provides a unified experience for asking questions about your documents. You can switch between <strong>Chat</strong> mode (quick RAG queries) and <strong>Deep Dive</strong> mode (in-depth project analysis) directly from the input bar.</p>
+            <div class="sec-head"><div class="sec-num">03</div><h2>Chat</h2></div>
+            <p>The Chat page is the <strong>landing page</strong> of Nexus and provides a unified experience for asking questions about your documents. Switch between <strong>Chat</strong> mode (quick RAG queries) and <strong>Deep Dive</strong> mode (in-depth project analysis) directly from the input bar.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/chat-welcome.png" alt="Nexus Chat welcome screen">
-                <div class="screenshot-caption">The Chat welcome screen with 4 suggestion cards and the input bar with Chat/Deep Dive toggle and project filter</div>
+                <div class="screenshot-caption">The Chat welcome screen: a centered prompt, suggestion chips, and the input bar with the Chat/Deep Dive toggle and project filter</div>
             </div>
 
             <h3>How to use Chat</h3>
@@ -511,44 +559,44 @@
             <ol class="steps">
                 <li>
                     <strong>Start a new conversation</strong>
-                    <p>Click <strong>"+ New Chat"</strong> in the sidebar, or simply start typing in the input bar on the welcome screen.</p>
+                    <p>Click <strong>"+ New Chat"</strong> in the sidebar, or simply start typing in the centered input on the welcome screen.</p>
                 </li>
                 <li>
                     <strong>Choose a mode</strong>
-                    <p>In the input bar at the bottom you will see two buttons: <strong>Chat</strong> and <strong>Deep Dive</strong>.</p>
-                    <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
+                    <p>In the input bar you will see two options: <strong>Chat</strong> and <strong>Deep Dive</strong>.</p>
+                    <ul>
                         <li><strong>Chat</strong> &mdash; Quick RAG query. The system finds relevant sections from your documents and generates an answer.</li>
-                        <li><strong>Deep Dive</strong> &mdash; In-depth analysis of a specific project. Uses more context and provides more detailed answers.</li>
+                        <li><strong>Deep Dive</strong> &mdash; In-depth analysis of a specific project. Uses more context for richer answers.</li>
                     </ul>
                 </li>
                 <li>
                     <strong>Filter by project (optional)</strong>
-                    <p>Click the <strong>"All Projects"</strong> dropdown in the input bar and select a specific project to search only within that project.</p>
+                    <p>Use the project dropdown in the input bar to search only within a specific project.</p>
                 </li>
                 <li>
                     <strong>Ask your question</strong>
-                    <p>Type a question in the text field and press Enter or click the send button. You can also click one of the <strong>suggestion cards</strong> on the welcome screen to get started quickly. Examples:</p>
-                    <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
+                    <p>Type a question and press Enter, or click one of the <strong>suggestion chips</strong> to get started. Examples:</p>
+                    <ul>
                         <li><em>"What projects are available?"</em></li>
                         <li><em>"How do the integrations connect?"</em></li>
                         <li><em>"What does the job LoadCustomerData do?"</em></li>
                     </ul>
                 </li>
                 <li>
+                    <strong>Attach an image (optional)</strong>
+                    <p>Use the image button to attach a screenshot or diagram (JPEG, PNG, GIF or WebP, up to 4 images). Nexus can analyse the image alongside your question.</p>
+                </li>
+                <li>
                     <strong>View the live answer</strong>
-                    <p>The answer is <strong>streamed word by word</strong>. Source citations appear with each answer.</p>
+                    <p>The answer is <strong>streamed word by word</strong>, with numbered source citations you can click to jump to the underlying document.</p>
                 </li>
                 <li>
                     <strong>Ask follow-up questions</strong>
-                    <p>Chat remembers your context. You can ask things like <em>"Can you tell me more about that?"</em> or <em>"What about the connections?"</em></p>
-                </li>
-                <li>
-                    <strong>Manage your conversations</strong>
-                    <p>Your conversation history appears in the sidebar below the navigation items. Click on a previous conversation to reopen it. Hover and click the trash icon to delete a conversation.</p>
+                    <p>Chat remembers your context. Ask things like <em>"Can you tell me more about that?"</em> or <em>"What about the connections?"</em></p>
                 </li>
             </ol>
 
-            <h3>Chat vs. Deep Dive &mdash; When to use which?</h3>
+            <h3>Chat vs. Deep Dive &mdash; when to use which?</h3>
 
             <div class="comparison">
                 <div class="card search">
@@ -573,13 +621,13 @@
 
             <div class="info-box tip">
                 <strong>Tips for better results</strong>
-                Ask specific questions for the best answers. Use project filtering when you have many projects. Use Deep Dive for complex, project-wide analyses. Click a suggestion card to get started quickly.
+                Ask specific questions. Use project filtering when you have many projects. Use Deep Dive for complex, project-wide analyses, and click a suggestion chip to get started quickly.
             </div>
         </section>
 
         <!-- 4. DOCUMENTS -->
         <section id="documents">
-            <h2><span class="number">04</span> Documents</h2>
+            <div class="sec-head"><div class="sec-num">04</div><h2>Documents</h2></div>
             <p>On the Documents page you upload and manage the files that become searchable in Chat.</p>
 
             <div class="screenshot-container">
@@ -592,15 +640,19 @@
             <ol class="steps">
                 <li>
                     <strong>Select a project</strong>
-                    <p>Choose the project you want to upload the document for in the dropdown at the top.</p>
+                    <p>Choose the project the document belongs to in the dropdown at the top.</p>
+                </li>
+                <li>
+                    <strong>Choose a document role (optional)</strong>
+                    <p>Tag the file by how it should be used &mdash; <em>source</em> (project evidence, the default), <em>reference</em>, <em>guidance</em>, <em>standard</em>, <em>template</em> or <em>policy</em>. Roles help Nexus decide which documents prove facts versus which shape interpretation.</p>
                 </li>
                 <li>
                     <strong>Upload your file</strong>
-                    <p>Drag the file into the upload area, <strong>or</strong> click the area to select a file.</p>
+                    <p>Drag the file into the upload area, <strong>or</strong> click the area to browse.</p>
                 </li>
                 <li>
                     <strong>Automatic processing</strong>
-                    <p>The system processes your file automatically: it is split into chunks, converted to vectors, and becomes immediately searchable.</p>
+                    <p>The file is split into chunks, embedded into vectors, and becomes immediately searchable.</p>
                 </li>
             </ol>
 
@@ -620,32 +672,32 @@
             </table>
 
             <h3>Document Library</h3>
-            <p>At the bottom of the page you can see all uploaded documents. For each document you can see the filename, type, and number of chunks. Click the trash icon to delete a document.</p>
+            <p>At the bottom of the page you can see all uploaded documents with filename, type, role and chunk count. Click the trash icon to delete a document &mdash; it is removed from both the database and the vector store.</p>
 
             <div class="info-box warning">
                 <strong>Note</strong>
-                You can only upload documents for projects that are assigned to you. Ask an admin for project access if you don't see a project in the dropdown.
+                You can only upload documents for projects assigned to you. Ask an admin for project access if you don't see a project in the dropdown.
             </div>
         </section>
 
         <!-- 5. PROJECT DOCS -->
         <section id="project-docs">
-            <h2><span class="number">05</span> Project Docs</h2>
-            <p>The Project Docs page shows <strong>automatically generated documentation</strong> about your integration projects. These documents are created by the Nexus Dashboard.</p>
+            <div class="sec-head"><div class="sec-num">05</div><h2>Project Docs</h2></div>
+            <p>The Project Docs page shows <strong>automatically generated documentation</strong> about your integration projects. These documents are produced by the Nexus Dashboard.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/project-docs.png" alt="Project Documentation overview">
-                <div class="screenshot-caption">Project Docs: select a project at the top, browse the 12 generated documents, and download or preview them</div>
+                <div class="screenshot-caption">Project Docs: select a project, browse the generated documents, and preview or download them</div>
             </div>
 
             <ol class="steps">
                 <li>
                     <strong>Select a project</strong>
-                    <p>Choose a project from the dropdown at the top. You will see the number of docs (e.g. "12 docs").</p>
+                    <p>Choose a project from the dropdown at the top. You will see the number of docs available.</p>
                 </li>
                 <li>
                     <strong>Browse the document list</strong>
-                    <p>You will see all generated documents, numbered from 00 to 11, with their file size.</p>
+                    <p>You will see all generated documents, numbered in reading order, with their file size.</p>
                 </li>
                 <li>
                     <strong>Preview a document</strong>
@@ -653,108 +705,37 @@
                 </li>
                 <li>
                     <strong>Download as PDF</strong>
-                    <p>Click the download icon next to a document, or click <strong>"Generate PDFs"</strong> to export everything.</p>
+                    <p>Click the download icon next to a document, or <strong>"Generate PDFs"</strong> to export everything.</p>
                 </li>
             </ol>
 
-            <h3>Available documents</h3>
+            <h3>The generated document set</h3>
+            <p>A full generation run produces a numbered set of Markdown documents. The exact set depends on the profile chosen in the Dashboard; a typical run includes:</p>
 
             <div class="doc-table">
-                <div class="doc-row">
-                    <div class="doc-icon">&#128202;</div>
-                    <div class="doc-info">
-                        <h5>00_EXECUTIVE_SUMMARY.md</h5>
-                        <p>Management-level summary of the entire project</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128196;</div>
-                    <div class="doc-info">
-                        <h5>01_PROJECT_OVERVIEW.md</h5>
-                        <p>General overview: scope, components, statistics</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128295;</div>
-                    <div class="doc-info">
-                        <h5>02_ARCHITECTURE_INVENTORY.md</h5>
-                        <p>Technical architecture and complete component inventory</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128260;</div>
-                    <div class="doc-info">
-                        <h5>03_DATA_FLOWS_LINEAGE.md</h5>
-                        <p>Data flows, lineage and dependencies between jobs</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128161;</div>
-                    <div class="doc-info">
-                        <h5>04_BUSINESS_LOGIC.md</h5>
-                        <p>Business logic, transformation rules and calculations</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#9888;</div>
-                    <div class="doc-info">
-                        <h5>05_OPERATIONS_RISK.md</h5>
-                        <p>Operational risks and points of attention</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#127760;</div>
-                    <div class="doc-info">
-                        <h5>06_ENVIRONMENT_EXTERNAL.md</h5>
-                        <p>External environment, dependencies and integrations</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128274;</div>
-                    <div class="doc-info">
-                        <h5>07_SECURITY_PERFORMANCE.md</h5>
-                        <p>Security, performance and compliance aspects</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128209;</div>
-                    <div class="doc-info">
-                        <h5>08_PATTERNS_STANDARDS.md</h5>
-                        <p>Code patterns, standards and best practices</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128214;</div>
-                    <div class="doc-info">
-                        <h5>09_RUNBOOK.md</h5>
-                        <p>Operational handbook for daily management</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#10067;</div>
-                    <div class="doc-info">
-                        <h5>10_ONBOARDING_FAQ.md</h5>
-                        <p>Frequently asked questions for new team members</p>
-                    </div>
-                </div>
-                <div class="doc-row">
-                    <div class="doc-icon">&#128640;</div>
-                    <div class="doc-info">
-                        <h5>11_MIGRATION_ASSESSMENT.md</h5>
-                        <p>Migration assessment: risks, complexity, recommendations</p>
-                    </div>
-                </div>
+                <div class="doc-row"><div class="doc-icon">&#128202;</div><div class="doc-info"><h5>Executive Summary</h5><p>Management-level summary of the entire project</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128196;</div><div class="doc-info"><h5>Project Overview</h5><p>Scope, components and statistics</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128295;</div><div class="doc-info"><h5>Architecture Inventory</h5><p>Technical architecture and complete component inventory</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128260;</div><div class="doc-info"><h5>Data Flows &amp; Lineage</h5><p>Data flows, lineage and dependencies between jobs</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128161;</div><div class="doc-info"><h5>Business Logic</h5><p>Transformation rules and calculations</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#9888;</div><div class="doc-info"><h5>Operations &amp; Risk</h5><p>Operational risks and points of attention</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#127760;</div><div class="doc-info"><h5>Environment &amp; External</h5><p>External dependencies and integrations</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128274;</div><div class="doc-info"><h5>Security &amp; Performance</h5><p>Security, performance and compliance aspects</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128209;</div><div class="doc-info"><h5>Patterns &amp; Standards</h5><p>Code patterns, standards and best practices</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128214;</div><div class="doc-info"><h5>Runbook</h5><p>Operational handbook for daily management</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#10067;</div><div class="doc-info"><h5>Onboarding FAQ</h5><p>Common questions for new team members</p></div></div>
+                <div class="doc-row"><div class="doc-icon">&#128640;</div><div class="doc-info"><h5>Migration Assessment</h5><p>Migration risks, complexity and recommendations</p></div></div>
             </div>
         </section>
 
         <!-- 6. TOPOLOGY -->
         <section id="topology">
-            <h2><span class="number">06</span> Topology</h2>
-            <p>The Topology page provides an <strong>interactive visual map</strong> of your project structure. It shows how jobs, connections, and groups relate to each other, making it easy to understand complex integration projects at a glance.</p>
+            <div class="sec-head"><div class="sec-num">06</div><h2>Topology</h2></div>
+            <p>The Topology page provides an <strong>interactive visual map</strong> of your project structure. It shows how jobs, connections and groups relate, making complex integration projects easy to understand at a glance.</p>
 
             <div class="screenshot-container">
-                <img src="screenshots/topology.png" alt="Project Topology visualization">
-                <div class="screenshot-caption">The Topology page: project selector, view mode buttons (Overview/Detail, Top-Down, Conn), group filter chips, search bar, and interactive graph with legend</div>
+                <img src="screenshots/topology.png" alt="Project topology visualization">
+                <div class="screenshot-caption">The Topology page: project selector, view modes, group filter chips, search bar, and an interactive graph with legend</div>
             </div>
 
             <h3>How to use Topology</h3>
@@ -762,12 +743,12 @@
             <ol class="steps">
                 <li>
                     <strong>Select a project</strong>
-                    <p>Choose a project from the dropdown at the top. You will see the platform type and number of jobs (e.g. "esb-main (talend, 21 jobs)").</p>
+                    <p>Choose a project from the dropdown. You will see the platform type and number of jobs (e.g. "esb-main (talend, 21 jobs)").</p>
                 </li>
                 <li>
                     <strong>Choose a view mode</strong>
-                    <p>Use the buttons in the toolbar to switch between views:</p>
-                    <ul style="margin-top:8px; padding-left:20px; font-size:14px; color:#475569;">
+                    <p>Switch between views from the toolbar:</p>
+                    <ul>
                         <li><strong>Overview</strong> &mdash; High-level view with groups collapsed into summary nodes</li>
                         <li><strong>Detail</strong> &mdash; Expanded view showing individual jobs within groups</li>
                         <li><strong>Top-Down</strong> &mdash; Hierarchical layout from top to bottom</li>
@@ -776,35 +757,39 @@
                 </li>
                 <li>
                     <strong>Filter by group</strong>
-                    <p>Click the coloured <strong>group chips</strong> in the toolbar to show or hide specific groups. Click "Reset" to show all groups.</p>
+                    <p>Click the coloured <strong>group chips</strong> to show or hide groups. Click "Reset" to show all.</p>
                 </li>
                 <li>
                     <strong>Search for nodes</strong>
-                    <p>Use the <strong>search bar</strong> in the toolbar to find specific jobs or connections by name.</p>
+                    <p>Use the <strong>search bar</strong> to find specific jobs or connections by name.</p>
                 </li>
                 <li>
-                    <strong>Interact with nodes</strong>
-                    <p>Click on a group node to expand it and see individual jobs. Hover over nodes and edges to see additional information.</p>
-                </li>
-                <li>
-                    <strong>Navigate the graph</strong>
-                    <p>Use <strong>scroll to zoom</strong>, <strong>drag to pan</strong>, and click the <strong>Fit</strong> button to fit the entire graph in view. A <strong>minimap</strong> in the bottom-right corner helps you orient yourself in large graphs.</p>
+                    <strong>Interact and navigate</strong>
+                    <p>Click a group node to expand it. Use <strong>scroll to zoom</strong>, <strong>drag to pan</strong>, and the <strong>Fit</strong> button to frame the whole graph. A minimap helps you orient in large graphs.</p>
                 </li>
             </ol>
 
             <div class="info-box tip">
                 <strong>Tip</strong>
-                Start in <strong>Overview</strong> mode for large projects to get a high-level picture of groups and their connections, then switch to <strong>Detail</strong> mode to drill into specific areas.
+                Start in <strong>Overview</strong> mode for large projects to see groups and their connections, then switch to <strong>Detail</strong> mode to drill into specific areas.
             </div>
         </section>
 
         <!-- 7. SETTINGS & ADMIN -->
         <section id="settings">
-            <h2><span class="number">07</span> Settings &amp; Admin</h2>
-            <p>The Settings page provides <strong>system health monitoring</strong>, <strong>usage analytics</strong>, and <strong>benchmark results</strong>. The Admin section (admin-only) lets you manage users, roles, and projects.</p>
+            <div class="sec-head"><div class="sec-num">07</div><h2>Settings &amp; Admin</h2></div>
+            <p>Settings provides <strong>system health</strong>, <strong>account security</strong>, <strong>usage analytics</strong>, <strong>runtime logs</strong> and <strong>benchmark results</strong>. The Admin section (admin-only) lets you manage users, roles and projects.</p>
+
+            <h3>Security &amp; your account</h3>
+            <p>Under <strong>Settings &rarr; Security</strong> you can enable multi-factor authentication (MFA). Scan the QR code with an authenticator app and store the one-time backup codes safely &mdash; they let you sign in if you lose your device.</p>
+
+            <div class="info-box important">
+                <strong>For administrators</strong>
+                Depending on your deployment, MFA may be <em>mandatory</em>. When enforced, users must complete enrolment before they can use the rest of the app.
+            </div>
 
             <h3>System Health</h3>
-            <p>The Settings page shows the health status of all system components.</p>
+            <p>The Settings page shows the health status of all backend components.</p>
 
             <table>
                 <thead>
@@ -813,17 +798,18 @@
                 <tbody>
                     <tr><td><strong>Database (PostgreSQL)</strong></td><td>Is the database reachable and active?</td></tr>
                     <tr><td><strong>Qdrant</strong></td><td>Is the vector database online?</td></tr>
-                    <tr><td><strong>Ollama</strong></td><td>Are the AI models available?</td></tr>
+                    <tr><td><strong>AI providers</strong></td><td>Are the configured embedding and language-model providers reachable?</td></tr>
+                    <tr><td><strong>Memory (Hindsight)</strong></td><td>Is the long-context memory service available?</td></tr>
                     <tr><td><strong>Version</strong></td><td>Which version of Nexus is running?</td></tr>
                 </tbody>
             </table>
 
             <h3>Usage Dashboard</h3>
-            <p>The Usage Dashboard (under Admin &gt; Usage) provides an overview of platform usage and costs.</p>
+            <p>Under <strong>Admin &rarr; Usage</strong> you get an overview of platform usage and cost.</p>
 
             <div class="screenshot-container">
-                <img src="screenshots/settings-usage.png" alt="Usage Dashboard with metrics and charts">
-                <div class="screenshot-caption">The Usage Dashboard: total queries, tokens, cost, active users, with daily charts and per-interface breakdown</div>
+                <img src="screenshots/settings-usage.png" alt="Usage dashboard with metrics and charts">
+                <div class="screenshot-caption">The Usage Dashboard: total queries, tokens, cost and active users, with daily charts and a per-interface breakdown</div>
             </div>
 
             <table>
@@ -831,20 +817,23 @@
                     <tr><th>Metric</th><th>Description</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>Total Queries</strong></td><td>Number of queries processed in the selected time period</td></tr>
+                    <tr><td><strong>Total Queries</strong></td><td>Queries processed in the selected period</td></tr>
                     <tr><td><strong>Input / Output Tokens</strong></td><td>Token usage across all AI interactions</td></tr>
-                    <tr><td><strong>Total Cost</strong></td><td>Estimated cost of AI model usage</td></tr>
-                    <tr><td><strong>Active Users</strong></td><td>Number of unique users in the period</td></tr>
-                    <tr><td><strong>Overview / Per User</strong></td><td>Switch between aggregate view and per-user breakdown</td></tr>
+                    <tr><td><strong>Total Cost</strong></td><td>Estimated cost of model usage (cloud providers only)</td></tr>
+                    <tr><td><strong>Active Users</strong></td><td>Unique users in the period</td></tr>
+                    <tr><td><strong>Overview / Per User</strong></td><td>Switch between aggregate and per-user views</td></tr>
                 </tbody>
             </table>
 
+            <h3>Logs &amp; Runtime</h3>
+            <p>Under <strong>Admin &rarr; Logs</strong>, administrators can review integration <strong>executions</strong> and <strong>failures</strong> collected from connected runtime sources, with a per-execution timeline and failure diagnostics. Data is scoped to the projects you can access, and only sanitized summaries and evidence are shown &mdash; never raw credentials.</p>
+
             <h3>Benchmark Results</h3>
-            <p>The Benchmark page (under Admin &gt; Benchmark) shows the results of RAG quality benchmarks. Use these metrics to evaluate and tune your retrieval pipeline.</p>
+            <p>Under <strong>Admin &rarr; Benchmark</strong> you can review RAG quality benchmarks to evaluate and tune retrieval.</p>
 
             <div class="screenshot-container">
-                <img src="screenshots/settings-benchmark.png" alt="Benchmark Results page">
-                <div class="screenshot-caption">Benchmark Results: total runs, precision, relevance, and latency metrics with a detailed results table</div>
+                <img src="screenshots/settings-benchmark.png" alt="Benchmark results page">
+                <div class="screenshot-caption">Benchmark Results: total runs, precision, relevance and latency metrics with a detailed results table</div>
             </div>
 
             <table>
@@ -861,85 +850,51 @@
 
             <div class="info-box important">
                 <strong>For administrators</strong>
-                The Admin section (Users, Roles, Projects, Usage, Benchmark) is only visible to users with an admin role. If a system component shows red (offline), check whether the corresponding Docker container is running with <code>docker-compose ps</code>.
+                The Admin section (Users, Roles, Projects, Usage, Logs, Benchmark) is only visible to users with an admin role. If a component shows red (offline), check whether the corresponding Docker container is running with <code>docker-compose ps</code>.
             </div>
         </section>
 
         <!-- 8. NEXUS DASHBOARD -->
         <section id="dashboard">
-            <h2><span class="number">08</span> Nexus Dashboard</h2>
+            <div class="sec-head"><div class="sec-num">08</div><h2>Nexus Dashboard</h2></div>
             <p>The Nexus Dashboard is a <strong>separate management system</strong> where projects are scanned and documentation is automatically generated. It runs on a different URL than the Knowledge Base.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/dashboard.png" alt="Nexus Dashboard with project overview">
-                <div class="screenshot-caption">The Nexus Dashboard: 27 projects, 620 components, 232 documents. Each card shows the project type (Talend/Workato), status and number of jobs/docs</div>
+                <div class="screenshot-caption">The Nexus Dashboard: each card shows the project type (Talend / Workato), status and number of jobs/docs</div>
             </div>
 
             <h3>What do you see on the Dashboard?</h3>
 
             <div class="feature-grid">
-                <div class="feature-card">
-                    <span class="icon">&#128194;</span>
-                    <h4>Projects</h4>
-                    <p>All registered projects with type (Talend/Workato), number of jobs and documents</p>
-                </div>
-                <div class="feature-card">
-                    <span class="icon">&#128221;</span>
-                    <h4>Templates</h4>
-                    <p>Reusable templates that determine what information goes into the documentation</p>
-                </div>
-                <div class="feature-card">
-                    <span class="icon">&#128203;</span>
-                    <h4>Profiles</h4>
-                    <p>Combinations of templates for different documentation styles</p>
-                </div>
-                <div class="feature-card">
-                    <span class="icon">&#128196;</span>
-                    <h4>Docs</h4>
-                    <p>View and manage generated documentation per project</p>
-                </div>
+                <div class="feature-card"><span class="icon">&#128194;</span><h4>Projects</h4><p>All registered projects with type, number of jobs and documents</p></div>
+                <div class="feature-card"><span class="icon">&#128221;</span><h4>Templates</h4><p>Reusable templates that determine what goes into the documentation</p></div>
+                <div class="feature-card"><span class="icon">&#128203;</span><h4>Profiles</h4><p>Combinations of templates for different documentation styles</p></div>
+                <div class="feature-card"><span class="icon">&#128196;</span><h4>Docs</h4><p>View and manage generated documentation per project</p></div>
             </div>
 
-            <h3>Project card &mdash; Actions per project</h3>
+            <h3>Project card &mdash; actions per project</h3>
 
-            <div style="display:flex; gap:20px; flex-wrap:wrap; margin:24px 0;">
-                <div class="screenshot-container" style="flex:1; min-width:250px;">
-                    <img src="screenshots/project-card.png" alt="Project card basic">
-                    <div class="screenshot-caption">A project card: name, type (Talend), status (Ready), number of jobs and docs</div>
+            <div style="display:flex; gap:18px; flex-wrap:wrap; margin:24px 0;">
+                <div class="screenshot-container" style="flex:1; min-width:250px; margin:0;">
+                    <img src="screenshots/project-card.png" alt="Project card">
+                    <div class="screenshot-caption">A project card: name, type, status and number of jobs and docs</div>
                 </div>
-                <div class="screenshot-container" style="flex:1; min-width:250px;">
-                    <img src="screenshots/project-card-buttons.png" alt="Project card with action buttons">
-                    <div class="screenshot-caption">Hover over a card to see the action buttons: Sync, Profile, Docs and RAG</div>
+                <div class="screenshot-container" style="flex:1; min-width:250px; margin:0;">
+                    <img src="screenshots/project-card-buttons.png" alt="Project card action buttons">
+                    <div class="screenshot-caption">Hover a card to reveal the action buttons: Sync, Profile, Docs and RAG</div>
                 </div>
             </div>
-
-            <p>Each project card shows the name, platform type, status, and number of jobs/docs. At the bottom you will find four action buttons:</p>
 
             <table>
                 <thead>
                     <tr><th>Button</th><th>Function</th><th>Description</th></tr>
                 </thead>
                 <tbody>
-                    <tr>
-                        <td><strong>&#x21BB; Sync</strong></td>
-                        <td>Reload project data</td>
-                        <td>Re-scans the source code and updates the job inventory</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Default &#9662;</strong></td>
-                        <td>Choose profile</td>
-                        <td>Select which template profile is used for documentation generation</td>
-                    </tr>
-                    <tr>
-                        <td><strong>&#128196; Docs</strong></td>
-                        <td>Generate documentation</td>
-                        <td>Starts the AI documentation process &mdash; generates 12 Markdown documents</td>
-                    </tr>
-                    <tr>
-                        <td><strong>RAG</strong></td>
-                        <td>Push to Knowledge Base</td>
-                        <td>Pushes the generated documents to the RAG database, making them searchable via Chat</td>
-                    </tr>
+                    <tr><td><strong>&#x21BB; Sync</strong></td><td>Reload project data</td><td>Re-scans the source code and updates the job inventory</td></tr>
+                    <tr><td><strong>Profile &#9662;</strong></td><td>Choose profile</td><td>Selects the template profile used for documentation generation</td></tr>
+                    <tr><td><strong>&#128196; Docs</strong></td><td>Generate documentation</td><td>Starts the AI documentation process and produces the Markdown document set</td></tr>
+                    <tr><td><strong>RAG</strong></td><td>Push to Knowledge Base</td><td>Pushes the generated documents into the RAG store, making them searchable in Chat</td></tr>
                 </tbody>
             </table>
 
@@ -951,15 +906,15 @@
                     <li>Choose a <strong>profile</strong> (or use "Default")</li>
                     <li>Click <strong>&#128196; Docs</strong> to generate documentation</li>
                     <li>Click <strong>RAG</strong> to push the docs to the Knowledge Base</li>
-                    <li>Go to the Knowledge Base and chat about your new documents!</li>
+                    <li>Open the Knowledge Base and chat about your new documents</li>
                 </ol>
             </div>
         </section>
 
         <!-- 9. ARCHITECTURE -->
         <section id="architecture">
-            <h2><span class="number">09</span> Architecture</h2>
-            <p>Nexus consists of two independent systems that work together:</p>
+            <div class="sec-head"><div class="sec-num">09</div><h2>Architecture</h2></div>
+            <p>Nexus consists of two independent systems that share infrastructure:</p>
 
             <div class="arch-diagram">
 <pre>
@@ -985,13 +940,13 @@
      | FastAPI           |     | REST + MCP         |
      +---------+---------+     +--------------------+
                |
-     +---------+---------+----------+
-     v                   v          v
+     +---------+----------+-------------------+
+     v                    v                   v
 
-  +----------+    +-----------+  +---------+
-  |<span class="highlight">PostgreSQL</span>|    | <span class="highlight">Qdrant</span>    |  | <span class="highlight">Ollama</span>  |
-  |Database  |    | Vector DB |  |AI Models|
-  +----------+    +-----------+  +---------+
+  +----------+    +-----------+     +--------------------+
+  |<span class="highlight">PostgreSQL</span>|    | <span class="highlight">Qdrant</span>    |     | <span class="highlight">AI Providers</span>       |
+  |Database  |    | Vector DB |     | Embeddings + LLM   |
+  +----------+    +-----------+     +--------------------+
 </pre>
             </div>
 
@@ -1000,44 +955,62 @@
                     <tr><th>Component</th><th>What does it do?</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>The web app you see as a user &mdash; Chat, Documents, Project Docs, Topology</td></tr>
-                    <tr><td><strong>Nexus Dashboard (React)</strong></td><td>Management of projects, templates and documentation generation</td></tr>
-                    <tr><td><strong>Backend API (FastAPI)</strong></td><td>Processes search queries, document ingestion, authentication and access control</td></tr>
-                    <tr><td><strong>MCP Server</strong></td><td>Orchestrates AI documentation generation with Claude Code</td></tr>
+                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>The web app you use &mdash; Chat, Documents, Project Docs, Topology</td></tr>
+                    <tr><td><strong>Nexus Dashboard (React)</strong></td><td>Manages projects, templates and documentation generation</td></tr>
+                    <tr><td><strong>Backend API (FastAPI)</strong></td><td>Search queries, document ingestion, authentication and access control</td></tr>
+                    <tr><td><strong>MCP Server</strong></td><td>Orchestrates AI documentation generation</td></tr>
                     <tr><td><strong>PostgreSQL</strong></td><td>Stores users, documents, conversations and statistics</td></tr>
-                    <tr><td><strong>Qdrant</strong></td><td>Vector database &mdash; enables searching through documents</td></tr>
-                    <tr><td><strong>Ollama</strong></td><td>Runs local AI models for embeddings and answers</td></tr>
+                    <tr><td><strong>Qdrant</strong></td><td>Vector database that powers semantic search</td></tr>
+                    <tr><td><strong>AI Providers</strong></td><td>Generate embeddings and answers &mdash; configurable per deployment (see below)</td></tr>
                 </tbody>
             </table>
+
+            <h3>AI providers &amp; data flow</h3>
+            <p>Nexus uses a <strong>configurable provider chain</strong> so each deployment can balance quality, cost and data residency:</p>
+            <table>
+                <thead>
+                    <tr><th>Stage</th><th>Default (cloud)</th><th>Local-only option</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><strong>Embeddings</strong></td><td>Voyage AI <code>voyage-4-large</code></td><td>Ollama <code>nomic-embed-text</code></td></tr>
+                    <tr><td><strong>Reranking</strong></td><td>Voyage AI <code>rerank-2.5</code></td><td>Disabled / local</td></tr>
+                    <tr><td><strong>Answer generation</strong></td><td>Cloud LLM (e.g. Anthropic Claude)</td><td>Ollama (e.g. <code>gemma3:12b</code>)</td></tr>
+                </tbody>
+            </table>
+
+            <div class="info-box important">
+                <strong>Data residency</strong>
+                When cloud providers are enabled, query text and relevant document chunks are sent to those providers to compute embeddings and answers. If your data must not leave your environment, your deployment can run <strong>fully local</strong> using Ollama for both embeddings and generation. Ask your administrator which configuration is active, and validate any regulatory requirements (e.g. GDPR) with your compliance team.
+            </div>
         </section>
 
         <!-- 10. FAQ -->
         <section id="faq">
-            <h2><span class="number">10</span> Frequently Asked Questions</h2>
+            <div class="sec-head"><div class="sec-num">10</div><h2>Frequently Asked Questions</h2></div>
 
             <h4>How do I add a new project?</h4>
-            <p>Open the <strong>Nexus Dashboard</strong>, click <strong>"Add Repo"</strong>, enter the project name and path to the source code, select the platform type (Talend, Workato, etc.) and click save.</p>
+            <p>Open the <strong>Nexus Dashboard</strong>, click <strong>"Add Repo"</strong>, enter the project name and path to the source code, select the platform type (Talend, Workato, etc.) and save.</p>
 
             <h4>Why am I not getting results?</h4>
-            <p>Check whether documents have been uploaded for the selected project. Try a different phrasing. Check whether the correct project is selected in the filter. Make sure documents have been ingested (check the Documents page for chunk counts).</p>
+            <p>Check that documents have been uploaded for the selected project, try different phrasing, and confirm the correct project is selected in the filter. On the Documents page, verify that documents show a chunk count (meaning they were ingested).</p>
 
             <h4>How do I make documents searchable?</h4>
-            <p>There are two ways: (1) <strong>Manual</strong>: upload files via the Documents page, or (2) <strong>Automatic</strong>: generate documentation via the Nexus Dashboard and click "RAG" to push them to the Knowledge Base.</p>
+            <p>Two ways: (1) <strong>Manual</strong> &mdash; upload files on the Documents page; or (2) <strong>Automatic</strong> &mdash; generate documentation in the Nexus Dashboard and click "RAG" to push it to the Knowledge Base.</p>
 
             <h4>Can I delete documents?</h4>
-            <p>Yes. Go to the <strong>Documents</strong> page and click the trash icon next to the document. The document will be removed from both the database and the vector database.</p>
+            <p>Yes. On the <strong>Documents</strong> page, click the trash icon next to a document. It is removed from both the database and the vector store.</p>
 
             <h4>What is the difference between Chat and Deep Dive?</h4>
-            <p><strong>Chat</strong> quickly searches through your documents and gives a concise answer. <strong>Deep Dive</strong> performs a more extensive analysis and provides a more detailed answer, specifically focused on a project. Both modes are available from the input bar at the bottom of the Chat page.</p>
+            <p><strong>Chat</strong> quickly searches your documents and returns a concise, cited answer. <strong>Deep Dive</strong> performs a more extensive, project-focused analysis. Both are available from the input bar on the Chat page.</p>
 
-            <h4>What is the Topology page?</h4>
-            <p>The Topology page provides an interactive visual map of your project's structure. It shows jobs, connections, and groups as nodes in a graph, with edges showing how they relate to each other. You can switch between Overview, Detail, Top-Down, and Connection views, filter by group, and search for specific nodes.</p>
+            <h4>How do I set up two-factor authentication?</h4>
+            <p>Go to <strong>Settings &rarr; Security</strong>, scan the QR code with an authenticator app, and save your backup codes. If MFA is mandatory in your deployment you will be prompted to enrol at login.</p>
 
             <h4>How do I reset my password?</h4>
-            <p>Contact an admin. They can reset your password via the Admin panel.</p>
+            <p>Contact an admin &mdash; they can reset your password from the Admin panel.</p>
 
-            <h4>Which AI models are used?</h4>
-            <p>Nexus uses <strong>local models</strong> via Ollama: <code>nomic-embed-text</code> for embeddings and <code>gemma3:12b</code> (or <code>llama3.1:8b</code>) for generating answers. No external APIs are used &mdash; all data stays local.</p>
+            <h4>Which AI models does Nexus use?</h4>
+            <p>Nexus uses a <strong>configurable provider chain</strong>. A typical cloud configuration uses Voyage AI for embeddings and reranking and a cloud LLM (such as Anthropic Claude) for answers, each with a local <a href="#architecture">Ollama</a> fallback. Deployments that must keep all data on-premise can run <strong>fully local</strong> with Ollama for both embeddings (<code>nomic-embed-text</code>) and generation (<code>gemma3:12b</code>). See <a href="#architecture">Architecture</a> for how this affects data flow, and check with your administrator which providers are active.</p>
         </section>
 
     </div>
@@ -1045,10 +1018,52 @@
     <!-- Footer -->
     <footer class="footer">
         <p><strong>Nexus Knowledge Base</strong> &mdash; IntoData &copy; 2026</p>
-        <p style="margin-top:4px;">User Guide version 3.0 &mdash; April 2026</p>
+        <p style="margin-top:4px;">User Guide version 4.0 &mdash; July 2026</p>
     </footer>
 
 </div>
+
+<script>
+    // Reading progress bar
+    var progress = document.getElementById('progress');
+    function updateProgress() {
+        var h = document.documentElement;
+        var scrolled = h.scrollTop;
+        var max = h.scrollHeight - h.clientHeight;
+        var pct = max > 0 ? (scrolled / max) * 100 : 0;
+        progress.style.width = pct + '%';
+    }
+    window.addEventListener('scroll', updateProgress, { passive: true });
+    window.addEventListener('resize', updateProgress);
+    updateProgress();
+
+    // Scroll-spy: highlight the active section in the sidebar
+    var links = Array.prototype.slice.call(document.querySelectorAll('.sidebar nav a'));
+    var sections = links
+        .map(function (a) { return document.querySelector(a.getAttribute('href')); })
+        .filter(Boolean);
+
+    function setActive(id) {
+        links.forEach(function (a) {
+            a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+        });
+    }
+
+    if ('IntersectionObserver' in window && sections.length) {
+        var visible = {};
+        var observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (e) {
+                visible[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0;
+            });
+            var best = null, bestRatio = 0;
+            Object.keys(visible).forEach(function (id) {
+                if (visible[id] > bestRatio) { bestRatio = visible[id]; best = id; }
+            });
+            if (best) setActive(best);
+        }, { rootMargin: '-72px 0px -55% 0px', threshold: [0, 0.25, 0.5, 1] });
+        sections.forEach(function (s) { observer.observe(s); });
+    }
+</script>
 
 </body>
 </html>
