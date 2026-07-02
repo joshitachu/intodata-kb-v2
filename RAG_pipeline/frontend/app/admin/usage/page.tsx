@@ -119,6 +119,22 @@ interface RecentThread {
   last_activity: string | null;
 }
 
+interface DocGenEntry {
+  id: number;
+  user_id: number | null;
+  interface: string;
+  query_text: string | null;
+  model_name: string | null;
+  provider: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+const DOC_GEN_INTERFACE = "doc_generation";
+
 // --- Helpers ---
 
 type Tab = "overview" | "per-user" | "detail";
@@ -170,11 +186,18 @@ export default function AdminUsagePage() {
     [],
   );
   const [userRecentPage, setUserRecentPage] = useState(0);
+  const [userDocEntries, setUserDocEntries] = useState<DocGenEntry[]>([]);
+  const [userDocPage, setUserDocPage] = useState(0);
 
   // Recent threads (overview)
   const [recentThreads, setRecentThreads] = useState<RecentThread[]>([]);
   const [recentPage, setRecentPage] = useState(0);
   const [recentLoading, setRecentLoading] = useState(false);
+
+  // Recent doc generation (overview)
+  const [docEntries, setDocEntries] = useState<DocGenEntry[]>([]);
+  const [docPage, setDocPage] = useState(0);
+  const [docLoading, setDocLoading] = useState(false);
 
   // --- Fetch functions ---
 
@@ -232,6 +255,31 @@ export default function AdminUsagePage() {
     [],
   );
 
+  const fetchDocGen = useCallback(
+    async (page: number, userId?: number | null) => {
+      setDocLoading(true);
+      try {
+        const skip = page * PAGE_SIZE;
+        let url = `/api/admin/usage/recent?skip=${skip}&limit=${PAGE_SIZE}&interface=${DOC_GEN_INTERFACE}`;
+        if (userId != null) url += `&user_id=${userId}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data: { entries: DocGenEntry[] } = await res.json();
+          if (userId != null) {
+            setUserDocEntries(data.entries);
+          } else {
+            setDocEntries(data.entries);
+          }
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        setDocLoading(false);
+      }
+    },
+    [],
+  );
+
   const fetchUserDetail = useCallback(
     async (userId: number, numDays: number) => {
       setUserDetailLoading(true);
@@ -258,12 +306,21 @@ export default function AdminUsagePage() {
       fetchByUser(days),
       fetchDailyByUser(days),
       fetchRecent(0),
+      fetchDocGen(0),
     ]).then(() => setLoading(false));
-  }, [days, fetchSummary, fetchByUser, fetchDailyByUser, fetchRecent]);
+  }, [
+    days,
+    fetchSummary,
+    fetchByUser,
+    fetchDailyByUser,
+    fetchRecent,
+    fetchDocGen,
+  ]);
 
   function handleDaysChange(newDays: number) {
     setDays(newDays);
     setRecentPage(0);
+    setDocPage(0);
   }
 
   function handleSelectUser(userId: number | null) {
@@ -271,8 +328,10 @@ export default function AdminUsagePage() {
     setSelectedUserId(userId);
     setTab("detail");
     setUserRecentPage(0);
+    setUserDocPage(0);
     fetchUserDetail(userId, days);
     fetchRecent(0, userId);
+    fetchDocGen(0, userId);
   }
 
   function handleBackToPerUser() {
@@ -280,6 +339,7 @@ export default function AdminUsagePage() {
     setSelectedUserId(null);
     setUserDetail(null);
     setUserRecentThreads([]);
+    setUserDocEntries([]);
   }
 
   // Compute totals
@@ -374,6 +434,13 @@ export default function AdminUsagePage() {
             setRecentPage(p);
             fetchRecent(p);
           }}
+          docEntries={docEntries}
+          docPage={docPage}
+          docLoading={docLoading}
+          onDocPageChange={(p) => {
+            setDocPage(p);
+            fetchDocGen(p);
+          }}
         />
       )}
       {tab === "per-user" && (
@@ -397,6 +464,13 @@ export default function AdminUsagePage() {
             setUserRecentPage(p);
             fetchRecent(p, selectedUserId);
           }}
+          docEntries={userDocEntries}
+          docPage={userDocPage}
+          docLoading={docLoading}
+          onDocPageChange={(p) => {
+            setUserDocPage(p);
+            fetchDocGen(p, selectedUserId);
+          }}
         />
       )}
     </div>
@@ -411,12 +485,20 @@ function OverviewTab({
   recentPage,
   recentLoading,
   onPageChange,
+  docEntries,
+  docPage,
+  docLoading,
+  onDocPageChange,
 }: {
   summary: UsageSummary | null;
   recentThreads: RecentThread[];
   recentPage: number;
   recentLoading: boolean;
   onPageChange: (p: number) => void;
+  docEntries: DocGenEntry[];
+  docPage: number;
+  docLoading: boolean;
+  onDocPageChange: (p: number) => void;
 }) {
   const pieData = (summary?.by_interface ?? []).map((r) => ({
     name: r.interface,
@@ -569,12 +651,20 @@ function OverviewTab({
         </table>
       </div>
 
-      {/* Recent Threads */}
+      {/* Recent Threads (RAG) */}
       <RecentThreadsTable
         entries={recentThreads}
         page={recentPage}
         loading={recentLoading}
         onPageChange={onPageChange}
+      />
+
+      {/* Recent Doc Generation */}
+      <DocGenerationTable
+        entries={docEntries}
+        page={docPage}
+        loading={docLoading}
+        onPageChange={onDocPageChange}
       />
     </div>
   );
@@ -726,6 +816,10 @@ function UserDetailTab({
   recentLoading,
   onBack,
   onPageChange,
+  docEntries,
+  docPage,
+  docLoading,
+  onDocPageChange,
 }: {
   detail: UserDetailUsage | null;
   loading: boolean;
@@ -734,6 +828,10 @@ function UserDetailTab({
   recentLoading: boolean;
   onBack: () => void;
   onPageChange: (p: number) => void;
+  docEntries: DocGenEntry[];
+  docPage: number;
+  docLoading: boolean;
+  onDocPageChange: (p: number) => void;
 }) {
   if (loading) {
     return <p className="text-gray-400 p-4">Loading user detail...</p>;
@@ -864,6 +962,15 @@ function UserDetailTab({
         onPageChange={onPageChange}
         title="Recent Threads (this user)"
       />
+
+      {/* Recent Doc Generation for this user */}
+      <DocGenerationTable
+        entries={docEntries}
+        page={docPage}
+        loading={docLoading}
+        onPageChange={onDocPageChange}
+        title="Recent Doc Generation (this user)"
+      />
     </div>
   );
 }
@@ -972,6 +1079,138 @@ function RecentThreadsTable({
                       className="px-3 py-6 text-center text-gray-400"
                     >
                       No recent threads
+                    </td>
+                  </tr>
+                )}
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between mt-3">
+        <p className="text-xs text-gray-500">
+          Page {page + 1}
+          {entries.length > 0 && ` (showing ${entries.length} entries)`}
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => onPageChange(page - 1)}
+            disabled={page === 0 || loading}
+            className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Previous
+          </button>
+          <button
+            onClick={() => onPageChange(page + 1)}
+            disabled={entries.length < PAGE_SIZE || loading}
+            className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DocGenerationTable({
+  entries,
+  page,
+  loading,
+  onPageChange,
+  title = "Recent Doc Generation",
+}: {
+  entries: DocGenEntry[];
+  page: number;
+  loading: boolean;
+  onPageChange: (p: number) => void;
+  title?: string;
+}) {
+  return (
+    <div className="bg-white border rounded-lg p-4">
+      <h3 className="text-sm font-semibold text-gray-700 mb-3">{title}</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b">
+            <tr>
+              <th className="text-left px-3 py-2 font-medium text-gray-600">
+                ID
+              </th>
+              <th className="text-left px-3 py-2 font-medium text-gray-600">
+                User
+              </th>
+              <th className="text-left px-3 py-2 font-medium text-gray-600">
+                Document / Prompt
+              </th>
+              <th className="text-left px-3 py-2 font-medium text-gray-600">
+                Model
+              </th>
+              <th className="text-right px-3 py-2 font-medium text-gray-600">
+                Tokens
+              </th>
+              <th className="text-right px-3 py-2 font-medium text-gray-600">
+                Cost
+              </th>
+              <th className="text-right px-3 py-2 font-medium text-gray-600">
+                Latency
+              </th>
+              <th className="text-left px-3 py-2 font-medium text-gray-600">
+                Time
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={8} className="px-3 py-6 text-center text-gray-400">
+                  Loading...
+                </td>
+              </tr>
+            ) : (
+              <>
+                {entries.map((e) => (
+                  <tr key={e.id} className="border-b last:border-0">
+                    <td className="px-3 py-2 text-gray-500">{e.id}</td>
+                    <td className="px-3 py-2 text-gray-600">
+                      {e.user_id != null ? `#${e.user_id}` : "-"}
+                    </td>
+                    <td
+                      className="px-3 py-2 text-gray-600 max-w-xs truncate"
+                      title={e.query_text || undefined}
+                    >
+                      {e.query_text || "-"}
+                    </td>
+                    <td className="px-3 py-2 text-gray-600 text-xs">
+                      {e.model_name || "-"}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600 text-xs">
+                      {e.input_tokens != null
+                        ? formatNumber(e.input_tokens)
+                        : "-"}
+                      {" / "}
+                      {e.output_tokens != null
+                        ? formatNumber(e.output_tokens)
+                        : "-"}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600 text-xs">
+                      {e.cost_usd != null ? formatCost(e.cost_usd) : "-"}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600 text-xs">
+                      {e.latency_ms != null ? `${e.latency_ms}ms` : "-"}
+                    </td>
+                    <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">
+                      {new Date(e.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+                {entries.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={8}
+                      className="px-3 py-6 text-center text-gray-400"
+                    >
+                      No doc generation activity
                     </td>
                   </tr>
                 )}
