@@ -17,10 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "generate_runs",
-        sa.Column("model_name", sa.String(100), nullable=True),
-    )
+    op.execute("ALTER TABLE generate_runs ADD COLUMN IF NOT EXISTS model_name VARCHAR(100)")
 
 
 def downgrade() -> None:

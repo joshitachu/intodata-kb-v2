@@ -266,11 +266,30 @@ class Phase1Investigation(Phase):
 
             return missing_chunk, chunk_reports
 
+        # Scoped reingestion: only investigate groups that Phase 2 will actually
+        # regenerate. Unchanged groups had their analysis restored from cache by
+        # incremental staging (present under _analysis/), so re-investigating them
+        # is wasted LLM work — Phase 2 reuses the cached analysis and Phase 3 reads
+        # it directly. The investigation-coverage check downstream is non-blocking.
+        def _should_investigate(group: str) -> bool:
+            if ctx.scoped_docs is None:
+                return True
+            analysis_path = ctx.staging_dir / "_analysis" / f"{group}.md"
+            return not (analysis_path.exists() and analysis_path.stat().st_size > 500)
+
+        groups_to_investigate = [g for g in ctx.preprocess_groups if _should_investigate(g)]
+        for skipped in (g for g in ctx.preprocess_groups if g not in groups_to_investigate):
+            await log_cb(
+                ctx.project_id,
+                f"[custom] REUSE: skipping Phase 1 investigation for {skipped} (unchanged group; cached analysis)",
+                "info",
+            )
+
         group_results = await asyncio.gather(
-            *[_investigate_group(g) for g in ctx.preprocess_groups]
+            *[_investigate_group(g) for g in groups_to_investigate]
         )
 
-        for group, (missing_chunk, chunk_reports) in zip(ctx.preprocess_groups, group_results):
+        for group, (missing_chunk, chunk_reports) in zip(groups_to_investigate, group_results):
             if missing_chunk:
                 failed_groups.add(group)
 
@@ -295,7 +314,7 @@ class Phase1Investigation(Phase):
                 {"group": group},
             )
 
-        if len(failed_groups) >= len(ctx.preprocess_groups):
+        if groups_to_investigate and len(failed_groups) >= len(groups_to_investigate):
             return PhaseResult(
                 phase_name=self.name,
                 success=False,

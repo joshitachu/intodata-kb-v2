@@ -3,6 +3,36 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-07-02
+
+### [Feature + Fix]: Living-Document Reingestion (Slices 1-5) + live-E2E bug fixes
+
+- **Files changed** (from `git diff --stat HEAD`; all uncommitted working tree):
+  - `docker-compose.yml` (added `MCP_IMPACT_ROUTING_ENABLED` env, default false)
+  - `knowledge_base/mcp-server/src/mcp_server/config.py` (flag + doc-version-history path constants)
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` (S5 manual full-rebuild endpoint + per-project scan output_dir already correct)
+  - `knowledge_base/mcp-server/src/mcp_server/schemas.py` (S5 `FullRebuildRequest`, reingestion-status drift fields)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/harness.py` (#3b Phase 2 REUSE for scoped runs, both dispatch sites)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/pipeline/phases/phase1_investigation.py` (#3c Phase 1 investigation scoped to changed groups)
+  - `knowledge_base/mcp-server/src/mcp_server/services/auto_doc_update.py` (Bug2 truthful skip via outcome_sink; #6 touched_docs = actual regenerated set; S1/S4 wiring)
+  - `knowledge_base/mcp-server/src/mcp_server/services/claude_service.py` (#3a do not wipe restored incremental staging on scoped runs)
+  - `knowledge_base/mcp-server/src/mcp_server/services/git_reingestion.py` (Bug1 per-project scan `output_dir`; Bug2 `outcome_sink` skip/regenerated reporting; #6 regenerated_docs; S1 ImpactRouter scoping + `full_rederive`)
+  - `knowledge_base/mcp-server/src/mcp_server/services/reingestion_router.py` (S1 retire doc-count thresholds under flag; path-fail -> scoped not full)
+  - `knowledge_base/mcp-server/src/mcp_server/services/true_patch_executor.py` (S2 G5 diff-fidelity guard integration; S3 Phase 3b synthesis amendment + G6 removal check)
+  - `knowledge_base/mcp-server/src/mcp_server/services/patch_section_map.py` (S3 shared `extract_h2_sections`)
+  - New: `services/impact_router.py` (S1), `services/diff_fidelity_guard.py` (S2), `services/synthesis_impact_mapper.py` (S3), `services/doc_version_history.py` (S4), `services/drift_summary.py` (S5)
+  - New prompt templates: `data/prompt_templates/phase3_synthesis_patch.md` (S3). (`phase2_patch.md`, `phase3_patch.md` were pre-existing untracked before this session.)
+  - New/updated tests: `test_services/test_impact_router.py`, `test_diff_fidelity_guard.py`, `test_synthesis_impact_mapper.py`, `test_doc_version_history.py`, `test_drift_summary.py`, `test_no_automatic_full_rebuild.py`, `test_api/test_reingestion_drift.py`, plus additions to `test_git_reingestion.py`, `test_reingestion_router.py`, `test_auto_doc_update.py`, `test_true_patch_executor.py`
+  - NOT this session (pre-existing dirty/untouched): `alembic/versions/003_add_model_name.py`, `model_strategies/strategies.py`, `docs/CONTAINER_TOPOLOGY_FOR_TERRAFORM.md`
+- **Problem**: Reingestion cost did not scale with change size. Follow-up to merged "Smart Reingestion": the impact machinery existed but the threshold/path router was still the front-line driver, and live E2E exposed that reingestion silently did nothing while reporting success.
+- **Root cause** (found via live Docker E2E on `reingest-drill`, not unit tests):
+  - **Bug 1**: `run_git_reingestion` called `run_scan` without `output_dir`, so scans wrote to the ROOT `intodoc_output_dir` while the fingerprint read the per-project dir -> compared new code against a stale scan -> empty dirty-set -> skipped everything.
+  - **Bug 2**: on a (wrongly) empty dirty-set the flow reported `targeted_regen` success, wrote a phantom change-history entry, bumped drift, and advanced the ingested SHA -- marking a push done with docs never touched.
+  - **#3**: even when scoped, `generate_docs` WIPED the restored incremental staging when resume-state wasn't detected (#3a), and Phase 1/Phase 2 re-ran on ALL groups (#3b/#3c) -- so "incremental" cost ~= full.
+- **Change**: Built S1-S5 (impact router + threshold retirement, diff-fidelity guard, synthesis-doc amendment, versioning/history, drift + manual-only rebuild). Then fixed Bug1 (per-project output_dir), Bug2 (outcome_sink truthful skip; skip writes no history, holds SHA), #3a (preserve staging when `scoped_docs` set), #3b (Phase 2 reuses unchanged groups' cached analysis on scoped runs), #3c (Phase 1 investigation skips unchanged groups), #6 (report actual regenerated doc set).
+- **Why this approach**: `outcome_sink` is a backward-compatible optional param (default None) so the bool return contract and all existing tests are unchanged. Phase 2/1 reuse is gated on `ctx.scoped_docs is not None` and leverages the existing incremental-staging mechanism (unchanged groups' analyses restored, changed groups' deleted) rather than the fragile resume-state detection.
+- **Verification**: `test_services` suite green throughout (`484 passed`, 1 pre-existing `intodoc` env failure). Live Docker E2E on `reingest-drill` with deepseek: Bug1 fixed (changes detected), Bug2 fixed (failed run held SHA `b67f89e`, `manual_review`, 0 phantom entries), #3a proven (`Resume state detected: analysis_files=['config','root','sql']`), #3b PROVEN (`REUSE: skipping Phase 2 for config/root/sql`, only `scripts` regenerated). GAP: no fully-green completed run (both real runs died on deepseek `402 Insufficient Balance` -- external); #3c deployed + service-tested but not observed live; harness changes not locally unit-testable (need `intodoc`/model deps); full `uv run pytest -q` still owed in a real dev env. Nothing git-committed.
+
 ## Session: 2026-06-19
 
 ### [Feature/Fix]: Reingestion Reliability Slice 5 - end-to-end smoke path and operator status

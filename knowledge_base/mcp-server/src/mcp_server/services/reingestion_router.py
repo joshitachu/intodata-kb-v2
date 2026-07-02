@@ -44,6 +44,7 @@ from mcp_server.services.group_doc_dependency import (
     DOC_PACK_MANIFEST_FILENAME,
     GroupDocDependency,
 )
+from mcp_server.services.impact_router import ImpactRouter
 from mcp_server.services.quick_change_scanner import QuickScanReport
 from mcp_server.services.rag_support_package import RAG_SUPPORT_DIRNAME
 
@@ -201,7 +202,16 @@ class ReingestionRouter:
         manifest_present = dependency is not None
         affected = self._affected_docs(dependency, changed_groups)
 
-        if dependency is None or not changed_groups or not affected:
+        # Slice 1: under impact routing the fingerprint dirty-set (inside
+        # run_git_reingestion) is the authoritative Phase 3 scope. The doc-count
+        # thresholds and the "path resolution failed -> full" fallback are retired
+        # here. Flag off -> the branches below are byte-identical to the legacy
+        # decision table.
+        impact_mode = config.impact_routing_enabled
+
+        # A missing provenance manifest is a genuine, reasoned full regeneration
+        # (traceability unavailable) in both modes.
+        if dependency is None:
             return self._full.build(
                 affected_docs=affected,
                 changed_groups=changed_groups,
@@ -210,7 +220,31 @@ class ReingestionRouter:
                 reason=self._full_regen_reason(dependency, changed_groups, affected),
             )
 
-        if len(affected) > self._full_regen_threshold:
+        # Groups unresolved by path, or resolved but mapping to no docs.
+        if not changed_groups or not affected:
+            if impact_mode:
+                # Do NOT force full: the path resolver is not the driver. Delegate
+                # the real scope to the fingerprint dirty-set downstream.
+                return self._scoped.build(
+                    affected_docs=affected,
+                    changed_groups=changed_groups,
+                    structural=structural,
+                    manifest_present=manifest_present,
+                    reason=(
+                        "Impact routing: change unresolved by path; scope "
+                        "delegated to the fingerprint dirty-set"
+                    ),
+                )
+            return self._full.build(
+                affected_docs=affected,
+                changed_groups=changed_groups,
+                structural=structural,
+                manifest_present=manifest_present,
+                reason=self._full_regen_reason(dependency, changed_groups, affected),
+            )
+
+        # Doc-count full-regen threshold: retired under impact routing.
+        if not impact_mode and len(affected) > self._full_regen_threshold:
             return self._full.build(
                 affected_docs=affected,
                 changed_groups=changed_groups,
@@ -229,6 +263,18 @@ class ReingestionRouter:
                 structural=True,
                 manifest_present=manifest_present,
                 reason="Structural change (unit add/remove) -> scoped regeneration",
+            )
+
+        # Non-structural in-file edits. Under impact routing these always take the
+        # patch lane regardless of doc count (the count gate is retired); the
+        # patch executor scopes and safely falls back to scoped regen on its own.
+        if impact_mode:
+            return self._bounded.build(
+                affected_docs=affected,
+                changed_groups=changed_groups,
+                structural=False,
+                manifest_present=manifest_present,
+                reason="Impact routing: in-file edits -> patch lane",
             )
 
         if len(affected) <= self._max_patch_docs:
@@ -370,13 +416,12 @@ class ReingestionRouter:
     def _affected_docs(
         dependency: GroupDocDependency | None, changed_groups: list[str]
     ) -> list[str]:
-        if dependency is None:
-            return []
-        affected: set[str] = set()
-        for group in changed_groups:
-            affected |= dependency.docs_for_group(group)
-        affected |= dependency.cross_cutting_docs()
-        return sorted(affected)
+        # Delegate the (docs_for_group union cross_cutting) resolution to the pure
+        # ImpactRouter so the union logic lives in one place (Slice 1, REC-1).
+        # ImpactRouter yields an empty list for a missing manifest, matching the
+        # prior contract here (the None manifest case is handled separately in
+        # ``decide`` via ``manifest_present``).
+        return ImpactRouter.plan(set(changed_groups), dependency).targeted_docs
 
     @staticmethod
     def _load_dependency(output_dir: Path) -> GroupDocDependency | None:

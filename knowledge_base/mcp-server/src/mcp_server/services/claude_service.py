@@ -1024,7 +1024,12 @@ Required sections:
         if resume and staging_dir.exists():
             resume_state = self._detect_resume_state(staging_dir)
 
-        if resume_state is None:
+        # A scoped reingestion (scoped_docs set) arrives with incremental staging
+        # already prepared by setup_incremental_staging: the unchanged groups'
+        # analyses are restored under _analysis/ and only the changed groups were
+        # removed. Wiping here would delete those restored analyses and force a
+        # full Phase 1/2 regeneration of every group. Preserve them.
+        if resume_state is None and scoped_docs is None:
             # Fresh run — wipe any leftover staging, preserving the active lock.
             for child in list(staging_dir.iterdir()) if staging_dir.exists() else []:
                 if child.name == ".generation.lock":

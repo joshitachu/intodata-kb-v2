@@ -12,6 +12,7 @@ from pathlib import Path
 
 from mcp_server.config import config
 from mcp_server.db.session import async_session_factory
+from mcp_server.services.doc_version_history import record_push_outcome
 from mcp_server.services.git_diff_patcher import _is_ignored_path
 from mcp_server.services.git_remote_service import pull_remote_ff_only, run_git
 from mcp_server.services.log_manager import LogManager
@@ -20,6 +21,7 @@ from mcp_server.services.group_doc_dependency import (
     DOC_PACK_MANIFEST_FILENAME,
     GroupDocDependency,
 )
+from mcp_server.services.impact_router import ImpactRouter
 from mcp_server.services.rag_support_package import (
     RAG_SUPPORT_DIRNAME,
     inspect_generation_cache_readiness,
@@ -79,13 +81,31 @@ async def run_git_reingestion(
     triggered_by: str,
     log_mgr: LogManager,
     targeted_docs: list[str] | None = None,
+    full_rederive: bool = False,
+    outcome_sink: dict | None = None,
 ) -> bool:
     """Pull latest code, scan, regenerate docs, sync RAG, then record after SHA.
 
     ``targeted_docs`` (Slice 3) restricts Phase 3 to exactly those documents
     (names without ``.md``); unaffected docs are preserved byte-stable from the
     prior baseline. ``None`` means full regeneration (no Phase 3 doc filter).
+
+    ``full_rederive`` (Slice 1) forces a full Phase 3 regeneration regardless of
+    the impact map -- the explicit, deliberate path for a first push or an
+    operator-triggered rebuild. When ``config.impact_routing_enabled`` is set and
+    ``full_rederive`` is False, the Phase 3 document set is derived from the
+    fingerprint dirty-set via ``ImpactRouter`` (not from the passed-in
+    ``targeted_docs``, which came from the legacy path/threshold router).
+
+    ``outcome_sink`` (optional): when provided, this function records whether it
+    actually regenerated (``{"skipped": False}``) or skipped without generating
+    (``{"skipped": True}`` -- fingerprint unchanged or infra-only push). Callers
+    use this to avoid reporting a ``targeted_regen`` that never ran. Default
+    ``None`` preserves the bool-only contract for existing callers/tests.
     """
+    def _mark(skipped: bool) -> None:
+        if outcome_sink is not None:
+            outcome_sink["skipped"] = skipped
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
@@ -131,10 +151,16 @@ async def run_git_reingestion(
 
     scanner = ScannerService(log_manager=log_mgr)
     log_mgr.reset_log_file(project_id)
+    # Write scan output to the PER-PROJECT dir (intodoc_output_dir/{project_id}),
+    # the same location the fingerprint diff and generation read from. Without an
+    # explicit output_dir, run_scan defaults to the root intodoc_output_dir, so the
+    # fresh scan lands in the wrong place and the fingerprint compares against a
+    # stale per-project snapshot -> misses all changes. Mirrors _run_scan_background.
     result = await scanner.run_scan(
         project_id=project_id,
         repo_path=local_path,
         platform=platform,
+        output_dir=str(config.intodoc_output_dir / project_id),
     )
 
     async with async_session_factory() as db:
@@ -207,6 +233,7 @@ async def run_git_reingestion(
             "Fingerprint diff: no scan groups changed; skipping regeneration",
             level="info",
         )
+        _mark(skipped=True)
         return True
 
     changed_groups = dirty_groups
@@ -227,6 +254,7 @@ async def run_git_reingestion(
             "Git re-ingestion skipped: all changed files are ignored (infra/docs/CI)",
             level="info",
         )
+        _mark(skipped=True)
         return True
 
     # NOTE(S1): resolve_changed_groups superseded by ScanFingerprintService;
@@ -241,7 +269,23 @@ async def run_git_reingestion(
     )
     # affected_docs_preview is computed over the FULL dirty set for reporting.
     affected_docs_preview = _affected_docs_from_dependency(dependency, changed_groups)
-    scoped_docs: set[str] | None = set(targeted_docs) if targeted_docs else None
+
+    # --- Slice 1: fingerprint dirty-set drives the Phase 3 document set ---
+    # Under impact routing, the Phase 3 scope comes from the fingerprint dirty-set
+    # via the provenance map (NOT the legacy path/threshold router's targeted_docs).
+    # A first push or an explicit full_rederive request forces full regeneration;
+    # a dirty-set that maps to no docs (missing manifest / unmapped) also falls
+    # back to full regeneration (scoped_docs=None) rather than regenerating zero
+    # docs. Flag off -> byte-identical legacy behaviour.
+    if config.impact_routing_enabled and not full_rederive and not is_first_push:
+        impact_plan = ImpactRouter.plan(dirty_groups, dependency)
+        scoped_docs: set[str] | None = (
+            set(impact_plan.targeted_docs) if impact_plan.targeted_docs else None
+        )
+    elif full_rederive:
+        scoped_docs = None
+    else:
+        scoped_docs = set(targeted_docs) if targeted_docs else None
 
     # --- Slice 3: classify dirty groups and partition into scoped/patch lanes ---
     group_delta_classifications = classify_dirty_groups(
@@ -415,6 +459,18 @@ async def run_git_reingestion(
         registry = ProjectRegistry(db)
         project = await registry.get_project(project_id)
         if project and project.status == "ready" and project.error_message is None:
+            # Report the docs actually regenerated (fingerprint-derived scope) so the
+            # caller records truthful touched_docs, not the router's path-based
+            # estimate. None scoped_docs == full regen (all published docs).
+            if outcome_sink is not None:
+                if scoped_docs:
+                    outcome_sink["regenerated_docs"] = sorted(scoped_docs)
+                else:
+                    docs_dir_now = output_dir / "docs"
+                    outcome_sink["regenerated_docs"] = (
+                        sorted(p.stem for p in docs_dir_now.glob("*.md"))
+                        if docs_dir_now.is_dir() else []
+                    )
             if project.last_ingested_commit_sha != after_sha:
                 await registry.update_last_ingested_commit(project_id, after_sha)
             if affected_docs_preview is not None:
@@ -445,7 +501,31 @@ async def run_git_reingestion(
             await prime_reingestion_baseline(
                 db, project_id, output_dir, current_hashes=current_hashes
             )
+            if full_rederive:
+                # Slice 5 (US-7/US-8): this is the ONE call site (besides the
+                # `full_rederive` default itself) that can reach this branch --
+                # see critique.md Attack 1. Record the manual-rebuild history
+                # entry here (this path bypasses AutoDocUpdateService, so
+                # record_push_outcome is not otherwise reached for it) and
+                # persist the summary so the reingestion-status surface can
+                # report the reset immediately.
+                docs_dir = output_dir / "docs"
+                touched_docs = (
+                    sorted(p.name for p in docs_dir.glob("*.md"))
+                    if docs_dir.is_dir()
+                    else []
+                )
+                manual_summary = _manual_full_rebuild_summary(
+                    project_id=project_id,
+                    before_sha=before_sha,
+                    after_sha=after_sha,
+                    triggered_by=triggered_by,
+                    touched_docs=touched_docs,
+                )
+                record_push_outcome(project_id, manual_summary)
+                await registry.update_git_update_summary(project_id, manual_summary)
             await db.commit()
+            _mark(skipped=False)
             return True
         await db.commit()
     return False
@@ -743,6 +823,41 @@ def setup_incremental_staging(
     )
 
 
+def _manual_full_rebuild_summary(
+    *,
+    project_id: str,
+    before_sha: str,
+    after_sha: str,
+    triggered_by: str,
+    touched_docs: list[str],
+) -> dict[str, object]:
+    """Build the git-update summary for a successful manual full rebuild.
+
+    ``reason_code`` is assigned UNCONDITIONALLY here (never derived from
+    ``triggered_by``, which is caller-supplied free text) -- this is the
+    single, structural signal ``services/drift_summary.compute_drift_summary``
+    uses to reset the drift counters (Slice 5, US-7/US-8). Keying the reset
+    on the code path (this function, only reachable when ``full_rederive``
+    is True) rather than on a string convention closes the "smuggled reset"
+    risk analyzed in .plans/slice-5-drift-manual-rebuild/critique.md
+    (Attack 3).
+    """
+    return {
+        "trigger": triggered_by,
+        "mode": "git_reingestion",
+        "action": "full_regen",
+        "outcome": "full_regen",
+        "reason_code": config.manual_full_rebuild_reason_code,
+        "decision_strategy": "manual_full_rebuild",
+        "project_id": project_id,
+        "before": before_sha,
+        "after": after_sha,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "reason": "Operator-triggered manual full rebuild",
+        "touched_docs": list(touched_docs),
+    }
+
+
 def _skip_summary(
     project_id: str,
     before_sha: str,
@@ -828,19 +943,17 @@ def _affected_docs_from_dependency(
 ) -> list[str] | None:
     """Map changed groups to their docs (+ cross-cutting) via the provenance map.
 
+    Delegates to the pure ``ImpactRouter`` so the (docs_for_group union
+    cross_cutting) resolution lives in exactly one place (Slice 1, REC-1).
+
     Returns None when no manifest exists (pre-baseline) so callers know the
     preview is unavailable rather than empty; an empty list when groups resolve
     but map to no docs.
     """
-    if dependency is None:
+    plan = ImpactRouter.plan(set(changed_groups), dependency)
+    if plan.manifest_missing:
         return None
-    if not changed_groups:
-        return []
-    affected: set[str] = set()
-    for group in changed_groups:
-        affected |= dependency.docs_for_group(group)
-    affected |= dependency.cross_cutting_docs()
-    return sorted(affected)
+    return plan.targeted_docs
 
 
 def _full_rebaseline_reason(reason_codes: list[str]) -> str:

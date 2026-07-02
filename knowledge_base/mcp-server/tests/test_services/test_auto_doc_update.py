@@ -73,8 +73,10 @@ async def test_auto_doc_update_skip_advances_commit_and_persists_summary(
     log_manager,
 ):
     import mcp_server.services.auto_doc_update as auto_doc_update
+    from mcp_server.config import config
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
 
     calls: list[tuple[str, ...]] = []
 
@@ -119,6 +121,14 @@ async def test_auto_doc_update_skip_advances_commit_and_persists_summary(
         assert project.git_update_summary["outcome"] == "skip"
         assert project.git_update_summary["reason_code"] == "non_doc_change"
 
+    # Slice 4 (US-9) AC3: a skip push touches no documents -> no change-history
+    # entry, no history file at all.
+    from mcp_server.services.doc_version_history import DocVersionHistoryRepository
+
+    repo = DocVersionHistoryRepository("proj", tmp_path / "output" / "proj")
+    assert not repo.history_path.exists()
+    assert not repo.sidecar_path.exists()
+
 
 async def test_auto_doc_update_true_patch_success(
     session_factory,
@@ -129,8 +139,12 @@ async def test_auto_doc_update_true_patch_success(
     """Slice 4 true patch: TruePatchExecutor returns action='true_patch' -> commit advances."""
     import mcp_server.services.auto_doc_update as auto_doc_update
     from mcp_server.services.true_patch_executor import PatchResult
+    from mcp_server.config import config
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
+    # Slice 4: a bounded_patch outcome with touched_docs writes a change-history
+    # entry under output/{project_id}/ -- keep it off the real repo tree.
+    monkeypatch.setattr(config, "project_root", tmp_path)
 
     async def git_stub(local_path: str, *args: str) -> str:
         if args[:2] == ("diff", "--name-status"):
@@ -208,6 +222,22 @@ async def test_auto_doc_update_true_patch_success(
         assert project.git_update_summary["outcome"] == "bounded_patch"
         assert project.git_update_summary["reason_code"] == "true_patch_succeeded"
         assert project.git_update_summary["touched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
+
+    # Slice 4 (US-9): the true_patch outcome is a confirmed write -> exactly
+    # one change-history entry, and the rollback lookup resolves the touched
+    # doc to this push's commit range.
+    from mcp_server.services.doc_version_history import CommitRange, DocVersionHistoryRepository
+
+    repo = DocVersionHistoryRepository("proj", tmp_path / "output" / "proj")
+    entries = repo.read_all()
+    assert len(entries) == 1
+    assert entries[0]["outcome"] == "bounded_patch"
+    assert entries[0]["before_sha"] == "a" * 40
+    assert entries[0]["after_sha"] == "b" * 40
+    assert entries[0]["touched_docs"] == ["04_BUSINESS_RULES_AND_TRANSFORMATIONS.md"]
+    assert repo.resolve("04_BUSINESS_RULES_AND_TRANSFORMATIONS.md") == CommitRange(
+        before_sha="a" * 40, after_sha="b" * 40
+    )
 
 
 async def test_auto_doc_update_scoped_regen_threads_targeted_docs(
@@ -449,8 +479,10 @@ async def test_auto_doc_update_true_patch_scoped_regen_fallback_gates_reingestio
     _scoped_regen; without a cache/support tree the preflight gates run_git_reingestion."""
     import mcp_server.services.auto_doc_update as auto_doc_update
     from mcp_server.services.true_patch_executor import PatchResult
+    from mcp_server.config import config
 
     monkeypatch.setattr(auto_doc_update, "async_session_factory", session_factory)
+    monkeypatch.setattr(config, "project_root", tmp_path)
 
     async def git_stub(local_path: str, *args: str) -> str:
         if args[:2] == ("diff", "--name-status"):
@@ -523,3 +555,11 @@ async def test_auto_doc_update_true_patch_scoped_regen_fallback_gates_reingestio
         assert project.git_update_summary["requires_full_rebaseline"] is True
         assert project.git_update_summary["fallback_used"] is False
         assert project.git_update_summary["regen_result"]["skipped"] is True
+
+    # Slice 4 (US-9): manual_review is not a confirmed write outcome, even
+    # though its summary carries a candidate touched_docs list -- no
+    # change-history entry (see doc_version_history.WRITE_OUTCOMES).
+    from mcp_server.services.doc_version_history import DocVersionHistoryRepository
+
+    repo = DocVersionHistoryRepository("proj", tmp_path / "output" / "proj")
+    assert not repo.history_path.exists()

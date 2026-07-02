@@ -27,6 +27,7 @@ from mcp_server.services.git_reingestion import (
     resolve_changed_groups,
     run_git_reingestion,
 )
+from mcp_server.services.doc_version_history import record_push_outcome
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.reingestion_router import ReingestionRouter, RoutingDecision
@@ -589,6 +590,7 @@ class AutoDocAgentRuntime:
         await self.log_mgr.emit(
             ctx.project_id, f"Auto-doc {action_label} regeneration: {reason}", "warning"
         )
+        regen_sink: dict[str, Any] = {}
         ok = await run_git_reingestion(
             ctx.project_id,
             before_sha,
@@ -596,7 +598,20 @@ class AutoDocAgentRuntime:
             triggered_by=trigger,
             log_mgr=self.log_mgr,
             targeted_docs=targeted_docs,
+            outcome_sink=regen_sink,
         )
+        # Bug fix: run_git_reingestion may SKIP (fingerprint unchanged / infra-only)
+        # instead of regenerating. Report that truthfully as a skip rather than a
+        # targeted_regen that never ran -- otherwise the change history records a
+        # phantom amendment, the drift counter over-counts, and the commit is
+        # marked done while docs are untouched.
+        if ok and regen_sink.get("skipped"):
+            return await self._skip(
+                ctx,
+                after_sha,
+                {**summary, **decision.to_impact_dict()},
+                "Scan fingerprint unchanged; no regeneration performed",
+            )
         final_summary = self._finalize_summary(
             {
                 **summary,
@@ -615,7 +630,13 @@ class AutoDocAgentRuntime:
             },
             action=action_label if ok else "manual_review",
             reason=reason if ok else f"Regeneration failed: {reason}",
-            touched_docs=list(decision.affected_docs),
+            # Prefer the actual regenerated set reported by run_git_reingestion over
+            # the router's path-based estimate, so history/telemetry are accurate.
+            touched_docs=(
+                regen_sink.get("regenerated_docs")
+                if ok and regen_sink.get("regenerated_docs") is not None
+                else list(decision.affected_docs)
+            ),
         )
         if ok:
             return DiffPatchResult(action=action_label, summary=final_summary, advance_commit=False)
@@ -787,6 +808,14 @@ class AutoDocUpdateService:
         after_sha: str,
         result: DiffPatchResult,
     ) -> None:
+        # Slice 4 (US-9): this is the single choke point every webhook/poller
+        # push flows through exactly once (AutoDocUpdateService.run() is the
+        # sole entrypoint -- see git_reingestion.run_git_reingestion, which is
+        # only ever reached via this class's _scoped_regen). result.summary is
+        # already the finalized, normalized outcome summary (before/after
+        # SHAs, outcome, touched_docs, reason_code), so it is reused directly
+        # as the change-history source of truth rather than recomputed.
+        record_push_outcome(project_id, result.summary)
         async with async_session_factory() as db:
             registry = ProjectRegistry(db)
             await registry.update_git_update_summary(project_id, result.summary, error=result.error)

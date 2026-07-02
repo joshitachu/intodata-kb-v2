@@ -12,21 +12,46 @@ True patch lane flow
    (Option A -- single-writer ADR preserved).
 5. Call ``replace_analysis_cache_from_rag_support()`` ONCE to rebuild the
    flat ``analysis_cache/`` (sole ADR writer; no crash window).
-6. Patch affected Phase 3 docs by heading replacement; G2/G2a validate;
-   push to RAG.
+6. Patch affected Phase 3 (group-scoped) docs by heading replacement;
+   G2/G2a validate; push to RAG.
+7. Patch affected Phase 3 SUMMARY/cross-cutting docs (Living-Document
+   Reingestion Slice 3) -- documents with no owning group, e.g.
+   ``09_EXECUTIVE_SUMMARY`` (``GroupDocDependency.cross_cutting_docs()``).
+   ``SynthesisImpactMapper`` maps each patched group's delta to the
+   specific ``## Heading`` sections of the summary doc that reference it;
+   only those headings are rewritten (same heading-replacement + G2/G2a
+   mechanism as step 6, plus G5 and a removal-completeness check). A
+   summary document that cannot be safely mapped is left untouched and
+   reported in ``PatchResult.summary["synthesis_fallback_docs"]`` for
+   scoped-local re-derivation of that document alone -- never a whole-repo
+   rebuild. See ``services/synthesis_impact_mapper.py``.
 
 Any per-group failure falls back to scoped_regen for that group.  Patch-
 succeeded groups are never re-patched.
 
 Guardrails
 ----------
-G2  BR-{GROUP}-NNN tag sets in non-rewritten Phase 3 sections are byte-
-    identical before and after.
+G2  BR-{GROUP}-NNN tag sets in non-rewritten Phase 3 sections (group-scoped
+    AND summary docs) are byte-identical before and after.
 G2a ``## Evidence Register`` is never added to headings_to_rewrite.
 G3  ``group_analysis_is_complete`` + size + GROUP_SUMMARY presence run
     BEFORE any write.  On failure: write nothing, fall back.
 G4  ``max_tokens`` capped to ``2000 * len(sections_to_rewrite)`` (Phase 2)
     and ``2500 * len(headings_to_rewrite)`` (Phase 3) to prevent truncation.
+G5  Validate-against-diff (Living-Document Reingestion Slice 2): every
+    mechanically-checkable fact (unit/component/param name, config key,
+    connection name) the model's rewritten sections assert must be
+    reconcilable with the group's field diff or the section's pre-existing
+    content.  Runs BEFORE G3, BEFORE any write.  On failure: write nothing,
+    raise with ``reason_code="diff_fidelity_failed"``, fall back to
+    scoped_regen for that group.  See ``services/diff_fidelity_guard.py``.
+    Reused verbatim (per-heading) for summary-doc amendment.
+G6  Removal completeness (Living-Document Reingestion Slice 3, summary docs
+    only): when a group's delta fully removes a unit, none of that unit's
+    identifiers may survive into a rewritten summary-doc heading.  On
+    failure: discard the rewrite, leave the summary doc untouched, report
+    it for scoped-local re-derivation.  See
+    ``services/synthesis_impact_mapper.verify_removal``.
 """
 
 from __future__ import annotations
@@ -49,12 +74,18 @@ from mcp_server.providers.custom.analysis_parser import (
 from mcp_server.providers.custom.models import ModelOptions
 from mcp_server.providers.custom.prompt_renderer import PromptRenderer
 from mcp_server.providers.custom.validators import group_analysis_is_complete
+from mcp_server.services.diff_fidelity_guard import find_unreconciled_facts
 from mcp_server.services.git_diff_patcher import _patch_provider, _replace_section
+from mcp_server.services.group_doc_dependency import (
+    DOC_PACK_MANIFEST_FILENAME,
+    GroupDocDependency,
+)
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.patch_section_map import (
     EVIDENCE_REGISTER_HEADING,
     FieldChange,
     docs_for_sections,
+    extract_h2_sections,
     sections_for_delta,
 )
 from mcp_server.services.rag_support_package import (
@@ -65,6 +96,12 @@ from mcp_server.services.rag_support_package import (
     replace_analysis_cache_from_rag_support,
 )
 from mcp_server.services.rag_bridge import RagBridge, rag_push_succeeded
+from mcp_server.services.synthesis_impact_mapper import (
+    SynthesisImpactMapper,
+    doc_references_group,
+    removed_unit_identifiers,
+    verify_removal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -264,21 +301,6 @@ def _analysis_text_is_valid(text: str, platform: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _extract_h2_sections(text: str) -> dict[str, str]:
-    """Return {heading_title: full section text} for each ``## Heading``."""
-    h2_re = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-    headings = list(h2_re.finditer(text))
-    if not headings:
-        return {}
-    result: dict[str, str] = {}
-    for idx, m in enumerate(headings):
-        title = m.group(1).strip()
-        start = m.start()
-        end = headings[idx + 1].start() if idx + 1 < len(headings) else len(text)
-        result[title] = text[start:end]
-    return result
-
-
 def _br_tags(text: str) -> set[str]:
     return set(re.findall(r"\bBR-[A-Za-z0-9_-]+-\d+\b", text))
 
@@ -295,8 +317,8 @@ def _assert_invariants_preserved(
     G2a: ``## Evidence Register`` must be byte-identical (regardless of
          whether it appears in ``rewritten_headings``).
     """
-    orig_sections = _extract_h2_sections(original_doc)
-    patched_sections = _extract_h2_sections(patched_doc)
+    orig_sections = extract_h2_sections(original_doc)
+    patched_sections = extract_h2_sections(patched_doc)
 
     for title, orig_content in orig_sections.items():
         if title == EVIDENCE_REGISTER_HEADING:
@@ -366,7 +388,18 @@ def _update_manifest_entry(output_dir: Path, group: str, data: bytes) -> None:
 
 
 class PatchQualityError(RuntimeError):
-    """Raised when a Phase 2 patch fails G3 validation (write nothing, fall back)."""
+    """Raised when a Phase 2 patch fails a pre-write quality gate (G3 or G5).
+
+    ``reason_code`` is a stable machine-readable cause distinct from the
+    free-text message, so callers can tell a G5 diff-fidelity rejection
+    apart from a G3 completeness failure or a precondition failure (missing
+    scan data, missing support file, model error) without string-matching.
+    Write nothing on this error; the caller falls back to scoped_regen.
+    """
+
+    def __init__(self, message: str, *, reason_code: str = "g3_validation_failed") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 @dataclass(frozen=True)
@@ -379,6 +412,22 @@ class PatchResult:
     summary: dict[str, Any]
     advance_commit: bool
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class _Phase2Patch:
+    """Internal result of :meth:`TruePatchExecutor._patch_phase2`.
+
+    Carries ``field_changes`` and ``removed_identifiers`` forward so the
+    Slice-3 summary-doc amendment step does not need to reload or recompute
+    the field diff -- the same diff already validated by G3/G5 is reused
+    for the synthesis impact mapping.
+    """
+
+    text: str
+    sections: frozenset[str]
+    field_changes: list[FieldChange]
+    removed_identifiers: frozenset[str]
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +474,16 @@ class TruePatchExecutor:
         provider = _patch_provider(self._doc_generation_provider)
         group_analyses: dict[str, str] = {}       # group -> merged text (after G3)
         group_sections: dict[str, frozenset[str]] = {}  # group -> sections_to_rewrite
+        # group -> validated field diff + fully-removed unit identifiers, carried
+        # forward for the Slice-3 summary-doc synthesis impact mapping (Phase 3b)
+        # so it is never recomputed.
+        group_field_changes: dict[str, list[FieldChange]] = {}
+        group_removed_ids: dict[str, frozenset[str]] = {}
         fallback_groups: list[str] = []
+        # group -> stable reason_code (e.g. "diff_fidelity_failed", "g3_validation_failed").
+        # Distinguishes a G5 fact-check rejection from every other fallback cause
+        # without string-matching the free-text error (Slice 2 AC3).
+        fallback_reasons: dict[str, str] = {}
 
         # ── Phase 2 patches (per group) ────────────────────────────────────
         for group in changed_groups:
@@ -433,23 +491,30 @@ class TruePatchExecutor:
                 project_id, f"TruePatch: Phase 2 patch for group {group!r}", "info"
             )
             try:
-                merged, sections = await self._patch_phase2(
+                patch = await self._patch_phase2(
                     group=group,
                     project_id=project_id,
                     output_dir=output_dir,
                     platform=platform,
                     provider=provider,
                 )
-                group_analyses[group] = merged
-                group_sections[group] = sections
+                group_analyses[group] = patch.text
+                group_sections[group] = patch.sections
+                group_field_changes[group] = patch.field_changes
+                group_removed_ids[group] = patch.removed_identifiers
             except PatchQualityError as exc:
-                logger.warning("TruePatch G3 failure for %s (fallback): %s", group, exc)
+                logger.warning(
+                    "TruePatch quality gate failure for %s (reason_code=%s, fallback): %s",
+                    group, exc.reason_code, exc,
+                )
                 await log_mgr.emit(
                     project_id,
-                    f"TruePatch: G3 quality gate failed for {group!r}; routing to scoped_regen",
+                    f"TruePatch: quality gate {exc.reason_code!r} failed for {group!r}; "
+                    "routing to scoped_regen",
                     "warning",
                 )
                 fallback_groups.append(group)
+                fallback_reasons[group] = exc.reason_code
             except Exception as exc:
                 logger.exception("TruePatch: Phase 2 failed for group %s", group)
                 await log_mgr.emit(
@@ -458,14 +523,18 @@ class TruePatchExecutor:
                     "warning",
                 )
                 fallback_groups.append(group)
+                fallback_reasons[group] = "phase2_patch_error"
 
         if not group_analyses:
             return PatchResult(
                 action="scoped_regen_fallback",
                 patched_groups=[],
                 patched_docs=[],
-                summary={"fallback_groups": fallback_groups,
-                         "reason": "all groups failed G3 validation"},
+                summary={
+                    "fallback_groups": fallback_groups,
+                    "fallback_reasons": fallback_reasons,
+                    "reason": "all groups failed quality gates",
+                },
                 advance_commit=False,
                 error="All patch groups failed validation; scoped_regen required",
             )
@@ -571,6 +640,7 @@ class TruePatchExecutor:
                         doc_name, group, exc,
                     )
                     group_p3_fail.add(group)
+                    fallback_reasons.setdefault(group, "phase3_patch_error")
                     continue
 
                 if not _assert_invariants_preserved(current_text, new_text, set(headings)):
@@ -579,6 +649,7 @@ class TruePatchExecutor:
                         doc_name, group,
                     )
                     group_p3_fail.add(group)
+                    fallback_reasons.setdefault(group, "g2_invariant_violation")
                     continue
 
                 current_text = new_text
@@ -595,6 +666,144 @@ class TruePatchExecutor:
 
         fallback_groups.extend(
             g for g in p3_fallback if g not in fallback_groups
+        )
+
+        # ── Phase 3b: summary/cross-cutting doc amendment (Slice 3) ────────
+        # Documents with no owning group (GroupDocDependency.cross_cutting_docs(),
+        # e.g. 09_EXECUTIVE_SUMMARY) are amended in place from the SAME validated
+        # group deltas, instead of being left stale or force-regenerated. A
+        # document that cannot be safely expressed as a section-level edit is
+        # left byte-unchanged and reported in synthesis_fallback_docs for
+        # scoped-local re-derivation of that document ALONE -- never the whole
+        # affected set, never a whole-repo rebuild (RD-05).
+        synthesis_patched_docs: list[str] = []
+        synthesis_fallback_docs: dict[str, str] = {}  # doc_name -> reason_code
+
+        dependency = GroupDocDependency.load(
+            docs_dir / RAG_SUPPORT_DIRNAME / DOC_PACK_MANIFEST_FILENAME
+        )
+        summary_docs = sorted(dependency.cross_cutting_docs()) if dependency else []
+
+        for doc_name in summary_docs:
+            doc_path = docs_dir / f"{doc_name}.md"
+            if not doc_path.is_file():
+                continue
+
+            current_text = doc_path.read_text(encoding="utf-8", errors="replace")
+            doc_modified = False
+            doc_reason: str | None = None
+
+            for group in patched_groups_so_far:
+                field_changes = group_field_changes.get(group, [])
+                if not field_changes:
+                    continue
+                if not doc_references_group(current_text, group, field_changes):
+                    # This document's current content has nothing to do with this
+                    # group's change -- nothing to amend, and not a fallback signal.
+                    continue
+
+                removed_ids = group_removed_ids.get(group, frozenset())
+                mapping = SynthesisImpactMapper.map_sections(
+                    doc_text=current_text,
+                    group=group,
+                    field_changes=field_changes,
+                    removed_identifiers=removed_ids,
+                )
+                if not mapping.mapped:
+                    logger.warning(
+                        "TruePatch: synthesis doc %s references group %s but no "
+                        "section could be isolated for amendment; routing to "
+                        "scoped-local re-derivation of this document",
+                        doc_name, group,
+                    )
+                    doc_reason = "synthesis_mapping_unavailable"
+                    break
+
+                headings = sorted(mapping.headings)
+                updated_excerpt = self._extract_sections(
+                    group_analyses[group], group_sections.get(group, frozenset())
+                )
+                try:
+                    new_text = await self._patch_phase3(
+                        doc_name=doc_name,
+                        group=group,
+                        platform=platform,
+                        headings_to_rewrite=headings,
+                        updated_analysis_sections=updated_excerpt,
+                        existing_doc=current_text,
+                        provider=provider,
+                        is_synthesis=True,
+                        removed_identifiers=mapping.removed_identifiers,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "TruePatch: synthesis Phase 3 failed for doc %s group %s: %s",
+                        doc_name, group, exc,
+                    )
+                    doc_reason = "phase3_patch_error"
+                    break
+
+                if not _assert_invariants_preserved(current_text, new_text, mapping.headings):
+                    logger.warning(
+                        "TruePatch: G2 violation amending synthesis doc %s for group %s",
+                        doc_name, group,
+                    )
+                    doc_reason = "g2_invariant_violation"
+                    break
+
+                # G5 (reused): each rewritten heading must be fact-grounded in
+                # this group's diff or the heading's own prior content.
+                new_headings = extract_h2_sections(new_text)
+                prior_headings = extract_h2_sections(current_text)
+                unreconciled: dict[str, list[str]] = {}
+                for heading in headings:
+                    bad = find_unreconciled_facts(
+                        rewritten_text=new_headings.get(heading, ""),
+                        original_text=prior_headings.get(heading, ""),
+                        field_changes=field_changes,
+                    )
+                    if bad:
+                        unreconciled[heading] = sorted(bad)
+                if unreconciled:
+                    logger.warning(
+                        "TruePatch: G5 diff-fidelity failure amending synthesis "
+                        "doc %s for group %s: %s",
+                        doc_name, group, unreconciled,
+                    )
+                    doc_reason = "diff_fidelity_failed"
+                    break
+
+                # G6: removed units must not survive into the rewritten headings.
+                residual: set[str] = set()
+                for heading in headings:
+                    residual |= verify_removal(
+                        new_headings.get(heading, ""), mapping.removed_identifiers
+                    )
+                if residual:
+                    logger.warning(
+                        "TruePatch: G6 removal-completeness failure amending "
+                        "synthesis doc %s for group %s: residual identifiers %s",
+                        doc_name, group, sorted(residual),
+                    )
+                    doc_reason = "removal_incomplete"
+                    break
+
+                current_text = new_text
+                doc_modified = True
+
+            if doc_reason is not None:
+                # Conservative: any rejection discards the WHOLE document's
+                # amendment for this run (no partial/half-amended write) and
+                # routes exactly this one document to scoped-local re-derivation.
+                synthesis_fallback_docs[doc_name] = doc_reason
+                continue
+
+            if doc_modified:
+                await asyncio.to_thread(doc_path.write_text, current_text, "utf-8")
+                synthesis_patched_docs.append(f"{doc_name}.md")
+
+        patched_docs.extend(
+            d for d in synthesis_patched_docs if d not in patched_docs
         )
 
         # ── RAG push ───────────────────────────────────────────────────────
@@ -633,7 +842,8 @@ class TruePatchExecutor:
         await log_mgr.emit(
             project_id,
             f"TruePatch: {final_action} | patched={patched_groups_so_far} "
-            f"docs={patched_docs} fallback={fallback_groups}",
+            f"docs={patched_docs} fallback={fallback_groups} "
+            f"synthesis_fallback={sorted(synthesis_fallback_docs)}",
             "info",
         )
         return PatchResult(
@@ -645,6 +855,13 @@ class TruePatchExecutor:
                 "patched_groups": patched_groups_so_far,
                 "patched_docs": patched_docs,
                 "fallback_groups": fallback_groups,
+                "fallback_reasons": fallback_reasons,
+                "synthesis_patched_docs": synthesis_patched_docs,
+                # doc_name (no .md) -> reason_code; documents the mapper could not
+                # safely amend. NOT auto-regenerated by this executor (RD-05: never
+                # whole-repo) -- left byte-unchanged and reported here for a
+                # scoped-local re-derivation of exactly these documents.
+                "synthesis_fallback_docs": synthesis_fallback_docs,
                 "reason_code": (
                     "true_patch_succeeded"
                     if final_action == "true_patch"
@@ -671,29 +888,41 @@ class TruePatchExecutor:
         output_dir: Path,
         platform: str,
         provider,
-    ) -> tuple[str, frozenset[str]]:
+    ) -> _Phase2Patch:
         """Patch the Phase 2 analysis for one group.
 
-        Returns (merged_analysis_text, sections_to_rewrite).
-        Raises PatchQualityError if G3 validation fails (caller routes to fallback).
-        NOTHING is written to disk here; writing is deferred to _write_support_analysis.
+        Returns a :class:`_Phase2Patch` (merged text, sections rewritten, the
+        validated field diff, and any fully-removed unit identifiers) so the
+        Slice-3 summary-doc amendment step can reuse the same diff without
+        recomputing it. Raises PatchQualityError (with a distinguishing
+        ``reason_code``) if a precondition, G5 diff-fidelity, or G3
+        completeness check fails; the caller routes to scoped_regen
+        fallback.  NOTHING is written to disk here; writing is deferred to
+        _write_support_analysis.
         """
         # 1. Load scan data
         prev_jobs = await asyncio.to_thread(_load_prev_jobs, output_dir, group)
         if not prev_jobs:
             raise PatchQualityError(
-                f"No (or empty) prev scan for group {group!r}"
+                f"No (or empty) prev scan for group {group!r}",
+                reason_code="missing_prev_scan",
             )
         curr_jobs = await asyncio.to_thread(_load_curr_jobs, project_id, group)
         if not curr_jobs:
-            raise PatchQualityError(f"Empty curr scan for group {group!r}")
+            raise PatchQualityError(
+                f"Empty curr scan for group {group!r}",
+                reason_code="missing_curr_scan",
+            )
 
         # 2. Field diff
         field_changes, field_diff_text = await asyncio.to_thread(
             _compute_field_diff, prev_jobs, curr_jobs
         )
         if not field_changes:
-            raise PatchQualityError(f"No field changes found for group {group!r}")
+            raise PatchQualityError(
+                f"No field changes found for group {group!r}",
+                reason_code="no_field_changes",
+            )
 
         # 3. Sections to rewrite
         sections_to_rewrite = sections_for_delta(platform, field_changes)
@@ -708,7 +937,8 @@ class TruePatchExecutor:
         )
         if not support_path.is_file():
             raise PatchQualityError(
-                f"No published support analysis for group {group!r} at {support_path}"
+                f"No published support analysis for group {group!r} at {support_path}",
+                reason_code="missing_support_analysis",
             )
         existing_analysis = await asyncio.to_thread(
             support_path.read_text, "utf-8", "replace"
@@ -737,7 +967,8 @@ class TruePatchExecutor:
         )
         if not result.success:
             raise PatchQualityError(
-                f"Model call failed for group {group!r}: {result.raw_error}"
+                f"Model call failed for group {group!r}: {result.raw_error}",
+                reason_code="model_call_failed",
             )
 
         # 7. Parse and merge
@@ -756,14 +987,43 @@ class TruePatchExecutor:
 
         merged_text = _reassemble_analysis(preamble, merged_sections)
 
-        # 8. G3 validate-before-return
+        # 8. G5 validate-against-diff -- reject hallucinated facts BEFORE G3/write.
+        # Only the sections the model actually rewrote are checked; each is compared
+        # against its own pre-existing content plus the group's field diff vocabulary.
+        unreconciled: dict[str, list[str]] = {}
+        for name in sections_to_rewrite:
+            if name not in model_sections:
+                continue
+            bad = find_unreconciled_facts(
+                rewritten_text=model_sections[name],
+                original_text=existing_sections.get(name, ""),
+                field_changes=field_changes,
+            )
+            if bad:
+                unreconciled[name] = sorted(bad)
+        if unreconciled:
+            raise PatchQualityError(
+                f"G5 diff-fidelity failure for group {group!r}: "
+                f"unreconciled facts not present in field diff or prior content: "
+                f"{unreconciled}",
+                reason_code="diff_fidelity_failed",
+            )
+
+        # 9. G3 validate-before-return
         if not await asyncio.to_thread(_analysis_text_is_valid, merged_text, platform):
             raise PatchQualityError(
                 f"G3 validation failed for group {group!r}: "
-                "merged analysis thin, incomplete, or missing GROUP_SUMMARY"
+                "merged analysis thin, incomplete, or missing GROUP_SUMMARY",
+                reason_code="g3_validation_failed",
             )
 
-        return merged_text, sections_to_rewrite
+        removed_ids = removed_unit_identifiers(prev_jobs, curr_jobs)
+        return _Phase2Patch(
+            text=merged_text,
+            sections=sections_to_rewrite,
+            field_changes=field_changes,
+            removed_identifiers=removed_ids,
+        )
 
     # ------------------------------------------------------------------
     # Phase 3
@@ -779,22 +1039,40 @@ class TruePatchExecutor:
         updated_analysis_sections: str,
         existing_doc: str,
         provider,
+        is_synthesis: bool = False,
+        removed_identifiers: frozenset[str] = frozenset(),
     ) -> str:
         """Patch one Phase 3 doc for the given group.
 
         Returns the patched doc text (caller validates invariants before writing).
+
+        ``is_synthesis`` (Slice 3): when True, renders the summary/cross-cutting
+        doc prompt variant instead of the group-scoped one -- same heading-
+        replacement mechanism, but the prompt frames the doc as holistic prose
+        covering ALL groups (amend only this group's parts) and instructs
+        removal of ``removed_identifiers`` rather than merely restating them.
+        Group-scoped callers are unaffected (default False -- identical
+        behaviour and template to before this slice).
         """
         if not headings_to_rewrite:
             return existing_doc
 
-        prompt = self._renderer.render("phase3_patch.md", {
+        template_name = "phase3_synthesis_patch.md" if is_synthesis else "phase3_patch.md"
+        slots = {
             "DOC_NAME": doc_name,
             "GROUP": group,
             "PLATFORM": platform,
             "HEADINGS_TO_REWRITE": "\n".join(f"- {h}" for h in headings_to_rewrite),
             "UPDATED_ANALYSIS_SECTIONS": updated_analysis_sections,
             "EXISTING_DOC": existing_doc,
-        })
+        }
+        if is_synthesis:
+            slots["REMOVED_IDENTIFIERS"] = (
+                "\n".join(f"- {i}" for i in sorted(removed_identifiers))
+                if removed_identifiers
+                else "(none)"
+            )
+        prompt = self._renderer.render(template_name, slots)
         max_tokens = min(config.phase3_max_tokens, 2500 * len(headings_to_rewrite))
         result = await provider.complete(
             prompt,

@@ -10,6 +10,7 @@ in-code dicts until that story is accepted.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -103,6 +104,28 @@ def _load_catalog():
     """Lazily load the doc catalog (cached)."""
     from mcp_server.providers.custom.doc_catalog import load_doc_catalog
     return load_doc_catalog()
+
+
+_H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+
+
+def extract_h2_sections(text: str) -> dict[str, str]:
+    """Return {heading_title: full section text (heading line included)}.
+
+    Shared by ``true_patch_executor`` (G2/G2a invariant checks) and
+    ``synthesis_impact_mapper`` (section-level impact mapping for summary
+    documents) -- one canonical ``## Heading`` splitter for both consumers.
+    """
+    headings = list(_H2_RE.finditer(text))
+    if not headings:
+        return {}
+    result: dict[str, str] = {}
+    for idx, m in enumerate(headings):
+        title = m.group(1).strip()
+        start = m.start()
+        end = headings[idx + 1].start() if idx + 1 < len(headings) else len(text)
+        result[title] = text[start:end]
+    return result
 
 
 def docs_for_sections(sections: frozenset[str]) -> list[str]:

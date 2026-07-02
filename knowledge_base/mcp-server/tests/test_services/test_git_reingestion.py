@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mcp_server.config import config
@@ -125,7 +126,7 @@ async def test_run_git_reingestion_advances_baseline_after_successful_background
         def __init__(self, log_manager=None):
             self.log_manager = log_manager
 
-        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str, output_dir: str | None = None):
             return {
                 "success": True,
                 "scan_result_path": str(tmp_path / "scan_result.json"),
@@ -205,7 +206,7 @@ async def test_run_git_reingestion_records_rebaseline_required_without_generatio
         def __init__(self, log_manager=None):
             self.log_manager = log_manager
 
-        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str, output_dir: str | None = None):
             return {
                 "success": True,
                 "scan_result_path": str(tmp_path / "scan_result.json"),
@@ -306,7 +307,7 @@ async def _common_reingestion_setup(monkeypatch, tmp_path, session_factory):
         def __init__(self, log_manager=None):
             self.log_manager = log_manager
 
-        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str, output_dir: str | None = None):
             return {
                 "success": True,
                 "scan_result_path": str(tmp_path / "scan_result.json"),
@@ -504,6 +505,125 @@ async def test_run_git_reingestion_full_regen_passes_no_scoped_docs(
     assert seen["scoped_docs"] is None
 
 
+def _write_impact_manifest(tmp_path: Path, project_id: str) -> None:
+    """Provenance manifest mapping scan group 'A' to a group-scoped doc plus a
+    cross-cutting (canonical_inventory) summary doc."""
+    support = tmp_path / "output" / project_id / "docs" / "_rag_support"
+    support.mkdir(parents=True, exist_ok=True)
+    (support / "_doc_pack_manifest.json").write_text(
+        json.dumps(
+            {
+                "doc_packs": {
+                    "02_ORDERS": {
+                        "included": {"A.md": ["GROUP_SUMMARY"]},
+                        "included_obligations": [],
+                    },
+                    "09_SUMMARY": {
+                        "included": {"A.md": ["GROUP_SUMMARY"]},
+                        "included_obligations": [{"category": "canonical_inventory"}],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+async def test_impact_routing_derives_scoped_docs_from_fingerprint_not_targeted(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """Slice 1: with the flag ON, the Phase 3 scope comes from the fingerprint
+    dirty-set via the provenance map, NOT from the legacy passed-in targeted_docs."""
+    projects_mod = await _common_reingestion_setup(monkeypatch, tmp_path, session_factory)
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    _write_impact_manifest(tmp_path, "proj")
+    output_dir = tmp_path / "output" / "proj"
+    seen: dict[str, object] = {}
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        seen["scoped_docs"] = kwargs.get("scoped_docs")
+        _write_staging(
+            output_dir, doc_body="Documents job_alpha fully.", analysis_body=_good_analysis()
+        )
+        # Satisfy the (now dependency-aware) correctness gate: the changed unit
+        # must appear in one of group A's MAPPED docs.
+        (output_dir / "docs_staging" / "02_ORDERS.md").write_text(
+            "Documents job_alpha fully.", encoding="utf-8"
+        )
+        gate = kwargs.get("pre_swap_gate")
+        outcome = gate(output_dir / "docs_staging") if gate else None
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+
+    ok = await run_git_reingestion(
+        "proj",
+        "a" * 40,
+        "b" * 40,
+        triggered_by="webhook",
+        log_mgr=log_manager,
+        targeted_docs=["LEGACY_ROUTER_VALUE_SHOULD_BE_IGNORED"],
+    )
+
+    assert ok is True
+    # Derived from group 'A' -> {02_ORDERS (group-scoped), 09_SUMMARY (cross-cutting)}.
+    assert seen["scoped_docs"] == {"02_ORDERS", "09_SUMMARY"}
+    assert "LEGACY_ROUTER_VALUE_SHOULD_BE_IGNORED" not in seen["scoped_docs"]
+
+
+async def test_impact_routing_full_rederive_forces_no_scoped_docs(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """Slice 1: full_rederive=True forces a full Phase 3 regen (scoped_docs=None)
+    even under impact routing -- the explicit first-push / manual-rebuild path."""
+    projects_mod = await _common_reingestion_setup(monkeypatch, tmp_path, session_factory)
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    _write_impact_manifest(tmp_path, "proj")
+    output_dir = tmp_path / "output" / "proj"
+    seen: dict[str, object] = {"set": False}
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        seen["scoped_docs"] = kwargs.get("scoped_docs")
+        seen["set"] = True
+        _write_staging(
+            output_dir, doc_body="Documents job_alpha fully.", analysis_body=_good_analysis()
+        )
+        # Satisfy the dependency-aware correctness gate (mapped doc for group A).
+        (output_dir / "docs_staging" / "02_ORDERS.md").write_text(
+            "Documents job_alpha fully.", encoding="utf-8"
+        )
+        gate = kwargs.get("pre_swap_gate")
+        outcome = gate(output_dir / "docs_staging") if gate else None
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+
+    ok = await run_git_reingestion(
+        "proj",
+        "a" * 40,
+        "b" * 40,
+        triggered_by="webhook",
+        log_mgr=log_manager,
+        full_rederive=True,
+    )
+
+    assert ok is True
+    assert seen["set"] is True
+    assert seen["scoped_docs"] is None
+
+
 async def test_run_git_reingestion_advances_sha_when_gate_passes_first_try(
     session_factory,
     monkeypatch,
@@ -577,7 +697,7 @@ async def test_run_git_reingestion_skips_when_all_changes_are_infra(
         def __init__(self, log_manager=None):
             self.log_manager = log_manager
 
-        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str, output_dir: str | None = None):
             return {
                 "success": True,
                 "scan_result_path": str(tmp_path / "scan_result.json"),
@@ -610,12 +730,18 @@ async def test_run_git_reingestion_skips_when_all_changes_are_infra(
     scan_group = tmp_path / "intodoc-output" / "proj" / "scan" / "jobs" / "A"
     scan_group.mkdir(parents=True)
 
+    sink: dict = {}
     ok = await run_git_reingestion(
-        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager
+        "proj", "a" * 40, "b" * 40, triggered_by="webhook", log_mgr=log_manager,
+        outcome_sink=sink,
     )
 
     assert ok is True, "infra-only push must return True (skip = success)"
     assert generation_called == [], "generation must NOT be triggered on infra-only push"
+    assert sink.get("skipped") is True, (
+        "outcome_sink must report skipped=True so the caller does not record a "
+        "phantom targeted_regen (no docs were regenerated)"
+    )
     async with session_factory() as session:
         project = await ProjectRegistry(session).get_project("proj")
         assert project is not None
@@ -650,7 +776,7 @@ async def test_run_git_reingestion_proceeds_on_mixed_infra_and_source_push(
         def __init__(self, log_manager=None):
             self.log_manager = log_manager
 
-        async def run_scan(self, *, project_id: str, repo_path: str, platform: str):
+        async def run_scan(self, *, project_id: str, repo_path: str, platform: str, output_dir: str | None = None):
             return {
                 "success": True,
                 "scan_result_path": str(tmp_path / "scan_result.json"),
@@ -704,3 +830,107 @@ async def test_run_git_reingestion_proceeds_on_mixed_infra_and_source_push(
 
     assert ok is True
     assert generation_called == ["called"], "mixed push must proceed to generation"
+
+
+# ---------------------------------------------------------------------------
+# Slice 5 (US-7/US-8): manual full-rebuild success path records history.
+# Additive tests only -- everything above this line is unmodified S1 coverage.
+# ---------------------------------------------------------------------------
+
+
+async def test_full_rederive_success_records_manual_rebuild_history_entry(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """The ONE call site (full_rederive=True) must, on success, persist a
+    history entry with reason_code == manual_full_rebuild_reason_code so
+    drift_summary.compute_drift_summary() recognizes the reset (Slice 5)."""
+    from mcp_server.services.doc_version_history import DocVersionHistoryRepository
+
+    projects_mod = await _common_reingestion_setup(monkeypatch, tmp_path, session_factory)
+    output_dir = tmp_path / "output" / "proj"
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        docs_dir = output_dir / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        (docs_dir / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+        (docs_dir / "02_ORDERS.md").write_text("# Orders", encoding="utf-8")
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+
+    ok = await run_git_reingestion(
+        "proj",
+        "a" * 40,
+        "b" * 40,
+        triggered_by="manual_full_rebuild",
+        log_mgr=log_manager,
+        full_rederive=True,
+    )
+
+    assert ok is True
+
+    repo = DocVersionHistoryRepository("proj", tmp_path / "output" / "proj")
+    entries = repo.read_all()
+    assert len(entries) == 1
+    assert entries[0]["outcome"] == "full_regen"
+    assert entries[0]["reason_code"] == config.manual_full_rebuild_reason_code
+    assert entries[0]["before_sha"] == "a" * 40
+    assert entries[0]["after_sha"] == "b" * 40
+    assert sorted(entries[0]["touched_docs"]) == ["01_ARCHITECTURE_MAP.md", "02_ORDERS.md"]
+
+    async with session_factory() as session:
+        project = await ProjectRegistry(session).get_project("proj")
+        assert project is not None
+        assert project.git_update_summary["reason_code"] == config.manual_full_rebuild_reason_code
+        assert project.git_update_summary["outcome"] == "full_regen"
+
+
+async def test_full_rederive_reason_code_is_independent_of_triggered_by_string(
+    session_factory,
+    monkeypatch,
+    tmp_path: Path,
+    log_manager,
+) -> None:
+    """Attack 3 (critique.md): the reset reason_code must be assigned
+    UNCONDITIONALLY by the full_rederive branch, never derived from the
+    caller-supplied `triggered_by` string -- so an automatic caller cannot
+    smuggle a reset merely by naming its trigger similarly."""
+    from mcp_server.services.doc_version_history import DocVersionHistoryRepository
+
+    projects_mod = await _common_reingestion_setup(monkeypatch, tmp_path, session_factory)
+    output_dir = tmp_path / "output" / "proj"
+
+    async def generate_background_stub(project_id, run_id, log_mgr, **kwargs):
+        docs_dir = output_dir / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        (docs_dir / "01_ARCHITECTURE_MAP.md").write_text("# Architecture", encoding="utf-8")
+        async with session_factory() as session:
+            registry = ProjectRegistry(session)
+            await registry.update_status(project_id, "ready", error_message=None)
+            await session.commit()
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", generate_background_stub)
+
+    # triggered_by is an arbitrary string unrelated to "manual_full_rebuild" --
+    # the reason code must still be assigned because full_rederive=True.
+    ok = await run_git_reingestion(
+        "proj",
+        "a" * 40,
+        "b" * 40,
+        triggered_by="webhook",
+        log_mgr=log_manager,
+        full_rederive=True,
+    )
+
+    assert ok is True
+    repo = DocVersionHistoryRepository("proj", tmp_path / "output" / "proj")
+    entries = repo.read_all()
+    assert entries[0]["reason_code"] == config.manual_full_rebuild_reason_code, (
+        "reason_code must come from full_rederive=True, not from triggered_by"
+    )

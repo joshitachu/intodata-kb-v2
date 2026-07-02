@@ -173,6 +173,21 @@ services:
     build:
       context: ./knowledge_base
       dockerfile: mcp-server/Dockerfile
+    command:
+      - sh
+      - -c
+      - |
+        python -c '
+        import asyncio
+        from mcp_server.db.session import engine
+        from mcp_server.db.models import Base
+        async def main():
+            async with engine.begin() as c:
+                await c.run_sync(Base.metadata.create_all)
+        asyncio.run(main())
+        '
+        alembic upgrade head
+        python -m mcp_server --serve --host 0.0.0.0 --port 8002
     ports:
       - "127.0.0.1:${MCP_PORT:-8002}:8002"
     environment:
@@ -186,6 +201,7 @@ services:
       MCP_PROJECT_ROOT: /app/workspace
       MCP_HINDSIGHT_ENABLED: "true"
       MCP_HINDSIGHT_URL: http://hindsight:8888
+      MCP_IMPACT_ROUTING_ENABLED: ${MCP_IMPACT_ROUTING_ENABLED:-false}
       MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
       MCP_JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production-use-a-strong-random-key}
       MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8001}}

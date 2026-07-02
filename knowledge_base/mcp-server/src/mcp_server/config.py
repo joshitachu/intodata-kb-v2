@@ -142,9 +142,19 @@ class MCPServerConfig(BaseSettings):
     git_diff_patch_output_tokens_large: int = 32_000
     git_diff_patch_max_obligations: int = 24
 
+    # Living-Document Reingestion (Slice 1). When enabled, the fingerprint
+    # dirty-set is the single front-line routing driver for BOTH Phase 2 analysis
+    # scope and the Phase 3 document set. The doc-count thresholds below
+    # (reingestion_full_regen_doc_threshold, git_diff_patch_max_docs) and the
+    # path-based resolve_changed_groups are RETIRED as routing drivers under this
+    # flag. Default off so deploy is a no-op until baselines are primed.
+    impact_routing_enabled: bool = False  # MCP_IMPACT_ROUTING_ENABLED
+
     # Deterministic reingestion routing (Slice 3). The affected-doc set is
     # computed in Python; a change touching more than this many docs routes to a
     # full regeneration rather than a scoped one.
+    # RETIRED as a routing driver when impact_routing_enabled is True (kept for
+    # the flag-off legacy path and removed in a later cleanup once defaulted on).
     reingestion_full_regen_doc_threshold: int = 8  # MCP_REINGESTION_FULL_REGEN_DOC_THRESHOLD
     # Optional expand-only, non-blocking LLM semantic pass. Disabled by default
     # so routing is fully deterministic (no model call on the floor path). When
@@ -266,6 +276,25 @@ class MCPServerConfig(BaseSettings):
     # the last successfully pushed hash. Default False so existing deployments
     # can bootstrap baselines before activation.
     incremental_hash_skip_enabled: bool = False  # MCP_INCREMENTAL_HASH_SKIP_ENABLED
+
+    # Living-Document Reingestion (Slice 4) -- doc versioning + change history.
+    # File-based, project-scoped, append-only storage under
+    # output/{project_id}/{doc_version_history_dirname}/ (see
+    # .plans/slice-4-versioning-history/plan.md for the storage-choice rationale).
+    doc_version_history_dirname: str = "_version_history"  # MCP_DOC_VERSION_HISTORY_DIRNAME
+    doc_version_history_log_filename: str = "change_history.jsonl"  # MCP_DOC_VERSION_HISTORY_LOG_FILENAME
+    doc_version_history_sidecar_filename: str = "doc_commit_ranges.json"  # MCP_DOC_VERSION_HISTORY_SIDECAR_FILENAME
+
+    # Living-Document Reingestion (Slice 5) -- drift visibility + manual
+    # full-rebuild trigger. This reason code is the ONLY signal
+    # `drift_summary.compute_drift_summary()` treats as "the operator reset
+    # the drift counters" -- it is assigned unconditionally by
+    # `run_git_reingestion`'s `full_rederive=True` branch (never derived from
+    # a caller-supplied string) so the reset boundary is the code path, not a
+    # naming convention. See .plans/slice-5-drift-manual-rebuild/critique.md
+    # (Attack 3) for why this must not be keyed off `triggered_by`.
+    manual_full_rebuild_reason_code: str = "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_REASON_CODE
+    manual_full_rebuild_trigger: str = "manual_full_rebuild"  # MCP_MANUAL_FULL_REBUILD_TRIGGER
 
     @property
     def logs_dir(self) -> Path:

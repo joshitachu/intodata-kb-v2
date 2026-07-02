@@ -195,6 +195,36 @@ class ReingestionCacheStatus(BaseModel):
     can_incremental_regen: bool = False
 
 
+class ReingestionDriftStatus(BaseModel):
+    """Slice 5 (US-7/US-8): mechanical drift counters since the last fully
+    reconciled (manually rebuilt) commit. Read-only -- computed by folding
+    the Slice 4 append-only change history; querying this never triggers
+    scan/generation/patch/RAG-sync work.
+
+    ``last_reconciled_after_sha`` is ``None`` when the project's change
+    history contains no manual-full-rebuild entry yet (never reconciled
+    since history began), not a fabricated zero SHA.
+    """
+
+    amendments_since_rebuild: int = 0
+    failed_fact_checks_since_rebuild: int = 0
+    skipped_since_rebuild: int = 0
+    last_reconciled_before_sha: str | None = None
+    last_reconciled_after_sha: str | None = None
+    last_reconciled_at: str | None = None
+
+
+class FullRebuildRequest(BaseModel):
+    """Slice 5 (US-7): body for the manual full-rebuild trigger.
+
+    ``after_sha`` is optional -- when omitted the route resolves the repo's
+    current HEAD after a fast-forward-only pull, matching how the automatic
+    webhook/poller paths resolve ``after_sha`` today.
+    """
+
+    after_sha: str | None = None
+
+
 class ReingestionStatusResponse(BaseModel):
     project_id: str
     project_status: str
@@ -207,6 +237,7 @@ class ReingestionStatusResponse(BaseModel):
     last_update: ReingestionLastUpdateStatus
     remote_hygiene: ReingestionRemoteHygieneStatus
     cache: ReingestionCacheStatus
+    drift: ReingestionDriftStatus
 
 
 class ScanRequest(BaseModel):

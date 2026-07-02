@@ -450,3 +450,117 @@ def test_multi_group_mixed_routing(tmp_path: Path) -> None:
     assert "grp_small" in patch_groups, "small FIELD_EDIT must route to patch lane"
     # Gate receives scoped subset (only grp_structural), not the full dirty set
     assert "grp_small" not in scoped_groups
+
+
+# ---------------------------------------------------------------------------
+# Living-Document Reingestion, Slice 1 -- impact-routing flag behaviour.
+# With config.impact_routing_enabled the doc-count thresholds and the
+# "path-resolution failed -> full" fallback are retired; the fingerprint
+# dirty-set (inside run_git_reingestion) is the authoritative scope.
+# ---------------------------------------------------------------------------
+
+
+def _wide_docs(n: int) -> dict:
+    return {
+        f"D{i}": {"included": {"jobs.md": ["GROUP_SUMMARY"]}, "included_obligations": []}
+        for i in range(n)
+    }
+
+
+def test_impact_mode_wide_in_file_edit_routes_bounded_not_full(tmp_path, monkeypatch) -> None:
+    """12 affected docs (> default threshold 8), in-file edit: flag ON keeps it in
+    the patch lane; the doc-count full-regen threshold is retired (REC-3)."""
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    output_dir = _manifest(tmp_path, "proj", _wide_docs(12))
+    _scan_group(tmp_path, "proj", "jobs")
+    changes = [FileChange(status="M", path="jobs/payments/svc.py")]
+    quick = _quick_scan(changes, "diff --git a/jobs/payments/svc.py b/jobs/payments/svc.py\n@@\n-x=1\n+x=2\n")
+
+    decision = ReingestionRouter().decide(
+        project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
+    )
+
+    assert decision.strategy == "bounded_patch"
+    assert len(decision.affected_docs) == 12
+
+
+def test_flag_off_same_wide_edit_still_full_regen(tmp_path, monkeypatch) -> None:
+    """Contrast: with the flag OFF the same 12-doc edit hits the legacy full-regen
+    threshold. Guards flag-off byte-identical behaviour."""
+    monkeypatch.setattr(config, "impact_routing_enabled", False)
+    output_dir = _manifest(tmp_path, "proj", _wide_docs(12))
+    _scan_group(tmp_path, "proj", "jobs")
+    changes = [FileChange(status="M", path="jobs/payments/svc.py")]
+    quick = _quick_scan(changes, "diff --git a/jobs/payments/svc.py b/jobs/payments/svc.py\n@@\n-x=1\n+x=2\n")
+
+    decision = ReingestionRouter().decide(
+        project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
+    )
+
+    assert decision.strategy == "full_regen"
+
+
+def test_impact_mode_structural_wide_set_routes_scoped_not_full(tmp_path, monkeypatch) -> None:
+    """Structural change over a wide doc set: flag ON routes to scoped_regen (the
+    threshold no longer forces full)."""
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    output_dir = _manifest(tmp_path, "proj", _wide_docs(12))
+    _scan_group(tmp_path, "proj", "jobs")
+    changes = [FileChange(status="A", path="jobs/new/x.py")]
+    quick = _quick_scan(changes, "diff --git a/jobs/new/x.py b/jobs/new/x.py\n+class X: pass\n")
+
+    decision = ReingestionRouter().decide(
+        project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
+    )
+
+    assert decision.strategy == "scoped_regen"
+    assert decision.structural is True
+
+
+def test_impact_mode_path_unresolved_routes_scoped_not_full(tmp_path, monkeypatch) -> None:
+    """A change that resolves to no scan group no longer forces full regen under the
+    flag; scope is delegated to the fingerprint dirty-set downstream."""
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    other_dir = tmp_path / "output" / "noscan"
+    (other_dir / "docs" / "_rag_support").mkdir(parents=True)
+    (other_dir / "docs" / "_rag_support" / "_doc_pack_manifest.json").write_text(
+        json.dumps({"doc_packs": {"01": {"included": {"g.md": []}}}}), encoding="utf-8"
+    )
+    changes = [FileChange(status="M", path="src/x.py")]
+    quick = _quick_scan(changes, "diff --git a/src/x.py b/src/x.py\n@@\n-a\n+b\n")
+
+    decision = ReingestionRouter().decide(
+        project_id="noscan", changed_files=changes, quick_scan=quick, output_dir=other_dir
+    )
+
+    assert decision.strategy == "scoped_regen"
+
+
+def test_impact_mode_missing_manifest_still_full_regen(tmp_path, monkeypatch) -> None:
+    """Missing provenance manifest is a reasoned full regen even under the flag."""
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    _scan_group(tmp_path, "proj", "jobs")
+    output_dir = tmp_path / "output" / "proj"  # no manifest
+    changes = [FileChange(status="A", path="jobs/new/x.py")]
+    quick = _quick_scan(changes, "diff --git a/jobs/new/x.py b/jobs/new/x.py\n+class X: pass\n")
+
+    decision = ReingestionRouter().decide(
+        project_id="proj", changed_files=changes, quick_scan=quick, output_dir=output_dir
+    )
+
+    assert decision.strategy == "full_regen"
+    assert decision.manifest_present is False
+
+
+def test_impact_mode_infra_only_still_skips(tmp_path, monkeypatch) -> None:
+    """The skip gate survives impact routing."""
+    monkeypatch.setattr(config, "impact_routing_enabled", True)
+    changes = [FileChange(status="M", path=".github/workflows/ci.yml")]
+    quick = _quick_scan(changes, "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n+jobs:\n")
+
+    decision = ReingestionRouter().decide(
+        project_id="proj", changed_files=changes, quick_scan=quick,
+        output_dir=tmp_path / "output" / "proj",
+    )
+
+    assert decision.strategy == "skip"

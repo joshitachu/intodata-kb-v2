@@ -1,6 +1,33 @@
 # KB Sub-project Context
 
-## Last Completed (2026-06-19) -- Reingestion Reliability Slice 5 (uncommitted)
+## Last Completed (2026-07-02) -- Living-Document Reingestion (Slices 1-5) + live-E2E bug fixes (uncommitted)
+
+Built Living-Document Reingestion S1-S5 (impact router + threshold retirement;
+diff-fidelity guard G5; synthesis-doc amendment G6; doc versioning/change-history;
+drift visibility + manual-only full-rebuild) behind flag `MCP_IMPACT_ROUTING_ENABLED`
+(default off). Live Docker E2E on `reingest-drill` exposed and fixed real bugs the
+unit tests could not: **Bug1** reingestion scan wrote to the ROOT `intodoc_output_dir`
+instead of per-project, so the fingerprint compared new code against a stale scan and
+skipped everything (fix: pass per-project `output_dir` in `run_git_reingestion`);
+**Bug2** an empty dirty-set reported `targeted_regen` success + wrote phantom history +
+advanced the SHA (fix: `outcome_sink` truthful skip; skip writes no history, holds SHA);
+**#3** scoped runs still cost ~full because `generate_docs` wiped the restored
+incremental staging (fix: preserve staging when `scoped_docs` set) and Phase 1/2 re-ran
+all groups (fix: reuse unchanged groups' cached analysis on scoped runs). **#6**
+touched_docs now reports the actual regenerated set. Phase 2 scoping PROVEN live
+(`REUSE: skipping Phase 2 for config/root/sql`, only changed group regenerated).
+`test_services` green: 484 passed (1 pre-existing `intodoc` env failure). Nothing
+git-committed.
+
+**Gaps**: no fully-green *completed* incremental run -- both real runs died on deepseek
+`402 Insufficient Balance` (external billing); Phase 1 investigation scoping (#3c)
+deployed + service-tested but not observed live; harness changes not locally
+unit-testable (need `intodoc`/model deps) -> full `uv run pytest -q` still owed in a
+real dev env; the true surgical single-section patch lane (S2/S3) never fired
+end-to-end; S3 `synthesis_fallback_docs` -> scoped-regen wiring in auto_doc_update
+still deferred.
+
+## Prior (2026-06-19) -- Reingestion Reliability Slice 5 (uncommitted)
 
 Slice 5 end-to-end smoke path and minimal operator visibility is implemented,
 inspected, and validated for MCP server API/webhook behavior. New
@@ -168,9 +195,19 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Immediate Next Steps
 
-1. **Reingestion Reliability commit-readiness**: Slices 1-5 are built,
-   inspected, and validated together (`uv run pytest -q` -> 658 passed). Keep
-   unrelated dirty files separate. No commit was made in this session.
+1. **Living-Document Reingestion — finish verification + commit**: All fixes are in
+   the working tree (uncommitted). Before commit: (a) top up the deepseek balance (or
+   point doc-gen at a funded provider) and run one single-group webhook on
+   `reingest-drill` to watch a FULLY-green incremental run — expect both
+   `REUSE: skipping Phase 1 investigation…` and `REUSE: skipping Phase 2…` for the 3
+   unchanged groups; (b) run full `uv run pytest -q` in a real dev env (harness tests
+   `test_providers`/`test_pipeline` need `intodoc`/model deps not available in the
+   sandbox); (c) keep unrelated dirty files separate on commit
+   (`alembic/versions/003_add_model_name.py`, `model_strategies/strategies.py`,
+   `docs/CONTAINER_TOPOLOGY_FOR_TERRAFORM.md`); (d) the `reingest-drill` clone is on a
+   throwaway local `e2e-huge` branch with test commits — not for keeping.
+   Deferred follow-ups: exercise the true surgical patch lane with a field-level edit;
+   wire S3 `synthesis_fallback_docs` -> scoped-regen in `auto_doc_update`.
 2. **Reingestion Reliability release smoke**: run a live GitHub delivery or the
    local smoke helper against a running MCP server and a real registered project:
    `python3 scripts/smoke_reingestion_webhook.py --base-url <url> --project-id <id> --repo-url <repo> --secret "$MCP_GITHUB_WEBHOOK_SECRET"`.

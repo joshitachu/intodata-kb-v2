@@ -41,6 +41,7 @@ from mcp_server.schemas import (
     DocFileInfo,
     DocListResponse,
     DocReview,
+    FullRebuildRequest,
     GenerateRequest,
     GenerateRunListResponse,
     GenerateRunResponse,
@@ -70,6 +71,8 @@ from mcp_server.schemas import (
     UpdateProjectRequest,
 )
 from mcp_server.services.atomic_swap import swap_docs
+from mcp_server.services.doc_version_history import DocVersionHistoryRepository
+from mcp_server.services.drift_summary import DriftSummary, compute_drift_summary
 from mcp_server.services.reingestion_gate import GateOutcome
 from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.deep_dive_service import DeepDiveService
@@ -79,10 +82,12 @@ from mcp_server.services.git_remote_service import (
     authenticated_url,
     git_subprocess_env,
     inspect_reingestion_readiness,
+    pull_remote_ff_only,
     repair_remote_hygiene,
     run_git,
     strip_url_credentials,
 )
+from mcp_server.services.git_reingestion import run_git_reingestion
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
@@ -157,6 +162,24 @@ def _summary_string_list(summary: dict[str, object], key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [sanitize_git_error(str(item)) for item in value]
+
+
+def _build_drift_status(project_id: str) -> dict[str, object]:
+    """Slice 5 (US-7/US-8): read-only drift counters for the status surface.
+
+    Folds the Slice 4 append-only change history (a local JSONL file read --
+    no scan/generation/patch/RAG-sync work) via the pure
+    ``drift_summary.compute_drift_summary``. Best-effort: any read failure
+    (e.g. project has no history yet) yields the zeroed/unreconciled default,
+    never raises -- this route must stay side-effect-free and available even
+    for brand-new projects.
+    """
+    try:
+        entries = DocVersionHistoryRepository(project_id).read_all()
+        return compute_drift_summary(entries).to_dict()
+    except OSError as exc:
+        logger.warning("Slice 5: failed reading change history for %s: %s", project_id, exc)
+        return DriftSummary().to_dict()
 
 
 def _build_reingestion_status_response(
@@ -257,6 +280,7 @@ def _build_reingestion_status_response(
             "reason_codes": list(readiness.reason_codes),
             "can_incremental_regen": readiness.can_incremental_regen,
         },
+        drift=_build_drift_status(project.id),
     )
 
 
@@ -628,6 +652,77 @@ async def repair_latest_git_update(project_id: str, request: Request, background
     return StatusResponse(
         status="repair_triggered",
         message=f"Diff-only repair started for {project_id}",
+    )
+
+
+@router.post(
+    "/projects/{project_id}/git-updates/full-rebuild",
+    response_model=StatusResponse,
+)
+async def trigger_manual_full_rebuild(
+    project_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: FullRebuildRequest | None = None,
+):
+    """Slice 5 (US-7): the ONLY operator path to a whole-repository rebuild.
+
+    Runs a full re-derive (``run_git_reingestion(..., full_rederive=True)``)
+    and, on success, resets the drift counters exposed on
+    ``GET .../reingestion-status`` (amendments-since-rebuild -> 0;
+    last-reconciled advances). This is a deliberate, explicit operator
+    action -- no automatic (time/push-count/doc-count) path may ever set
+    ``full_rederive=True`` (see
+    ``tests/test_services/test_no_automatic_full_rebuild.py``).
+    """
+    await require_project_access(request, project_id)
+    log_mgr = request.app.state.log_manager
+
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+        if project.source_type != "git":
+            raise HTTPException(
+                status_code=400,
+                detail="Manual full rebuild is only available for git projects",
+            )
+        if project.status in {"scanning", "generating"} or project_id in _currently_generating:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A scan/generate is already running for project {project_id!r}. "
+                "Wait for it to complete before triggering a full rebuild.",
+            )
+        local_path = project.local_path
+        github_token_enc = getattr(project, "github_token_enc", None)
+        before_sha = project.last_ingested_commit_sha or "0" * 40
+
+    after_sha = body.after_sha if body and body.after_sha else None
+    if not after_sha:
+        try:
+            await pull_remote_ff_only(local_path, github_token_enc)
+            after_sha = await run_git(local_path, "rev-parse", "HEAD", strip=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not resolve current commit for {project_id!r}: "
+                f"{sanitize_git_error(str(exc))}",
+            )
+
+    background_tasks.add_task(
+        run_git_reingestion,
+        project_id,
+        before_sha,
+        after_sha,
+        triggered_by=config.manual_full_rebuild_trigger,
+        log_mgr=log_mgr,
+        targeted_docs=None,
+        full_rederive=True,
+    )
+    return StatusResponse(
+        status="full_rebuild_triggered",
+        message=f"Manual full rebuild started for {project_id}",
     )
 
 

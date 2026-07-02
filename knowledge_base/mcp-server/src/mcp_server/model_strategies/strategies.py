@@ -164,6 +164,13 @@ class DeepSeekModelStrategy(ModelProviderStrategy):
                 supports_analysis=True,
                 supports_writing=True,
             ),
+            ModelDescriptorData(
+                id="deepseek/deepseek-v4-flash",
+                provider=self.provider_id,
+                label="DeepSeek V4 Flash",
+                supports_analysis=True,
+                supports_writing=True,
+            ),
         ]
 
 

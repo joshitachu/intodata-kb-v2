@@ -1480,16 +1480,20 @@ Fallback plan example:
         phase_name: str = "phase2",
     ) -> None:
             analysis_path = analysis_dir / f"{group}.md"
-            if ctx.resume_state is not None and analysis_path.exists() and analysis_path.stat().st_size > 500:
+            # Reuse an existing group analysis when resuming a prior run OR when this
+            # is a scoped reingestion (incremental staging restored the unchanged
+            # groups' analyses and deleted only the changed groups', so a present
+            # analysis here == an unchanged group whose Phase 2 must not re-run).
+            if (ctx.resume_state is not None or ctx.scoped_docs is not None) and analysis_path.exists() and analysis_path.stat().st_size > 500:
                 if group_analysis_is_complete(
                     analysis_path,
                     state.facts_manifest.platform,
                     require_sections=not self._plugin_mode,
                 ):
-                    await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 2 for {group} (analysis exists)", "info")
+                    await log_cb(ctx.project_id, f"[custom] REUSE: skipping Phase 2 for {group} (unchanged group; cached analysis)", "info")
                     self._write_phase2_coverage_record(ctx, group, self._group_units(state, group), analysis_path)
                     return
-                await log_cb(ctx.project_id, f"[custom] RESUME: cached Phase 2 for {group} is incomplete, regenerating", "info")
+                await log_cb(ctx.project_id, f"[custom] REUSE: cached Phase 2 for {group} is incomplete, regenerating", "info")
 
             group_units = self._group_units(state, group)
             group_file = preprocess_dir / f"{group}.md"
@@ -1973,16 +1977,18 @@ Fallback plan example:
     ) -> None:
         """Single direct model call for one group (no tool loops)."""
         analysis_path = analysis_dir / f"{group}.md"
-        if ctx.resume_state is not None and analysis_path.exists() and analysis_path.stat().st_size > 500:
+        # See _phase2_group_agent: reuse on resume OR scoped reingestion (unchanged
+        # groups' analyses are restored by incremental staging).
+        if (ctx.resume_state is not None or ctx.scoped_docs is not None) and analysis_path.exists() and analysis_path.stat().st_size > 500:
             if group_analysis_is_complete(
                 analysis_path,
                 state.facts_manifest.platform,
                 require_sections=not self._plugin_mode,
             ):
-                await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 2 for {group} (analysis exists)", "info")
+                await log_cb(ctx.project_id, f"[custom] REUSE: skipping Phase 2 for {group} (unchanged group; cached analysis)", "info")
                 self._write_phase2_coverage_record(ctx, group, self._group_units(state, group), analysis_path)
                 return
-            await log_cb(ctx.project_id, f"[custom] RESUME: cached Phase 2 for {group} is incomplete, regenerating", "info")
+            await log_cb(ctx.project_id, f"[custom] REUSE: cached Phase 2 for {group} is incomplete, regenerating", "info")
 
         group_units = self._group_units(state, group)
         group_file = preprocess_dir / f"{group}.md"
