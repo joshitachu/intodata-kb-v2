@@ -53,13 +53,23 @@ export function OnboardingWizard({ onDismiss }: Props) {
 
   return (
     <div className="fixed inset-0 bg-background z-50 flex flex-col overflow-y-auto">
+      {/* Ambient brand glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[45%] opacity-[0.06] dark:opacity-[0.12]"
+        style={{
+          background:
+            "radial-gradient(55% 60% at 50% 0%, hsl(var(--primary)) 0%, transparent 72%)",
+        }}
+      />
+
       <WizardProgress
         steps={STEP_LABELS}
         currentStep={step}
         workspaceName={status?.workspace_name}
       />
 
-      <div className="flex-1 flex items-center justify-center py-10">
+      <div key={step} className="animate-hero-enter relative flex-1 flex items-center justify-center py-10">
         {step === 0 && (
           <WelcomeStep
             username={user?.username ?? "there"}

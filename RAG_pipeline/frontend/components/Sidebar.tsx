@@ -33,7 +33,6 @@ import { useChatContext } from "@/contexts/ChatContext";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { UserGuideDialog } from "@/components/UserGuideDialog";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
-import { TenantMark } from "@/components/TenantMark";
 import type { ConversationResponse } from "@/types";
 
 const SIDEBAR_KEY = "sidebar-expanded";
@@ -137,9 +136,14 @@ export function Sidebar() {
         className="w-14 border-r bg-card flex flex-col h-full transition-all duration-200"
         data-tour="sidebar"
       >
-        {/* Tenant mark */}
+        {/* Brand mark */}
         <div className="px-2 py-3 flex items-center justify-center border-b border-border/60">
-          <TenantMark iconOnly size="md" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/favicon.svg"
+            alt="Intodata"
+            className="h-7 w-7 rounded-md shadow-elevation-xs"
+          />
         </div>
         {/* Toggle expand */}
         <div className="p-2 flex items-center justify-center">
@@ -238,9 +242,16 @@ export function Sidebar() {
       className="w-56 border-r bg-card flex flex-col h-full transition-all duration-200"
       data-tour="sidebar"
     >
-      {/* Tenant mark + collapse */}
+      {/* Brand mark + collapse */}
       <div className="px-3 py-3 border-b border-border/60 flex items-center gap-2">
-        <TenantMark size="md" className="flex-1 min-w-0" />
+        <div className="flex-1 min-w-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/intodata-logo-hero.png"
+            alt="Intodata"
+            className="h-7 w-auto max-w-full object-contain object-left dark:brightness-0 dark:invert"
+          />
+        </div>
         <button
           onClick={() => setExpanded(false)}
           className="shrink-0 p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"

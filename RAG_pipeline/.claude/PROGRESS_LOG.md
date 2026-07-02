@@ -22,6 +22,7 @@
 - **Change**: Reworked purely the welcome branch of `ChatWindow`; the conversation/loading branches are untouched. Everything uses existing design tokens so it adapts to light/dark and per-tenant branding.
 - **Why this approach**: Contained, token-driven, reuses the shared `ChatInput` in place (no prop/behavior changes) so send/mode/project/image flows are unchanged.
 - **Verification**: `node_modules/.bin/tsc --noEmit` clean; `npm test` 62 passed (incl. `MessageList.test.tsx`, affected by the `SUGGESTIONS` shape change).
+- **Follow-up (same session, post-review)**: Per user feedback, replaced the hero's gradient sparkles tile + tenant wordmark + `EnvironmentBadge` ("Dev") with the **IntoData logo**. Added `public/intodata-logo-hero.png` (the existing transparent `public/intodata-logo.png` cropped 2084×2084→2084×760 via `sips -c 760 2084` to strip vertical padding). Logo renders `h-10 sm:h-12`, full-color in light and `dark:brightness-0 dark:invert` (white monochrome) in dark. Removed now-unused `Sparkles`, `EnvironmentBadge`, `useTenantContext` from `ChatWindow`. NOTE: this hard-codes IntoData branding on the hero, overriding the tenant-aware lockup — intentional per request. tsc clean; frontend rebuilt + healthy; asset serves 200.
 
 ### [Feature]: Modernized + corrected in-app user guide
 
@@ -32,6 +33,21 @@
 - **Change**: Corrected the AI-models/architecture sections to describe a **configurable provider chain** (cloud default: Voyage + cloud LLM; local-only: Ollama) with an explicit **data-residency note** advising users to confirm the active config and validate regulatory (GDPR) requirements with compliance. Bumped to v4.0 (Jul 2026). Added brief, accurate coverage of MFA/Security, document roles on upload, and the Admin → Logs runtime view. Kept existing screenshots/logo asset references.
 - **Why this approach**: The "all data stays local" statement is a data-governance misstatement for a data consultancy's client-facing guide; the fix states the truth without over-claiming a specific deployment's config.
 - **Verification**: Static HTML; renders in the guide iframe. Frontend `tsc`/tests unaffected and green.
+
+### [Feature]: 2026 polish for login + onboarding + product tour
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/app/login/page.tsx` — full visual redesign of the app's front door (all 5 modes: login/otp-code/mfa/bootstrap/request-access). Replaced hardcoded `bg-white`/`text-gray-*`/`bg-gray-50` with design tokens (dark-mode-aware); added `AuroraBackground` ambient glow, IntoData logo + `EnvironmentBadge` header (`AuthHeader`), a shared `AuthCard` shell, and shared token-driven input/button/tab/error class constants. **All auth handlers/state preserved verbatim** — only JSX/styling changed.
+  - `RAG_pipeline/frontend/components/onboarding/WizardProgress.tsx` — swapped `TenantMark` (sparkles) for the IntoData logo in the wizard header.
+  - `RAG_pipeline/frontend/components/onboarding/OnboardingWizard.tsx` — added an ambient brand glow to the full-screen wizard container; step content wrapper now `key={step}` + `animate-hero-enter` so each step animates in on transition.
+  - `RAG_pipeline/frontend/components/onboarding/steps/WelcomeStep.tsx` — replaced the sparkles-in-tile mark with the IntoData logo (soft halo retained); removed unused `Sparkles` import.
+  - `RAG_pipeline/frontend/app/globals.css` — tour (`driver.js .intodata-tour`) polish: branded top accent bar (`::before` gradient), progress-text pill, `tour-pop` entrance keyframe (reduced-motion guarded).
+- **Problem**: User extended the "modernize the introduction" ask to onboarding + the guided walk-through. Audit found the **login page** was the real weak spot (raw gray, no dark mode, no brand logo, dated inputs) — the actual front door; the onboarding wizard was already fairly polished.
+- **Change**: Login fully retokenized + branded; onboarding chrome unified to the IntoData logo with ambient glow + per-step entrance; tour popovers given a branded accent + entrance. Consistent with the new intro hero (`ChatWindow`).
+- **Why this approach**: Highest-impact surface (login) first; reused the existing `intodata-logo-hero.png` + `hero-enter`/elevation tokens so it's cohesive and low-risk. Did NOT alter the global `TenantMark` (still used by the sidebar / white-label) — logo is applied only to the surfaces the user flagged.
+- **Verification**: `tsc --noEmit` clean; `npm test` 62 passed; frontend rebuilt + healthy; `/login` serves 200.
+- **Follow-up (same session)**: `components/Sidebar.tsx` — replaced the `TenantMark` (sparkles) brand mark in BOTH sidebar states: collapsed uses the IntoData brand icon `public/favicon.svg` (navy tile) at `h-7 w-7 rounded-md`; expanded uses `intodata-logo-hero.png` (`dark:brightness-0 dark:invert`, left-aligned, flex-1 wrapper so the collapse button stays right). Removed the now-unused `TenantMark` import. `TenantMark` is still used by `app/onboarding/page.tsx` (untouched). tsc clean; frontend rebuilt + healthy; `/favicon.svg` serves 200.
+- **Deferred (offered)**: deeper per-form-step polish (Workspace/Platforms/Tools/Source select steps) and the Admin/User welcome wizard variants — not yet touched.
 
 ## Session: 2026-06-18
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { TenantMark } from "@/components/TenantMark";
 
 interface Props {
   steps: string[];
@@ -20,10 +19,17 @@ export function WizardProgress({ steps, currentStep, workspaceName }: Props) {
       <div className="mx-auto max-w-5xl px-6 py-4">
         {/* Top row — brand lockup + step indicator */}
         <div className="flex items-center justify-between gap-4">
-          <TenantMark
-            size="md"
-            subtitle={workspaceName || "Workspace setup"}
-          />
+          <div className="flex min-w-0 items-center gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/intodata-logo-hero.png"
+              alt="Intodata"
+              className="h-7 w-auto shrink-0 dark:brightness-0 dark:invert"
+            />
+            <span className="hidden truncate text-xs text-muted-foreground sm:inline">
+              {workspaceName || "Workspace setup"}
+            </span>
+          </div>
 
           <div className="flex items-center gap-2">
             <span className="text-xs tabular-nums text-muted-foreground">

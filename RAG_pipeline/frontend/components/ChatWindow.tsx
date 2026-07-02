@@ -1,14 +1,12 @@
 "use client";
 
-import { FolderOpen, Sparkles } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
 import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
-import { EnvironmentBadge } from "./TenantMark";
-import { useTenantContext } from "@/contexts/TenantContext";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { SUGGESTIONS } from "@/lib/constants";
 import type { ChatMode } from "./ModeToggle";
@@ -51,7 +49,6 @@ export function ChatWindow({
   const isDeepDive = mode === "deep-dive";
   const inputDisabled = isDeepDive && !selectedProject;
 
-  const { tenant, isProduction } = useTenantContext();
   const { data: userProjectsData } = useUserProjects();
   const selectedProjectName = !isDeepDive
     ? userProjectsData?.projects.find((p) => p.id === selectedProject)?.display_name
@@ -107,20 +104,13 @@ export function ChatWindow({
 
         <div className="relative flex-1 flex flex-col items-center justify-center px-4 py-10 overflow-y-auto">
           <div className="w-full max-w-2xl mx-auto flex flex-col items-center text-center">
-            {/* Brand lockup */}
-            <div className="animate-hero-enter flex flex-col items-center gap-3">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-elevation-lg ring-1 ring-primary/20">
-                <Sparkles className="h-7 w-7" />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-base font-semibold tracking-tight text-foreground">
-                  {tenant.name}
-                </span>
-                {!isProduction && (
-                  <EnvironmentBadge environment={tenant.environment} />
-                )}
-              </div>
-            </div>
+            {/* Brand */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/intodata-logo-hero.png"
+              alt="Intodata"
+              className="animate-hero-enter h-10 sm:h-12 w-auto dark:brightness-0 dark:invert"
+            />
 
             {/* Headline */}
             <h2
