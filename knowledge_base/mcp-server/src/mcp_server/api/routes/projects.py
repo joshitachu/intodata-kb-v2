@@ -95,7 +95,10 @@ from mcp_server.services.rag_bridge import RagBridge
 from mcp_server.services.rag_support_package import replace_analysis_cache_from_rag_support
 from mcp_server.utils.error_sanitizer import sanitize_git_error
 from mcp_server.services.scanner_service import ScannerService
-from mcp_server.services.summary_service import SummaryService
+from mcp_server.services.summary_service import (
+    SummaryService,
+    build_component_summaries_async,
+)
 from mcp_server.services import validation_service
 
 router = APIRouter(tags=["projects"])
@@ -559,6 +562,13 @@ async def _run_scan_background(
                 run_id, status="completed", job_count=result["job_count"]
             )
 
+            # Fire-and-forget: populate topology component summaries in the
+            # background. Will read Phase 2 prose if available; otherwise falls
+            # back to scan_data.purpose + heuristic. Never raises.
+            asyncio.create_task(
+                _safe_build_component_summaries(project_id, log_mgr)
+            )
+
         else:
             await registry.update_status(
                 project_id, "error", error_message=result.get("error")
@@ -610,6 +620,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         investigation_model=req.investigation_model,
         model=req.model,
         write_model=req.write_model,
+        plugin_pack_id=req.plugin_pack_id,
         resume=req.resume,
         run_id_for_lock=run_id,
         doc_generation_provider=project.doc_generation_provider,
@@ -1112,6 +1123,23 @@ def _diff_generated_docs(old_docs_dir: Path, new_docs_dir: Path) -> tuple[set[st
     return changed, removed
 
 
+async def _safe_build_component_summaries(project_id: str, log_mgr) -> None:
+    """Background wrapper for component summary generation. Never raises.
+
+    Called fire-and-forget after a successful scan and after a successful
+    doc-generation swap. Re-uses the same scan/summaries.json cache, so each
+    call upgrades the cache if Phase 2 prose has become available since the
+    last run.
+    """
+    try:
+        await build_component_summaries_async(project_id, log_mgr=log_mgr)
+    except Exception as exc:  # noqa: BLE001 - background task, must not bubble
+        logger.warning(
+            "Component summary generation failed for %s: %s", project_id, exc,
+            exc_info=True,
+        )
+
+
 def _load_enterprise_gate_results(base_dir: Path) -> dict | None:
     for candidate in (
         base_dir / "_assessment" / "enterprise_gates.json",
@@ -1134,6 +1162,7 @@ async def _run_generate_background(
     investigation_model: str | None = None,
     model: str | None = None,
     write_model: str | None = None,
+    plugin_pack_id: int | None = None,
     resume: bool = True,
     run_id_for_lock: int | None = None,
     doc_generation_provider: str | None = None,
@@ -1147,6 +1176,10 @@ async def _run_generate_background(
 
     Uses a staging directory (docs_staging/) so that existing docs survive
     if generation fails.  Only on success is the staging dir swapped in.
+
+    ``plugin_pack_id`` is an optional per-run override. When supplied, it takes
+    precedence over the project's saved ``plugin_pack_id``. Pass ``None`` to
+    use the project default (existing behaviour).
 
     ``pre_swap_gate`` (reingestion only) runs blocking correctness gates against
     the staging tree before the swap. If it returns a failed ``GateOutcome`` the
@@ -1162,7 +1195,8 @@ async def _run_generate_background(
     try:
         result = await claude.generate_docs(
             project_id, investigation_model=investigation_model, model=model,
-            write_model=write_model, resume=resume, run_id=run_id_for_lock or run_id,
+            write_model=write_model, plugin_pack_id=plugin_pack_id,
+            resume=resume, run_id=run_id_for_lock or run_id,
             doc_generation_provider=doc_generation_provider,
             instruction_pack_dir=instruction_pack_dir,
             enterprise_mode=enterprise_mode,
@@ -1257,6 +1291,13 @@ async def _run_generate_background(
             # _rag_support/ package (Phase 4 packages the Phase 2 group
             # analyses before deleting _analysis/).
             replace_analysis_cache_from_rag_support(output_dir)
+
+            # Fire-and-forget: upgrade topology component summaries with the
+            # now-persisted Phase 2 prose. This call is cheap when prose is
+            # missing and produces rich summaries when it exists.
+            asyncio.create_task(
+                _safe_build_component_summaries(project_id, log_mgr)
+            )
 
             # Push new docs to RAG server-side
             bridge = RagBridge(log_manager=log_mgr)
@@ -2399,24 +2440,16 @@ def _derive_node_summary(
     external_systems: list[str],
     direction: str,
 ) -> str:
-    """Lightweight summary for graph nodes (no file I/O)."""
-    parts: list[str] = []
-    dir_label = {
-        "OnRamp": "Reads from",
-        "OffRamp": "Writes to",
-        "Bidirectional": "Syncs with",
-    }.get(direction, "Connects to")
+    """Lightweight summary for graph nodes when no cached AI summary exists.
 
-    if external_systems:
-        systems = " and ".join(external_systems[:3])
-        parts.append(f"{dir_label} {systems}")
-    if component_types:
-        notable = [t for t in component_types if t.startswith("t") and t[1:2].isupper()]
-        if notable:
-            parts.append(f"using {', '.join(notable[:3])}")
-    if not parts:
-        return ""
-    return ". ".join(parts) + "."
+    Delegates to ``summary_service.heuristic_summary`` so that the topology
+    fallback is shared between the request-time graph endpoint and the
+    async background extractor. Returns ``""`` when the available signal is
+    too thin to say anything meaningful — the JobDetailPanel then renders an
+    empty state instead of a repetitive template sentence.
+    """
+    from mcp_server.services.summary_service import heuristic_summary
+    return heuristic_summary(job_name, direction, external_systems, component_types)
 
 
 _DOC_SUMMARY_HEADINGS = {

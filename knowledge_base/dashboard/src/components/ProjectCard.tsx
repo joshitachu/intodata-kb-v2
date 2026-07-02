@@ -98,7 +98,7 @@ export default function ProjectCard({
       {canManageProjects && (
         <div className="px-4 py-2.5">
           <ActionButtons
-            projectId={project.id}
+            project={project}
             status={project.status}
             onAction={onAction}
           />

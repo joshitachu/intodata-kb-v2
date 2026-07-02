@@ -12,16 +12,17 @@ from src.db.models import User, Role, Document
 CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
 
 
-def _mock_user():
+def _mock_user(*, is_superadmin: bool = False, user_id: int = 1):
     role = MagicMock(spec=Role)
     role.name = "engineering"
     user = MagicMock(spec=User)
-    user.id = 1
+    user.id = user_id
+    user.is_superadmin = is_superadmin
     user.roles = [role]
     return user
 
 
-def _mock_document(id: int = 1):
+def _mock_document(id: int = 1, *, uploaded_by: int | None = 1):
     doc = MagicMock(spec=Document)
     doc.id = id
     doc.filename = "test.pdf"
@@ -33,6 +34,7 @@ def _mock_document(id: int = 1):
     doc.project_id = "test-project"
     doc.chunk_count = 5
     doc.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+    doc.uploaded_by = uploaded_by
     return doc
 
 
@@ -54,6 +56,7 @@ def mock_deps():
 
 async def test_list_documents(mock_deps):
     mock_db = mock_deps["db"]
+    mock_deps["user"].is_superadmin = True
 
     # Mock the count query
     count_result = MagicMock()
@@ -76,6 +79,37 @@ async def test_list_documents(mock_deps):
     assert len(data["documents"]) == 1
     assert data["documents"][0]["filename"] == "test.pdf"
     assert data["documents"][0]["document_role"] == "guidance"
+
+
+async def test_list_documents_scoped_to_caller_for_non_admin(mock_deps):
+    """Non-admin user sees only their own uploads; the SQL filter must be applied."""
+    from sqlalchemy import select as sa_select
+
+    mock_db = mock_deps["db"]
+    user = mock_deps["user"]
+    user.is_superadmin = False
+    user.id = 42
+
+    count_result = MagicMock()
+    count_result.scalar_one.return_value = 0
+    select_result = MagicMock()
+    select_result.scalars.return_value.all.return_value = []
+
+    mock_db.execute = AsyncMock(side_effect=[count_result, select_result])
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/v1/documents")
+
+    assert resp.status_code == 200
+    # Two queries: count + select. Both must include a where-clause referencing the user.
+    assert mock_db.execute.await_count == 2
+    for call in mock_db.execute.await_args_list:
+        stmt = call.args[0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "uploaded_by" in compiled, (
+            f"Expected uploaded_by filter on non-admin list query, got: {compiled}"
+        )
 
 
 async def test_delete_document_success(mock_deps):
@@ -109,32 +143,69 @@ async def test_delete_document_not_found(mock_deps):
     assert resp.status_code == 404
 
 
-async def test_delete_document_forbidden_wrong_project(mock_deps):
-    """Non-admin user cannot delete a document from a project they are not assigned to."""
+async def test_delete_document_forbidden_other_user_upload(mock_deps):
+    """Non-admin user cannot delete a document uploaded by a different user."""
     mock_db = mock_deps["db"]
     user = mock_deps["user"]
 
     user.is_superadmin = False
-    role = MagicMock()
-    role.permissions = []
-    user.roles = [role]
+    user.id = 1
 
-    doc = _mock_document(id=1)  # project_id = "test-project"
+    doc = _mock_document(id=1, uploaded_by=99)  # different uploader
 
     doc_result = MagicMock()
     doc_result.scalar_one_or_none.return_value = doc
 
-    # User has no project assignments
-    proj_result = MagicMock()
-    proj_result.scalars.return_value.all.return_value = []
-
-    mock_db.execute = AsyncMock(side_effect=[doc_result, proj_result])
+    mock_db.execute = AsyncMock(return_value=doc_result)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete("/api/v1/documents/1", headers=CSRF_HEADERS)
 
     assert resp.status_code == 403
+
+
+async def test_delete_document_allowed_for_owner(mock_deps):
+    """Non-admin user can delete their own upload."""
+    mock_db = mock_deps["db"]
+    user = mock_deps["user"]
+
+    user.is_superadmin = False
+    user.id = 1
+
+    doc = _mock_document(id=1, uploaded_by=1)
+
+    doc_result = MagicMock()
+    doc_result.scalar_one_or_none.return_value = doc
+    mock_db.execute = AsyncMock(return_value=doc_result)
+
+    with patch("src.api.routes.documents.delete_document_points", new_callable=AsyncMock):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.delete("/api/v1/documents/1", headers=CSRF_HEADERS)
+
+    assert resp.status_code == 204
+
+
+async def test_delete_document_allowed_for_superadmin(mock_deps):
+    """Superadmin can delete any document, regardless of uploader."""
+    mock_db = mock_deps["db"]
+    user = mock_deps["user"]
+    user.is_superadmin = True
+    user.id = 1
+
+    doc = _mock_document(id=1, uploaded_by=999)
+
+    doc_result = MagicMock()
+    doc_result.scalar_one_or_none.return_value = doc
+    mock_db.execute = AsyncMock(return_value=doc_result)
+
+    with patch("src.api.routes.documents.delete_document_points", new_callable=AsyncMock):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.delete("/api/v1/documents/1", headers=CSRF_HEADERS)
+
+    assert resp.status_code == 204
 
 
 # --- Soft delete tests (real SQLite DB via db_session) ---

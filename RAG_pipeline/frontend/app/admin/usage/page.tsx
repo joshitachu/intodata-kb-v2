@@ -106,18 +106,17 @@ interface UserDetailUsage {
   by_model: ModelBreakdown[];
 }
 
-interface RecentEntry {
+interface RecentThread {
   id: number;
+  title: string | null;
   user_id: number | null;
-  interface: string;
-  query_text: string | null;
-  model_name: string | null;
-  provider: string | null;
+  username: string | null;
+  message_count: number;
+  avg_session_seconds: number;
   input_tokens: number | null;
   output_tokens: number | null;
   cost_usd: number | null;
-  latency_ms: number | null;
-  created_at: string;
+  last_activity: string | null;
 }
 
 // --- Helpers ---
@@ -131,6 +130,17 @@ function formatNumber(n: number): string {
 
 function formatCost(n: number): string {
   return `$${n.toFixed(4)}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (!seconds || seconds <= 0) return "-";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins < 60) return secs ? `${mins}m ${secs}s` : `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins ? `${hours}h ${remMins}m` : `${hours}h`;
 }
 
 // --- Component ---
@@ -156,11 +166,13 @@ export default function AdminUsagePage() {
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [userDetail, setUserDetail] = useState<UserDetailUsage | null>(null);
   const [userDetailLoading, setUserDetailLoading] = useState(false);
-  const [userRecentEntries, setUserRecentEntries] = useState<RecentEntry[]>([]);
+  const [userRecentThreads, setUserRecentThreads] = useState<RecentThread[]>(
+    [],
+  );
   const [userRecentPage, setUserRecentPage] = useState(0);
 
-  // Recent queries (overview)
-  const [recentEntries, setRecentEntries] = useState<RecentEntry[]>([]);
+  // Recent threads (overview)
+  const [recentThreads, setRecentThreads] = useState<RecentThread[]>([]);
   const [recentPage, setRecentPage] = useState(0);
   const [recentLoading, setRecentLoading] = useState(false);
 
@@ -200,15 +212,15 @@ export default function AdminUsagePage() {
       setRecentLoading(true);
       try {
         const skip = page * PAGE_SIZE;
-        let url = `/api/admin/usage/recent?skip=${skip}&limit=${PAGE_SIZE}`;
+        let url = `/api/admin/usage/recent-threads?skip=${skip}&limit=${PAGE_SIZE}`;
         if (userId != null) url += `&user_id=${userId}`;
         const res = await fetch(url);
         if (res.ok) {
-          const data: { entries: RecentEntry[] } = await res.json();
+          const data: { entries: RecentThread[] } = await res.json();
           if (userId != null) {
-            setUserRecentEntries(data.entries);
+            setUserRecentThreads(data.entries);
           } else {
-            setRecentEntries(data.entries);
+            setRecentThreads(data.entries);
           }
         }
       } catch {
@@ -267,7 +279,7 @@ export default function AdminUsagePage() {
     setTab("per-user");
     setSelectedUserId(null);
     setUserDetail(null);
-    setUserRecentEntries([]);
+    setUserRecentThreads([]);
   }
 
   // Compute totals
@@ -355,7 +367,7 @@ export default function AdminUsagePage() {
       {tab === "overview" && (
         <OverviewTab
           summary={summary}
-          recentEntries={recentEntries}
+          recentThreads={recentThreads}
           recentPage={recentPage}
           recentLoading={recentLoading}
           onPageChange={(p) => {
@@ -377,7 +389,7 @@ export default function AdminUsagePage() {
         <UserDetailTab
           detail={userDetail}
           loading={userDetailLoading}
-          recentEntries={userRecentEntries}
+          recentThreads={userRecentThreads}
           recentPage={userRecentPage}
           recentLoading={recentLoading}
           onBack={handleBackToPerUser}
@@ -395,13 +407,13 @@ export default function AdminUsagePage() {
 
 function OverviewTab({
   summary,
-  recentEntries,
+  recentThreads,
   recentPage,
   recentLoading,
   onPageChange,
 }: {
   summary: UsageSummary | null;
-  recentEntries: RecentEntry[];
+  recentThreads: RecentThread[];
   recentPage: number;
   recentLoading: boolean;
   onPageChange: (p: number) => void;
@@ -557,9 +569,9 @@ function OverviewTab({
         </table>
       </div>
 
-      {/* Recent Queries */}
-      <RecentQueriesTable
-        entries={recentEntries}
+      {/* Recent Threads */}
+      <RecentThreadsTable
+        entries={recentThreads}
         page={recentPage}
         loading={recentLoading}
         onPageChange={onPageChange}
@@ -709,7 +721,7 @@ function PerUserTab({
 function UserDetailTab({
   detail,
   loading,
-  recentEntries,
+  recentThreads,
   recentPage,
   recentLoading,
   onBack,
@@ -717,7 +729,7 @@ function UserDetailTab({
 }: {
   detail: UserDetailUsage | null;
   loading: boolean;
-  recentEntries: RecentEntry[];
+  recentThreads: RecentThread[];
   recentPage: number;
   recentLoading: boolean;
   onBack: () => void;
@@ -844,13 +856,13 @@ function UserDetailTab({
         </div>
       )}
 
-      {/* Recent Queries for this user */}
-      <RecentQueriesTable
-        entries={recentEntries}
+      {/* Recent Threads for this user */}
+      <RecentThreadsTable
+        entries={recentThreads}
         page={recentPage}
         loading={recentLoading}
         onPageChange={onPageChange}
-        title="Recent Queries (this user)"
+        title="Recent Threads (this user)"
       />
     </div>
   );
@@ -858,14 +870,14 @@ function UserDetailTab({
 
 // ===================== SHARED COMPONENTS =====================
 
-function RecentQueriesTable({
+function RecentThreadsTable({
   entries,
   page,
   loading,
   onPageChange,
-  title = "Recent Queries",
+  title = "Recent Threads",
 }: {
-  entries: RecentEntry[];
+  entries: RecentThread[];
   page: number;
   loading: boolean;
   onPageChange: (p: number) => void;
@@ -882,16 +894,16 @@ function RecentQueriesTable({
                 ID
               </th>
               <th className="text-left px-3 py-2 font-medium text-gray-600">
+                Thread
+              </th>
+              <th className="text-left px-3 py-2 font-medium text-gray-600">
                 User
               </th>
-              <th className="text-left px-3 py-2 font-medium text-gray-600">
-                Interface
+              <th className="text-right px-3 py-2 font-medium text-gray-600">
+                Messages
               </th>
-              <th className="text-left px-3 py-2 font-medium text-gray-600">
-                Query
-              </th>
-              <th className="text-left px-3 py-2 font-medium text-gray-600">
-                Model
+              <th className="text-right px-3 py-2 font-medium text-gray-600">
+                Avg Session
               </th>
               <th className="text-right px-3 py-2 font-medium text-gray-600">
                 Tokens
@@ -899,11 +911,8 @@ function RecentQueriesTable({
               <th className="text-right px-3 py-2 font-medium text-gray-600">
                 Cost
               </th>
-              <th className="text-right px-3 py-2 font-medium text-gray-600">
-                Latency
-              </th>
               <th className="text-left px-3 py-2 font-medium text-gray-600">
-                Time
+                Last Activity
               </th>
             </tr>
           </thead>
@@ -911,7 +920,7 @@ function RecentQueriesTable({
             {loading ? (
               <tr>
                 <td
-                  colSpan={9}
+                  colSpan={8}
                   className="px-3 py-6 text-center text-gray-400"
                 >
                   Loading...
@@ -922,22 +931,20 @@ function RecentQueriesTable({
                 {entries.map((e) => (
                   <tr key={e.id} className="border-b last:border-0">
                     <td className="px-3 py-2 text-gray-500">{e.id}</td>
-                    <td className="px-3 py-2 text-gray-600">
-                      {e.user_id != null ? `#${e.user_id}` : "-"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className="text-xs bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded">
-                        {e.interface}
-                      </span>
-                    </td>
                     <td
                       className="px-3 py-2 text-gray-600 max-w-xs truncate"
-                      title={e.query_text || undefined}
+                      title={e.title || undefined}
                     >
-                      {e.query_text || "-"}
+                      {e.title || "(untitled)"}
                     </td>
-                    <td className="px-3 py-2 text-gray-600 text-xs">
-                      {e.model_name || "-"}
+                    <td className="px-3 py-2 text-gray-600">
+                      {e.username || (e.user_id != null ? `#${e.user_id}` : "-")}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600">
+                      {formatNumber(e.message_count)}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600 text-xs">
+                      {formatDuration(e.avg_session_seconds)}
                     </td>
                     <td className="px-3 py-2 text-right text-gray-600 text-xs">
                       {e.input_tokens != null
@@ -951,21 +958,20 @@ function RecentQueriesTable({
                     <td className="px-3 py-2 text-right text-gray-600 text-xs">
                       {e.cost_usd != null ? formatCost(e.cost_usd) : "-"}
                     </td>
-                    <td className="px-3 py-2 text-right text-gray-600 text-xs">
-                      {e.latency_ms != null ? `${e.latency_ms}ms` : "-"}
-                    </td>
                     <td className="px-3 py-2 text-gray-500 text-xs whitespace-nowrap">
-                      {new Date(e.created_at).toLocaleString()}
+                      {e.last_activity
+                        ? new Date(e.last_activity).toLocaleString()
+                        : "-"}
                     </td>
                   </tr>
                 ))}
                 {entries.length === 0 && (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={8}
                       className="px-3 py-6 text-center text-gray-400"
                     >
-                      No recent queries
+                      No recent threads
                     </td>
                   </tr>
                 )}

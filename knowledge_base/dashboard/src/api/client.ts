@@ -359,6 +359,7 @@ export const api = {
     investigationModel?: string | null,
     model?: string | null,
     writeModel?: string | null,
+    pluginPackId?: number | null,
   ) =>
     request<import("../types").StatusResponse>("/mcp/generate", {
       method: "POST",
@@ -368,6 +369,7 @@ export const api = {
         investigation_model: investigationModel ?? null,
         model: model ?? null,
         write_model: writeModel ?? null,
+        plugin_pack_id: pluginPackId ?? null,
       }),
     }, StatusResponseSchema),
 };
