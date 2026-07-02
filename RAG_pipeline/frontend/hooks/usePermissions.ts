@@ -12,7 +12,8 @@ type PermissionCodename =
   | "view_assigned_projects"
   | "query_rag"
   | "ingest_documents"
-  | "view_audit_logs";
+  | "view_audit_logs"
+  | "create_projects";
 
 interface UsePermissionsReturn {
   /** Check if the current user has a specific permission (superadmin bypasses). */
@@ -24,6 +25,7 @@ interface UsePermissionsReturn {
   canManageUsers: boolean;
   canManageRoles: boolean;
   canAssignProjects: boolean;
+  canCreateProjects: boolean;
   canIngestDocuments: boolean;
   canViewAuditLogs: boolean;
 }
@@ -46,6 +48,7 @@ export function usePermissions(): UsePermissionsReturn {
     canManageUsers: hasPermission("manage_users"),
     canManageRoles: hasPermission("manage_roles"),
     canAssignProjects: hasPermission("assign_projects"),
+    canCreateProjects: hasPermission("create_projects"),
     canIngestDocuments: hasPermission("ingest_documents"),
     canViewAuditLogs: hasPermission("view_audit_logs"),
   };

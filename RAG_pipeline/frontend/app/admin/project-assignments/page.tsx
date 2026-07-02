@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthContext } from "@/components/AuthProvider";
+import { usePermissions } from "@/hooks/usePermissions";
 
 interface AssignmentItem {
   id: number;
   user_id: number;
   username: string;
   project_id: string;
+  is_owner: boolean;
   assigned_by: number | null;
   assigned_at: string;
 }
@@ -31,12 +33,16 @@ interface AssignForm {
 
 export default function AdminProjectAssignmentsPage() {
   const { user: authUser } = useAuthContext();
+  const { isSuperadmin, canCreateProjects } = usePermissions();
+  const allowed = isSuperadmin || canCreateProjects;
   const router = useRouter();
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAssign, setShowAssign] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [createForm, setCreateForm] = useState({ project_id: "", display_name: "" });
   const [assignForm, setAssignForm] = useState<AssignForm>({
     user_id: "",
     project_id: "",
@@ -123,6 +129,36 @@ export default function AdminProjectAssignmentsPage() {
     }
   }
 
+  async function handleCreateProject(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    const projectId = createForm.project_id.trim();
+    if (!projectId) {
+      setError("Enter a project id");
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          display_name: createForm.display_name.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data: { error?: string } | null = await res.json().catch(() => null);
+        setError(data?.error || "Failed to create project");
+        return;
+      }
+      setShowCreate(false);
+      setCreateForm({ project_id: "", display_name: "" });
+      await Promise.all([fetchAssignments(), fetchProjects()]);
+    } catch {
+      setError("Network error");
+    }
+  }
+
   async function handleUnassign(assignmentId: number) {
     if (!confirm("Are you sure you want to remove this assignment?")) return;
     setActionLoading(assignmentId);
@@ -147,15 +183,15 @@ export default function AdminProjectAssignmentsPage() {
   // Falls back to the raw ID so rows for deleted/empty projects still render.
   const projectNameById = new Map(projects.map((p) => [p.id, p.display_name]));
 
-  // Superadmin-only guard
+  // Admins (create_projects) and superadmins may manage projects.
   useEffect(() => {
-    if (authUser && !authUser.is_superadmin) {
+    if (authUser && !allowed) {
       router.replace("/admin/usage");
     }
-  }, [authUser, router]);
+  }, [authUser, allowed, router]);
 
-  if (!authUser?.is_superadmin) {
-    return <p className="text-muted-foreground p-4">Access denied. Superadmin only.</p>;
+  if (authUser && !allowed) {
+    return <p className="text-muted-foreground p-4">Access denied.</p>;
   }
 
   if (loading) {
@@ -167,17 +203,66 @@ export default function AdminProjectAssignmentsPage() {
   return (
     <div className="max-w-5xl mx-auto py-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Project Assignments</h1>
-        <button
-          onClick={() => {
-            setShowAssign(!showAssign);
-            setError("");
-          }}
-          className="px-4 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90"
-        >
-          {showAssign ? "Cancel" : "Assign Project"}
-        </button>
+        <h1 className="text-2xl font-bold">Projects</h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setShowCreate(!showCreate);
+              setShowAssign(false);
+              setError("");
+            }}
+            className="px-4 py-2 border text-sm rounded-md hover:bg-muted transition-colors"
+          >
+            {showCreate ? "Cancel" : "Create Project"}
+          </button>
+          <button
+            onClick={() => {
+              setShowAssign(!showAssign);
+              setShowCreate(false);
+              setError("");
+            }}
+            className="px-4 py-2 bg-primary text-primary-foreground text-sm rounded-md hover:bg-primary/90"
+          >
+            {showAssign ? "Cancel" : "Assign Project"}
+          </button>
+        </div>
       </div>
+
+      {showCreate && (
+        <form
+          onSubmit={handleCreateProject}
+          className="bg-white border rounded-lg p-4 mb-6 space-y-3"
+        >
+          <h3 className="font-medium text-sm text-gray-700">
+            Create a project (you become its owner)
+          </h3>
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              value={createForm.project_id}
+              onChange={(e) =>
+                setCreateForm({ ...createForm, project_id: e.target.value })
+              }
+              placeholder="project-id (e.g. talend-finance)"
+              className="px-3 py-2 border rounded-md text-sm"
+              required
+            />
+            <input
+              value={createForm.display_name}
+              onChange={(e) =>
+                setCreateForm({ ...createForm, display_name: e.target.value })
+              }
+              placeholder="Display name (optional)"
+              className="px-3 py-2 border rounded-md text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            className="px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
+          >
+            Create
+          </button>
+        </form>
+      )}
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
@@ -311,6 +396,11 @@ export default function AdminProjectAssignmentsPage() {
                   <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">
                     {projectNameById.get(a.project_id) ?? a.project_id}
                   </span>
+                  {a.is_owner && (
+                    <span className="ml-1.5 text-xs bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
+                      owner
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-gray-500">
                   {a.assigned_by !== null ? `User #${a.assigned_by}` : "-"}
@@ -321,13 +411,17 @@ export default function AdminProjectAssignmentsPage() {
                     : "-"}
                 </td>
                 <td className="px-4 py-3">
-                  <button
-                    onClick={() => handleUnassign(a.id)}
-                    disabled={actionLoading === a.id}
-                    className="text-xs text-red-600 hover:text-red-800 disabled:opacity-50"
-                  >
-                    Unassign
-                  </button>
+                  {a.is_owner ? (
+                    <span className="text-xs text-gray-400">owner</span>
+                  ) : (
+                    <button
+                      onClick={() => handleUnassign(a.id)}
+                      disabled={actionLoading === a.id}
+                      className="text-xs text-red-600 hover:text-red-800 disabled:opacity-50"
+                    >
+                      Unassign
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
