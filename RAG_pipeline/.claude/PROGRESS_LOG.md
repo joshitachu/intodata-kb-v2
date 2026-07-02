@@ -1,5 +1,49 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-07-02 (branch: feat/superadmin-admin-rbac)
+
+> Superadmin/admin RBAC split — backend complete (3 slices), built in an isolated
+> worktree off `master` (head 035) because a concurrent session was building the
+> runtime feature (migrations 036/037) in the main tree. 349 backend tests pass.
+> Frontend (Slice 4) + `/inspect` + merge still pending. NOT merged.
+
+### [Feature]: Superadmin/admin RBAC — 3-tier model
+
+- **Design**: superadmin (sees/does everything, curates the LLM standard) / admin
+  (creates + sees/manages ONLY projects they own) / user (assigned only). `manager`
+  role retired. Decisions captured via AskUserQuestion: own-only admin scope, no
+  separate "groups" (projects only), LLM answer-model only (not embeddings/rerank).
+- **Slice 1** (`e79e286`) — Files: `alembic/versions/036_superadmin_admin_rbac.py` (NEW),
+  `src/db/models/user.py`, `src/rbac/permissions.py`, `src/api/dependencies.py`,
+  `tests/test_rbac/test_project_ownership.py` (NEW). Migration retires `manager`
+  (migrates its users→admin), adds `project_assignments.is_owner` + `create_projects`
+  perm, rebalances admin (+assign/manage/create, −view_all_projects). Ownership = the
+  `is_owner` assignment flag, so existing `get_user_project_ids` scoping already limits
+  admins to owned/assigned. `can_manage_project()` is the single ownership gate
+  (superadmin bypass). INVARIANT: never re-derive ownership inline — call it.
+- **Slice 2** (`319d49b`) — Files: `src/api/routes/admin.py`,
+  `tests/test_api/test_project_ownership_api.py` (NEW). `POST /admin/projects` claims a
+  project (one owner max → owner assignment). assign/unassign/list/get_user_projects are
+  owner-scoped for non-superadmins; owner assignment can't be unassigned; response gains
+  `is_owner`. Real-DB integration tests (mocked-DB pattern can't exercise ownership).
+- **Slice 3** (`61141c3`) — Files: `alembic/versions/037_rbac_model_config.py` (NEW),
+  `src/db/models/system_config.py`, `src/generation/model_config.py` (NEW),
+  `src/generation/llm_client.py`, `src/services/system_config_service.py`,
+  `src/api/routes/admin.py`, `src/api/main.py`, `tests/test_generation/test_model_config.py`
+  (NEW), `tests/test_api/test_model_config_api.py` (NEW). Superadmin-only
+  `GET/PUT /admin/model-config` sets a curated LLM answer-model standard stored on
+  `system_config`; `model_config` holds an in-memory override (allow-list validated),
+  loaded at startup; `llm_client` reads `order_with_override(settings.llm_providers)` +
+  `model_for(provider)` — backward-compatible when no override. INVARIANT: llm_client must
+  pass its OWN `settings.llm_providers` into `order_with_override` (tests patch
+  `llm_client.settings`, not `model_config.settings`). Only the answer LLM is configurable.
+- **Verification**: 349 tests pass (test_generation + test_rbac + test_api) via a throwaway
+  container bind-mounted to the worktree (image lacks pytest; `pip install` as root + mount).
+- **Pending**: Slice 4 (frontend: create_projects perm type, superadmin Model settings page +
+  BFF routes/hooks, admin Create-project UI, nav gating); `/inspect` + security review;
+  reconcile the `036_rbac`/`037_rbac` migrations vs the runtime branch's `036`/`037`
+  (both descend from `035` → `alembic merge`); merge to master + Docker rebuild.
+
 ## Session: 2026-07-02
 
 > UI/UX refresh: modernized the app introduction (Perplexity-style centered home) and
