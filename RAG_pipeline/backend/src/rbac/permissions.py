@@ -20,6 +20,7 @@ VIEW_ASSIGNED_PROJECTS = "view_assigned_projects"
 QUERY_RAG = "query_rag"
 INGEST_DOCUMENTS = "ingest_documents"
 VIEW_AUDIT_LOGS = "view_audit_logs"
+CREATE_PROJECTS = "create_projects"
 
 ALL_PERMISSIONS = {
     MANAGE_USERS,
@@ -31,6 +32,7 @@ ALL_PERMISSIONS = {
     QUERY_RAG,
     INGEST_DOCUMENTS,
     VIEW_AUDIT_LOGS,
+    CREATE_PROJECTS,
 }
 
 
@@ -91,3 +93,36 @@ async def get_user_project_ids(user: User, db: AsyncSession) -> list[str] | None
     project_ids = list(result.scalars().all())
     logger.debug("User %s has access to projects: %s", user.username, project_ids)
     return project_ids
+
+
+async def get_owned_project_ids(user: User, db: AsyncSession) -> list[str]:
+    """Return the project_ids the user owns (created).
+
+    Ownership is the ``is_owner`` flag on ``ProjectAssignment``. Superadmins are
+    not implicitly owners of every project — ownership is about *management*
+    rights (assign/scan/generate), which superadmins already get via their
+    global bypass, so callers should check ``is_superadmin`` first where a
+    global override is intended.
+    """
+    from src.db.models import ProjectAssignment
+
+    result = await db.execute(
+        select(ProjectAssignment.project_id).where(
+            ProjectAssignment.user_id == user.id,
+            ProjectAssignment.is_owner.is_(True),
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def can_manage_project(user: User, db: AsyncSession, project_id: str) -> bool:
+    """Whether the user may manage (assign/scan/generate/push) a given project.
+
+    Superadmins can manage any project; everyone else must own it. This is the
+    single ownership gate the project endpoints should call — do not re-derive
+    ownership inline.
+    """
+    if user.is_superadmin:
+        return True
+    owned = await get_owned_project_ids(user, db)
+    return project_id in owned

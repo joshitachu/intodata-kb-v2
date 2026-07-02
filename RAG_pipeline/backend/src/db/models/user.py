@@ -134,6 +134,10 @@ class ProjectAssignment(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     project_id: Mapped[str] = mapped_column(String(255), index=True)
+    # True when this user owns the project (created it). Owners can manage the
+    # project and grant/revoke access for other users; members (is_owner=False)
+    # can only view/query it. Superadmins bypass ownership entirely.
+    is_owner: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     assigned_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

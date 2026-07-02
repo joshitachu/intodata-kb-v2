@@ -123,3 +123,6 @@ def require_permission(codename: str):
 ManagerUser = Annotated[User, Depends(require_permission("manage_users"))]
 ProjectManager = Annotated[User, Depends(require_permission("assign_projects"))]
 AuditViewer = Annotated[User, Depends(require_permission("view_audit_logs"))]
+# Admins + superadmins can create projects (they become the owner). Ownership of
+# an *existing* project is enforced separately via rbac.permissions.can_manage_project.
+ProjectCreator = Annotated[User, Depends(require_permission("create_projects"))]
