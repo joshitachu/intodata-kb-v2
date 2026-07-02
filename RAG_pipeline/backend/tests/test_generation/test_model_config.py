@@ -39,6 +39,23 @@ def test_set_override_rejects_disallowed() -> None:
         mc.set_override("ollama", "bogus-model")
 
 
+def test_provider_not_enabled_on_deployment_rejected(monkeypatch) -> None:
+    # Deployment disables kimi.
+    monkeypatch.setattr(settings, "llm_providers", ["ollama"])
+    assert mc.is_allowed("kimi", "kimi-k2.5") is False
+    assert "kimi" not in mc.allowed_models()
+    with pytest.raises(ValueError):
+        mc.set_override("kimi", "kimi-k2.5")
+
+
+def test_order_with_override_ignores_excluded_provider(monkeypatch) -> None:
+    mc.set_override("ollama", "gemma3:12b")  # valid under default chain
+    # Deployment later restricts to kimi only — the stale ollama override must
+    # NOT resurrect ollama into the chain.
+    monkeypatch.setattr(settings, "llm_providers", ["kimi"])
+    assert mc.order_with_override(["kimi"]) == ["kimi"]
+
+
 def test_load_from_row_valid_invalid_and_none() -> None:
     mc.load_from_row("ollama", "gemma3:4b")
     assert mc.get_override() == {"provider": "ollama", "model": "gemma3:4b"}

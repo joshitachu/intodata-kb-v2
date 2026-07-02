@@ -36,11 +36,21 @@ _override: dict[str, str] | None = None  # {"provider": ..., "model": ...}
 
 
 def is_allowed(provider: str, model: str) -> bool:
-    return model in ALLOWED_MODELS.get(provider, [])
+    # Must be a vetted model AND a provider actually enabled on this deployment
+    # (settings.llm_providers) — so a superadmin can't select a provider ops disabled.
+    return (
+        provider in settings.llm_providers
+        and model in ALLOWED_MODELS.get(provider, [])
+    )
 
 
 def allowed_models() -> dict[str, list[str]]:
-    return {p: list(m) for p, m in ALLOWED_MODELS.items()}
+    # Only offer providers enabled on this deployment.
+    return {
+        p: list(m)
+        for p, m in ALLOWED_MODELS.items()
+        if p in settings.llm_providers
+    }
 
 
 def set_override(provider: str, model: str) -> None:
@@ -73,6 +83,14 @@ def order_with_override(base: list[str]) -> list[str]:
     if not override:
         return ordered
     provider = override["provider"]
+    # Never resurrect a provider the deployment excluded from its chain.
+    if provider not in ordered:
+        logger.warning(
+            "LLM override provider %s is not in the deployment chain %s — ignoring",
+            provider,
+            ordered,
+        )
+        return ordered
     return [provider] + [p for p in ordered if p != provider]
 
 

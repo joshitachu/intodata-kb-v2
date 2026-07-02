@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.main import app
 from src.api.dependencies import get_current_user, get_db, get_qdrant
-from src.db.models import Permission, ProjectAssignment, Role, User
+from src.db.models import Document, Permission, ProjectAssignment, Role, User
 from src.rbac.permissions import get_owned_project_ids
 
 CSRF = {"cookie": "csrf_token=t", "X-CSRF-Token": "t"}
@@ -89,6 +89,98 @@ async def test_duplicate_project_claim_rejected(db_session: AsyncSession) -> Non
                     headers=CSRF,
                 )
         assert resp.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_admin_cannot_claim_project_with_documents(db_session: AsyncSession) -> None:
+    """Security: an admin must not seize a pre-existing (scanner/dashboard) project
+    that has documents but no owner row."""
+    admin = await _seed_user(db_session, "admin_claim_docs", perms=("create_projects",))
+    db_session.add(
+        Document(filename="a.pdf", file_type="pdf", project_id="legacy-proj")
+    )
+    await db_session.flush()
+    _override(db_session, admin)
+    try:
+        with _patched_audit():
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/admin/projects",
+                    json={"project_id": "legacy-proj"},
+                    headers=CSRF,
+                )
+        assert resp.status_code == 409
+        assert await get_owned_project_ids(admin, db_session) == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_admin_cannot_claim_project_assigned_to_others(db_session: AsyncSession) -> None:
+    admin = await _seed_user(db_session, "admin_claim_asg", perms=("create_projects",))
+    other = await _seed_user(db_session, "other_member")
+    db_session.add(
+        ProjectAssignment(user_id=other.id, project_id="shared-proj", is_owner=False)
+    )
+    await db_session.flush()
+    _override(db_session, admin)
+    try:
+        with _patched_audit():
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/admin/projects",
+                    json={"project_id": "shared-proj"},
+                    headers=CSRF,
+                )
+        assert resp.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_claiming_own_existing_assignment_is_clean_409(db_session: AsyncSession) -> None:
+    """Correctness: creator already has a member assignment → clean 409, not a 500
+    IntegrityError on the (user_id, project_id) unique constraint."""
+    admin = await _seed_user(db_session, "admin_dup", perms=("create_projects",))
+    db_session.add(
+        ProjectAssignment(user_id=admin.id, project_id="dup-proj", is_owner=False)
+    )
+    await db_session.flush()
+    _override(db_session, admin)
+    try:
+        with _patched_audit():
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/admin/projects",
+                    json={"project_id": "dup-proj"},
+                    headers=CSRF,
+                )
+        assert resp.status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_superadmin_can_adopt_preexisting_project(db_session: AsyncSession) -> None:
+    """Superadmin bypasses the pre-existing guard (can adopt scanner/dashboard projects)."""
+    root = await _seed_user(db_session, "root_adopt", superadmin=True)
+    db_session.add(
+        Document(filename="b.pdf", file_type="pdf", project_id="adopt-proj")
+    )
+    await db_session.flush()
+    _override(db_session, root)
+    try:
+        with _patched_audit():
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/admin/projects",
+                    json={"project_id": "adopt-proj"},
+                    headers=CSRF,
+                )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["is_owner"] is True
     finally:
         app.dependency_overrides.clear()
 

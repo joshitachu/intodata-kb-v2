@@ -30,6 +30,7 @@ from src.config import settings
 from src.db.models import (
     AccessRequest,
     AuditLog,
+    Document,
     Permission,
     ProjectAssignment,
     Role,
@@ -591,7 +592,13 @@ async def create_project(
     Ownership is recorded as an ``is_owner`` ProjectAssignment for the creator,
     which is what scopes an admin's visibility/management to their own projects.
     A project can have exactly one owner — a second claim is rejected.
+
+    Non-superadmins may only claim GENUINELY-NEW projects. Projects that already
+    exist (created via the scanner/dashboard, which leaves documents but no owner
+    row, or already assigned to users) must be granted by a superadmin — otherwise
+    any admin could seize a project's data just by guessing its id.
     """
+    # Reject if the project already has an owner (any user).
     existing_owner = await db.execute(
         select(ProjectAssignment).where(
             ProjectAssignment.project_id == body.project_id,
@@ -601,6 +608,32 @@ async def create_project(
     if existing_owner.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Project already exists")
 
+    # Reject a duplicate assignment for this creator (unique on user_id+project_id).
+    own_existing = await db.execute(
+        select(ProjectAssignment.id).where(
+            ProjectAssignment.user_id == creator.id,
+            ProjectAssignment.project_id == body.project_id,
+        )
+    )
+    if own_existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="You already have this project")
+
+    # Non-superadmins can't adopt a pre-existing/populated project.
+    if not creator.is_superadmin:
+        has_docs = await db.execute(
+            select(Document.id).where(Document.project_id == body.project_id).limit(1)
+        )
+        has_assignment = await db.execute(
+            select(ProjectAssignment.id)
+            .where(ProjectAssignment.project_id == body.project_id)
+            .limit(1)
+        )
+        if has_docs.scalar_one_or_none() is not None or has_assignment.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Project already exists — ask a superadmin to grant access",
+            )
+
     assignment = ProjectAssignment(
         user_id=creator.id,
         project_id=body.project_id,
@@ -609,6 +642,7 @@ async def create_project(
     )
     db.add(assignment)
     await db.flush()
+    await db.refresh(assignment)
 
     audit = AuditService(db)
     await audit.log(
@@ -674,6 +708,7 @@ async def assign_project(
     )
     db.add(assignment)
     await db.flush()
+    await db.refresh(assignment)
 
     audit = AuditService(db)
     await audit.log(
