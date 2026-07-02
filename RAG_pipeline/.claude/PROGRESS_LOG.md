@@ -49,9 +49,18 @@
 - **Verification**: backend 789 tests pass + full alembic chain applied on a scratch Postgres
   (upgrade→downgrade 035→re-upgrade; roles=admin,developer; admin perms=3,5,6,7,8,9,10; is_owner
   + system_config llm cols present). Frontend `tsc --noEmit` clean + vitest 62 passed.
-- **Pending (pre-merge)**: `/inspect` + security review (mandatory for auth/RBAC); reconcile
-  the `036_rbac`/`037_rbac` migrations vs the runtime branch's `036`/`037` (both descend from
-  `035` → `alembic merge`); merge to master + Docker rebuild to go live.
+- **Review** (`fc0d269`) — Ran parallel adversarial security + correctness reviews on the branch.
+  Findings fixed: HIGH security (create_project let a non-superadmin claim a pre-existing/populated
+  project by id → data takeover; now rejects when docs/assignments exist, superadmin may adopt);
+  HIGH correctness (create_project 500 IntegrityError on dup `(user_id,project_id)` → clean 409);
+  MED (model override could force a provider excluded from `settings.llm_providers` → `is_allowed`
+  /`allowed_models`/`order_with_override` now chain-gated); MED (`db.refresh` so `assigned_at`
+  populated). Reviewers confirmed the rest safe (write/read ownership gates, model-config
+  superadmin-only + server-side allow-list, scope after losing view_all, migration idempotency,
+  CSRF, frontend gating cosmetic-only). 355 tests pass. FOLLOW-UP (not in branch): MCP-side
+  `manage_projects` handlers should apply an ownership check, not just the permission bit.
+- **Pending (pre-merge)**: reconcile `036_rbac`/`037_rbac` vs the runtime branch's `036`/`037`
+  (both descend from `035` → `alembic merge`); merge to master + Docker rebuild to go live.
 
 ## Session: 2026-07-02
 
