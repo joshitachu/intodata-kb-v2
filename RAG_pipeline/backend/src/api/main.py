@@ -102,6 +102,19 @@ async def lifespan(app: FastAPI):
             logger.info("No permissions table data yet, skipping RBAC seed (run migration 006)")
         # Note: admin role permissions are managed by migrations (012+).
 
+        # Load the superadmin-curated LLM answer-model standard into the
+        # in-process override so it applies from the first request.
+        try:
+            from src.services.system_config_service import SystemConfigService
+            from src.generation import model_config as _mc
+
+            provider, model = await SystemConfigService(db).get_model_config()
+            _mc.load_from_row(provider, model)
+        except Exception:
+            logger.warning(
+                "Could not load LLM model override at startup", exc_info=True
+            )
+
     yield
     logger.info("Shutting down IntoData KB API")
     # Cleanup: close Qdrant client if open

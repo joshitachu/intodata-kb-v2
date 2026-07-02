@@ -49,3 +49,8 @@ class SystemConfig(Base):
         String(20), default="pending", server_default="pending", nullable=False
     )  # pending | processing | completed | failed | skipped
     setup_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Superadmin-curated LLM answer-model standard. NULL → use deployment env
+    # defaults. Only the generation LLM is configurable here (see model_config).
+    llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(200), nullable=True)

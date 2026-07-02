@@ -11,6 +11,7 @@ import httpx
 import ollama as ollama_lib
 
 from src.config import settings
+from src.generation import model_config
 from src.generation.usage import UsageStats, StreamUsageStats
 from src.runtime.models import RuntimeToolDefinition
 
@@ -113,7 +114,7 @@ async def _kimi_generate(messages: list[dict], images: list[str] | None = None) 
     client = await _get_kimi_client()
     t0 = time.perf_counter()
     response = await client.chat.completions.create(
-        model=settings.kimi_llm_model,
+        model=model_config.model_for("kimi"),
         messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
@@ -122,7 +123,7 @@ async def _kimi_generate(messages: list[dict], images: list[str] | None = None) 
     elapsed = int((time.perf_counter() - t0) * 1000)
     usage = UsageStats(
         provider="kimi",
-        model=settings.kimi_llm_model,
+        model=model_config.model_for("kimi"),
         latency_ms=elapsed,
     )
     if response.usage:
@@ -136,7 +137,7 @@ async def _kimi_stream(messages: list[dict], images: list[str] | None = None) ->
     client = await _get_kimi_client()
     t0 = time.perf_counter()
     stream = await client.chat.completions.create(
-        model=settings.kimi_llm_model,
+        model=model_config.model_for("kimi"),
         messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
@@ -144,7 +145,7 @@ async def _kimi_stream(messages: list[dict], images: list[str] | None = None) ->
         stream_options={"include_usage": True},
         extra_body={"thinking": {"type": "disabled"}},
     )
-    acc = StreamUsageStats(provider="kimi", model=settings.kimi_llm_model)
+    acc = StreamUsageStats(provider="kimi", model=model_config.model_for("kimi"))
     async for chunk in stream:
         if chunk.choices and chunk.choices[0].delta.content:
             yield chunk.choices[0].delta.content
@@ -160,14 +161,14 @@ async def _ollama_generate(messages: list[dict], images: list[str] | None = None
     client = await _get_ollama_client()
     t0 = time.perf_counter()
     response = await client.chat(
-        model=settings.ollama_llm_model,
+        model=model_config.model_for("ollama"),
         messages=_apply_images_ollama(messages, images),
         options={"num_ctx": 32768, "temperature": 0.45},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
     usage = UsageStats(
         provider="ollama",
-        model=settings.ollama_llm_model,
+        model=model_config.model_for("ollama"),
         input_tokens=response.get("prompt_eval_count", 0) or 0,
         output_tokens=response.get("eval_count", 0) or 0,
         latency_ms=elapsed,
@@ -179,12 +180,12 @@ async def _ollama_stream(messages: list[dict], images: list[str] | None = None) 
     client = await _get_ollama_client()
     t0 = time.perf_counter()
     stream = await client.chat(
-        model=settings.ollama_llm_model,
+        model=model_config.model_for("ollama"),
         messages=_apply_images_ollama(messages, images),
         stream=True,
         options={"num_ctx": 32768, "temperature": 0.45},
     )
-    acc = StreamUsageStats(provider="ollama", model=settings.ollama_llm_model)
+    acc = StreamUsageStats(provider="ollama", model=model_config.model_for("ollama"))
     async for chunk in stream:
         token = chunk["message"]["content"]
         if token:
@@ -244,7 +245,7 @@ async def _kimi_generate_with_tools(
     t0 = time.perf_counter()
     tools_schema = [_to_openai_tool_schema(t) for t in runtime_tools] if runtime_tools else None
     response = await client.chat.completions.create(
-        model=settings.kimi_llm_model,
+        model=model_config.model_for("kimi"),
         messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
@@ -253,7 +254,7 @@ async def _kimi_generate_with_tools(
         extra_body={"thinking": {"type": "disabled"}},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
-    usage = UsageStats(provider="kimi", model=settings.kimi_llm_model, latency_ms=elapsed)
+    usage = UsageStats(provider="kimi", model=model_config.model_for("kimi"), latency_ms=elapsed)
     if response.usage:
         usage.input_tokens = response.usage.prompt_tokens or 0
         usage.output_tokens = response.usage.completion_tokens or 0
@@ -317,7 +318,7 @@ async def generate_answer_with_runtime_tools(
     fall back to generate_answer() without claiming live data.
     """
     global _last_usage
-    for name in settings.llm_providers:
+    for name in model_config.order_with_override(settings.llm_providers):
         tool_fn = _resolve_tool_aware(name)
         if tool_fn is None:
             continue
@@ -373,7 +374,7 @@ async def generate_answer(
     """Try each provider in chain order. First success wins."""
     global _last_usage
     errors: list[str] = []
-    for name in settings.llm_providers:
+    for name in model_config.order_with_override(settings.llm_providers):
         gen_fn = _resolve(name, 0)
         try:
             t0 = time.perf_counter()
@@ -401,7 +402,7 @@ async def generate_answer_stream(
     """
     global _last_usage
     errors: list[str] = []
-    for name in settings.llm_providers:
+    for name in model_config.order_with_override(settings.llm_providers):
         stream_fn = _resolve(name, 1)
         try:
             async for item in stream_fn(messages, images=images):
