@@ -14,7 +14,15 @@ from sqlalchemy.orm import selectinload
 
 from sqlalchemy import func as sa_func
 
-from src.api.dependencies import AdminUser, AuditViewer, DBSession, ManagerUser, ProjectManager
+from src.api.dependencies import (
+    AdminUser,
+    AuditViewer,
+    DBSession,
+    ManagerUser,
+    ProjectCreator,
+    ProjectManager,
+)
+from src.rbac.permissions import can_manage_project, get_owned_project_ids
 from src.api.routes.auth import limiter
 from src.auth.security import hash_password, hash_token
 from src.auth.service import AuthService
@@ -542,11 +550,17 @@ class AssignProjectRequest(BaseModel):
     project_id: str = Field(..., min_length=1, max_length=255)
 
 
+class CreateProjectRequest(BaseModel):
+    project_id: str = Field(..., min_length=1, max_length=255)
+    display_name: str | None = Field(None, max_length=255)
+
+
 class ProjectAssignmentResponse(BaseModel):
     id: int
     user_id: int
     username: str
     project_id: str
+    is_owner: bool
     assigned_by: int | None
     assigned_at: str
 
@@ -563,6 +577,59 @@ class AuditLogResponse(BaseModel):
     created_at: str
 
 
+@router.post("/projects", status_code=201, summary="Create/claim a project (owned by the creator)")
+async def create_project(
+    request: Request,
+    body: CreateProjectRequest,
+    creator: ProjectCreator,
+    db: DBSession,
+):
+    """Register a project and take ownership of it.
+
+    Ownership is recorded as an ``is_owner`` ProjectAssignment for the creator,
+    which is what scopes an admin's visibility/management to their own projects.
+    A project can have exactly one owner — a second claim is rejected.
+    """
+    existing_owner = await db.execute(
+        select(ProjectAssignment).where(
+            ProjectAssignment.project_id == body.project_id,
+            ProjectAssignment.is_owner.is_(True),
+        )
+    )
+    if existing_owner.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Project already exists")
+
+    assignment = ProjectAssignment(
+        user_id=creator.id,
+        project_id=body.project_id,
+        is_owner=True,
+        assigned_by=creator.id,
+    )
+    db.add(assignment)
+    await db.flush()
+
+    audit = AuditService(db)
+    await audit.log(
+        user_id=creator.id,
+        username=creator.username,
+        action="create_project",
+        resource_type="project",
+        resource_id=body.project_id,
+        details={"project_id": body.project_id, "display_name": body.display_name},
+        ip_address=request.client.host if request.client else None,
+    )
+
+    return ProjectAssignmentResponse(
+        id=assignment.id,
+        user_id=assignment.user_id,
+        username=creator.username,
+        project_id=assignment.project_id,
+        is_owner=True,
+        assigned_by=assignment.assigned_by,
+        assigned_at=assignment.assigned_at.isoformat() if assignment.assigned_at else "",
+    )
+
+
 @router.post("/project-assignments", status_code=201, summary="Assign a project to a user")
 async def assign_project(
     request: Request,
@@ -570,7 +637,17 @@ async def assign_project(
     manager: ProjectManager,
     db: DBSession,
 ):
-    """Assign a project to a user."""
+    """Assign a project to a user.
+
+    Non-superadmins may only assign projects they own (``can_manage_project``).
+    """
+    # Ownership gate: an admin can only grant access to projects they own.
+    if not await can_manage_project(manager, db, body.project_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only assign projects you own",
+        )
+
     # Check user exists
     user_result = await db.execute(select(User).where(User.id == body.user_id))
     user = user_result.scalar_one_or_none()
@@ -590,6 +667,7 @@ async def assign_project(
     assignment = ProjectAssignment(
         user_id=body.user_id,
         project_id=body.project_id,
+        is_owner=False,
         assigned_by=manager.id,
     )
     db.add(assignment)
@@ -611,6 +689,7 @@ async def assign_project(
         user_id=assignment.user_id,
         username=user.username,
         project_id=assignment.project_id,
+        is_owner=assignment.is_owner,
         assigned_by=assignment.assigned_by,
         assigned_at=assignment.assigned_at.isoformat() if assignment.assigned_at else "",
     )
@@ -630,6 +709,19 @@ async def unassign_project(
     assignment = result.scalar_one_or_none()
     if assignment is None:
         raise HTTPException(status_code=404, detail="Assignment not found")
+
+    # Owners are removed via project deletion, not the assignment endpoint.
+    if assignment.is_owner:
+        raise HTTPException(
+            status_code=400, detail="Cannot remove the project owner assignment"
+        )
+
+    # Ownership gate: an admin can only manage assignments for projects they own.
+    if not await can_manage_project(manager, db, assignment.project_id):
+        raise HTTPException(
+            status_code=403,
+            detail="You can only manage assignments for projects you own",
+        )
 
     audit = AuditService(db)
     await audit.log(
@@ -655,12 +747,20 @@ async def list_project_assignments(
     user_id: int | None = None,
     project_id: str | None = None,
 ):
-    """List project assignments, optionally filtered."""
+    """List project assignments, optionally filtered.
+
+    Non-superadmins only see assignments for projects they own.
+    """
     query = select(ProjectAssignment)
     if user_id is not None:
         query = query.where(ProjectAssignment.user_id == user_id)
     if project_id is not None:
         query = query.where(ProjectAssignment.project_id == project_id)
+
+    # Owner-scope for non-superadmins.
+    if not manager.is_superadmin:
+        owned = await get_owned_project_ids(manager, db)
+        query = query.where(ProjectAssignment.project_id.in_(owned))
 
     result = await db.execute(query)
     assignments = result.scalars().all()
@@ -677,6 +777,7 @@ async def list_project_assignments(
                 user_id=a.user_id,
                 username=users_map.get(a.user_id, ""),
                 project_id=a.project_id,
+                is_owner=a.is_owner,
                 assigned_by=a.assigned_by,
                 assigned_at=a.assigned_at.isoformat() if a.assigned_at else "",
             )
@@ -688,10 +789,16 @@ async def list_project_assignments(
 
 @router.get("/users/{user_id}/projects", summary="Get projects assigned to a user")
 async def get_user_projects(user_id: int, manager: ProjectManager, db: DBSession):
-    """Get projects assigned to a specific user."""
-    result = await db.execute(
-        select(ProjectAssignment).where(ProjectAssignment.user_id == user_id)
-    )
+    """Get projects assigned to a specific user.
+
+    Non-superadmins only see the target user's assignments for projects they own.
+    """
+    query = select(ProjectAssignment).where(ProjectAssignment.user_id == user_id)
+    if not manager.is_superadmin:
+        owned = await get_owned_project_ids(manager, db)
+        query = query.where(ProjectAssignment.project_id.in_(owned))
+
+    result = await db.execute(query)
     assignments = result.scalars().all()
     return {
         "user_id": user_id,
