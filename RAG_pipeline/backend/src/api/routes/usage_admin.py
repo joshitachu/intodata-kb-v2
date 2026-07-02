@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy import func as sa_func
 
 from src.api.dependencies import AuditViewer, DBSession
-from src.db.models import QueryUsage, User
+from src.db.models import Conversation, ConversationMessage, QueryUsage, User
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -138,6 +138,127 @@ async def usage_recent(
                 "created_at": e.created_at.isoformat(),
             }
             for e in entries
+        ],
+    }
+
+
+@router.get("/usage/recent-threads", summary="List recent conversation threads")
+async def usage_recent_threads(
+    admin: AuditViewer,
+    db: DBSession,
+    skip: int = 0,
+    limit: int = Query(default=20, ge=1, le=100),
+    user_id: int | None = None,
+):
+    """List recent conversation threads ordered by last activity.
+
+    Per thread this returns the message count, aggregated token/cost usage, and the
+    average daily session length. A "session" is a thread's activity on a single day;
+    its length is (last message - first message) that day. The reported value is the
+    average of those daily spans across every day the thread was active.
+    """
+    # Message count + last activity per thread (non-deleted messages only).
+    msg_stats = (
+        select(
+            ConversationMessage.conversation_id.label("cid"),
+            sa_func.count(ConversationMessage.id).label("message_count"),
+            sa_func.max(ConversationMessage.created_at).label("last_activity"),
+        )
+        .where(ConversationMessage.deleted_at.is_(None))
+        .group_by(ConversationMessage.conversation_id)
+        .subquery()
+    )
+
+    # Daily span per thread: last - first message on each active day (in seconds).
+    per_day_span = (
+        select(
+            ConversationMessage.conversation_id.label("cid"),
+            sa_func.extract(
+                "epoch",
+                sa_func.max(ConversationMessage.created_at)
+                - sa_func.min(ConversationMessage.created_at),
+            ).label("span_seconds"),
+        )
+        .where(ConversationMessage.deleted_at.is_(None))
+        .group_by(
+            ConversationMessage.conversation_id,
+            sa_func.date_trunc("day", ConversationMessage.created_at),
+        )
+        .subquery()
+    )
+    # Average of the daily spans across the thread's active days.
+    avg_session = (
+        select(
+            per_day_span.c.cid,
+            sa_func.avg(per_day_span.c.span_seconds).label("avg_session_seconds"),
+        )
+        .group_by(per_day_span.c.cid)
+        .subquery()
+    )
+
+    # Aggregated token/cost usage per thread.
+    usage_stats = (
+        select(
+            QueryUsage.conversation_id.label("cid"),
+            sa_func.coalesce(sa_func.sum(QueryUsage.input_tokens), 0).label("input_tokens"),
+            sa_func.coalesce(sa_func.sum(QueryUsage.output_tokens), 0).label("output_tokens"),
+            sa_func.coalesce(sa_func.sum(QueryUsage.cost_usd), 0).label("cost_usd"),
+        )
+        .where(QueryUsage.conversation_id.is_not(None))
+        .group_by(QueryUsage.conversation_id)
+        .subquery()
+    )
+
+    query = (
+        select(
+            Conversation.id.label("id"),
+            Conversation.title,
+            Conversation.user_id,
+            User.username,
+            User.email,
+            msg_stats.c.message_count,
+            msg_stats.c.last_activity,
+            avg_session.c.avg_session_seconds,
+            usage_stats.c.input_tokens,
+            usage_stats.c.output_tokens,
+            usage_stats.c.cost_usd,
+        )
+        # Inner join on msg_stats drops threads that have no (non-deleted) messages.
+        .join(msg_stats, msg_stats.c.cid == Conversation.id)
+        .join(User, User.id == Conversation.user_id, isouter=True)
+        .join(avg_session, avg_session.c.cid == Conversation.id, isouter=True)
+        .join(usage_stats, usage_stats.c.cid == Conversation.id, isouter=True)
+        .where(Conversation.deleted_at.is_(None))
+        .order_by(msg_stats.c.last_activity.desc())
+    )
+    if user_id is not None:
+        query = query.where(Conversation.user_id == user_id)
+
+    result = await db.execute(query.offset(skip).limit(limit))
+
+    return {
+        "entries": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "user_id": row.user_id,
+                "username": row.username,
+                "message_count": row.message_count,
+                "avg_session_seconds": (
+                    round(float(row.avg_session_seconds), 1)
+                    if row.avg_session_seconds is not None
+                    else 0.0
+                ),
+                "input_tokens": int(row.input_tokens) if row.input_tokens is not None else None,
+                "output_tokens": int(row.output_tokens) if row.output_tokens is not None else None,
+                "cost_usd": (
+                    round(float(row.cost_usd), 6) if row.cost_usd is not None else None
+                ),
+                "last_activity": (
+                    row.last_activity.isoformat() if row.last_activity else None
+                ),
+            }
+            for row in result
         ],
     }
 

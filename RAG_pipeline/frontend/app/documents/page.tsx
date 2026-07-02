@@ -38,7 +38,7 @@ export default function DocumentsPage() {
 
       <div>
         <h2 className="text-lg font-medium mb-4">
-          Document Library
+          My Documents
           {data && <span className="text-muted-foreground font-normal"> ({data.total})</span>}
         </h2>
 

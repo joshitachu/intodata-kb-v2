@@ -157,6 +157,28 @@
   animation: step-enter 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* Welcome hero entrance — staggered via inline animation-delay */
+@keyframes hero-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-hero-enter {
+  animation: hero-enter 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-hero-enter {
+    animation: none;
+  }
+}
+
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
@@ -288,6 +310,48 @@
 .driver-popover.intodata-tour .driver-popover-arrow-side-left.driver-popover-arrow,
 .driver-popover.intodata-tour .driver-popover-arrow-side-right.driver-popover-arrow {
   border-color: hsl(var(--card));
+}
+
+/* Branded top accent bar on tour popovers */
+.driver-popover.intodata-tour::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 18px;
+  right: 18px;
+  height: 3px;
+  border-radius: 0 0 3px 3px;
+  background: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--primary) / 0.35));
+}
+
+/* Progress text as a subtle pill */
+.driver-popover.intodata-tour .driver-popover-progress-text {
+  background: hsl(var(--muted));
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+/* Gentle entrance for the tour popover */
+@keyframes tour-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.driver-popover.intodata-tour {
+  animation: tour-pop 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .driver-popover.intodata-tour {
+    animation: none;
+  }
 }
 
 /* ── Topology graph animations ──────────────────────────────── */

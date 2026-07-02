@@ -1,6 +1,6 @@
 "use client";
 
-import { Sparkles, ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface Props {
@@ -19,15 +19,18 @@ const HIGHLIGHTS = [
 export function WelcomeStep({ username, onNext }: Props) {
   return (
     <div className="flex flex-col items-center justify-center text-center px-6 max-w-xl mx-auto">
-      {/* Glowing halo around the mark for a premium first impression */}
-      <div className="relative mb-8">
+      {/* Soft brand halo for a premium first impression */}
+      <div className="relative mb-10">
         <div
-          className="absolute inset-0 rounded-full bg-primary/15 blur-2xl scale-110"
+          className="absolute inset-0 -inset-x-8 rounded-full bg-primary/10 blur-3xl scale-125"
           aria-hidden
         />
-        <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-elevation-lg">
-          <Sparkles className="h-9 w-9" aria-hidden />
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/intodata-logo-hero.png"
+          alt="Intodata"
+          className="relative h-11 w-auto dark:brightness-0 dark:invert"
+        />
       </div>
 
       <h1 className="text-4xl font-semibold tracking-tight text-foreground mb-3">

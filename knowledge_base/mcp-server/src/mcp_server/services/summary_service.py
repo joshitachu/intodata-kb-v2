@@ -375,3 +375,305 @@ class SummaryService:
             return data.get("summaries", {})
         except (json.JSONDecodeError, OSError, KeyError):
             return {}
+
+
+# ---------------------------------------------------------------------------
+# Component summaries (topology graph)
+# ---------------------------------------------------------------------------
+#
+# Topology nodes are surfaced with a one-line "What This Component Does" field.
+# Source priority for each job's summary:
+#
+#   1. Phase 2 group analysis prose  — written during doc generation, lives in
+#      output/<project>/_rag_support/phase2_analysis/<group>.md after the
+#      docs_staging -> docs swap. Best signal: authored for this exact purpose.
+#   2. scan_data.purpose              — intodoc's stored purpose string per job.
+#   3. Improved heuristic             — connection flow shape + job name + system
+#      names, with no repeating template.
+#   4. Ollama (gemma3:12b)            — last-resort LLM pass if no source above
+#      yields a usable sentence. Costs real time per job.
+#
+# All paths are deterministic and run async after scan / after Phase 2 swap.
+# Results are persisted to scan/summaries.json (same file as SummaryService).
+# The topology graph endpoint already reads from this file via load_summaries().
+
+_PHASE2_HEADING_RE = re.compile(r"^#{1,4}\s+GROUP_SUMMARY\b", re.IGNORECASE | re.MULTILINE)
+_PHASE2_MD_NOISE_RE = re.compile(r"^\s*[-*+]\s+|^\|.*\|$|^[-=]+$|^#+\s*", re.MULTILINE)
+
+
+def _extract_first_useful_sentences(text: str, max_sentences: int = 2, max_chars: int = 300) -> str:
+    """Return the first N substantive sentences from a Phase 2 prose blob."""
+    if not text:
+        return ""
+    # Strip table rows / list bullets / heading markers for a clean read.
+    cleaned = _PHASE2_MD_NOISE_RE.sub("", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    out: list[str] = []
+    total = 0
+    for sentence in sentences:
+        s = sentence.strip()
+        if len(s) < 20:
+            continue
+        out.append(s)
+        total += len(s)
+        if len(out) >= max_sentences or total >= max_chars:
+            break
+    joined = " ".join(out)
+    if len(joined) > max_chars:
+        joined = joined[:max_chars].rsplit(".", 1)[0] + "."
+    return joined
+
+
+def extract_phase2_summary_for_job(group_md: str, job_name: str) -> str:
+    """Extract a 1-2 sentence summary for ``job_name`` from a Phase 2 group .md file.
+
+    The group file may contain prose for multiple jobs; we look for the section
+    that explicitly names the job (preferred) and fall back to the GROUP_SUMMARY
+    heading if no per-job section is found.
+    """
+    if not group_md or not job_name:
+        return ""
+
+    # Preferred: a section whose heading or first paragraph names this job.
+    job_lower = job_name.lower()
+    sections = re.split(r"(?=^#{1,4}\s+)", group_md, flags=re.MULTILINE)
+    for section in sections:
+        section_lc = section.lower()
+        if job_lower in section_lc:
+            body = _PHASE2_MD_NOISE_RE.sub(" ", section)
+            body = re.sub(r"\s+", " ", body).strip()
+            extracted = _extract_first_useful_sentences(body, max_sentences=2, max_chars=280)
+            if extracted:
+                return extracted
+
+    # Fallback: GROUP_SUMMARY heading section, which usually covers the whole group.
+    match = _PHASE2_HEADING_RE.search(group_md)
+    if match:
+        tail = group_md[match.end():]
+        # Stop at the next heading.
+        tail = re.split(r"^#{1,4}\s+", tail, maxsplit=1, flags=re.MULTILINE)[0]
+        return _extract_first_useful_sentences(tail, max_sentences=2, max_chars=280)
+
+    return ""
+
+
+def heuristic_summary(
+    job_name: str,
+    direction: str,
+    external_systems: list[str],
+    component_types: list[str],
+) -> str:
+    """Improved non-LLM fallback for one-line component summaries.
+
+    Differs from the legacy ``_derive_node_summary`` heuristic: no fixed
+    "Reads from X. using Y, Z" template; output varies by job name and the
+    actual flow shape. Returns ``""`` when the available signal is too thin to
+    say anything meaningful (caller renders an empty state instead).
+    """
+    verb = {
+        "OnRamp": "ingests",
+        "OffRamp": "writes",
+        "Bidirectional": "syncs",
+    }.get(direction, "moves data for")
+
+    systems = [s for s in external_systems if s][:3]
+    notable_types = [
+        t for t in component_types
+        if t and t[:1].isalpha() and not t.startswith("tPrejob")
+        and not t.startswith("tPostjob")
+        and not t.startswith("tLog")
+        and not t.startswith("tSetGlobal")
+        and not t.startswith("tContext")
+        and not t.startswith("tFixed")
+        and not t.startswith("tFlowTo")
+        and not t.startswith("tFileInput")
+        and not t.startswith("tFileOutput")
+    ][:3]
+
+    if not systems and not notable_types:
+        # Too thin to say anything useful; let the empty state render.
+        return ""
+
+    parts: list[str] = []
+    if systems:
+        if len(systems) == 1:
+            parts.append(f"{verb} {systems[0]}")
+        else:
+            parts.append(f"{verb} {' and '.join(systems)}")
+    else:
+        parts.append(verb)
+
+    if notable_types:
+        if len(notable_types) == 1:
+            parts.append(f"using {notable_types[0]}")
+        else:
+            parts.append(f"using {', '.join(notable_types[:-1])} and {notable_types[-1]}")
+
+    sentence = " ".join(parts).strip()
+    # Light touch-up: avoid "ingests X using Y" without a preposition.
+    sentence = sentence.replace("ingests using", "processes with")
+    sentence = sentence.replace("writes using", "loads via")
+    sentence = sentence.replace("syncs using", "exchanges data via")
+    if not sentence.endswith("."):
+        sentence += "."
+    return sentence
+
+
+def _write_summaries_file(project_id: str, summaries: dict[str, str], source: str) -> None:
+    """Persist the topology summaries cache. Overwrites the file atomically."""
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    summaries_path = scan_dir / "summaries.json"
+    payload = {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "model": source,
+        "job_count": len(summaries),
+        "summaries": summaries,
+    }
+    tmp_path = summaries_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    tmp_path.replace(summaries_path)
+
+
+def _scan_data_summary(project_id: str, job_groups: dict[str, str]) -> dict[str, str]:
+    """Fall back to scan_data.purpose strings for each job."""
+    out: dict[str, str] = {}
+    jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+    for job_name, group in job_groups.items():
+        job_path = jobs_dir / group / f"{job_name}.json"
+        if not job_path.exists():
+            continue
+        try:
+            data = json.loads(job_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        purpose = (data.get("purpose") or "").strip()
+        if purpose:
+            extracted = _extract_first_useful_sentences(purpose, max_sentences=2, max_chars=280)
+            if extracted:
+                out[job_name] = extracted
+    return out
+
+
+def _heuristic_summaries(project_id: str, job_groups: dict[str, str], job_external_systems: dict[str, list[str]]) -> dict[str, str]:
+    """Generate heuristic summaries for jobs that the prose + scan paths missed."""
+    out: dict[str, str] = {}
+    jobs_dir = config.intodoc_output_dir / project_id / "scan" / "jobs"
+    for job_name, group in job_groups.items():
+        job_path = jobs_dir / group / f"{job_name}.json"
+        direction = SummaryService._derive_direction(str(job_path), job_name)
+        ext = job_external_systems.get(job_name, [])
+        comp_types: list[str] = []
+        if job_path.exists():
+            try:
+                job_data = json.loads(job_path.read_text(encoding="utf-8"))
+                seen: set[str] = set()
+                for c in job_data.get("components", []):
+                    ctype = c.get("component_type", "")
+                    if ctype and ctype not in seen:
+                        seen.add(ctype)
+                        comp_types.append(ctype)
+            except (json.JSONDecodeError, OSError):
+                pass
+        sentence = heuristic_summary(job_name, direction, ext, comp_types)
+        if sentence:
+            out[job_name] = sentence
+    return out
+
+
+def _phase2_prose_summaries(project_id: str, job_groups: dict[str, str]) -> dict[str, str]:
+    """Pull per-job 1-2 sentence summaries from the persisted Phase 2 prose."""
+    rag_dir = config.project_root / "output" / project_id / "_rag_support" / "phase2_analysis"
+    if not rag_dir.exists():
+        return {}
+
+    out: dict[str, str] = {}
+    seen_groups: set[str] = set()
+    for job_name, group in job_groups.items():
+        if group in seen_groups:
+            continue
+        seen_groups.add(group)
+        group_md_path = rag_dir / f"{group}.md"
+        if not group_md_path.exists():
+            continue
+        try:
+            group_md = group_md_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        sentence = extract_phase2_summary_for_job(group_md, job_name)
+        if sentence:
+            out[job_name] = sentence
+    return out
+
+
+async def build_component_summaries_async(
+    project_id: str,
+    log_mgr=None,
+) -> dict[str, str]:
+    """Build component summaries for the topology graph.
+
+    Reads from Phase 2 prose (if available) -> scan_data.purpose -> improved
+    heuristic. Persists to ``scan/summaries.json``. Safe to call repeatedly:
+    each call rewrites the cache.
+
+    Returns the final summary dict.
+    """
+    scan_dir = config.intodoc_output_dir / project_id / "scan"
+    manifest_path = scan_dir / "manifest.json"
+    if not manifest_path.exists():
+        return {}
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    job_groups: dict[str, str] = manifest.get("job_groups", {}) or {}
+    job_external_systems: dict[str, list[str]] = manifest.get("job_external_systems", {}) or {}
+    if not job_groups:
+        return {}
+
+    summaries: dict[str, str] = {}
+    source = "none"
+
+    phase2 = _phase2_prose_summaries(project_id, job_groups)
+    if phase2:
+        summaries.update(phase2)
+        source = "phase2_prose"
+
+    if len(summaries) < len(job_groups):
+        scan_purpose = _scan_data_summary(project_id, job_groups)
+        for name, sentence in scan_purpose.items():
+            summaries.setdefault(name, sentence)
+        if scan_purpose and source == "none":
+            source = "scan_data.purpose"
+
+    if len(summaries) < len(job_groups):
+        heuristic = _heuristic_summaries(project_id, job_groups, job_external_systems)
+        for name, sentence in heuristic.items():
+            summaries.setdefault(name, sentence)
+        if heuristic and source == "none":
+            source = "heuristic"
+
+    if not summaries:
+        return {}
+
+    _write_summaries_file(project_id, summaries, source)
+    logger.info(
+        "Built %d/%d component summaries for %s (source=%s)",
+        len(summaries), len(job_groups), project_id, source,
+    )
+    if log_mgr is not None:
+        try:
+            await log_mgr.emit(
+                project_id,
+                f"Component summaries updated: {len(summaries)}/{len(job_groups)} jobs "
+                f"(source={source}).",
+                level="info",
+            )
+        except Exception:
+            pass
+    return summaries

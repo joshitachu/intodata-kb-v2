@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderOpen, Sparkles } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
@@ -82,56 +82,98 @@ export function ChatWindow({
   // Welcome screen - no conversation selected, and no active deep dive to show
   if (!conversation && !isLoading && !hasDeepDiveContent) {
     return (
-      <div className="flex-1 flex flex-col h-full relative">
+      <div className="flex-1 flex flex-col h-full relative overflow-hidden">
+        {/* Ambient brand glow */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-[65%] opacity-[0.07] dark:opacity-[0.14]"
+          style={{
+            background:
+              "radial-gradient(60% 55% at 50% 0%, hsl(var(--primary)) 0%, transparent 72%)",
+          }}
+        />
+
         {selectedProjectName && (
           <div className="absolute top-3 right-4 z-10 pointer-events-none">
-            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border bg-background/80 backdrop-blur-sm shadow-sm text-sm text-muted-foreground whitespace-nowrap">
+            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border bg-background/80 backdrop-blur-sm shadow-elevation-xs text-sm text-muted-foreground whitespace-nowrap">
               <FolderOpen className="h-3.5 w-3.5 text-primary/70 shrink-0" />
               <span>{selectedProjectName}</span>
             </div>
           </div>
         )}
-        <div className="flex-1 flex flex-col items-center justify-center px-4">
-          <div className="max-w-md text-center space-y-4">
-            <div>
-              <h2 className="text-xl font-semibold">Nexus</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                Ask questions about your documents, explore integrations, or deep-dive into project code.
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 pt-2">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleSuggestionClick(s)}
-                  className="text-left text-xs px-3 py-2.5 rounded-xl border bg-card hover:bg-muted/60 transition-colors text-muted-foreground hover:text-foreground"
-                >
-                  <Sparkles className="h-3 w-3 mb-1 text-primary/60" />
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
 
-        <div className="max-w-3xl mx-auto w-full">
-          <ChatInput
-            onSend={handleSend}
-            isLoading={false}
-            disabled={inputDisabled}
-            hideImagePicker={isDeepDive}
-            toolbarContent={toolbarContent}
-            placeholder={
-              isDeepDive
-                ? selectedProject
-                  ? "Ask a question about the project..."
-                  : "Select a project to start deep dive..."
-                : "Ask about your documents..."
-            }
-          />
-          <p className="text-xs text-muted-foreground text-center pb-2">
-            AI can make mistakes. Always review responses before acting on them.
-          </p>
+        <div className="relative flex-1 flex flex-col items-center justify-center px-4 py-10 overflow-y-auto">
+          <div className="w-full max-w-2xl mx-auto flex flex-col items-center text-center">
+            {/* Brand */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/intodata-logo-hero.png"
+              alt="Intodata"
+              className="animate-hero-enter h-10 sm:h-12 w-auto dark:brightness-0 dark:invert"
+            />
+
+            {/* Headline */}
+            <h2
+              className="animate-hero-enter mt-6 bg-gradient-to-br from-foreground to-foreground/55 bg-clip-text text-transparent text-3xl sm:text-4xl font-semibold tracking-tight"
+              style={{ animationDelay: "0.04s" }}
+            >
+              What would you like to know?
+            </h2>
+            <p
+              className="animate-hero-enter mt-3 max-w-md text-sm sm:text-[15px] text-muted-foreground"
+              style={{ animationDelay: "0.08s" }}
+            >
+              Ask questions about your documents, explore integrations, or
+              deep-dive into project code.
+            </p>
+
+            {/* Centered input */}
+            <div
+              className="animate-hero-enter mt-7 w-full"
+              style={{ animationDelay: "0.12s" }}
+            >
+              <ChatInput
+                onSend={handleSend}
+                isLoading={false}
+                disabled={inputDisabled}
+                hideImagePicker={isDeepDive}
+                toolbarContent={toolbarContent}
+                placeholder={
+                  isDeepDive
+                    ? selectedProject
+                      ? "Ask a question about the project..."
+                      : "Select a project to start deep dive..."
+                    : "Ask about your documents..."
+                }
+              />
+            </div>
+
+            {/* Suggestion pills */}
+            <div className="flex flex-wrap items-center justify-center gap-2 px-6">
+              {SUGGESTIONS.map((s, i) => {
+                const Icon = s.icon;
+                return (
+                  <button
+                    key={s.label}
+                    onClick={() => handleSuggestionClick(s.label)}
+                    className="animate-hero-enter group inline-flex items-center gap-2 rounded-full border bg-card/70 backdrop-blur-sm px-3.5 py-2 text-xs text-muted-foreground shadow-elevation-xs transition-all hover:-translate-y-px hover:border-primary/40 hover:text-foreground hover:shadow-elevation-sm"
+                    style={{ animationDelay: `${0.16 + i * 0.05}s` }}
+                  >
+                    <Icon className="h-3.5 w-3.5 text-primary/70 transition-colors group-hover:text-primary" />
+                    {s.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <p
+              className="animate-hero-enter mt-6 text-xs text-muted-foreground/80"
+              style={{ animationDelay: "0.4s" }}
+            >
+              AI can make mistakes. Always review responses before acting on
+              them.
+            </p>
+          </div>
         </div>
       </div>
     );

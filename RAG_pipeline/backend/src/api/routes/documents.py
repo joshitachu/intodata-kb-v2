@@ -11,7 +11,6 @@ from sqlalchemy import func, select
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.routes.auth import limiter
 from src.db.models import Document
-from src.rbac.permissions import get_user_project_ids
 from src.retrieval.vector_store import delete_document_points
 from src.schemas import DocumentListResponse, DocumentResponse
 from src.services.audit_service import AuditService
@@ -19,24 +18,31 @@ from src.services.audit_service import AuditService
 router = APIRouter(tags=["documents"])
 
 
-@router.get("/documents", response_model=DocumentListResponse, summary="List documents with RBAC filtering")
+@router.get("/documents", response_model=DocumentListResponse, summary="List documents scoped to the caller")
 async def list_documents(
     db: DBSession,
     user: CurrentUser,
     skip: int = 0,
     limit: int = Query(default=50, ge=1, le=100),
 ) -> DocumentListResponse:
-    """List documents with RBAC filtering. Admins see all, others see only their projects."""
-    project_ids = await get_user_project_ids(user, db)
+    """List documents scoped to the caller.
 
-    # Build base queries with optional project filter
+    Superadmins see every non-deleted document (audit/oversight).
+    Regular users see only documents they personally uploaded.
+
+    This replaces the previous project-membership filter, which surfaced
+    shared uploads from other users to anyone assigned to the same project.
+    """
     count_query = select(func.count(Document.id)).where(Document.deleted_at.is_(None))
-    list_query = select(Document).where(Document.deleted_at.is_(None)).order_by(Document.created_at.desc())
+    list_query = (
+        select(Document)
+        .where(Document.deleted_at.is_(None))
+        .order_by(Document.created_at.desc())
+    )
 
-    if project_ids is not None:
-        # Non-admin: only documents from assigned projects
-        count_query = count_query.where(Document.project_id.in_(project_ids))
-        list_query = list_query.where(Document.project_id.in_(project_ids))
+    if not user.is_superadmin:
+        count_query = count_query.where(Document.uploaded_by == user.id)
+        list_query = list_query.where(Document.uploaded_by == user.id)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar_one()
@@ -73,7 +79,12 @@ async def delete_document(
     qdrant: QdrantClient,
     user: CurrentUser,
 ) -> None:
-    """Delete a document and its Qdrant vectors."""
+    """Delete a document and its Qdrant vectors.
+
+    Superadmins may delete any document. Regular users may only delete
+    documents they personally uploaded (matches the visibility scope of
+    GET /documents).
+    """
     result = await db.execute(
         select(Document).where(Document.id == document_id, Document.deleted_at.is_(None))
     )
@@ -81,9 +92,8 @@ async def delete_document(
     if doc is None:
         raise api_error(404, "not_found", "Document not found")
 
-    user_project_ids = await get_user_project_ids(user, db)
-    if user_project_ids is not None and doc.project_id not in user_project_ids:
-        raise api_error(403, "forbidden", "No access to this project")
+    if not user.is_superadmin and doc.uploaded_by != user.id:
+        raise api_error(403, "forbidden", "No access to this document")
 
     # Remove vectors from Qdrant (hard delete — content must not remain searchable)
     await delete_document_points(qdrant, document_id)

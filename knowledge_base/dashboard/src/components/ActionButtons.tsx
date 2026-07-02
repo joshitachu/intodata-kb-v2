@@ -1,20 +1,22 @@
 import { useState } from "react";
-import { useScan, useGenerate, usePushToRag, useResetStatus, useDeleteProject } from "../hooks/useProjects";
+import { useScan, usePushToRag, useResetStatus, useDeleteProject } from "../hooks/useProjects";
+import GenerateDialog from "./GenerateDialog";
+import type { Project } from "../types";
 
 interface Props {
-  projectId: string;
+  project: Project;
   status: string;
   onAction: (projectId: string) => void;
 }
 
-export default function ActionButtons({ projectId, status, onAction }: Props) {
+export default function ActionButtons({ project, status, onAction }: Props) {
+  const projectId = project.id;
   const scan = useScan();
-  const generate = useGenerate();
   const push = usePushToRag();
   const resetStatus = useResetStatus();
   const deleteProject = useDeleteProject();
 
-  const [resumeGenerate, setResumeGenerate] = useState(true);
+  const [generateOpen, setGenerateOpen] = useState(false);
 
   const busy = status === "scanning" || status === "generating";
 
@@ -32,37 +34,12 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
         </svg>
       </button>
 
-      <label
-        className="flex items-center gap-1 px-1.5 py-1 text-xs text-slate-500 select-none"
-        title="Resume from docs_staging checkpoint when available"
-      >
-        <input
-          type="checkbox"
-          checked={resumeGenerate}
-          onChange={(e) => setResumeGenerate(e.target.checked)}
-          className="h-3 w-3 accent-accent-primary"
-          onClick={(e) => e.stopPropagation()}
-        />
-        Resume
-      </label>
-
       {/* Generate */}
       <button
         className="btn-icon-action"
-        disabled={busy || generate.isPending}
-        title="Generate Docs"
-        onClick={() => {
-          const investigationModel = localStorage.getItem(`project_investigation_model_${projectId}`) || null;
-          const writeModel = localStorage.getItem(`project_write_model_${projectId}`) || null;
-          onAction(projectId);
-          generate.mutate({
-            projectId,
-            resume: resumeGenerate,
-            investigationModel,
-            model: null,
-            writeModel,
-          });
-        }}
+        disabled={busy}
+        title="Generate Docs (choose pack + see default models)"
+        onClick={(e) => { e.stopPropagation(); onAction(projectId); setGenerateOpen(true); }}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -115,6 +92,13 @@ export default function ActionButtons({ projectId, status, onAction }: Props) {
           </svg>
         </button>
       )}
+
+      <GenerateDialog
+        project={project}
+        open={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        onTriggered={onAction}
+      />
     </div>
   );
 }

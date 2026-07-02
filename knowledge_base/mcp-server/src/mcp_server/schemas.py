@@ -250,6 +250,7 @@ class GenerateRequest(BaseModel):
     investigation_model: str | None = Field(None, description="Investigation model override (Phase 1) — 'provider/model' format")
     model: str | None = Field(None, description="Analysis model override (Phase 2) — 'provider/model' format")
     write_model: str | None = Field(None, description="Doc-writing model override (Phase 3) — 'provider/model' format")
+    plugin_pack_id: int | None = Field(None, ge=1, description="Plugin pack override for this run. If set, takes precedence over the project's saved plugin_pack_id. Pass an int ID, or omit/null to use the project default.")
     resume: bool = Field(True, description="Resume from staging checkpoint if available")
     mode: str = Field("enterprise", description="'enterprise' blocks publish on all quality gates; 'draft' allows looser output")
 

@@ -977,6 +977,7 @@ Required sections:
         investigation_model: str | None = None,
         model: str | None = None,
         write_model: str | None = None,
+        plugin_pack_id: int | None = None,
         resume: bool = True,
         run_id: int | None = None,
         doc_generation_provider: str | None = None,
@@ -988,6 +989,10 @@ Required sections:
 
         When resume=True (default), checks for existing docs_staging/ artifacts
         and skips already-completed phases. Set resume=False for a clean run.
+
+        ``plugin_pack_id`` is an optional per-run override. When supplied it
+        takes precedence over the project's saved ``plugin_pack_id``. Pass
+        ``None`` (the default) to keep the existing per-project behaviour.
 
         Returns dict with success, cost_usd, duration_ms, input_tokens, etc.
         """
@@ -1070,14 +1075,25 @@ Required sections:
                     f"Project {project_id!r} not found in database — cannot determine platform"
                 )
             platform = project.platform
-            if getattr(project, "plugin_pack_id", None) is not None:
+            effective_plugin_pack_id = (
+                plugin_pack_id
+                if plugin_pack_id is not None
+                else getattr(project, "plugin_pack_id", None)
+            )
+            if effective_plugin_pack_id is not None:
                 pack_row = (
                     await db.execute(
-                        select(PluginPack).where(PluginPack.id == project.plugin_pack_id)
+                        select(PluginPack).where(PluginPack.id == effective_plugin_pack_id)
                     )
                 ).scalar_one_or_none()
                 if pack_row:
                     plugin_pack_dir = Path(pack_row.path)
+                elif plugin_pack_id is not None:
+                    await log_manager.emit(
+                        project_id,
+                        f"Override plugin_pack_id={plugin_pack_id} not found; falling back to project default.",
+                        level="warning",
+                    )
 
         # Compute project metrics early (needed for preprocessing decisions)
         scanner = ScannerService()

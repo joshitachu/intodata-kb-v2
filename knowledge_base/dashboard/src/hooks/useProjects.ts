@@ -48,13 +48,15 @@ export function useGenerate() {
       investigationModel,
       model,
       writeModel,
+      pluginPackId,
     }: {
       projectId: string;
       resume?: boolean;
       investigationModel?: string | null;
       model?: string | null;
       writeModel?: string | null;
-    }) => api.generate(projectId, resume, investigationModel, model, writeModel),
+      pluginPackId?: number | null;
+    }) => api.generate(projectId, resume, investigationModel, model, writeModel, pluginPackId),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
 }

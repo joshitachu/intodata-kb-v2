@@ -157,11 +157,11 @@ export function JobDetailPanel({ projectId, jobName, onClose, metadata }: JobDet
 
         {data && !loading && (
           <div className="space-y-4">
-            {/* What This Job Does */}
+            {/* What This Component Does */}
             {summary && (
               <div className="space-y-1">
                 <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                  What This Job Does
+                  What This Component Does
                 </h3>
                 <p className="text-sm leading-relaxed">{summary}</p>
               </div>
