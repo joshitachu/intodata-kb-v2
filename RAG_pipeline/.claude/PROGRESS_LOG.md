@@ -37,12 +37,21 @@
   `model_for(provider)` — backward-compatible when no override. INVARIANT: llm_client must
   pass its OWN `settings.llm_providers` into `order_with_override` (tests patch
   `llm_client.settings`, not `model_config.settings`). Only the answer LLM is configurable.
-- **Verification**: 349 tests pass (test_generation + test_rbac + test_api) via a throwaway
-  container bind-mounted to the worktree (image lacks pytest; `pip install` as root + mount).
-- **Pending**: Slice 4 (frontend: create_projects perm type, superadmin Model settings page +
-  BFF routes/hooks, admin Create-project UI, nav gating); `/inspect` + security review;
-  reconcile the `036_rbac`/`037_rbac` migrations vs the runtime branch's `036`/`037`
-  (both descend from `035` → `alembic merge`); merge to master + Docker rebuild.
+- **Slice 4** (`9b1e7e7`) — Files: `hooks/usePermissions.ts`, `components/Sidebar.tsx`,
+  `app/api/admin/projects/route.ts` (NEW), `app/api/admin/model-config/route.ts` (NEW),
+  `app/admin/model-config/page.tsx` (NEW), `app/admin/project-assignments/page.tsx`. Adds
+  `create_projects` perm codename + `canCreateProjects`; Sidebar "Projects" now visible to
+  admins (perm create_projects), new superadmin-only "Model" link; BFF proxies for
+  create-project + model-config; superadmin Answer-Model settings page (provider+model from
+  the allow-list, shows effective chain + env defaults); project-assignments page opened to
+  admins with a Create-Project form (creator = owner), owner badge, owner rows can't be
+  unassigned.
+- **Verification**: backend 789 tests pass + full alembic chain applied on a scratch Postgres
+  (upgrade→downgrade 035→re-upgrade; roles=admin,developer; admin perms=3,5,6,7,8,9,10; is_owner
+  + system_config llm cols present). Frontend `tsc --noEmit` clean + vitest 62 passed.
+- **Pending (pre-merge)**: `/inspect` + security review (mandatory for auth/RBAC); reconcile
+  the `036_rbac`/`037_rbac` migrations vs the runtime branch's `036`/`037` (both descend from
+  `035` → `alembic merge`); merge to master + Docker rebuild to go live.
 
 ## Session: 2026-07-02
 
