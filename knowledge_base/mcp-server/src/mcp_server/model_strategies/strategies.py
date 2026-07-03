@@ -15,6 +15,12 @@ class ModelDescriptorData:
     supports_analysis: bool
     supports_writing: bool
     is_local: bool = False
+    # Env vars any of which, when set, make a cloud model available (empty for
+    # local models). Populated from data/model_catalogue.json.
+    credential_env: tuple[str, ...] = ()
+    # Whether the RAG chat surface may offer this model (doc-gen-only mechanisms
+    # such as claude-cli are False).
+    rag_capable: bool = True
 
 
 class ModelProviderStrategy(ABC):
@@ -67,59 +73,6 @@ class OpenAIModelStrategy(ModelProviderStrategy):
             api_key=api_key or os.environ.get("OPENAI_API_KEY"),
         )
 
-    def descriptors(self) -> list[ModelDescriptorData]:
-        return [
-            ModelDescriptorData(
-                id="openai/gpt-5.5",
-                provider=self.provider_id,
-                label="OpenAI GPT-5.5",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="openai/gpt-5.4",
-                provider=self.provider_id,
-                label="OpenAI GPT-5.4",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="openai/gpt-5.4-mini",
-                provider=self.provider_id,
-                label="OpenAI GPT-5.4 Mini",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="openai/gpt-5",
-                provider=self.provider_id,
-                label="OpenAI GPT-5",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="openai/gpt-4.5",
-                provider=self.provider_id,
-                label="OpenAI GPT-4.5",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="openai/gpt-4.1",
-                provider=self.provider_id,
-                label="OpenAI GPT-4.1",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="openai/gpt-4o",
-                provider=self.provider_id,
-                label="OpenAI GPT-4o",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-        ]
-
 
 class DeepSeekModelStrategy(ModelProviderStrategy):
     provider_id = "deepseek"
@@ -141,38 +94,6 @@ class DeepSeekModelStrategy(ModelProviderStrategy):
             provider_name="deepseek",
         )
 
-    def descriptors(self) -> list[ModelDescriptorData]:
-        return [
-            ModelDescriptorData(
-                id="deepseek/deepseek-chat",
-                provider=self.provider_id,
-                label="DeepSeek Chat",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="deepseek/deepseek-reasoner",
-                provider=self.provider_id,
-                label="DeepSeek Reasoner",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="deepseek/deepseek-v4-pro",
-                provider=self.provider_id,
-                label="DeepSeek V4 Pro",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="deepseek/deepseek-v4-flash",
-                provider=self.provider_id,
-                label="DeepSeek V4 Flash",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-        ]
-
 
 class GoogleModelStrategy(ModelProviderStrategy):
     provider_id = "google"
@@ -193,38 +114,6 @@ class GoogleModelStrategy(ModelProviderStrategy):
             base_url=base_url,
         )
 
-    def descriptors(self) -> list[ModelDescriptorData]:
-        return [
-            ModelDescriptorData(
-                id="google/gemini-3.1-pro-preview",
-                provider=self.provider_id,
-                label="Gemini 3.1 Pro Preview",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="google/gemini-2.5-pro",
-                provider=self.provider_id,
-                label="Gemini 2.5 Pro",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="google/gemini-2.5-flash-lite",
-                provider=self.provider_id,
-                label="Gemini 2.5 Flash-Lite",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="google/gemini-2.5-flash",
-                provider=self.provider_id,
-                label="Gemini 2.5 Flash",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-        ]
-
 
 class AnthropicModelStrategy(ModelProviderStrategy):
     provider_id = "anthropic"
@@ -243,24 +132,6 @@ class AnthropicModelStrategy(ModelProviderStrategy):
             self.parse_model_name(model_id),
             api_key=os.environ.get("ANTHROPIC_API_KEY") or api_key,
         )
-
-    def descriptors(self) -> list[ModelDescriptorData]:
-        return [
-            ModelDescriptorData(
-                id="anthropic/claude-sonnet-4-6",
-                provider=self.provider_id,
-                label="Claude Sonnet 4.6",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-            ModelDescriptorData(
-                id="anthropic/claude-opus-4-7",
-                provider=self.provider_id,
-                label="Claude Opus 4.7",
-                supports_analysis=True,
-                supports_writing=True,
-            ),
-        ]
 
 
 class OllamaModelStrategy(ModelProviderStrategy):
@@ -281,26 +152,6 @@ class OllamaModelStrategy(ModelProviderStrategy):
             self.parse_model_name(model_id),
             base_url=ollama_base_url or base_url,
         )
-
-    def descriptors(self) -> list[ModelDescriptorData]:
-        return [
-            ModelDescriptorData(
-                id="ollama/gemma3:12b",
-                provider=self.provider_id,
-                label="Ollama Gemma 3 12B (local)",
-                supports_analysis=True,
-                supports_writing=True,
-                is_local=True,
-            ),
-            ModelDescriptorData(
-                id="ollama/gemma3:4b",
-                provider=self.provider_id,
-                label="Ollama Gemma 3 4B (local)",
-                supports_analysis=True,
-                supports_writing=True,
-                is_local=True,
-            ),
-        ]
 
 
 class CustomHarnessStrategy(ModelProviderStrategy):
@@ -345,6 +196,8 @@ class ClaudeCliStrategy(ModelProviderStrategy):
         return ClaudeCliModelProvider(config.claude_model)
 
     def descriptors(self) -> list[ModelDescriptorData]:
+        # Doc-generation-only mechanism (not a network provider) — kept in code,
+        # not in the shared catalogue, and never offered on the RAG chat surface.
         return [
             ModelDescriptorData(
                 id="claude-cli",
@@ -352,5 +205,6 @@ class ClaudeCliStrategy(ModelProviderStrategy):
                 label="Claude Code CLI",
                 supports_analysis=True,
                 supports_writing=True,
+                rag_capable=False,
             )
         ]

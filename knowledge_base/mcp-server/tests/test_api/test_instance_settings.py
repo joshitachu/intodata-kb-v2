@@ -104,10 +104,40 @@ class TestPut:
         assert resp.status_code == 200
         assert resp.json()["settings"] == {}
 
-    async def test_put_accepts_rag_keys_without_validation(self, client):
+    async def test_put_rag_chat_model_accepts_runnable_local(self, client):
+        # A local model is always runnable (no credentials needed).
+        resp = await client.put(
+            "/mcp/admin/instance-settings",
+            json={"settings": {"rag_chat_model": "ollama/gemma3:4b"}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["settings"]["rag_chat_model"] == "ollama/gemma3:4b"
+
+    async def test_put_rag_chat_model_rejects_non_chat_model(self, client):
+        # claude-cli is a doc-gen-only mechanism (rag_capable=False) → rejected.
+        resp = await client.put(
+            "/mcp/admin/instance-settings",
+            json={"settings": {"rag_chat_model": "claude-cli"}},
+        )
+        assert resp.status_code == 400
+        assert "not runnable" in resp.json()["detail"]
+
+    async def test_put_rag_chat_model_rejects_missing_credentials(self, client, monkeypatch):
+        # A cloud model with no credentials in the environment is not runnable.
+        for var in ("ANTHROPIC_API_KEY",):
+            monkeypatch.delenv(var, raising=False)
         resp = await client.put(
             "/mcp/admin/instance-settings",
             json={"settings": {"rag_chat_model": "anthropic/claude-sonnet-4-6"}},
         )
+        assert resp.status_code == 400
+        assert "not runnable" in resp.json()["detail"]
+
+    async def test_put_accepts_rag_embed_key_verbatim(self, client):
+        # Embeddings are out of scope for runnable-validation; stored verbatim.
+        resp = await client.put(
+            "/mcp/admin/instance-settings",
+            json={"settings": {"rag_embed_model": "voyage-4-large"}},
+        )
         assert resp.status_code == 200
-        assert resp.json()["settings"]["rag_chat_model"] == "anthropic/claude-sonnet-4-6"
+        assert resp.json()["settings"]["rag_embed_model"] == "voyage-4-large"

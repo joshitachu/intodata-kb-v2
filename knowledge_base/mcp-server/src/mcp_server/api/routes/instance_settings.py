@@ -37,19 +37,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-# Catalogue of valid model ids the MCP server can use. Built lazily so tests
-# that mock `list_models()` see the override.
-def _valid_mcp_model_ids() -> set[str]:
-    """All model ids the MCP server knows how to talk to right now."""
-    return {m.id for m in list_catalogue_models(
+# Catalogue of valid model ids. Built lazily so tests that mock `list_models()`
+# see the override.
+def _catalogue_models():
+    return list_catalogue_models(
         default_analysis_model="",
         default_investigation_model=None,
         default_writing_model="",
-    )}
+    )
 
 
-# Keys the MCP route is responsible for validating. Other keys (RAG-side) are
-# accepted and stored verbatim — the RAG backend validates them on its own PUT.
+def _valid_mcp_model_ids() -> set[str]:
+    """All model ids the MCP server knows how to talk to right now."""
+    return {m.id for m in _catalogue_models()}
+
+
+def _valid_rag_chat_model_ids() -> set[str]:
+    """Catalogue ids the RAG chat surface can actually run: RAG-capable and with
+    credentials present (or local). Prevents persisting an un-runnable selection."""
+    return {m.id for m in _catalogue_models() if m.rag_capable and m.available}
+
+
+# Keys the MCP route validates against the doc-generation catalogue.
 MCP_VALIDATED_KEYS = {"deep_dive_model", "doc_gen_analysis_model", "doc_gen_write_model"}
 
 
@@ -137,7 +146,7 @@ async def update_instance_settings(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Validate MCP-controlled keys against the runtime catalogue.
+    # Validate MCP-controlled (doc-gen) keys against the runtime catalogue.
     valid_ids = _valid_mcp_model_ids()
     invalid = [
         f"{key}={value}"
@@ -152,6 +161,22 @@ async def update_instance_settings(
                 f"Valid ids: {sorted(valid_ids)}"
             ),
         )
+
+    # Validate the RAG chat model against what the RAG backend can actually run
+    # (RAG-capable + credentials present). Closes the gap that let an un-runnable
+    # selection like a keyless cloud model persist and 404 at chat time.
+    rag_chat_value = normalized.get("rag_chat_model", "")
+    if rag_chat_value:
+        runnable = _valid_rag_chat_model_ids()
+        if rag_chat_value not in runnable:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"RAG chat model {rag_chat_value!r} is not runnable "
+                    f"(unknown, not chat-capable, or missing credentials). "
+                    f"Runnable: {sorted(runnable)}"
+                ),
+            )
 
     payload = getattr(request.state, "auth_payload", None)
     actor_username = payload.get("preferred_username") if payload else None

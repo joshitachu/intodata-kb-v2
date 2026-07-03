@@ -128,6 +128,10 @@ export const ModelDescriptorSchema = z.object({
   is_default_investigation: z.boolean(),
   is_default_writing: z.boolean(),
   is_local: z.boolean(),
+  // Newer backends include availability + rag_capable; default for older ones.
+  available: z.boolean().optional().default(true),
+  unavailable_reason: z.string().nullable().optional().default(null),
+  rag_capable: z.boolean().optional().default(true),
 });
 export const ModelListResponseSchema = z.object({
   models: z.array(ModelDescriptorSchema),

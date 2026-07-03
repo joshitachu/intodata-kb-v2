@@ -69,6 +69,9 @@ class ModelDescriptorResponse(BaseModel):
     is_default_investigation: bool = False
     is_default_writing: bool = False
     is_local: bool = False
+    available: bool = True
+    unavailable_reason: str | None = None
+    rag_capable: bool = True
 
 
 class ModelListResponse(BaseModel):

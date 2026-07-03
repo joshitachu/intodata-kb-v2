@@ -24,6 +24,7 @@ def test_model_registry_exposes_current_discovery_models():
         "deepseek/deepseek-chat",
         "deepseek/deepseek-reasoner",
         "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
         "anthropic/claude-sonnet-4-6",
         "anthropic/claude-opus-4-7",
         "google/gemini-3.1-pro-preview",

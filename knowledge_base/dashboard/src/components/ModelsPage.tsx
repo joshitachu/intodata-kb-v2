@@ -37,12 +37,14 @@ export default function ModelsPage() {
     () => allModels.filter((m) => m.supports_writing),
     [allModels]
   );
-  const modelsFor = (slot: SettingSlot) =>
-    slot.key === "rag_embed_model"
-      ? allModels
-      : slot.key === "doc_gen_write_model"
-        ? writingModels
-        : chatModels;
+  const modelsFor = (slot: SettingSlot) => {
+    if (slot.key === "rag_embed_model") return allModels;
+    if (slot.key === "doc_gen_write_model") return writingModels;
+    // The RAG chat surface only offers models it can actually run (excludes
+    // doc-gen-only mechanisms such as claude-cli).
+    if (slot.key === "rag_chat_model") return chatModels.filter((m) => m.rag_capable);
+    return chatModels;
+  };
 
   const isDirty =
     draft !== null &&
@@ -79,8 +81,8 @@ export default function ModelsPage() {
         <h3 className="text-sm font-mono text-slate-400">Instance Models</h3>
         <p className="text-xs text-slate-600 mt-1">
           Per-VPS default models. Changes apply within 30 seconds without a restart.
-          RAG keys ({'"rag_chat_model"'} and {'"rag_embed_model"'}) are validated by the
-          RAG backend; MCP keys by the MCP server against the live model catalogue.
+          Selections are validated against the live model catalogue; models without
+          configured credentials appear as unavailable and cannot be selected.
         </p>
       </div>
       <div className="p-4 space-y-4">
@@ -128,8 +130,9 @@ export default function ModelsPage() {
                         >
                           <option value="">(env / pydantic default)</option>
                           {options.map((m) => (
-                            <option key={m.id} value={m.id}>
+                            <option key={m.id} value={m.id} disabled={!m.available}>
                               {m.label} ({m.id})
+                              {m.available ? "" : " — unavailable (no credentials)"}
                             </option>
                           ))}
                         </select>

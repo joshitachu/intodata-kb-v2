@@ -100,6 +100,9 @@ export interface ModelDescriptor {
   is_default_investigation: boolean;
   is_default_writing: boolean;
   is_local: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
+  rag_capable: boolean;
 }
 
 export interface ModelListResponse {

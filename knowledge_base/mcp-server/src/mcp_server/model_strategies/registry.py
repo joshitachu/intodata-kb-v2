@@ -50,7 +50,13 @@ def get_model_strategy(model_id: str) -> ModelProviderStrategy:
 
 
 def list_model_descriptors() -> list[ModelDescriptorData]:
-    descriptors: list[ModelDescriptorData] = []
+    """Real-provider descriptors from the shared catalogue file, plus any
+    code-defined special descriptors (e.g. claude-cli). The JSON catalogue is the
+    single source of truth; strategies no longer hardcode descriptor data."""
+    from mcp_server.model_strategies.catalogue import load_catalogue
+
+    descriptors: list[ModelDescriptorData] = list(load_catalogue())
+    # Meta/code-only strategies (claude-cli) still contribute their own descriptor.
     for strategy in _STRATEGIES:
         descriptors.extend(strategy.descriptors())
     return descriptors

@@ -16,6 +16,12 @@ class ModelDescriptor:
     is_default_investigation: bool = False
     is_default_writing: bool = False
     is_local: bool = False
+    # Whether the running instance has what it needs to use this model (local, or
+    # a credential env var is set). Cloud models with no key show unavailable.
+    available: bool = True
+    unavailable_reason: str | None = None
+    # Whether the RAG chat surface may offer this model (excludes claude-cli).
+    rag_capable: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -28,6 +34,7 @@ def list_models(
     default_writing_model: str,
 ) -> list[ModelDescriptor]:
     from mcp_server.model_strategies import list_model_descriptors
+    from mcp_server.model_strategies.catalogue import is_model_available, unavailable_reason
 
     models: list[ModelDescriptor] = []
     for descriptor in list_model_descriptors():
@@ -42,6 +49,9 @@ def list_models(
                 is_default_investigation=descriptor.id == default_investigation_model,
                 is_default_writing=descriptor.id == default_writing_model,
                 is_local=descriptor.is_local,
+                available=is_model_available(descriptor),
+                unavailable_reason=unavailable_reason(descriptor),
+                rag_capable=descriptor.rag_capable,
             )
         )
     return models
