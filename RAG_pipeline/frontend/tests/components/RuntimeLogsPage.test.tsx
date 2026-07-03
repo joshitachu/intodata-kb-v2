@@ -19,6 +19,10 @@ const mocks = vi.hoisted(() => ({
   useRuntimePlanRuns: vi.fn(),
   useRuntimePlans: vi.fn(),
   useRuntimeSources: vi.fn(),
+  useRuntimeArtifacts: vi.fn(),
+  useRuntimeConnections: vi.fn(),
+  useRuntimeDependencies: vi.fn(),
+  useRuntimeDependencySummary: vi.fn(),
   useUserProjects: vi.fn(),
 }));
 
@@ -46,6 +50,11 @@ describe("RuntimeLogsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.useUserProjects.mockReturnValue(queryState({ projects: [] }));
+    // Estate inventory hooks — default to empty so the page renders in every view.
+    mocks.useRuntimeArtifacts.mockReturnValue(queryState({ artifacts: [] }));
+    mocks.useRuntimeConnections.mockReturnValue(queryState({ connections: [] }));
+    mocks.useRuntimeDependencies.mockReturnValue(queryState({ dependencies: [] }));
+    mocks.useRuntimeDependencySummary.mockReturnValue(queryState({ summary: null }));
     mocks.useRuntimeExecutions.mockReturnValue(queryState({ executions: [], total: 0 }));
     mocks.useRuntimeFailures.mockReturnValue(
       queryState({
