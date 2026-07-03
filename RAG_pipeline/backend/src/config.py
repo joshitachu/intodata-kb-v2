@@ -8,7 +8,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # LLM provider chain (tried in order, first success wins)
+    # Default RAG chat model as a ``provider/model`` id. The provider is resolved
+    # from the prefix by the provider registry. A superadmin override
+    # (`rag_chat_model` in instance_settings) takes precedence. Selecting a model
+    # routes to exactly its provider — there is no cross-provider fallback chain.
+    rag_default_model: str = "kimi/kimi-k2.5"
+
+    # Fast-path fallback chain for the lightweight intent classifier ONLY (query
+    # routing in intent_classifier.py, which uses its own small models). The main
+    # RAG chat answer path routes via rag_default_model / the provider registry
+    # and does NOT use this list.
     llm_providers: list[str] = ["kimi", "ollama"]
 
     # Kimi (Moonshot AI)

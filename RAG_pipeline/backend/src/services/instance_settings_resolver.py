@@ -69,14 +69,15 @@ async def get_value(key: str, *, default: str | None = None) -> str | None:
     return os.environ.get(key.upper()) or None
 
 
-async def get_kimi_llm_model() -> str:
-    val = await get_value("rag_chat_model", default=settings.kimi_llm_model)
-    return val or settings.kimi_llm_model
+async def get_rag_chat_model_id() -> str:
+    """Return the selected RAG chat model as a ``provider/model`` id.
 
-
-async def get_ollama_llm_model() -> str:
-    val = await get_value("rag_chat_model", default=settings.ollama_llm_model)
-    return val or settings.ollama_llm_model
+    Superadmin override (`rag_chat_model`) wins; otherwise the deployment default
+    (`settings.rag_default_model`). The provider is resolved from this id by the
+    provider registry — the value is NOT a bare model name.
+    """
+    val = await get_value("rag_chat_model", default=settings.rag_default_model)
+    return val or settings.rag_default_model
 
 
 async def get_voyage_embed_model() -> str:
