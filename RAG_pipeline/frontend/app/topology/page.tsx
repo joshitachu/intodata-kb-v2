@@ -735,7 +735,7 @@ function TopologyContent() {
             )}
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.display_name} ({p.platform}, {p.job_count} jobs)
+                {p.display_name} ({p.platform}, {p.job_count} components)
               </option>
             ))}
           </select>

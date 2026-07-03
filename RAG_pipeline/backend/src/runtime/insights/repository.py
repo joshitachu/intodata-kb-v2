@@ -23,7 +23,16 @@ import hashlib
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models.runtime_data import RuntimeExecutionRow, RuntimeLogEventRow
+from src.db.models.runtime_data import (
+    RuntimeEngineRow,
+    RuntimeExecutionRow,
+    RuntimeJobRow,
+    RuntimeJobRunRow,
+    RuntimeLogEventRow,
+    RuntimePlanRow,
+    RuntimePlanRunRow,
+    RuntimeSourceRow,
+)
 from src.db.models.runtime_insights import (
     RuntimeEnrichedEventRow,
     RuntimeErrorSignatureRow,
@@ -34,6 +43,7 @@ from src.db.models.runtime_insights import (
 from src.runtime.insights.models import (
     RuntimeAlertReadyMetadata,
     RuntimeExecutionSummaryInsight,
+    RuntimeFailureEstateContext,
     RuntimeIncidentEvidence,
     RuntimeIncidentInsight,
     RuntimeSimilarFailures,
@@ -104,6 +114,7 @@ class RuntimeInsightRepository:
 
         exec_row = await self._load_execution(summary_row.project_id, execution_id)
         inc_row = await self._load_incident_by_execution(summary_row.project_id, execution_id)
+        estate_context = await self._load_estate_context(summary_row.project_id, execution_id, exec_row)
 
         return RuntimeExecutionSummaryInsight(
             project_id=summary_row.project_id,
@@ -126,6 +137,7 @@ class RuntimeInsightRepository:
             project_name=exec_row.project_name if exec_row else None,
             incident_id=inc_row.incident_id if inc_row else None,
             has_incident=inc_row is not None,
+            estate_context=estate_context,
         )
 
     # -------------------------------------------------------------------------
@@ -184,7 +196,7 @@ class RuntimeInsightRepository:
                 log_event_id=log_row.id,
                 timestamp=_as_utc(log_row.timestamp),
                 severity=log_row.severity,
-                message=log_row.message,
+                signal=_build_timeline_signal(enriched_map.get(log_row.id), log_row.severity),
                 component_name=enriched_map[log_row.id].component_name if log_row.id in enriched_map else None,
                 error_code=enriched_map[log_row.id].error_code if log_row.id in enriched_map else None,
                 exception_class=enriched_map[log_row.id].exception_class if log_row.id in enriched_map else None,
@@ -231,10 +243,12 @@ class RuntimeInsightRepository:
         exec_rows = (await self._session.execute(exec_stmt)).scalars().all()
         exec_map = {(row.project_id, row.execution_id): row for row in exec_rows}
 
-        return [
-            _to_incident_insight(row, exec_map.get((row.project_id, row.execution_id)))
-            for row in inc_rows
-        ]
+        incidents: list[RuntimeIncidentInsight] = []
+        for row in inc_rows:
+            exec_row = exec_map.get((row.project_id, row.execution_id))
+            estate_context = await self._load_estate_context(row.project_id, row.execution_id, exec_row)
+            incidents.append(_to_incident_insight(row, exec_row, estate_context))
+        return incidents
 
     async def get_incident(
         self, scope: ProjectScope, incident_id: str
@@ -255,7 +269,8 @@ class RuntimeInsightRepository:
             raise RuntimeRecordNotFoundError(f"Incident not found: {incident_id}")
 
         exec_row = await self._load_execution(row.project_id, row.execution_id)
-        return _to_incident_insight(row, exec_row)
+        estate_context = await self._load_estate_context(row.project_id, row.execution_id, exec_row)
+        return _to_incident_insight(row, exec_row, estate_context)
 
     async def get_incident_evidence(
         self, scope: ProjectScope, incident_id: str, limit: int = 20
@@ -469,6 +484,192 @@ class RuntimeInsightRepository:
         )
         return (await self._session.execute(stmt)).scalars().first()
 
+    async def _load_estate_context(
+        self,
+        project_id: str,
+        execution_id: str,
+        exec_row: RuntimeExecutionRow | None,
+    ) -> RuntimeFailureEstateContext:
+        source_key = exec_row.source_key if exec_row else None
+
+        job_run = await self._load_job_run(project_id, execution_id)
+        if job_run is not None:
+            source_key = job_run.source_key
+
+        job = await self._load_job(project_id, source_key, job_run, exec_row)
+        engine = await self._load_engine(project_id, source_key, job_run, job)
+        source = await self._load_source(project_id, source_key)
+        plan_run = await self._load_plan_run_for_execution(project_id, source_key, execution_id)
+        plan = await self._load_plan(project_id, source_key, plan_run.plan_id if plan_run else None)
+
+        environment_id = _first_present(
+            job_run.environment_id if job_run else None,
+            job.environment_id if job else None,
+            engine.environment_id if engine else None,
+            plan_run.environment_id if plan_run else None,
+            plan.environment_id if plan else None,
+        )
+        environment_name = _first_present(
+            job_run.environment_name if job_run else None,
+            job.environment_name if job else None,
+            engine.environment_name if engine else None,
+            plan_run.environment_name if plan_run else None,
+            plan.environment_name if plan else None,
+        )
+        workspace_id = _first_present(
+            job_run.workspace_id if job_run else None,
+            job.workspace_id if job else None,
+            engine.workspace_id if engine else None,
+            plan_run.workspace_id if plan_run else None,
+            plan.workspace_id if plan else None,
+        )
+        workspace_name = _first_present(
+            job_run.workspace_name if job_run else None,
+            job.workspace_name if job else None,
+            engine.workspace_name if engine else None,
+            plan_run.workspace_name if plan_run else None,
+            plan.workspace_name if plan else None,
+        )
+
+        return RuntimeFailureEstateContext(
+            source_key=source_key,
+            source_label=source.label if source else None,
+            source_type=source.source_type if source else None,
+            source_status=source.status if source else None,
+            source_is_demo=bool(source.is_demo) if source else None,
+            source_last_synced_at=_as_utc(source.last_synced_at) if source else None,
+            source_last_seen_at=_as_utc(source.last_seen_at) if source else None,
+            environment_id=environment_id,
+            environment_name=environment_name,
+            workspace_id=workspace_id,
+            workspace_name=workspace_name,
+            engine_id=_first_present(
+                job_run.engine_id if job_run else None,
+                job.engine_id if job else None,
+                engine.engine_id if engine else None,
+            ),
+            engine_name=_first_present(
+                job_run.engine_name if job_run else None,
+                job.engine_name if job else None,
+                engine.name if engine else None,
+            ),
+            engine_status=engine.status if engine else None,
+            engine_version=engine.version if engine else None,
+            engine_last_seen_at=_as_utc(engine.last_seen_at) if engine else None,
+            job_id=_first_present(job_run.job_id if job_run else None, job.job_id if job else None),
+            job_name=_first_present(
+                job_run.job_name if job_run else None,
+                job.name if job else None,
+                exec_row.job_name if exec_row else None,
+            ),
+            job_display_name=job.display_name if job else None,
+            job_run_id=job_run.run_id if job_run else None,
+            plan_id=_first_present(plan_run.plan_id if plan_run else None, plan.plan_id if plan else None),
+            plan_name=_first_present(plan_run.plan_name if plan_run else None, plan.name if plan else None),
+            plan_display_name=plan.display_name if plan else None,
+            plan_run_id=plan_run.run_id if plan_run else None,
+        )
+
+    async def _load_source(
+        self, project_id: str, source_key: str | None
+    ) -> RuntimeSourceRow | None:
+        if source_key is None:
+            return None
+        stmt = select(RuntimeSourceRow).where(
+            RuntimeSourceRow.project_id == project_id,
+            RuntimeSourceRow.source_key == source_key,
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def _load_job_run(
+        self, project_id: str, execution_id: str
+    ) -> RuntimeJobRunRow | None:
+        stmt = select(RuntimeJobRunRow).where(
+            RuntimeJobRunRow.project_id == project_id,
+            RuntimeJobRunRow.execution_id == execution_id,
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def _load_job(
+        self,
+        project_id: str,
+        source_key: str | None,
+        job_run: RuntimeJobRunRow | None,
+        exec_row: RuntimeExecutionRow | None,
+    ) -> RuntimeJobRow | None:
+        if source_key is None:
+            return None
+        stmt = select(RuntimeJobRow).where(
+            RuntimeJobRow.project_id == project_id,
+            RuntimeJobRow.source_key == source_key,
+        )
+        if job_run is not None:
+            stmt = stmt.where(RuntimeJobRow.job_id == job_run.job_id)
+        elif exec_row is not None:
+            stmt = stmt.where(RuntimeJobRow.name == exec_row.job_name)
+        else:
+            return None
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def _load_engine(
+        self,
+        project_id: str,
+        source_key: str | None,
+        job_run: RuntimeJobRunRow | None,
+        job: RuntimeJobRow | None,
+    ) -> RuntimeEngineRow | None:
+        engine_id = _first_present(
+            job_run.engine_id if job_run else None,
+            job.engine_id if job else None,
+        )
+        if source_key is None or engine_id is None:
+            return None
+        stmt = select(RuntimeEngineRow).where(
+            RuntimeEngineRow.project_id == project_id,
+            RuntimeEngineRow.source_key == source_key,
+            RuntimeEngineRow.engine_id == engine_id,
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def _load_plan_run_for_execution(
+        self,
+        project_id: str,
+        source_key: str | None,
+        execution_id: str,
+    ) -> RuntimePlanRunRow | None:
+        if source_key is None:
+            return None
+        stmt = (
+            select(RuntimePlanRunRow)
+            .where(
+                RuntimePlanRunRow.project_id == project_id,
+                RuntimePlanRunRow.source_key == source_key,
+            )
+            .order_by(RuntimePlanRunRow.started_at.desc())
+            .limit(50)
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        for row in rows:
+            for step in row.step_results or []:
+                if isinstance(step, dict) and step.get("execution_id") == execution_id:
+                    return row
+        return None
+
+    async def _load_plan(
+        self,
+        project_id: str,
+        source_key: str | None,
+        plan_id: str | None,
+    ) -> RuntimePlanRow | None:
+        if source_key is None or plan_id is None:
+            return None
+        stmt = select(RuntimePlanRow).where(
+            RuntimePlanRow.project_id == project_id,
+            RuntimePlanRow.source_key == source_key,
+            RuntimePlanRow.plan_id == plan_id,
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
 
 # -------------------------------------------------------------------------
 # Row-to-model helpers
@@ -478,6 +679,7 @@ class RuntimeInsightRepository:
 def _to_incident_insight(
     row: RuntimeIncidentRow,
     exec_row: RuntimeExecutionRow | None,
+    estate_context: RuntimeFailureEstateContext,
 ) -> RuntimeIncidentInsight:
     return RuntimeIncidentInsight(
         project_id=row.project_id,
@@ -494,4 +696,35 @@ def _to_incident_insight(
         next_checks=row.next_checks or [],
         job_name=exec_row.job_name if exec_row else None,
         state=exec_row.state if exec_row else None,
+        estate_context=estate_context,
     )
+
+
+def _first_present(*values: str | None) -> str | None:
+    for value in values:
+        if value:
+            return value
+    return None
+
+
+def _build_timeline_signal(enriched: RuntimeEnrichedEventRow | None, severity: str) -> str:
+    """Return a bounded structured signal, never the raw log message body."""
+    if enriched is None:
+        return f"{severity} event"
+
+    parts: list[str] = []
+    if enriched.component_name:
+        parts.append(f"component={enriched.component_name}")
+    if enriched.error_code:
+        parts.append(f"error_code={enriched.error_code}")
+    if enriched.exception_class:
+        parts.append(f"exception={enriched.exception_class}")
+    if enriched.retry_attempt is not None and enriched.retry_max is not None:
+        parts.append(f"retry={enriched.retry_attempt}/{enriched.retry_max}")
+    if enriched.timeout_ms is not None:
+        parts.append(f"timeout_ms={enriched.timeout_ms}")
+    if enriched.message_family:
+        parts.append(f"family={enriched.message_family}")
+    if not parts:
+        return f"{severity} event"
+    return "; ".join(parts[:6])

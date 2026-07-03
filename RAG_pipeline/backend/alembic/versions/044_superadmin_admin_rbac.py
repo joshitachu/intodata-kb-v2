@@ -13,20 +13,19 @@ Reshapes RBAC into a 3-tier model — superadmin / admin / user:
   ``create_projects`` (all enforced as owner-scoped at the endpoints); loses
   ``view_all_projects`` so admins see only owned/assigned projects.
 
-Revision ID: 036_rbac
-Revises: 035
-Create Date: 2026-07-02
+Revision ID: 044_rbac
+Revises: 043
+Create Date: 2026-07-03
 
-NB: sibling to the runtime ``036`` migration on another branch — both descend from
-``035``. If both land, reconcile with an ``alembic merge`` revision.
+NB: rebased to sit after the runtime feature's migrations (head 043).
 """
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "036_rbac"
-down_revision: Union[str, None] = "035"
+revision: str = "044_rbac"
+down_revision: Union[str, None] = "043"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -11,6 +11,10 @@ import time
 import ollama as ollama_lib
 
 from src.config import settings
+from src.services.instance_settings_resolver import (
+    get_ollama_embed_model,
+    get_voyage_embed_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +56,9 @@ async def _voyage_embed_single(text: str) -> list[float]:
         base_url="https://api.voyageai.com/v1",
         api_key=settings.voyage_api_key,
     )
+    model = await get_voyage_embed_model()
     response = await client.embeddings.create(
-        model=settings.voyage_embed_model,
+        model=model,
         input=text,
     )
     _set_embed_tokens(getattr(response.usage, "total_tokens", None))
@@ -72,12 +77,13 @@ async def _voyage_embed_batch(texts: list[str]) -> list[list[float]]:
         base_url="https://api.voyageai.com/v1",
         api_key=settings.voyage_api_key,
     )
+    model = await get_voyage_embed_model()
 
     total_tokens = 0
 
     if len(texts) <= SUB_BATCH_SIZE:
         response = await client.embeddings.create(
-            model=settings.voyage_embed_model,
+            model=model,
             input=texts,
         )
         total_tokens += getattr(response.usage, "total_tokens", 0) or 0
@@ -96,7 +102,7 @@ async def _voyage_embed_batch(texts: list[str]) -> list[list[float]]:
             )
             await asyncio.sleep(SUB_BATCH_DELAY)
         response = await client.embeddings.create(
-            model=settings.voyage_embed_model,
+            model=model,
             input=sub_batch,
         )
         total_tokens += getattr(response.usage, "total_tokens", 0) or 0
@@ -112,14 +118,16 @@ async def _voyage_embed_batch(texts: list[str]) -> list[list[float]]:
 
 async def _ollama_embed_single(text: str) -> list[float]:
     client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
-    response = await client.embed(model=settings.ollama_embed_model, input=text)
+    model = await get_ollama_embed_model()
+    response = await client.embed(model=model, input=text)
     _set_embed_tokens(response.get("prompt_eval_count"))
     return response["embeddings"][0]
 
 
 async def _ollama_embed_batch(texts: list[str]) -> list[list[float]]:
     client = ollama_lib.AsyncClient(host=settings.ollama_base_url)
-    response = await client.embed(model=settings.ollama_embed_model, input=texts)
+    model = await get_ollama_embed_model()
+    response = await client.embed(model=model, input=texts)
     _set_embed_tokens(response.get("prompt_eval_count"))
     return response["embeddings"]
 

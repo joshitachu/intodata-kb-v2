@@ -684,6 +684,175 @@ class TestMultiPlatformRootCause:
         assert "connector" in joined or "connectivity" in joined
 
 
+class TestDiagnosticGoldenSet:
+    """Representative failures must produce diagnostic incidents, not shallow status."""
+
+    async def _build_and_get(self, db_session, exec_id, lines):
+        await _seed_custom_failed_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            job_name=f"{exec_id}_job",
+            lines=lines,
+        )
+        result = await build_runtime_insights_for_execution(
+            db_session,
+            project_id=_PROJECT,
+            execution_id=exec_id,
+            source_key="mock",
+            ingested_at=_SYNCED_AT,
+        )
+        incident = await _get_incident(db_session, _PROJECT, exec_id)
+        assert result.had_incident
+        assert incident is not None
+        return incident
+
+    async def _evidence_excerpts(self, db_session, incident_id: str) -> list[str]:
+        stmt = select(RuntimeIncidentEvidenceRow.excerpt).where(
+            RuntimeIncidentEvidenceRow.project_id == _PROJECT,
+            RuntimeIncidentEvidenceRow.incident_id == incident_id,
+        )
+        return list((await db_session.execute(stmt)).scalars().all())
+
+    @pytest.mark.parametrize(
+        ("exec_id", "lines", "cause_tokens", "check_tokens"),
+        [
+            (
+                "golden-source-offline",
+                [
+                    (10, "INFO", "[engine_1] Engine accepted execution"),
+                    (
+                        11,
+                        "ERROR",
+                        "[engine_1] com.runtime.EngineOfflineException: source engine is offline",
+                    ),
+                ],
+                ("offline", "unavailable"),
+                ("heartbeat", "online"),
+            ),
+            (
+                "golden-db-timeout",
+                [
+                    (10, "INFO", "[route_1] Route starting"),
+                    (
+                        11,
+                        "ERROR",
+                        "[tOracleConnection_1] java.sql.SQLRecoverableException: "
+                        "ORA-12170: TNS:Connect timeout",
+                    ),
+                ],
+                ("database", "timeout"),
+                ("listener", "network"),
+            ),
+            (
+                "golden-auth-http",
+                [
+                    (10, "INFO", "[rest_1] Calling partner API"),
+                    (11, "ERROR", "[rest_1] Downstream API returned HTTP 401 unauthorized"),
+                ],
+                ("authentication", "authorization"),
+                ("credential", "authorized"),
+            ),
+            (
+                "golden-jms",
+                [
+                    (10, "INFO", "[jms_1] Reading jms:queue:orders.in"),
+                    (
+                        11,
+                        "ERROR",
+                        "[jms_1] jakarta.jms.JMSException: broker connection refused for "
+                        "jms:queue:orders.in",
+                    ),
+                ],
+                ("broker", "queue"),
+                ("queue", "dead-letter"),
+            ),
+            (
+                "golden-resource-memory",
+                [
+                    (10, "INFO", "[transform_1] Processing batch"),
+                    (
+                        11,
+                        "ERROR",
+                        "[transform_1] java.lang.OutOfMemoryError: Java heap space",
+                    ),
+                ],
+                ("memory", "resource"),
+                ("heap", "scale"),
+            ),
+        ],
+    )
+    async def test_known_failure_patterns_are_diagnostic(
+        self,
+        db_session,
+        exec_id,
+        lines,
+        cause_tokens,
+        check_tokens,
+    ):
+        incident = await self._build_and_get(db_session, exec_id, lines)
+
+        cause = (incident.root_cause_candidate or "").lower()
+        checks = " ".join(incident.next_checks or []).lower()
+        assert all(token in cause for token in cause_tokens)
+        assert any(token in checks for token in check_tokens)
+        assert incident.confidence in ("high", "medium", "low")
+        assert incident.pattern_id not in (None, "generic.unknown", "exception.generic")
+
+        excerpts = await self._evidence_excerpts(db_session, incident.incident_id)
+        assert excerpts
+        assert all(len(excerpt) <= 300 for excerpt in excerpts if excerpt)
+
+    async def test_unknown_failure_is_low_confidence_and_distinct_by_causal_message(self, db_session):
+        incident_a = await self._build_and_get(
+            db_session,
+            "golden-unknown-a",
+            [
+                (10, "INFO", "[route_1] Route starting"),
+                (11, "ERROR", "[engine_1] engine failed while finalizing partition alpha"),
+            ],
+        )
+        incident_b = await self._build_and_get(
+            db_session,
+            "golden-unknown-b",
+            [
+                (10, "INFO", "[route_1] Route starting"),
+                (11, "ERROR", "[engine_1] engine failed while finalizing partition beta"),
+            ],
+        )
+
+        assert incident_a.confidence == "low"
+        assert incident_b.confidence == "low"
+        assert incident_a.pattern_id == "generic.unknown"
+        assert incident_b.pattern_id == "generic.unknown"
+        assert incident_a.root_cause_candidate
+        assert incident_b.root_cause_candidate
+        assert incident_a.signature_hash != incident_b.signature_hash
+
+        stmt = select(RuntimeErrorSignatureRow).where(
+            RuntimeErrorSignatureRow.project_id == _PROJECT,
+            RuntimeErrorSignatureRow.signature_hash.in_(
+                [incident_a.signature_hash, incident_b.signature_hash]
+            ),
+        )
+        signatures = list((await db_session.execute(stmt)).scalars().all())
+        assert {sig.occurrence_count for sig in signatures} == {1}
+
+    async def test_shallow_engine_failed_does_not_become_high_confidence(self, db_session):
+        incident = await self._build_and_get(
+            db_session,
+            "golden-shallow-engine-failed",
+            [
+                (10, "INFO", "[route_1] Route starting"),
+                (11, "ERROR", "[engine_1] engine failed"),
+            ],
+        )
+
+        assert incident.confidence == "low"
+        assert incident.pattern_id == "generic.unknown"
+        assert "engine failed" not in (incident.root_cause_candidate or "").lower()
+
+
 class TestCausalExtraction:
     """Slice 3: root cause must come from the deepest causal event, not first-seen."""
 
@@ -879,7 +1048,7 @@ class TestRebuildRuntimeInsights:
         await seed_rich_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
         # No insights built yet — rebuild from raw store.
         rebuilt = await rebuild_runtime_insights(db_session, project_id=_PROJECT)
-        assert rebuilt == 2  # one failed + one success execution
+        assert rebuilt == 3  # failed order sync + success order sync + success billing export
 
         incident = await _get_incident(db_session, _PROJECT, _RICH_FAILED_EXEC)
         assert incident is not None

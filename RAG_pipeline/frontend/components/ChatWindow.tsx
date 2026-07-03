@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, FileText, Network } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
@@ -8,7 +8,6 @@ import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
 import { useUserProjects } from "@/hooks/useUserProjects";
-import { SUGGESTIONS } from "@/lib/constants";
 import type { ChatMode } from "./ModeToggle";
 import type {
   ConversationDetailResponse,
@@ -16,6 +15,16 @@ import type {
 } from "@/types";
 import type { StreamState } from "@/hooks/useStreamMessage";
 import type { DeepDiveState } from "@/hooks/useDeepDive";
+
+// Capability categories shown on the empty-state chat. These are NOT
+// pre-baked questions -- they describe what each chat mode is for, and
+// clicking one switches the mode so the user can type their own query.
+interface IntroCta {
+  icon: typeof FileText;
+  label: string;
+  description: string;
+  mode: ChatMode;
+}
 
 interface ChatWindowProps {
   conversation: ConversationDetailResponse | null;
@@ -71,6 +80,27 @@ export function ChatWindow({
     handleSend(suggestion);
   }
 
+  function handleIntroCtaClick(targetMode: ChatMode) {
+    onModeChange(targetMode);
+  }
+
+  // Capability categories shown on the empty-state chat. Two cards only,
+  // matching the two chat modes. Edit copy here.
+  const INTRO_CTAS: IntroCta[] = [
+    {
+      icon: FileText,
+      label: "Search your documents",
+      description: "Ask anything across your uploaded files and project docs.",
+      mode: "chat",
+    },
+    {
+      icon: Network,
+      label: "Deep-dive a project",
+      description: "Inspect a scanned repo's code, integrations, and data flows.",
+      mode: "deep-dive",
+    },
+  ];
+
   const toolbarContent = (
     <>
       <ModeToggle mode={mode} onModeChange={onModeChange} />
@@ -102,9 +132,9 @@ export function ChatWindow({
           </div>
         )}
 
-        <div className="relative flex-1 flex flex-col items-center justify-center px-4 py-10 overflow-y-auto">
+        <div className="relative flex-1 flex flex-col items-center justify-center px-4 py-16 overflow-y-auto">
           <div className="w-full max-w-2xl mx-auto flex flex-col items-center text-center">
-            {/* Brand */}
+            {/* Brand wordmark */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/intodata-logo-hero.png"
@@ -112,25 +142,10 @@ export function ChatWindow({
               className="animate-hero-enter h-10 sm:h-12 w-auto dark:brightness-0 dark:invert"
             />
 
-            {/* Headline */}
-            <h2
-              className="animate-hero-enter mt-6 bg-gradient-to-br from-foreground to-foreground/55 bg-clip-text text-transparent text-3xl sm:text-4xl font-semibold tracking-tight"
-              style={{ animationDelay: "0.04s" }}
-            >
-              What would you like to know?
-            </h2>
-            <p
-              className="animate-hero-enter mt-3 max-w-md text-sm sm:text-[15px] text-muted-foreground"
-              style={{ animationDelay: "0.08s" }}
-            >
-              Ask questions about your documents, explore integrations, or
-              deep-dive into project code.
-            </p>
-
             {/* Centered input */}
             <div
-              className="animate-hero-enter mt-7 w-full"
-              style={{ animationDelay: "0.12s" }}
+              className="animate-hero-enter mt-10 w-full"
+              style={{ animationDelay: "0.04s" }}
             >
               <ChatInput
                 onSend={handleSend}
@@ -148,31 +163,36 @@ export function ChatWindow({
               />
             </div>
 
-            {/* Suggestion pills */}
-            <div className="flex flex-wrap items-center justify-center gap-2 px-6">
-              {SUGGESTIONS.map((s, i) => {
-                const Icon = s.icon;
+            {/* Two large CTA cards (Perplexity-style) -- capability categories,
+                not pre-baked questions. Click switches chat mode. */}
+            <div
+              className="animate-hero-enter mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full"
+              style={{ animationDelay: "0.1s" }}
+            >
+              {INTRO_CTAS.map((cta) => {
+                const Icon = cta.icon;
+                const isActive = mode === cta.mode;
                 return (
                   <button
-                    key={s.label}
-                    onClick={() => handleSuggestionClick(s.label)}
-                    className="animate-hero-enter group inline-flex items-center gap-2 rounded-full border bg-card/70 backdrop-blur-sm px-3.5 py-2 text-xs text-muted-foreground shadow-elevation-xs transition-all hover:-translate-y-px hover:border-primary/40 hover:text-foreground hover:shadow-elevation-sm"
-                    style={{ animationDelay: `${0.16 + i * 0.05}s` }}
+                    key={cta.label}
+                    onClick={() => handleIntroCtaClick(cta.mode)}
+                    className={`group text-left rounded-2xl border px-5 py-4 transition-all hover:-translate-y-px hover:shadow-elevation-sm ${
+                      isActive
+                        ? "border-primary/50 bg-primary/[0.04]"
+                        : "bg-card/60 hover:bg-card/80 hover:border-primary/40"
+                    }`}
                   >
-                    <Icon className="h-3.5 w-3.5 text-primary/70 transition-colors group-hover:text-primary" />
-                    {s.label}
+                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                      <Icon className="h-4 w-4 text-primary/70 transition-colors group-hover:text-primary" />
+                      {cta.label}
+                    </div>
+                    <p className="mt-1.5 text-xs text-muted-foreground leading-snug">
+                      {cta.description}
+                    </p>
                   </button>
                 );
               })}
             </div>
-
-            <p
-              className="animate-hero-enter mt-6 text-xs text-muted-foreground/80"
-              style={{ animationDelay: "0.4s" }}
-            >
-              AI can make mistakes. Always review responses before acting on
-              them.
-            </p>
           </div>
         </div>
       </div>

@@ -22,7 +22,7 @@ export function GraphLegend({ groupColorMap, collapsedMode }: GraphLegendProps) 
           <div className="w-8 h-0 border-t-[2px] border-blue-500 relative">
             <div className="absolute -right-0.5 -top-[3px] w-0 h-0 border-l-[4px] border-l-blue-500 border-y-[3px] border-y-transparent" />
           </div>
-          <span className="text-slate-500">Job orchestration</span>
+          <span className="text-slate-500">Component orchestration</span>
         </div>
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-0 border-t-[1.5px] border-purple-400 border-dashed" />
@@ -40,7 +40,7 @@ export function GraphLegend({ groupColorMap, collapsedMode }: GraphLegendProps) 
       <div className="space-y-1.5 mb-2.5 pb-2.5 border-b border-slate-100">
         <div className="flex items-center gap-2.5">
           <div className="w-4 h-3 rounded border-[1.5px] border-blue-400" style={{ background: "linear-gradient(135deg, #dbeafe, white)" }} />
-          <span className="text-slate-500">Job</span>
+          <span className="text-slate-500">Component</span>
         </div>
         <div className="flex items-center gap-2.5">
           <div className="w-4 h-3 rounded border border-purple-300" style={{ background: "linear-gradient(135deg, #faf5ff, white)" }} />

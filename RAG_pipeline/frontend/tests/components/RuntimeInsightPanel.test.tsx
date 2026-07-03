@@ -47,6 +47,32 @@ const SUMMARY_WITH_INCIDENT = {
     project_name: "esbmain",
     incident_id: "abc123def456abc123def456abc12300",
     has_incident: true,
+    estate_context: {
+      source_key: "mock",
+      source_label: "Demo runtime source",
+      source_type: "mock",
+      source_status: "success",
+      source_is_demo: true,
+      source_last_synced_at: "2026-06-17T10:00:00Z",
+      source_last_seen_at: "2026-06-17T10:00:00Z",
+      environment_id: "env-prod",
+      environment_name: "Production",
+      workspace_id: "ws-esb-main",
+      workspace_name: "ESB Main",
+      engine_id: "remote-engine-prod-02",
+      engine_name: "remote-engine-prod-02",
+      engine_status: "online",
+      engine_version: "2.13.8",
+      engine_last_seen_at: "2026-06-17T10:00:00Z",
+      job_id: "job-order-sync",
+      job_name: "esb_order_sync_route",
+      job_display_name: "Order Sync",
+      job_run_id: "esbmain-route-7841",
+      plan_id: "plan-nightly-order-flow",
+      plan_name: "nightly_order_flow",
+      plan_display_name: "Nightly Order Flow",
+      plan_run_id: "plan-nightly-order-flow-7841",
+    },
   },
 };
 
@@ -64,6 +90,7 @@ const INCIDENT = {
     next_checks: ["Check Oracle listener", "Verify network path to DB"],
     job_name: "esb_order_sync_route",
     state: "failed",
+    estate_context: SUMMARY_WITH_INCIDENT.summary.estate_context,
   },
 };
 
@@ -88,7 +115,7 @@ const TIMELINE = {
       log_event_id: 1,
       timestamp: "2026-06-17T10:00:30Z",
       severity: "error",
-      message: "[tOracleConnection_1] ORA-12170 Connect timeout",
+      signal: "component=tOracleConnection_1; error_code=ORA-12170",
       component_name: "tOracleConnection_1",
       error_code: "ORA-12170",
       exception_class: null,
@@ -143,6 +170,13 @@ describe("RuntimeInsightPanel", () => {
     expect(screen.getAllByText("tOracleConnection_1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("ORA-12170").length).toBeGreaterThan(0);
     expect(screen.getByText("SQLRecoverableException")).toBeTruthy();
+    expect(screen.getByText("Runtime Context")).toBeTruthy();
+    expect(screen.getByText("Demo runtime source (demo)")).toBeTruthy();
+    expect(screen.getByText("Production")).toBeTruthy();
+    expect(screen.getByText("ESB Main")).toBeTruthy();
+    expect(screen.getByText("remote-engine-prod-02 (online, 2.13.8)")).toBeTruthy();
+    expect(screen.getByText("Order Sync")).toBeTruthy();
+    expect(screen.getByText("Nightly Order Flow")).toBeTruthy();
 
     // Incident-derived items
     expect(screen.getByText("Check Oracle listener")).toBeTruthy();
@@ -194,6 +228,43 @@ describe("RuntimeInsightPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("No incident was derived for this execution.")).toBeTruthy();
     });
+  });
+
+  it("renders explicit unknown/not reported estate values for partial context", async () => {
+    const partialSummary = {
+      summary: {
+        ...SUMMARY_WITH_INCIDENT.summary,
+        has_incident: false,
+        incident_id: null,
+        estate_context: {
+          source_key: "mock",
+          source_label: null,
+          source_status: null,
+          source_is_demo: false,
+          source_last_synced_at: null,
+          environment_name: null,
+          workspace_name: null,
+          engine_id: null,
+          job_name: "esb_order_sync_route",
+          plan_name: null,
+        },
+      },
+    };
+    mockFetchSequence([
+      { body: partialSummary },
+      { body: { execution_id: "esbmain-route-7841", events: [], total: 0 } },
+    ]);
+
+    render(
+      React.createElement(RuntimeInsightPanel, { executionId: "esbmain-route-7841" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("mock")).toBeTruthy();
+    });
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Not reported").length).toBeGreaterThan(0);
   });
 
   it("renders empty evidence and timeline states without throwing", async () => {

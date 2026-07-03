@@ -103,7 +103,8 @@ export default function ModelSelectionPanel({
           )}
         </select>
         <p className="mt-1 text-xs text-slate-600">
-          The Generate button uses this model for Phase 1 chunk investigation.
+          Saved to your browser the moment you pick a value. The Generate button uses this for
+          Phase 1 chunk investigation. Default values come from the global Models tab (superadmin only).
         </p>
         {!hasKnownInvestigationModel && (
           <p className="mt-1 text-xs text-amber-400">
@@ -135,9 +136,12 @@ export default function ModelSelectionPanel({
           </p>
         ) : (
           <p className="mt-1 text-xs text-slate-600">
-            Saved locally. Phase 3 doc-writing uses <span className="font-mono text-accent-primary/60">{writeModel.split("/")[1] ?? writeModel}</span>.
+            Saved to your browser. Phase 3 doc-writing uses <span className="font-mono text-accent-primary/60">{writeModel.split("/")[1] ?? writeModel}</span>.
           </p>
         )}
+        <p className="mt-1 text-xs text-slate-600">
+          Default values come from the global Models tab (superadmin only).
+        </p>
         {!hasKnownWriteModel && (
           <p className="mt-1 text-xs text-amber-400">
             This local write model is not supported by the custom harness. Choose a supported model or clear it.

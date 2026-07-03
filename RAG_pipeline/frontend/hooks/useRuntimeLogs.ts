@@ -10,6 +10,8 @@ import {
   ExecutionSummaryResponseSchema,
   FailureListResponse,
   FailureListResponseSchema,
+  HealthSummaryResponse,
+  HealthSummaryResponseSchema,
   IncidentDetailResponse,
   IncidentDetailResponseSchema,
   IncidentEvidenceResponse,
@@ -20,8 +22,37 @@ import {
   IncidentSimilarResponseSchema,
   LogEventListResponse,
   LogEventListResponseSchema,
+  RuntimeEngineHealthResponse,
+  RuntimeEngineHealthResponseSchema,
+  RuntimeEngineListResponse,
+  RuntimeEngineListResponseSchema,
+  RuntimeEngineStatus,
+  RuntimeArtifactListResponse,
+  RuntimeArtifactListResponseSchema,
+  RuntimeConnectionListResponse,
+  RuntimeConnectionListResponseSchema,
+  RuntimeDependencyListResponse,
+  RuntimeDependencyListResponseSchema,
+  RuntimeDependencySummaryResponse,
+  RuntimeDependencySummaryResponseSchema,
   RuntimeExecutionState,
+  RuntimeJobHealthResponse,
+  RuntimeJobHealthResponseSchema,
+  RuntimeJobListResponse,
+  RuntimeJobListResponseSchema,
+  RuntimeJobRunListResponse,
+  RuntimeJobRunListResponseSchema,
   RuntimeLogSeverity,
+  RuntimeOverviewResponse,
+  RuntimeOverviewResponseSchema,
+  RuntimePlanHealthResponse,
+  RuntimePlanHealthResponseSchema,
+  RuntimePlanListResponse,
+  RuntimePlanListResponseSchema,
+  RuntimePlanRunListResponse,
+  RuntimePlanRunListResponseSchema,
+  RuntimeSourceListResponse,
+  RuntimeSourceListResponseSchema,
   TimelineResponse,
   TimelineResponseSchema,
 } from "@/types";
@@ -36,6 +67,66 @@ export interface ExecutionFilters {
 export interface FailureFilters {
   projectId?: string;
   limit?: number;
+}
+
+export interface HealthFilters {
+  projectId?: string;
+  sourceKey?: string;
+  limit?: number;
+}
+
+export interface InventoryFilters {
+  projectId?: string;
+  sourceKey?: string;
+  limit?: number;
+}
+
+export interface EngineFilters extends InventoryFilters {
+  status?: RuntimeEngineStatus;
+}
+
+export interface JobFilters extends InventoryFilters {
+  environmentId?: string;
+  workspaceId?: string;
+  engineId?: string;
+  status?: string;
+}
+
+export interface ArtifactFilters extends InventoryFilters {
+  workspaceId?: string;
+  artifactType?: string;
+}
+
+export interface ConnectionFilters extends InventoryFilters {
+  workspaceId?: string;
+  connectionType?: string;
+}
+
+export interface DependencyFilters extends InventoryFilters {
+  dependencyType?: "artifact" | "connection";
+  dependencyId?: string;
+  jobId?: string;
+}
+
+export interface JobRunFilters extends InventoryFilters {
+  jobId?: string;
+  engineId?: string;
+  state?: RuntimeExecutionState;
+  since?: string;
+  until?: string;
+}
+
+export interface PlanFilters extends InventoryFilters {
+  environmentId?: string;
+  workspaceId?: string;
+  status?: string;
+}
+
+export interface PlanRunFilters extends InventoryFilters {
+  planId?: string;
+  state?: RuntimeExecutionState;
+  since?: string;
+  until?: string;
 }
 
 export interface LogFilters {
@@ -150,6 +241,360 @@ export function useRuntimeFailures(filters: FailureFilters = {}) {
   return useQuery({
     queryKey: ["runtime", "failures", filters],
     queryFn: () => fetchFailures(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchHealth(filters: HealthFilters): Promise<HealthSummaryResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/health${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime health");
+  }
+  return HealthSummaryResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeHealth(filters: HealthFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "health", filters],
+    queryFn: () => fetchHealth(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchSources(filters: InventoryFilters): Promise<RuntimeSourceListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/sources${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime sources");
+  }
+  return RuntimeSourceListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeSources(filters: InventoryFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "sources", filters],
+    queryFn: () => fetchSources(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchEngines(filters: EngineFilters): Promise<RuntimeEngineListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    status: filters.status,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/engines${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime engines");
+  }
+  return RuntimeEngineListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeEngines(filters: EngineFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "engines", filters],
+    queryFn: () => fetchEngines(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchEngineHealth(
+  filters: EngineFilters,
+): Promise<RuntimeEngineHealthResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    status: filters.status,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/engine-health${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime engine health");
+  }
+  return RuntimeEngineHealthResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeEngineHealth(filters: EngineFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "engine-health", filters],
+    queryFn: () => fetchEngineHealth(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchOverview(filters: InventoryFilters): Promise<RuntimeOverviewResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+  });
+  const res = await fetch(`/api/runtime/overview${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime overview");
+  }
+  return RuntimeOverviewResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeOverview(filters: InventoryFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "overview", filters],
+    queryFn: () => fetchOverview(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchJobs(filters: JobFilters): Promise<RuntimeJobListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    environment_id: filters.environmentId,
+    workspace_id: filters.workspaceId,
+    engine_id: filters.engineId,
+    status: filters.status,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/jobs${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime jobs");
+  }
+  return RuntimeJobListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeJobs(filters: JobFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "jobs", filters],
+    queryFn: () => fetchJobs(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchArtifacts(
+  filters: ArtifactFilters,
+): Promise<RuntimeArtifactListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    workspace_id: filters.workspaceId,
+    artifact_type: filters.artifactType,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/artifacts${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime artifacts");
+  }
+  return RuntimeArtifactListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeArtifacts(filters: ArtifactFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "artifacts", filters],
+    queryFn: () => fetchArtifacts(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchConnections(
+  filters: ConnectionFilters,
+): Promise<RuntimeConnectionListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    workspace_id: filters.workspaceId,
+    connection_type: filters.connectionType,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/connections${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime connections");
+  }
+  return RuntimeConnectionListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeConnections(filters: ConnectionFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "connections", filters],
+    queryFn: () => fetchConnections(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchDependencies(
+  filters: DependencyFilters,
+): Promise<RuntimeDependencyListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    dependency_type: filters.dependencyType,
+    dependency_id: filters.dependencyId,
+    job_id: filters.jobId,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/dependencies${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime dependencies");
+  }
+  return RuntimeDependencyListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeDependencies(filters: DependencyFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "dependencies", filters],
+    queryFn: () => fetchDependencies(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchDependencySummary(
+  filters: InventoryFilters,
+): Promise<RuntimeDependencySummaryResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/dependency-summary${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime dependency summary");
+  }
+  return RuntimeDependencySummaryResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeDependencySummary(filters: InventoryFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "dependency-summary", filters],
+    queryFn: () => fetchDependencySummary(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchJobRuns(filters: JobRunFilters): Promise<RuntimeJobRunListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    job_id: filters.jobId,
+    engine_id: filters.engineId,
+    state: filters.state,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/job-runs${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime job runs");
+  }
+  return RuntimeJobRunListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeJobRuns(filters: JobRunFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "job-runs", filters],
+    queryFn: () => fetchJobRuns(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchJobHealth(filters: JobFilters): Promise<RuntimeJobHealthResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    environment_id: filters.environmentId,
+    workspace_id: filters.workspaceId,
+    engine_id: filters.engineId,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/job-health${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime job health");
+  }
+  return RuntimeJobHealthResponseSchema.parse(await res.json());
+}
+
+export function useRuntimeJobHealth(filters: JobFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "job-health", filters],
+    queryFn: () => fetchJobHealth(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchPlans(filters: PlanFilters): Promise<RuntimePlanListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    environment_id: filters.environmentId,
+    workspace_id: filters.workspaceId,
+    status: filters.status,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/plans${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime plans");
+  }
+  return RuntimePlanListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimePlans(filters: PlanFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "plans", filters],
+    queryFn: () => fetchPlans(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchPlanRuns(filters: PlanRunFilters): Promise<RuntimePlanRunListResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    plan_id: filters.planId,
+    state: filters.state,
+    since: filters.since,
+    until: filters.until,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/plan-runs${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime plan runs");
+  }
+  return RuntimePlanRunListResponseSchema.parse(await res.json());
+}
+
+export function useRuntimePlanRuns(filters: PlanRunFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "plan-runs", filters],
+    queryFn: () => fetchPlanRuns(filters),
+    staleTime: STALE_MS,
+  });
+}
+
+async function fetchPlanHealth(filters: PlanFilters): Promise<RuntimePlanHealthResponse> {
+  const query = buildQuery({
+    project_id: filters.projectId,
+    source_key: filters.sourceKey,
+    environment_id: filters.environmentId,
+    workspace_id: filters.workspaceId,
+    limit: filters.limit,
+  });
+  const res = await fetch(`/api/runtime/plan-health${query}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to fetch runtime plan health");
+  }
+  return RuntimePlanHealthResponseSchema.parse(await res.json());
+}
+
+export function useRuntimePlanHealth(filters: PlanFilters = {}) {
+  return useQuery({
+    queryKey: ["runtime", "plan-health", filters],
+    queryFn: () => fetchPlanHealth(filters),
     staleTime: STALE_MS,
   });
 }

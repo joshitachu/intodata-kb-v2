@@ -38,9 +38,7 @@ from src.db.models import (
     UserInvite,
     UserOnboarding,
 )
-from src.generation import model_config
 from src.services.audit_service import AuditService
-from src.services.system_config_service import SystemConfigService
 from src.services.email_service import (
     EmailSendError,
     send_invite_email,
@@ -841,59 +839,6 @@ async def get_user_projects(user_id: int, manager: ProjectManager, db: DBSession
         "user_id": user_id,
         "projects": [a.project_id for a in assignments],
     }
-
-
-# --- LLM answer-model standard (superadmin only) ---------------------------
-
-class ModelConfigRequest(BaseModel):
-    provider: str = Field(..., min_length=1, max_length=50)
-    model: str = Field(..., min_length=1, max_length=200)
-
-
-@router.get("/model-config", summary="Get the LLM answer-model standard")
-async def get_model_config(admin: AdminUser, db: DBSession):
-    """Return the curated LLM standard: persisted choice, what's live now, the
-    allow-list, and the env defaults. Superadmin only."""
-    provider, model = await SystemConfigService(db).get_model_config()
-    return {
-        "provider": provider,
-        "model": model,
-        "effective_chain": model_config.effective_provider_chain(),
-        "allowed": model_config.allowed_models(),
-        "defaults": {
-            "kimi": settings.kimi_llm_model,
-            "ollama": settings.ollama_llm_model,
-        },
-    }
-
-
-@router.put("/model-config", summary="Set the LLM answer-model standard (superadmin)")
-async def put_model_config(
-    request: Request,
-    body: ModelConfigRequest,
-    admin: AdminUser,
-    db: DBSession,
-):
-    """Set the generation model everyone inherits. Superadmin only; the value
-    must be in the curated allow-list. Embeddings/rerank are not configurable here."""
-    if not model_config.is_allowed(body.provider, body.model):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model/provider not allowed: {body.provider}/{body.model}",
-        )
-    await SystemConfigService(db).set_model_config(body.provider, body.model)
-
-    audit = AuditService(db)
-    await audit.log(
-        user_id=admin.id,
-        username=admin.username,
-        action="set_model_config",
-        resource_type="system_config",
-        resource_id="llm_model",
-        details={"provider": body.provider, "model": body.model},
-        ip_address=request.client.host if request.client else None,
-    )
-    return {"provider": body.provider, "model": body.model}
 
 
 # --- Audit logs ---

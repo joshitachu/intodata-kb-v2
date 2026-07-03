@@ -16,10 +16,18 @@ from src.runtime.models import (
     DetectFailuresInput,
     FindSimilarFailuresInput,
     GetExecutionDetailsInput,
-    GetExecutionLogsInput,
     GetExecutionTimelineInput,
     GetRuntimeIncidentInput,
     ListExecutionsInput,
+    ListRuntimeArtifactsInput,
+    ListRuntimeConnectionsInput,
+    ListRuntimeDependenciesInput,
+    ListRuntimeEnginesInput,
+    ListRuntimeHealthInput,
+    ListRuntimeInventoryInput,
+    ListRuntimeJobsInput,
+    ListRuntimePlansInput,
+    ListRuntimeSyncStatusInput,
     RuntimeToolDefinition,
 )
 
@@ -92,7 +100,106 @@ _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
             ),
             input_model=FindSimilarFailuresInput,
         ),
-        # --- Low-level tools (use to find execution IDs or for raw log drill-down) ---
+        RuntimeToolSpec(
+            name="list_runtime_sync_status",
+            description=(
+                "Return source/project runtime freshness and sync health from the central DB. "
+                "Use this when answering runtime status or failure questions so the final "
+                "answer can say how fresh the data is."
+            ),
+            input_model=ListRuntimeSyncStatusInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_health",
+            description=(
+                "Return DB-derived unhealthy job/source rollups: failure rate, current failure "
+                "streak, last failure, duration percentiles, recurrence, and row reject ratio "
+                "when component metrics exist."
+            ),
+            input_model=ListRuntimeHealthInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_sources",
+            description=(
+                "List connected runtime sources from the central DB, including source type, "
+                "sync status, demo flag, last_synced_at, and last_seen_at. Use for source "
+                "freshness and 'what runtime data do we have?' questions."
+            ),
+            input_model=ListRuntimeInventoryInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_engines",
+            description=(
+                "List runtime engines from the central DB with normalized status, source, "
+                "environment, workspace, version, and last_seen_at. Use for 'which engines "
+                "do we have?' and engine inventory questions."
+            ),
+            input_model=ListRuntimeEnginesInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_jobs",
+            description=(
+                "List runtime jobs/tasks from the central DB with source, environment, "
+                "workspace, assigned engine, owner, artifact, and last_seen_at. Use for "
+                "job/task inventory questions."
+            ),
+            input_model=ListRuntimeJobsInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_artifacts",
+            description=(
+                "List runtime artifacts/packages from the central DB with source, workspace, "
+                "type, version, owner, and timestamps. Use for artifact inventory and "
+                "outdated or unowned artifact questions."
+            ),
+            input_model=ListRuntimeArtifactsInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_connections",
+            description=(
+                "List runtime connection metadata from the central DB. Returns only "
+                "sanitized labels/types/workspace/owner fields, never connection parameters "
+                "or credentials."
+            ),
+            input_model=ListRuntimeConnectionsInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_dependencies",
+            description=(
+                "Answer dependency questions from DB facts, such as which jobs use a "
+                "connection or artifact. Filter by dependency_type ('connection' or "
+                "'artifact'), dependency_id, job_id, source_key, or project_id."
+            ),
+            input_model=ListRuntimeDependenciesInput,
+        ),
+        RuntimeToolSpec(
+            name="get_runtime_dependency_summary",
+            description=(
+                "Return extended metadata availability and hygiene facts: artifact count, "
+                "connection count, dependency edge count, unowned metadata, and which "
+                "metadata categories are unavailable for the current source."
+            ),
+            input_model=ListRuntimeInventoryInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_plans",
+            description=(
+                "List orchestration plans from the central DB with source, environment, "
+                "workspace, steps, owner, status, and last_seen_at. Use for plan inventory "
+                "questions."
+            ),
+            input_model=ListRuntimePlansInput,
+        ),
+        RuntimeToolSpec(
+            name="list_runtime_unhealthy",
+            description=(
+                "Return one DB-derived estate health summary: overview counts, source "
+                "freshness, unhealthy engines, unhealthy jobs, and unhealthy plans. Use for "
+                "'what is broken/unhealthy?' questions before diagnosing a specific run."
+            ),
+            input_model=ListRuntimeInventoryInput,
+        ),
+        # --- Low-level lookup tools (use to find execution IDs) ---
         RuntimeToolSpec(
             name="list_executions",
             description=(
@@ -120,15 +227,6 @@ _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
                 "analyze_execution_failure."
             ),
             input_model=DetectFailuresInput,
-        ),
-        RuntimeToolSpec(
-            name="get_execution_logs",
-            description=(
-                "Get raw log lines for ONE execution. Requires execution_id. Use ONLY "
-                "for explicit raw-log requests — for failure analysis, prefer "
-                "analyze_execution_failure instead."
-            ),
-            input_model=GetExecutionLogsInput,
         ),
     )
 }

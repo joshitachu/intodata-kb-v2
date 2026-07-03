@@ -11,6 +11,7 @@ from src.runtime.models import (
     RuntimeFailure,
     RuntimeLogEvent,
     RuntimeLogSeverity,
+    RuntimeSyncStatus,
 )
 from src.runtime.providers import RuntimeProviderError
 from src.runtime.providers.mock import provider
@@ -66,3 +67,16 @@ class TestMockProviderGetExecutionLogs:
         )
         assert results
         assert all(r.severity == RuntimeLogSeverity.ERROR for r in results)
+
+
+class TestMockProviderSyncBatch:
+    async def test_fetch_runtime_batch_returns_fixture_inventory_and_runs(self):
+        batch = await provider.fetch_runtime_batch(project_id="project-a")
+
+        assert batch.sources[0].source_key == "mock"
+        assert batch.sources[0].status == RuntimeSyncStatus.SUCCESS
+        assert [engine.name for engine in batch.engines] == ["mock-engine-01"]
+        assert [job.name for job in batch.jobs] == ["nightly_sync"]
+        assert {run.run_id for run in batch.job_runs} == {"mock-exec-1", "mock-exec-2"}
+        assert {execution.execution_id for execution in batch.executions} == {"mock-exec-1", "mock-exec-2"}
+        assert [failure.execution_id for failure in batch.failures] == ["mock-exec-2"]

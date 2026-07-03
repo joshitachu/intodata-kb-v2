@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, JSON, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,7 +50,28 @@ class SystemConfig(Base):
     )  # pending | processing | completed | failed | skipped
     setup_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Superadmin-curated LLM answer-model standard. NULL → use deployment env
-    # defaults. Only the generation LLM is configurable here (see model_config).
-    llm_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    llm_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+class InstanceSetting(Base):
+    """Per-instance model override (one row per key).
+
+    Lets a superadmin change the default LLM/embedder model at runtime without
+    editing env vars or restarting the service. Each VPS owns its own Postgres,
+    so a row here is naturally scoped to one VPS deployment.
+
+    `key` is a registered constant in
+    `src.services.instance_settings_service.SETTING_KEYS`. The dashboard PUTs a
+    full {key: value} map and the service writes one row per key, replacing any
+    prior value. An empty string value deletes the row.
+    """
+
+    __tablename__ = "instance_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    updated_by_username: Mapped[str | None] = mapped_column(String(100), nullable=True)

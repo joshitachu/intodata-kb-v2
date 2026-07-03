@@ -22,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    JSON,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -100,8 +101,12 @@ class RuntimeLogEventRow(Base):
 
 
 class RuntimeSyncStateRow(Base):
-    """Freshness watermark per (source_key, project_id). `last_synced_at` is the
-    truthful "as of" timestamp a future chat surface can show."""
+    """Freshness/status watermark per (source_key, project_id).
+
+    `last_synced_at` is the truthful "as of" timestamp user-facing surfaces can show.
+    Failed or partial sync attempts also persist a sanitized status/reason without
+    raw source payloads or credentials.
+    """
 
     __tablename__ = "runtime_sync_state"
     __table_args__ = (
@@ -112,4 +117,407 @@ class RuntimeSyncStateRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     project_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    last_synced_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_synced_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="success")
+    failure_reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeSourceRow(Base):
+    """Current-state inventory for one runtime source in one project."""
+
+    __tablename__ = "runtime_sources"
+    __table_args__ = (
+        UniqueConstraint("project_id", "source_key", name="uq_runtime_sources_project_source"),
+        Index("ix_runtime_sources_project_id", "project_id"),
+        Index("ix_runtime_sources_source_key", "source_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_demo: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_synced_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeEnvironmentRow(Base):
+    """Current-state runtime environment inventory."""
+
+    __tablename__ = "runtime_environments"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "environment_id",
+            name="uq_runtime_environments_project_source_environment",
+        ),
+        Index("ix_runtime_environments_project_id", "project_id"),
+        Index("ix_runtime_environments_source_key", "source_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    environment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeWorkspaceRow(Base):
+    """Current-state runtime workspace inventory."""
+
+    __tablename__ = "runtime_workspaces"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "workspace_id",
+            name="uq_runtime_workspaces_project_source_workspace",
+        ),
+        Index("ix_runtime_workspaces_project_id", "project_id"),
+        Index("ix_runtime_workspaces_source_key", "source_key"),
+        Index("ix_runtime_workspaces_environment_id", "environment_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeEngineRow(Base):
+    """Current-state runtime engine/runner inventory."""
+
+    __tablename__ = "runtime_engines"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "engine_id",
+            name="uq_runtime_engines_project_source_engine",
+        ),
+        Index("ix_runtime_engines_project_id", "project_id"),
+        Index("ix_runtime_engines_source_key", "source_key"),
+        Index("ix_runtime_engines_status", "status"),
+        Index("ix_runtime_engines_environment_id", "environment_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    engine_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_status: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    availability: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeJobRow(Base):
+    """Current-state runtime job/task inventory."""
+
+    __tablename__ = "runtime_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "job_id",
+            name="uq_runtime_jobs_project_source_job",
+        ),
+        Index("ix_runtime_jobs_project_id", "project_id"),
+        Index("ix_runtime_jobs_source_key", "source_key"),
+        Index("ix_runtime_jobs_environment_id", "environment_id"),
+        Index("ix_runtime_jobs_workspace_id", "workspace_id"),
+        Index("ix_runtime_jobs_engine_id", "engine_id"),
+        Index("ix_runtime_jobs_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    job_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    engine_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    engine_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    artifact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeArtifactRow(Base):
+    """Optional source artifact/package metadata used by runtime jobs."""
+
+    __tablename__ = "runtime_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "artifact_id",
+            name="uq_runtime_artifacts_project_source_artifact",
+        ),
+        Index("ix_runtime_artifacts_project_id", "project_id"),
+        Index("ix_runtime_artifacts_source_key", "source_key"),
+        Index("ix_runtime_artifacts_workspace_id", "workspace_id"),
+        Index("ix_runtime_artifacts_type", "artifact_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    artifact_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeConnectionRow(Base):
+    """Optional source connection metadata without credentials or raw parameters."""
+
+    __tablename__ = "runtime_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "connection_id",
+            name="uq_runtime_connections_project_source_connection",
+        ),
+        Index("ix_runtime_connections_project_id", "project_id"),
+        Index("ix_runtime_connections_source_key", "source_key"),
+        Index("ix_runtime_connections_workspace_id", "workspace_id"),
+        Index("ix_runtime_connections_type", "connection_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    connection_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    connection_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeJobDependencyRow(Base):
+    """Dependency edge from a runtime job/task to an artifact or connection."""
+
+    __tablename__ = "runtime_job_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "job_id",
+            "dependency_type",
+            "dependency_id",
+            name="uq_runtime_job_dependencies_project_source_job_dep",
+        ),
+        Index("ix_runtime_job_dependencies_project_id", "project_id"),
+        Index("ix_runtime_job_dependencies_source_key", "source_key"),
+        Index("ix_runtime_job_dependencies_job_id", "job_id"),
+        Index("ix_runtime_job_dependencies_dependency", "dependency_type", "dependency_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    dependency_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    dependency_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    dependency_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    dependency_kind: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeJobRunRow(Base):
+    """One stored runtime job/task run fact."""
+
+    __tablename__ = "runtime_job_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "run_id",
+            name="uq_runtime_job_runs_project_source_run",
+        ),
+        Index("ix_runtime_job_runs_project_id", "project_id"),
+        Index("ix_runtime_job_runs_source_key", "source_key"),
+        Index("ix_runtime_job_runs_job_id", "job_id"),
+        Index("ix_runtime_job_runs_engine_id", "engine_id"),
+        Index("ix_runtime_job_runs_state", "state"),
+        Index("ix_runtime_job_runs_started_at", "started_at"),
+        Index("ix_runtime_job_runs_execution_id", "execution_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    execution_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    engine_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    engine_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimePlanRow(Base):
+    """Current-state runtime orchestration plan inventory."""
+
+    __tablename__ = "runtime_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "plan_id",
+            name="uq_runtime_plans_project_source_plan",
+        ),
+        Index("ix_runtime_plans_project_id", "project_id"),
+        Index("ix_runtime_plans_source_key", "source_key"),
+        Index("ix_runtime_plans_environment_id", "environment_id"),
+        Index("ix_runtime_plans_workspace_id", "workspace_id"),
+        Index("ix_runtime_plans_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    step_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_updated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimePlanRunRow(Base):
+    """One stored runtime orchestration plan run fact."""
+
+    __tablename__ = "runtime_plan_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_key",
+            "run_id",
+            name="uq_runtime_plan_runs_project_source_run",
+        ),
+        Index("ix_runtime_plan_runs_project_id", "project_id"),
+        Index("ix_runtime_plan_runs_source_key", "source_key"),
+        Index("ix_runtime_plan_runs_plan_id", "plan_id"),
+        Index("ix_runtime_plan_runs_state", "state"),
+        Index("ix_runtime_plan_runs_started_at", "started_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    environment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    step_results: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeComponentMetricRow(Base):
+    """Generic component/source-target metric fact for one execution.
+
+    Source adapters can provide partial data. Component identifiers and connector
+    types are technical labels, not user-authored log bodies.
+    """
+
+    __tablename__ = "runtime_component_metrics"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "execution_id",
+            "component_key",
+            "source_key",
+            name="uq_runtime_component_metrics_project_exec_component_source",
+        ),
+        Index("ix_runtime_component_metrics_project_id", "project_id"),
+        Index("ix_runtime_component_metrics_execution_id", "execution_id"),
+        Index("ix_runtime_component_metrics_component_key", "component_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    execution_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    component_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    component_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_connector_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    target_connector_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    rows_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rows_rejected: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    measured_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)

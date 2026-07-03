@@ -517,7 +517,12 @@ async def _build_incident(
             host=summary.first_host,
             retry_max=summary.first_retry_max,
         )
-        next_checks = CATALOG.render_next_checks(pattern, host=summary.first_host)
+        next_checks = CATALOG.render_next_checks(
+            pattern,
+            host=summary.first_host,
+            error_code=summary.primary_error_code,
+            exception_class=summary.primary_exception_class,
+        )
         if not next_checks:
             next_checks = ["Review execution log for error details"]
     confidence = _derive_confidence(

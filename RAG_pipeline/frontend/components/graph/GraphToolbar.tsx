@@ -100,7 +100,7 @@ export function GraphToolbar({
               ? "bg-slate-800 text-white"
               : "bg-white text-slate-500 hover:bg-slate-50"
           }`}
-          title="Detail: show all individual job nodes"
+          title="Detail: show all individual component nodes"
         >
           Detail
         </button>
@@ -226,7 +226,7 @@ export function GraphToolbar({
 
       {/* Stats */}
       <div className="flex items-center gap-2.5 text-[11px] text-slate-400 ml-auto font-medium">
-        <span>{stats.jobCount} <span className="text-slate-300">jobs</span></span>
+        <span>{stats.jobCount} <span className="text-slate-300">components</span></span>
         <span className="text-slate-200">|</span>
         <span>{stats.connectionCount} <span className="text-slate-300">conn</span></span>
         <span className="text-slate-200">|</span>

@@ -214,3 +214,24 @@ class PluginPack(Base):
     repo_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     auto_update: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class InstanceSetting(Base):
+    """Per-instance model override (one row per key).
+
+    Mirrors the RAG-side model. The `instance_settings` table is created by the
+    RAG backend's alembic migration (042_instance_settings); both processes
+    read and write the same row to keep their effective model defaults in
+    sync. Defined here so the MCP server can use SQLAlchemy ORM queries
+    instead of raw SQL.
+    """
+
+    __tablename__ = "instance_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_by_username: Mapped[str | None] = mapped_column(String(100), nullable=True)

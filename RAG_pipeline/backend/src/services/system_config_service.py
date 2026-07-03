@@ -108,30 +108,6 @@ class SystemConfigService:
         row.setup_error = error[:4000]
         await self.db.commit()
 
-    async def get_model_config(self) -> tuple[str | None, str | None]:
-        """Return the persisted (llm_provider, llm_model) override, or (None, None)."""
-        row = await self.get(create=False)
-        if row is None:
-            return None, None
-        return row.llm_provider, row.llm_model
-
-    async def set_model_config(self, provider: str, model: str) -> SystemConfig:
-        """Persist the superadmin LLM answer-model standard and refresh the
-        in-process override. Validates against the curated allow-list."""
-        from src.generation import model_config
-
-        if not model_config.is_allowed(provider, model):
-            raise ValueError(f"Model not allowed: {provider}/{model}")
-
-        row = await self.get()
-        assert row is not None
-        row.llm_provider = provider
-        row.llm_model = model
-        await self.db.commit()
-        await self.db.refresh(row)
-        model_config.set_override(provider, model)
-        return row
-
     async def reset(self) -> None:
         """Wipe company onboarding state so the admin wizard shows again."""
         row = await self.get(create=False)

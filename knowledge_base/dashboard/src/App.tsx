@@ -14,6 +14,7 @@ import ABComparison from "./components/ABComparison";
 import HelpPanel from "./components/HelpPanel";
 import PluginPacksPage from "./components/PluginPacksPage";
 import FleetPage from "./components/FleetPage";
+import ModelsPage from "./components/ModelsPage";
 import { useLogStream } from "./hooks/useLogStream";
 import { useProjects } from "./hooks/useProjects";
 import { useAuth, getLoginUrl } from "./hooks/useAuth";
@@ -22,7 +23,7 @@ import type { GenerateRun } from "./types";
 
 const FLEET_ENABLED = import.meta.env.VITE_FLEET_ENABLED === "true";
 
-type TopNav = "projects" | "docs" | "packs" | "fleet";
+type TopNav = "projects" | "docs" | "packs" | "fleet" | "models";
 
 export default function App() {
   const auth = useAuth();
@@ -147,6 +148,18 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   Fleet
                 </button>
               )}
+              {user?.is_superadmin && (
+                <button
+                  className={`px-3 py-1.5 text-sm rounded transition-all ${
+                    topNav === "models"
+                      ? "text-slate-200 bg-white/[0.06]"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                  onClick={() => setTopNav("models")}
+                >
+                  Models
+                </button>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -247,6 +260,9 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
 
           {/* Fleet / Mission Control — nexus operator server only */}
           {topNav === "fleet" && FLEET_ENABLED && user?.is_superadmin && <FleetPage />}
+
+          {/* Models — per-VPS default model overrides (superadmin only) */}
+          {topNav === "models" && user?.is_superadmin && <ModelsPage />}
         </div>
       </main>
 

@@ -123,7 +123,7 @@ function unitLabel(platform: string, count: number): string {
   const id = platform.toLowerCase();
   if (id === "workato") return count === 1 ? "recipe" : "recipes";
   if (id === "lobster") return count === 1 ? "workflow" : "workflows";
-  if (id === "talend") return count === 1 ? "job" : "jobs";
+  if (id === "talend") return count === 1 ? "component" : "components";
   return count === 1 ? "unit" : "units";
 }
 
@@ -673,7 +673,7 @@ export default function SourcesSettingsPage() {
           <Stat label="Sources" value={projects.length} />
           <Stat label="GitHub" value={projects.filter((p) => p.source_type === "git").length} />
           <Stat label="Docs" value={projects.reduce((sum, p) => sum + (p.doc_count ?? 0), 0)} />
-          <Stat label="Recipes / jobs" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
+          <Stat label="Recipes / components" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
         </div>
 
         {projects.length === 0 ? (

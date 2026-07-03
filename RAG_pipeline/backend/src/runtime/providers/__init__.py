@@ -28,9 +28,29 @@ from src.runtime.models import (
     GetExecutionTimelineInput,
     GetRuntimeIncidentInput,
     ListExecutionsInput,
+    ListRuntimeArtifactsInput,
+    ListRuntimeConnectionsInput,
+    ListRuntimeDependenciesInput,
+    ListRuntimeEnginesInput,
+    ListRuntimeHealthInput,
+    ListRuntimeInventoryInput,
+    ListRuntimeJobsInput,
+    ListRuntimePlansInput,
+    ListRuntimeSyncStatusInput,
+    RuntimeArtifact,
+    RuntimeConnection,
+    RuntimeDependencySummary,
     RuntimeExecution,
+    RuntimeEngine,
+    RuntimeJob,
+    RuntimeJobDependency,
+    RuntimePlan,
+    RuntimeSource,
     RuntimeFailure,
+    RuntimeHealthSummary,
     RuntimeLogEvent,
+    RuntimeSyncState,
+    RuntimeUnhealthySummary,
 )
 from src.runtime.store import ProjectScope
 
@@ -87,3 +107,47 @@ class RuntimeProvider(Protocol):
     async def find_similar_failures(
         self, params: FindSimilarFailuresInput, context: RuntimeProviderContext | None = None
     ) -> RuntimeSimilarFailures: ...
+
+    async def list_runtime_sync_status(
+        self, params: ListRuntimeSyncStatusInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeSyncState]: ...
+
+    async def list_runtime_health(
+        self, params: ListRuntimeHealthInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeHealthSummary]: ...
+
+    async def list_runtime_sources(
+        self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeSource]: ...
+
+    async def list_runtime_engines(
+        self, params: ListRuntimeEnginesInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeEngine]: ...
+
+    async def list_runtime_jobs(
+        self, params: ListRuntimeJobsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeJob]: ...
+
+    async def list_runtime_artifacts(
+        self, params: ListRuntimeArtifactsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeArtifact]: ...
+
+    async def list_runtime_connections(
+        self, params: ListRuntimeConnectionsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeConnection]: ...
+
+    async def list_runtime_dependencies(
+        self, params: ListRuntimeDependenciesInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeJobDependency]: ...
+
+    async def get_runtime_dependency_summary(
+        self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeDependencySummary: ...
+
+    async def list_runtime_plans(
+        self, params: ListRuntimePlansInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimePlan]: ...
+
+    async def list_runtime_unhealthy(
+        self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeUnhealthySummary: ...

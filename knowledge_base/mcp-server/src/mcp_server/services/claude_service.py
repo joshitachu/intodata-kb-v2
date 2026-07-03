@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from mcp_server.config import config
 from mcp_server.db.models import PluginPack
+from mcp_server.services import instance_settings_service
 from mcp_server.db.session import async_session_factory
 from mcp_server.model_strategies import resolve_generation_models
 from mcp_server.providers import get_provider
@@ -1192,13 +1193,22 @@ Required sections:
             analysis_guide_file = "_analysis_prompts*.md"  # legacy fallback
 
         # Resolve provider and models through the shared model strategy registry.
+        # Per-instance overrides from the dashboard Models tab take precedence
+        # over the env-var defaults so superadmins can change the effective
+        # model at runtime without restarting the service.
+        analysis_default = await instance_settings_service.get_value(
+            "doc_gen_analysis_model", default=config.doc_generation_model
+        )
+        write_default = await instance_settings_service.get_value(
+            "doc_gen_write_model", default=config.doc_generation_write_model
+        )
         model_resolution = resolve_generation_models(
             provider_type=doc_generation_provider,
             model=model,
             write_model=write_model,
             default_provider=config.doc_generation_provider,
-            default_analysis_model=config.doc_generation_model,
-            default_write_model=config.doc_generation_write_model,
+            default_analysis_model=analysis_default or config.doc_generation_model,
+            default_write_model=write_default or config.doc_generation_write_model,
             default_claude_cli_model=config.claude_model,
         )
         resolved_provider = model_resolution.provider_type

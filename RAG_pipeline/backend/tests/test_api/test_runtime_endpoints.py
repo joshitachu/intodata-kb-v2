@@ -22,6 +22,7 @@ _ESB = "esbmain"
 _OTHER = "other-proj"
 _FAILED_EXEC = "esbmain-route-7841"
 _SUCCESS_EXEC = "esbmain-route-7840"
+_BILLING_EXEC = "billing-route-2190"
 
 
 def _mock_user(id: int = 1) -> User:
@@ -65,8 +66,8 @@ class TestListExecutions:
         assert resp.status_code == 200
         body = resp.json()
         ids = {e["execution_id"] for e in body["executions"]}
-        assert ids == {_FAILED_EXEC, _SUCCESS_EXEC}
-        assert body["total"] == 2
+        assert ids == {_FAILED_EXEC, _SUCCESS_EXEC, _BILLING_EXEC}
+        assert body["total"] == 3
 
     async def test_unrestricted_scope_sees_both_projects(self, seeded_client):
         with _scope(None):
@@ -172,6 +173,251 @@ class TestFailures:
         with _scope([]):
             resp = await seeded_client.get("/api/v1/runtime/failures")
         assert resp.json() == {"failures": [], "total": 0}
+
+
+class TestSyncStatus:
+    async def test_scoped_sync_status(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/sync-status?source_key=mock")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["states"][0]["project_id"] == _ESB
+        assert body["states"][0]["source_key"] == "mock"
+        assert body["states"][0]["status"] == "success"
+        assert body["states"][0]["last_synced_at"] is not None
+
+    async def test_project_id_filter_cannot_widen_sync_status_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/sync-status?source_key=mock&project_id={_OTHER}"
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"states": [], "total": 0}
+
+    async def test_empty_scope_returns_empty_sync_status(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/sync-status")
+        assert resp.status_code == 200
+        assert resp.json() == {"states": [], "total": 0}
+
+
+class TestRuntimeHealth:
+    async def test_scoped_health(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] >= 1
+        assert all(item["project_id"] == _ESB for item in body["health"])
+        assert body["health"][0]["total_executions"] >= 1
+
+    async def test_project_id_filter_cannot_widen_health_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/health?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"health": [], "total": 0}
+
+    async def test_empty_scope_returns_empty_health(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"health": [], "total": 0}
+
+
+class TestRuntimeInventory:
+    async def test_scoped_sources(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/sources")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["sources"][0]["project_id"] == _ESB
+        assert body["sources"][0]["source_key"] == "mock"
+        assert body["sources"][0]["is_demo"] is True
+
+    async def test_project_id_filter_cannot_widen_sources_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/sources?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"sources": [], "total": 0}
+
+    async def test_scoped_engines(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/engines")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 2
+        names = {engine["name"] for engine in body["engines"]}
+        assert names == {"remote-engine-prod-01", "remote-engine-prod-02"}
+        assert {engine["status"] for engine in body["engines"]} == {"online", "degraded"}
+
+    async def test_project_id_filter_cannot_widen_engines_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/engines?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"engines": [], "total": 0}
+
+    async def test_scoped_engine_health(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/engine-health")
+        assert resp.status_code == 200
+        body = resp.json()
+        engine_health = next(
+            item for item in body["health"] if item["engine_id"] == "engine-prod-02"
+        )
+        assert engine_health["engine_name"] == "remote-engine-prod-02"
+        assert engine_health["engine_status"] == "degraded"
+        assert engine_health["total_runs"] == 2
+        assert engine_health["failed_runs"] == 1
+        assert engine_health["failure_rate"] == 0.5
+        assert engine_health["current_failure_streak"] == 1
+        assert engine_health["latest_state"] == "failed"
+
+    async def test_project_id_filter_cannot_widen_engine_health_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/engine-health?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"health": [], "total": 0}
+
+    async def test_scoped_overview(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/overview")
+        assert resp.status_code == 200
+        overview = resp.json()["overview"]
+        assert overview["sources_total"] == 1
+        assert overview["sources_demo"] == 1
+        assert overview["engines_total"] == 2
+        assert overview["engines_online"] == 1
+        assert overview["engines_degraded"] == 1
+        assert overview["environments_total"] == 2
+        assert overview["workspaces_total"] == 1
+        assert overview["engines_unhealthy"] == 1
+        assert overview["jobs_unhealthy"] == 1
+        assert overview["plans_unhealthy"] == 1
+        assert overview["sources_stale"] == 1
+
+    async def test_empty_scope_returns_empty_overview(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/overview")
+        assert resp.status_code == 200
+        assert resp.json()["overview"]["engines_total"] == 0
+        assert resp.json()["overview"]["engines_unhealthy"] == 0
+
+
+class TestRuntimeJobs:
+    async def test_scoped_jobs(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/jobs")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] >= 2
+        names = {job["name"] for job in body["jobs"]}
+        assert {"esb_order_sync_route", "esb_billing_export_route"}.issubset(names)
+        order_job = next(job for job in body["jobs"] if job["name"] == "esb_order_sync_route")
+        assert order_job["engine_name"] == "remote-engine-prod-02"
+        assert order_job["environment_name"] == "Production"
+
+    async def test_project_id_filter_cannot_widen_jobs_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/jobs?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"jobs": [], "total": 0}
+
+    async def test_scoped_job_runs(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-runs")
+        assert resp.status_code == 200
+        body = resp.json()
+        run_ids = {run["run_id"] for run in body["runs"]}
+        assert {_FAILED_EXEC, _SUCCESS_EXEC, _BILLING_EXEC}.issubset(run_ids)
+        failed = next(run for run in body["runs"] if run["run_id"] == _FAILED_EXEC)
+        assert failed["state"] == "failed"
+        assert failed["execution_id"] == _FAILED_EXEC
+        assert failed["engine_name"] == "remote-engine-prod-02"
+
+    async def test_project_id_filter_cannot_widen_job_runs_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/job-runs?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"runs": [], "total": 0}
+
+    async def test_scoped_job_health(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/job-health")
+        assert resp.status_code == 200
+        body = resp.json()
+        order_health = next(item for item in body["health"] if item["job_id"] == "job-order-sync")
+        assert order_health["total_runs"] == 2
+        assert order_health["failed_runs"] == 1
+        assert order_health["failure_rate"] == 0.5
+        assert order_health["current_failure_streak"] == 1
+        assert order_health["latest_state"] == "failed"
+
+    async def test_empty_scope_returns_empty_job_health(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/job-health")
+        assert resp.status_code == 200
+        assert resp.json() == {"health": [], "total": 0}
+
+
+class TestRuntimePlans:
+    async def test_scoped_plans(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/plans")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        plan = body["plans"][0]
+        assert plan["plan_id"] == "plan-nightly-order-flow"
+        assert plan["display_name"] == "Nightly Order Flow"
+        assert {step["job_id"] for step in plan["steps"]} == {
+            "job-order-sync",
+            "job-billing-export",
+        }
+
+    async def test_project_id_filter_cannot_widen_plans_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/plans?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"plans": [], "total": 0}
+
+    async def test_scoped_plan_runs(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/plan-runs")
+        assert resp.status_code == 200
+        body = resp.json()
+        run_ids = {run["run_id"] for run in body["runs"]}
+        assert {"plan-nightly-order-flow-7841", "plan-nightly-order-flow-7840"} == run_ids
+        failed = next(run for run in body["runs"] if run["state"] == "failed")
+        assert failed["plan_id"] == "plan-nightly-order-flow"
+        assert failed["step_results"][0]["execution_id"] == _FAILED_EXEC
+
+    async def test_project_id_filter_cannot_widen_plan_runs_scope(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(f"/api/v1/runtime/plan-runs?project_id={_OTHER}")
+        assert resp.status_code == 200
+        assert resp.json() == {"runs": [], "total": 0}
+
+    async def test_scoped_plan_health(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/plan-health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        health = body["health"][0]
+        assert health["plan_id"] == "plan-nightly-order-flow"
+        assert health["total_runs"] == 2
+        assert health["failed_runs"] == 1
+        assert health["failure_rate"] == 0.5
+        assert health["current_failure_streak"] == 1
+        assert health["latest_state"] == "failed"
+
+    async def test_empty_scope_returns_empty_plan_health(self, seeded_client):
+        with _scope([]):
+            resp = await seeded_client.get("/api/v1/runtime/plan-health")
+        assert resp.status_code == 200
+        assert resp.json() == {"health": [], "total": 0}
 
 
 class TestAuthentication:

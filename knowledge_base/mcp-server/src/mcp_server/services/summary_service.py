@@ -385,7 +385,7 @@ class SummaryService:
 # Source priority for each job's summary:
 #
 #   1. Phase 2 group analysis prose  — written during doc generation, lives in
-#      output/<project>/_rag_support/phase2_analysis/<group>.md after the
+#      output/<project>/docs/_rag_support/phase2_analysis/<group>.md after the
 #      docs_staging -> docs swap. Best signal: authored for this exact purpose.
 #   2. scan_data.purpose              — intodoc's stored purpose string per job.
 #   3. Improved heuristic             — connection flow shape + job name + system
@@ -398,6 +398,12 @@ class SummaryService:
 # The topology graph endpoint already reads from this file via load_summaries().
 
 _PHASE2_HEADING_RE = re.compile(r"^#{1,4}\s+GROUP_SUMMARY\b", re.IGNORECASE | re.MULTILINE)
+_PHASE2_UNIT_RE = re.compile(r"^#{2,5}\s+Unit:\s*[`'\"]?([^\n`'\"]+)[`'\"]?", re.IGNORECASE | re.MULTILINE)
+_PHASE2_COVERAGE_RE = re.compile(r"^#{1,4}\s+Coverage\s*$", re.IGNORECASE | re.MULTILINE)
+_PHASE2_PURPOSE_RE = re.compile(
+    r"\*\*Purpose\*\*\s*[:\-]\s*(.+?)(?=\n\s*\n|\n\s*\*\*|\n\s*[-*+]|\Z)",
+    re.DOTALL,
+)
 _PHASE2_MD_NOISE_RE = re.compile(r"^\s*[-*+]\s+|^\|.*\|$|^[-=]+$|^#+\s*", re.MULTILINE)
 
 
@@ -430,34 +436,144 @@ def _extract_first_useful_sentences(text: str, max_sentences: int = 2, max_chars
 def extract_phase2_summary_for_job(group_md: str, job_name: str) -> str:
     """Extract a 1-2 sentence summary for ``job_name`` from a Phase 2 group .md file.
 
-    The group file may contain prose for multiple jobs; we look for the section
-    that explicitly names the job (preferred) and fall back to the GROUP_SUMMARY
-    heading if no per-job section is found.
+    Phase 2 group .md files follow two common shapes:
+
+    1. **Per-job Unit subsections** (``scripts.md`` shape) — a top-level
+       ``## Coverage`` section listing covered jobs, followed by
+       ``## Model Analysis`` with ``#### Unit: <name>`` subsections.
+    2. **Group COMPONENTS bullet list** (``config.md`` / ``root.md`` shape) —
+       a single ``### COMPONENTS`` section with bullet entries whose first
+       item is ``- **Unit**: `<name>``` followed by ``**Purpose**: ...``.
+
+    The extractor strips Coverage metadata, then tries in order: a matching
+    ``#### Unit:`` subsection, a bullet-list entry whose **Unit** label
+    matches, then the GROUP_SUMMARY section as a last resort.
     """
     if not group_md or not job_name:
         return ""
 
-    # Preferred: a section whose heading or first paragraph names this job.
+    # Strip out the Coverage metadata section so its bullets don't get matched
+    # as "sentences" by the extractor when a job name appears there.
+    coverage_match = _PHASE2_COVERAGE_RE.search(group_md)
+    if coverage_match:
+        tail = group_md[coverage_match.end():]
+        tail = re.split(r"^#{1,4}\s+", tail, maxsplit=1, flags=re.MULTILINE)
+        prose_without_coverage = (tail[1] if len(tail) > 1 else "")
+    else:
+        prose_without_coverage = group_md
+
     job_lower = job_name.lower()
-    sections = re.split(r"(?=^#{1,4}\s+)", group_md, flags=re.MULTILINE)
-    for section in sections:
-        section_lc = section.lower()
-        if job_lower in section_lc:
+
+    # Preferred: a `#### Unit: <job_name>` (or similar) subsection.
+    unit_sections = re.split(r"(?=^#{2,5}\s+Unit:\s+)", prose_without_coverage, flags=re.MULTILINE)
+    for section in unit_sections:
+        match = _PHASE2_UNIT_RE.search(section)
+        if match and match.group(1).strip().lower() == job_lower:
+            purpose = _PHASE2_PURPOSE_RE.search(section)
+            if purpose:
+                cleaned = re.sub(r"\s+", " ", purpose.group(1)).strip()
+                return _extract_first_useful_sentences(cleaned, max_sentences=2, max_chars=280)
             body = _PHASE2_MD_NOISE_RE.sub(" ", section)
             body = re.sub(r"\s+", " ", body).strip()
             extracted = _extract_first_useful_sentences(body, max_sentences=2, max_chars=280)
             if extracted:
                 return extracted
 
-    # Fallback: GROUP_SUMMARY heading section, which usually covers the whole group.
-    match = _PHASE2_HEADING_RE.search(group_md)
-    if match:
-        tail = group_md[match.end():]
-        # Stop at the next heading.
-        tail = re.split(r"^#{1,4}\s+", tail, maxsplit=1, flags=re.MULTILINE)[0]
-        return _extract_first_useful_sentences(tail, max_sentences=2, max_chars=280)
+    # Fallback: a COMPONENTS-style bullet entry for this job. The entry
+    # starts with ``- **Unit**: `<name>``` and contains a ``**Purpose**: ...``
+    # line within the next ~30 lines.
+    purpose_for_unit = _find_purpose_for_unit_in_bullets(prose_without_coverage, job_lower)
+    if purpose_for_unit:
+        return _extract_first_useful_sentences(
+            re.sub(r"\s+", " ", purpose_for_unit).strip(),
+            max_sentences=2, max_chars=280,
+        )
+
+    # Final fallback: find any **Purpose**: ... line whose preceding context
+    # (~600 chars back) mentions this job. Catches the "Detailed analysis
+    # for <job>" pattern where Purpose lives in a non-bullet subsection.
+    purpose_with_context = _find_nearest_purpose_to_job(prose_without_coverage, job_lower)
+    if purpose_with_context:
+        return _extract_first_useful_sentences(
+            re.sub(r"\s+", " ", purpose_with_context).strip(),
+            max_sentences=2, max_chars=280,
+        )
+
+    # Last resort: any section whose body explicitly names the job, skipping
+    # one-line sections.
+    sections = re.split(r"(?=^#{1,4}\s+)", prose_without_coverage, flags=re.MULTILINE)
+    for section in sections:
+        if job_lower not in section.lower():
+            continue
+        body = _PHASE2_MD_NOISE_RE.sub(" ", section)
+        body = re.sub(r"\s+", " ", body).strip()
+        if len(body) < 80:
+            continue
+        extracted = _extract_first_useful_sentences(body, max_sentences=2, max_chars=280)
+        if extracted:
+            return extracted
+
+    # Note: we deliberately do NOT fall back to GROUP_SUMMARY here. That
+    # section describes the whole group, not this specific job, and surfacing
+    # it as a job summary is misleading. If no per-job prose exists the
+    # downstream priority chain falls back to scan_data.purpose -> heuristic,
+    # and the JobDetailPanel hides the section when the final string is empty.
 
     return ""
+
+
+def _find_purpose_for_unit_in_bullets(prose: str, job_lower: str) -> str | None:
+    """Locate the ``**Purpose**: ...`` line for ``job_lower`` in a COMPONENTS-style
+    bullet list. The bullet entry starts with ``- **Unit**: `<name>``` and the
+    Purpose line must appear before the next blank line or the next bullet
+    entry begins.
+    """
+    pattern = re.compile(
+        r"-\s+\*\*Unit\*\*\s*[:\-]\s*[`'\"]?" + re.escape(job_lower) + r"[`'\"]?",
+        re.IGNORECASE,
+    )
+    match = pattern.search(prose)
+    if not match:
+        return None
+    # Read forward from the match end up to the next blank line + bullet,
+    # the next heading, or end of file — whichever comes first.
+    chunk = prose[match.end():]
+    lines: list[str] = []
+    for line in chunk.splitlines():
+        # Stop at next bullet entry (different job starts).
+        if line.lstrip().startswith("- **Unit**"):
+            break
+        # Stop at any heading.
+        if re.match(r"^#{1,6}\s+", line):
+            break
+        # Stop at blank line that precedes a new bullet.
+        if not line.strip() and lines and lines[-1].strip().startswith("**"):
+            break
+        lines.append(line)
+    purpose_match = _PHASE2_PURPOSE_RE.search("\n".join(lines))
+    if purpose_match:
+        return purpose_match.group(1).strip()
+    return None
+
+
+def _find_nearest_purpose_to_job(prose: str, job_lower: str, context_chars: int = 600) -> str | None:
+    """Find a ``**Purpose**: ...`` line in the prose where the preceding
+    ``context_chars`` characters contain ``job_lower``.
+
+    Used as a last-resort fallback for files (e.g. ``root.md``) where each
+    job's Purpose lives in a non-bullet subsection like
+    ``**Detailed analysis for <job>**:`` followed by ``- **Purpose**: ...``.
+    """
+    best: tuple[int, str] | None = None
+    for purpose_match in _PHASE2_PURPOSE_RE.finditer(prose):
+        start = purpose_match.start()
+        window = prose[max(0, start - context_chars):start]
+        if job_lower in window.lower():
+            # Prefer the FIRST Purpose whose preceding context mentions the job
+            # (closest match). Update only if this is earlier than what we have.
+            if best is None or start < best[0]:
+                best = (start, purpose_match.group(1).strip())
+    return best[1] if best else None
 
 
 def heuristic_summary(
@@ -585,17 +701,39 @@ def _heuristic_summaries(project_id: str, job_groups: dict[str, str], job_extern
 
 
 def _phase2_prose_summaries(project_id: str, job_groups: dict[str, str]) -> dict[str, str]:
-    """Pull per-job 1-2 sentence summaries from the persisted Phase 2 prose."""
-    rag_dir = config.project_root / "output" / project_id / "_rag_support" / "phase2_analysis"
+    """Pull per-job 1-2 sentence summaries from the persisted Phase 2 prose.
+
+    Phase 2 group analyses are packaged into ``output/<project>/docs/_rag_support/phase2_analysis/``
+    during Phase 4 cleanup and carried into ``docs/`` by the atomic swap
+    (see ``rag_support_package.build_rag_support_package``).
+
+    Reads each group file at most once, then extracts a purpose per job in
+    that group. Previously this skipped re-extraction for jobs sharing a
+    group, which only populated the first job per group.
+    """
+    # Use the canonical dirnames so we don't drift if either is renamed.
+    from mcp_server.services.rag_support_package import (
+        PHASE2_ANALYSIS_SUBDIR,
+        RAG_SUPPORT_DIRNAME,
+    )
+
+    rag_dir = (
+        config.project_root
+        / "output"
+        / project_id
+        / "docs"
+        / RAG_SUPPORT_DIRNAME
+        / PHASE2_ANALYSIS_SUBDIR
+    )
     if not rag_dir.exists():
         return {}
 
     out: dict[str, str] = {}
-    seen_groups: set[str] = set()
+    jobs_by_group: dict[str, list[str]] = {}
     for job_name, group in job_groups.items():
-        if group in seen_groups:
-            continue
-        seen_groups.add(group)
+        jobs_by_group.setdefault(group, []).append(job_name)
+
+    for group, jobs in jobs_by_group.items():
         group_md_path = rag_dir / f"{group}.md"
         if not group_md_path.exists():
             continue
@@ -603,9 +741,10 @@ def _phase2_prose_summaries(project_id: str, job_groups: dict[str, str]) -> dict
             group_md = group_md_path.read_text(encoding="utf-8")
         except OSError:
             continue
-        sentence = extract_phase2_summary_for_job(group_md, job_name)
-        if sentence:
-            out[job_name] = sentence
+        for job_name in jobs:
+            sentence = extract_phase2_summary_for_job(group_md, job_name)
+            if sentence:
+                out[job_name] = sentence
     return out
 
 

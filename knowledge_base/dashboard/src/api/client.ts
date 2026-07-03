@@ -5,6 +5,7 @@ import {
   DocContentSchema,
   DocListResponseSchema,
   GenerateAssessmentResponseSchema,
+  InstanceSettingsResponseSchema,
   GenerateRunListResponseSchema,
   InstructionPackMetadataSchema,
   LogContentSchema,
@@ -84,6 +85,23 @@ export const api = {
       "/mcp/models",
       {},
       ModelListResponseSchema
+    ),
+
+  getInstanceSettings: () =>
+    request<{ settings: Record<string, string> }>(
+      "/mcp/admin/instance-settings",
+      {},
+      InstanceSettingsResponseSchema
+    ),
+
+  updateInstanceSettings: (settings: Record<string, string | null>) =>
+    request<{ settings: Record<string, string> }>(
+      "/mcp/admin/instance-settings",
+      {
+        method: "PUT",
+        body: JSON.stringify({ settings }),
+      },
+      InstanceSettingsResponseSchema
     ),
 
   addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string; github_token?: string }) =>
