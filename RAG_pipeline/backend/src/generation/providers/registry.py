@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import logging
 
+import os
+
 from src.generation.providers.anthropic_provider import AnthropicProvider
 from src.generation.providers.base import ChatProvider
+from src.generation.providers.google_provider import GoogleProvider
 from src.generation.providers.ollama_provider import OllamaProvider
 from src.generation.providers.openai_compat import OpenAICompatibleProvider
 
@@ -55,6 +58,12 @@ def _build_default_registry() -> dict[str, ChatProvider]:
         "anthropic": AnthropicProvider(
             api_key=settings.anthropic_api_key,
             timeout=settings.anthropic_timeout,
+            temperature=settings.cloud_llm_temperature,
+        ),
+        "google": GoogleProvider(
+            # Honor either GOOGLE_API_KEY (config field) or GEMINI_API_KEY.
+            api_key=settings.google_api_key or os.environ.get("GEMINI_API_KEY", ""),
+            timeout=settings.google_timeout,
             temperature=settings.cloud_llm_temperature,
         ),
         "ollama": OllamaProvider(

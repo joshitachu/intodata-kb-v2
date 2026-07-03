@@ -32,7 +32,21 @@ def test_parse_no_prefix_falls_back_to_default_provider():
 
 def test_default_registry_has_expected_providers():
     ids = registry.registered_provider_ids()
-    assert {"kimi", "ollama", "openai", "deepseek"} <= ids
+    assert {"kimi", "ollama", "openai", "deepseek", "anthropic", "google"} <= ids
+
+
+# The providers offered by the shared model catalogue (data/model_catalogue.json
+# in the MCP server). The RAG registry MUST implement every one so any model the
+# dashboard offers is runnable. RAG cannot import the MCP file (separate service),
+# so this set is the contract; update both together if the catalogue gains a
+# provider.
+CATALOGUE_PROVIDERS = {"openai", "deepseek", "anthropic", "google", "ollama"}
+
+
+def test_registry_covers_every_catalogue_provider():
+    ids = registry.registered_provider_ids()
+    missing = CATALOGUE_PROVIDERS - ids
+    assert not missing, f"RAG registry missing catalogue providers: {missing}"
 
 
 def test_resolve_openai_and_deepseek_use_openai_compatible_adapter():

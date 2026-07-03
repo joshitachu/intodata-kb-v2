@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_timeout: float = 120.0
 
+    # Google Gemini — provider id "google". Reads GOOGLE_API_KEY; a deployment may
+    # instead export GEMINI_API_KEY, mapped to this field below.
+    google_api_key: str = ""
+    google_timeout: float = 120.0
+
     # Shared sampling temperature for cloud chat providers (openai/deepseek/etc.).
     cloud_llm_temperature: float = 0.6
 
