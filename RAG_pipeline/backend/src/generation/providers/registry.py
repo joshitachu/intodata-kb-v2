@@ -37,6 +37,20 @@ def _build_default_registry() -> dict[str, ChatProvider]:
             # Moonshot-specific: disable server-side reasoning tokens.
             extra_body={"thinking": {"type": "disabled"}},
         ),
+        "openai": OpenAICompatibleProvider(
+            provider_id="openai",
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key,
+            timeout=settings.openai_timeout,
+            temperature=settings.cloud_llm_temperature,
+        ),
+        "deepseek": OpenAICompatibleProvider(
+            provider_id="deepseek",
+            base_url=settings.deepseek_base_url,
+            api_key=settings.deepseek_api_key,
+            timeout=settings.deepseek_timeout,
+            temperature=settings.cloud_llm_temperature,
+        ),
         "ollama": OllamaProvider(
             base_url=settings.ollama_base_url,
             timeout=settings.ollama_timeout,

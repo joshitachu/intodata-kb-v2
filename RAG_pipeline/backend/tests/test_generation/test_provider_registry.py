@@ -30,10 +30,20 @@ def test_parse_no_prefix_falls_back_to_default_provider():
     assert bare == "gemma3:12b"
 
 
-def test_default_registry_has_kimi_and_ollama():
+def test_default_registry_has_expected_providers():
     ids = registry.registered_provider_ids()
-    assert "kimi" in ids
-    assert "ollama" in ids
+    assert {"kimi", "ollama", "openai", "deepseek"} <= ids
+
+
+def test_resolve_openai_and_deepseek_use_openai_compatible_adapter():
+    for pid, model_id, bare in [
+        ("openai", "openai/gpt-4o", "gpt-4o"),
+        ("deepseek", "deepseek/deepseek-chat", "deepseek-chat"),
+    ]:
+        provider, name = registry.resolve(model_id)
+        assert isinstance(provider, OpenAICompatibleProvider)
+        assert provider.provider_id == pid
+        assert name == bare
 
 
 def test_resolve_ollama_returns_provider_and_bare_model():
@@ -51,7 +61,7 @@ def test_resolve_kimi_uses_openai_compatible_adapter():
 
 def test_resolve_unknown_provider_raises():
     with pytest.raises(ValueError, match="No RAG chat provider"):
-        registry.resolve("deepseek/deepseek-chat")  # not registered until Slice 2
+        registry.resolve("mistral/mistral-large")  # provider not implemented
 
 
 def test_registered_providers_are_chat_providers():

@@ -26,6 +26,19 @@ class Settings(BaseSettings):
     kimi_temperature: float = 0.6
     kimi_timeout: float = 300.0
 
+    # OpenAI (official) — provider id "openai"
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout: float = 120.0
+
+    # DeepSeek (OpenAI-compatible) — provider id "deepseek"
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_timeout: float = 120.0
+
+    # Shared sampling temperature for cloud chat providers (openai/deepseek/etc.).
+    cloud_llm_temperature: float = 0.6
+
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_llm_model: str = "gemma3:4b"
