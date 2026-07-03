@@ -25,8 +25,11 @@ integrated on top of the runtime-failure-slices work once it landed on master.
 - **Reviewed** earlier (security + correctness): create_project takeover guard, dup-assignment
   409, provider-gating, `db.refresh` — all retained.
 - **Verification**: app imports OK; 35 RBAC/admin/ownership tests pass; frontend tsc clean.
-  NOTE: `frontend tests/components/RuntimeLogsPage.test.tsx` fails 4/4 — pre-existing in the
-  runtime work on master (NOT from this RBAC merge); flagged to the owner.
+  NOTE: `frontend tests/components/RuntimeLogsPage.test.tsx` was failing 4/4 (pre-existing in the
+  runtime work — stale `vi.mock` missing the estate-inventory hooks). FIXED in follow-up `6bddd00`
+  (added useRuntimeArtifacts/Connections/Dependencies/DependencySummary to the mock). Went live:
+  pushed runtime (`c64f01e`) + RBAC (`67eccf9`) + test fix (`6bddd00`) to master; rebuilt local
+  stack; DB at `044_rbac`; all 8 services healthy; full frontend suite 82/82.
 
 ## Session: 2026-07-02 (continued)
 
