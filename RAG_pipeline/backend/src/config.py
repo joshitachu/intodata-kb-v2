@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_timeout: float = 120.0
 
+    # Anthropic (Claude) — provider id "anthropic"
+    anthropic_api_key: str = ""
+    anthropic_timeout: float = 120.0
+
     # Shared sampling temperature for cloud chat providers (openai/deepseek/etc.).
     cloud_llm_temperature: float = 0.6
 

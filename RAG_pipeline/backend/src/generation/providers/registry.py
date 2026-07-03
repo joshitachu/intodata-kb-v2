@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from src.generation.providers.anthropic_provider import AnthropicProvider
 from src.generation.providers.base import ChatProvider
 from src.generation.providers.ollama_provider import OllamaProvider
 from src.generation.providers.openai_compat import OpenAICompatibleProvider
@@ -49,6 +50,11 @@ def _build_default_registry() -> dict[str, ChatProvider]:
             base_url=settings.deepseek_base_url,
             api_key=settings.deepseek_api_key,
             timeout=settings.deepseek_timeout,
+            temperature=settings.cloud_llm_temperature,
+        ),
+        "anthropic": AnthropicProvider(
+            api_key=settings.anthropic_api_key,
+            timeout=settings.anthropic_timeout,
             temperature=settings.cloud_llm_temperature,
         ),
         "ollama": OllamaProvider(
