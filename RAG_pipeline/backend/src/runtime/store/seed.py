@@ -34,10 +34,22 @@ from src.runtime.models import (
     GetExecutionLogsInput,
     ListExecutionsInput,
     RuntimeExecution,
+    RuntimeEngine,
+    RuntimeEngineStatus,
+    RuntimeEnvironment,
     RuntimeExecutionState,
     RuntimeFailure,
+    RuntimeJob,
+    RuntimeJobRun,
     RuntimeLogEvent,
     RuntimeLogSeverity,
+    RuntimePlan,
+    RuntimePlanRun,
+    RuntimePlanRunStepResult,
+    RuntimePlanStep,
+    RuntimeSource,
+    RuntimeSyncStatus,
+    RuntimeWorkspace,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.providers.mock import provider as mock_provider
@@ -114,6 +126,13 @@ async def seed_mock_runtime_data(
 
     repo = RuntimeStoreRepository(session)
 
+    await seed_demo_inventory(
+        repo,
+        project_id=project_id,
+        source_key=source_key,
+        synced_at=synced_at,
+    )
+
     for execution in executions:
         shifted = execution.model_copy(
             update={
@@ -122,6 +141,30 @@ async def seed_mock_runtime_data(
             }
         )
         await repo.upsert_execution(project_id, shifted, source_key, synced_at)
+
+    shifted_executions = [
+        execution.model_copy(
+            update={
+                "started_at": _shift(execution.started_at, delta),
+                "ended_at": _shift(execution.ended_at, delta),
+            }
+        )
+        for execution in executions
+    ]
+    await seed_demo_jobs(
+        repo,
+        project_id=project_id,
+        source_key=source_key,
+        synced_at=synced_at,
+        executions=shifted_executions,
+    )
+    await seed_demo_plans(
+        repo,
+        project_id=project_id,
+        source_key=source_key,
+        synced_at=synced_at,
+        executions=shifted_executions,
+    )
 
     for failure in failures:
         shifted_failure = failure.model_copy(update={"failed_at": _shift(failure.failed_at, delta)})
@@ -211,6 +254,13 @@ async def seed_rich_runtime_data(
     failed_start = synced_at - datetime.timedelta(seconds=_RICH_RUN_SECONDS)
     success_start = synced_at - datetime.timedelta(hours=2)
 
+    await seed_demo_inventory(
+        repo,
+        project_id=project_id,
+        source_key=source_key,
+        synced_at=synced_at,
+    )
+
     await repo.upsert_execution(
         project_id,
         RuntimeExecution(
@@ -238,6 +288,63 @@ async def seed_rich_runtime_data(
         ),
         source_key,
         synced_at,
+    )
+    await repo.upsert_execution(
+        project_id,
+        RuntimeExecution(
+            execution_id="billing-route-2190",
+            job_name="esb_billing_export_route",
+            project_name="esb_main",
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=synced_at - datetime.timedelta(hours=4),
+            ended_at=synced_at - datetime.timedelta(hours=4) + datetime.timedelta(seconds=44),
+            duration_ms=44_210,
+        ),
+        source_key,
+        synced_at,
+    )
+    rich_executions = [
+        RuntimeExecution(
+            execution_id=_RICH_FAILED_EXEC,
+            job_name=_RICH_JOB,
+            project_name="esb_main",
+            state=RuntimeExecutionState.FAILED,
+            started_at=failed_start,
+            ended_at=synced_at,
+            duration_ms=_RICH_RUN_SECONDS * 1000,
+        ),
+        RuntimeExecution(
+            execution_id=_RICH_SUCCESS_EXEC,
+            job_name=_RICH_JOB,
+            project_name="esb_main",
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=success_start,
+            ended_at=success_start + datetime.timedelta(seconds=28),
+            duration_ms=28_013,
+        ),
+        RuntimeExecution(
+            execution_id="billing-route-2190",
+            job_name="esb_billing_export_route",
+            project_name="esb_main",
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=synced_at - datetime.timedelta(hours=4),
+            ended_at=synced_at - datetime.timedelta(hours=4) + datetime.timedelta(seconds=44),
+            duration_ms=44_210,
+        ),
+    ]
+    await seed_demo_jobs(
+        repo,
+        project_id=project_id,
+        source_key=source_key,
+        synced_at=synced_at,
+        executions=rich_executions,
+    )
+    await seed_demo_plans(
+        repo,
+        project_id=project_id,
+        source_key=source_key,
+        synced_at=synced_at,
+        executions=rich_executions,
     )
     await repo.upsert_failure(
         project_id,
@@ -292,6 +399,357 @@ async def seed_rich_runtime_data(
     )
 
 
+async def seed_demo_inventory(
+    repo: RuntimeStoreRepository,
+    *,
+    project_id: str,
+    source_key: str,
+    synced_at: datetime.datetime,
+) -> None:
+    """Seed the minimum runtime estate needed to demo the operational mirror."""
+    await repo.upsert_source(
+        project_id,
+        RuntimeSource(
+            project_id=project_id,
+            source_key=source_key,
+            source_type="mock",
+            label="Demo runtime source",
+            status=RuntimeSyncStatus.SUCCESS,
+            is_demo=True,
+            last_synced_at=synced_at,
+            last_seen_at=synced_at,
+            ingested_at=synced_at,
+        ),
+        synced_at,
+    )
+    await repo.upsert_environment(
+        project_id,
+        RuntimeEnvironment(
+            source_key=source_key,
+            environment_id="env-prod",
+            name="Production",
+            description="Demo production runtime environment",
+            last_seen_at=synced_at,
+        ),
+        source_key,
+        synced_at,
+    )
+    await repo.upsert_environment(
+        project_id,
+        RuntimeEnvironment(
+            source_key=source_key,
+            environment_id="env-test",
+            name="Test",
+            description="Demo test runtime environment",
+            last_seen_at=synced_at,
+        ),
+        source_key,
+        synced_at,
+    )
+    await repo.upsert_workspace(
+        project_id,
+        RuntimeWorkspace(
+            source_key=source_key,
+            workspace_id="ws-esb-main",
+            name="ESB Main",
+            environment_id="env-prod",
+            environment_name="Production",
+            owner="integration-ops",
+            workspace_type="operations",
+            last_seen_at=synced_at,
+        ),
+        source_key,
+        synced_at,
+    )
+    await repo.upsert_engine(
+        project_id,
+        RuntimeEngine(
+            source_key=source_key,
+            engine_id="engine-prod-01",
+            name="remote-engine-prod-01",
+            status=RuntimeEngineStatus.ONLINE,
+            raw_status="PAIRED",
+            availability="AVAILABLE",
+            version="8.0.1",
+            environment_id="env-prod",
+            environment_name="Production",
+            workspace_id="ws-esb-main",
+            workspace_name="ESB Main",
+            last_seen_at=synced_at,
+            source_updated_at=synced_at,
+        ),
+        source_key,
+        synced_at,
+    )
+    await repo.upsert_engine(
+        project_id,
+        RuntimeEngine(
+            source_key=source_key,
+            engine_id="engine-prod-02",
+            name="remote-engine-prod-02",
+            status=RuntimeEngineStatus.DEGRADED,
+            raw_status="PAIRED",
+            availability="UNAVAILABLE",
+            version="8.0.1",
+            environment_id="env-prod",
+            environment_name="Production",
+            workspace_id="ws-esb-main",
+            workspace_name="ESB Main",
+            last_seen_at=synced_at - datetime.timedelta(minutes=7),
+            source_updated_at=synced_at - datetime.timedelta(minutes=7),
+        ),
+        source_key,
+        synced_at,
+    )
+
+
+async def seed_demo_jobs(
+    repo: RuntimeStoreRepository,
+    *,
+    project_id: str,
+    source_key: str,
+    synced_at: datetime.datetime,
+    executions: list[RuntimeExecution],
+) -> None:
+    """Seed durable job inventory and job-run facts linked to demo engines."""
+    jobs_by_name = {execution.job_name: execution for execution in executions}
+    if _RICH_JOB not in jobs_by_name:
+        jobs_by_name[_RICH_JOB] = RuntimeExecution(
+            execution_id="demo-order-sync-seed",
+            job_name=_RICH_JOB,
+            project_name="esb_main",
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=synced_at - datetime.timedelta(hours=3),
+            ended_at=synced_at - datetime.timedelta(hours=3) + datetime.timedelta(seconds=30),
+            duration_ms=30_000,
+        )
+    if "esb_billing_export_route" not in jobs_by_name:
+        jobs_by_name["esb_billing_export_route"] = RuntimeExecution(
+            execution_id="demo-billing-export-seed",
+            job_name="esb_billing_export_route",
+            project_name="esb_main",
+            state=RuntimeExecutionState.SUCCESS,
+            started_at=synced_at - datetime.timedelta(hours=5),
+            ended_at=synced_at - datetime.timedelta(hours=5) + datetime.timedelta(seconds=45),
+            duration_ms=45_000,
+        )
+
+    job_context = {
+        _RICH_JOB: {
+            "job_id": "job-order-sync",
+            "display_name": "Order Sync Route",
+            "engine_id": "engine-prod-02",
+            "engine_name": "remote-engine-prod-02",
+            "artifact_name": "esb-order-sync-1.8.4",
+        },
+        "esb_billing_export_route": {
+            "job_id": "job-billing-export",
+            "display_name": "Billing Export Route",
+            "engine_id": "engine-prod-01",
+            "engine_name": "remote-engine-prod-01",
+            "artifact_name": "esb-billing-export-2.1.0",
+        },
+    }
+
+    for job_name, execution in sorted(jobs_by_name.items()):
+        context = job_context.get(
+            job_name,
+            {
+                "job_id": f"job-{job_name.replace('_', '-')[:80]}",
+                "display_name": job_name.replace("_", " ").title(),
+                "engine_id": "engine-prod-01",
+                "engine_name": "remote-engine-prod-01",
+                "artifact_name": None,
+            },
+        )
+        await repo.upsert_job(
+            project_id,
+            RuntimeJob(
+                source_key=source_key,
+                job_id=context["job_id"],
+                name=job_name,
+                display_name=context["display_name"],
+                job_type="task",
+                status="active",
+                environment_id="env-prod",
+                environment_name="Production",
+                workspace_id="ws-esb-main",
+                workspace_name="ESB Main",
+                engine_id=context["engine_id"],
+                engine_name=context["engine_name"],
+                owner="integration-ops",
+                artifact_name=context["artifact_name"],
+                last_seen_at=execution.ended_at or execution.started_at,
+                source_updated_at=synced_at,
+            ),
+            source_key,
+            synced_at,
+        )
+
+    for execution in executions:
+        context = job_context.get(
+            execution.job_name,
+            {
+                "job_id": f"job-{execution.job_name.replace('_', '-')[:80]}",
+                "engine_id": "engine-prod-01",
+                "engine_name": "remote-engine-prod-01",
+            },
+        )
+        await repo.upsert_job_run(
+            project_id,
+            RuntimeJobRun(
+                source_key=source_key,
+                run_id=execution.execution_id,
+                job_id=context["job_id"],
+                job_name=execution.job_name,
+                execution_id=execution.execution_id,
+                state=execution.state,
+                environment_id="env-prod",
+                environment_name="Production",
+                workspace_id="ws-esb-main",
+                workspace_name="ESB Main",
+                engine_id=context["engine_id"],
+                engine_name=context["engine_name"],
+                started_at=execution.started_at,
+                ended_at=execution.ended_at,
+                duration_ms=execution.duration_ms,
+            ),
+            source_key,
+            synced_at,
+        )
+
+
+async def seed_demo_plans(
+    repo: RuntimeStoreRepository,
+    *,
+    project_id: str,
+    source_key: str,
+    synced_at: datetime.datetime,
+    executions: list[RuntimeExecution],
+) -> None:
+    """Seed a generic orchestration plan composed of the demo jobs."""
+    executions_by_id = {execution.execution_id: execution for execution in executions}
+    failed_order = executions_by_id.get(_RICH_FAILED_EXEC)
+    success_order = executions_by_id.get(_RICH_SUCCESS_EXEC)
+    billing = executions_by_id.get("billing-route-2190")
+
+    steps = [
+        RuntimePlanStep(
+            step_id="step-order-sync",
+            name="Run order sync",
+            job_id="job-order-sync",
+            job_name=_RICH_JOB,
+            order=1,
+        ),
+        RuntimePlanStep(
+            step_id="step-billing-export",
+            name="Run billing export",
+            job_id="job-billing-export",
+            job_name="esb_billing_export_route",
+            order=2,
+        ),
+    ]
+
+    await repo.upsert_plan(
+        project_id,
+        RuntimePlan(
+            source_key=source_key,
+            plan_id="plan-nightly-order-flow",
+            name="nightly_order_flow",
+            display_name="Nightly Order Flow",
+            status="active",
+            environment_id="env-prod",
+            environment_name="Production",
+            workspace_id="ws-esb-main",
+            workspace_name="ESB Main",
+            owner="integration-ops",
+            step_count=len(steps),
+            steps=steps,
+            last_seen_at=synced_at,
+            source_updated_at=synced_at,
+        ),
+        source_key,
+        synced_at,
+    )
+
+    failed_start = failed_order.started_at if failed_order is not None else synced_at - datetime.timedelta(minutes=2)
+    await repo.upsert_plan_run(
+        project_id,
+        RuntimePlanRun(
+            source_key=source_key,
+            run_id="plan-nightly-order-flow-7841",
+            plan_id="plan-nightly-order-flow",
+            plan_name="nightly_order_flow",
+            state=RuntimeExecutionState.FAILED,
+            environment_id="env-prod",
+            environment_name="Production",
+            workspace_id="ws-esb-main",
+            workspace_name="ESB Main",
+            started_at=failed_start,
+            ended_at=synced_at,
+            duration_ms=int((synced_at - failed_start).total_seconds() * 1000),
+            step_results=[
+                RuntimePlanRunStepResult(
+                    step_id="step-order-sync",
+                    job_id="job-order-sync",
+                    job_name=_RICH_JOB,
+                    state=RuntimeExecutionState.FAILED,
+                    execution_id=failed_order.execution_id if failed_order is not None else None,
+                ),
+                RuntimePlanRunStepResult(
+                    step_id="step-billing-export",
+                    job_id="job-billing-export",
+                    job_name="esb_billing_export_route",
+                    state=RuntimeExecutionState.UNKNOWN,
+                    execution_id=None,
+                ),
+            ],
+        ),
+        source_key,
+        synced_at,
+    )
+
+    success_start = (success_order.started_at if success_order is not None else synced_at - datetime.timedelta(hours=2))
+    success_end = (
+        (billing.ended_at if billing is not None else None)
+        or (success_order.ended_at if success_order is not None else None)
+        or success_start + datetime.timedelta(minutes=1)
+    )
+    await repo.upsert_plan_run(
+        project_id,
+        RuntimePlanRun(
+            source_key=source_key,
+            run_id="plan-nightly-order-flow-7840",
+            plan_id="plan-nightly-order-flow",
+            plan_name="nightly_order_flow",
+            state=RuntimeExecutionState.SUCCESS,
+            environment_id="env-prod",
+            environment_name="Production",
+            workspace_id="ws-esb-main",
+            workspace_name="ESB Main",
+            started_at=success_start,
+            ended_at=success_end,
+            duration_ms=int((success_end - success_start).total_seconds() * 1000),
+            step_results=[
+                RuntimePlanRunStepResult(
+                    step_id="step-order-sync",
+                    job_id="job-order-sync",
+                    job_name=_RICH_JOB,
+                    state=RuntimeExecutionState.SUCCESS,
+                    execution_id=success_order.execution_id if success_order is not None else None,
+                ),
+                RuntimePlanRunStepResult(
+                    step_id="step-billing-export",
+                    job_id="job-billing-export",
+                    job_name="esb_billing_export_route",
+                    state=RuntimeExecutionState.SUCCESS,
+                    execution_id=billing.execution_id if billing is not None else None,
+                ),
+            ],
+        ),
+        source_key,
+        synced_at,
+    )
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Seed the held runtime store from mock fixtures.")
     parser.add_argument("--project-id", default=DEFAULT_PROJECT_ID)

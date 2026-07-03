@@ -13,13 +13,25 @@ from src.runtime.models import (
     GetExecutionDetailsInput,
     GetExecutionLogsInput,
     ListExecutionsInput,
+    RuntimeArtifact,
+    RuntimeConnection,
+    RuntimeEngine,
+    RuntimeEngineStatus,
+    RuntimeEnvironment,
     RuntimeExecution,
     RuntimeExecutionState,
     RuntimeFailure,
+    RuntimeJob,
+    RuntimeJobDependency,
+    RuntimeJobRun,
     RuntimeLogEvent,
     RuntimeLogSeverity,
+    RuntimeSource,
+    RuntimeSyncStatus,
+    RuntimeWorkspace,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
+from src.runtime.sync import RuntimeSyncBatch
 
 _FIXED_NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -123,6 +135,151 @@ class MockRuntimeProvider:
             min_rank = _SEVERITY_RANK.index(params.min_severity)
             logs = [log for log in logs if _SEVERITY_RANK.index(log.severity) >= min_rank]
         return logs[: params.limit]
+
+    async def fetch_runtime_batch(self, *, project_id: str) -> RuntimeSyncBatch:
+        """Return a deterministic local sync batch for scheduler smoke tests.
+
+        This is intentionally credential-free and network-free. It lets the
+        runtime scheduler exercise the same DB write path as live adapters.
+        """
+        source_key = "mock"
+        environment = RuntimeEnvironment(
+            source_key=source_key,
+            environment_id="mock-env",
+            name="Mock Environment",
+            last_seen_at=_FIXED_NOW,
+        )
+        workspace = RuntimeWorkspace(
+            source_key=source_key,
+            workspace_id="mock-workspace",
+            name="Mock Workspace",
+            environment_id=environment.environment_id,
+            environment_name=environment.name,
+            last_seen_at=_FIXED_NOW,
+        )
+        engine = RuntimeEngine(
+            source_key=source_key,
+            engine_id="mock-engine",
+            name="mock-engine-01",
+            status=RuntimeEngineStatus.ONLINE,
+            environment_id=environment.environment_id,
+            environment_name=environment.name,
+            workspace_id=workspace.workspace_id,
+            workspace_name=workspace.name,
+            last_seen_at=_FIXED_NOW,
+        )
+        job = RuntimeJob(
+            source_key=source_key,
+            job_id="mock-nightly-sync",
+            name="nightly_sync",
+            display_name="Nightly Sync",
+            job_type="task",
+            status="active",
+            environment_id=environment.environment_id,
+            environment_name=environment.name,
+            workspace_id=workspace.workspace_id,
+            workspace_name=workspace.name,
+            engine_id=engine.engine_id,
+            engine_name=engine.name,
+            artifact_name="mock-orders-artifact",
+            last_seen_at=_FIXED_NOW,
+        )
+        artifact = RuntimeArtifact(
+            source_key=source_key,
+            artifact_id="mock-orders-artifact",
+            name="orders_sync_route",
+            artifact_type="route",
+            version="1.3.0",
+            workspace_id=workspace.workspace_id,
+            workspace_name=workspace.name,
+            owner="platform-team",
+            last_seen_at=_FIXED_NOW,
+            source_updated_at=_FIXED_NOW,
+        )
+        connection = RuntimeConnection(
+            source_key=source_key,
+            connection_id="mock-oracle-prod",
+            name="Oracle PROD orders",
+            connection_type="oracle",
+            workspace_id=workspace.workspace_id,
+            workspace_name=workspace.name,
+            owner="data-platform",
+            last_seen_at=_FIXED_NOW,
+            source_updated_at=_FIXED_NOW,
+        )
+        dependencies = [
+            RuntimeJobDependency(
+                source_key=source_key,
+                job_id=job.job_id,
+                job_name=job.name,
+                dependency_type="artifact",
+                dependency_id=artifact.artifact_id,
+                dependency_name=artifact.name,
+                dependency_kind=artifact.artifact_type,
+                workspace_id=workspace.workspace_id,
+                workspace_name=workspace.name,
+                last_seen_at=_FIXED_NOW,
+            ),
+            RuntimeJobDependency(
+                source_key=source_key,
+                job_id=job.job_id,
+                job_name=job.name,
+                dependency_type="connection",
+                dependency_id=connection.connection_id,
+                dependency_name=connection.name,
+                dependency_kind=connection.connection_type,
+                workspace_id=workspace.workspace_id,
+                workspace_name=workspace.name,
+                last_seen_at=_FIXED_NOW,
+            ),
+        ]
+        job_runs = [
+            RuntimeJobRun(
+                source_key=source_key,
+                run_id=execution.execution_id,
+                job_id=job.job_id,
+                job_name=execution.job_name,
+                execution_id=execution.execution_id,
+                state=execution.state,
+                environment_id=environment.environment_id,
+                environment_name=environment.name,
+                workspace_id=workspace.workspace_id,
+                workspace_name=workspace.name,
+                engine_id=engine.engine_id,
+                engine_name=engine.name,
+                started_at=execution.started_at,
+                ended_at=execution.ended_at,
+                duration_ms=execution.duration_ms,
+            )
+            for execution in _EXECUTIONS
+        ]
+        return RuntimeSyncBatch(
+            sources=[
+                RuntimeSource(
+                    project_id=project_id,
+                    source_key=source_key,
+                    source_type="mock",
+                    label="Mock runtime source",
+                    status=RuntimeSyncStatus.SUCCESS,
+                    is_demo=True,
+                    last_synced_at=_FIXED_NOW,
+                    last_seen_at=_FIXED_NOW,
+                    ingested_at=_FIXED_NOW,
+                )
+            ],
+            environments=[environment],
+            workspaces=[workspace],
+            engines=[engine],
+            jobs=[job],
+            artifacts=[artifact],
+            connections=[connection],
+            job_dependencies=dependencies,
+            job_runs=job_runs,
+            executions=_EXECUTIONS,
+            failures=_FAILURES,
+            log_events=[event for events in _LOGS.values() for event in events],
+            synced_at=_FIXED_NOW,
+        )
 
 
 provider = MockRuntimeProvider()

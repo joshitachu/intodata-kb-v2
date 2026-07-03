@@ -123,6 +123,25 @@ class TestExecutionSummary:
         assert isinstance(body["evidence_refs"], list)
         assert len(body["evidence_refs"]) > 0
 
+    async def test_failed_execution_has_estate_context(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get(
+                f"/api/v1/runtime/executions/{_FAILED_EXEC}/summary"
+            )
+        assert resp.status_code == 200
+        context = resp.json()["summary"]["estate_context"]
+        assert context["source_key"] == "mock"
+        assert context["source_label"] == "Demo runtime source"
+        assert context["source_is_demo"] is True
+        assert context["environment_name"] == "Production"
+        assert context["workspace_name"] == "ESB Main"
+        assert context["engine_id"] == "engine-prod-02"
+        assert context["engine_name"] == "remote-engine-prod-02"
+        assert context["job_id"] == "job-order-sync"
+        assert context["job_run_id"] == _FAILED_EXEC
+        assert context["plan_id"] == "plan-nightly-order-flow"
+        assert context["plan_run_id"] == "plan-nightly-order-flow-7841"
+
 
 # ---------------------------------------------------------------------------
 # Timeline
@@ -150,6 +169,8 @@ class TestTimeline:
         assert resp.status_code == 200
         events = resp.json()["events"]
         assert len(events) > 0
+        assert all("message" not in e for e in events)
+        assert all("signal" in e for e in events)
         # At least one error-level event should have an extracted component
         components = [e["component_name"] for e in events if e["component_name"]]
         assert len(components) > 0

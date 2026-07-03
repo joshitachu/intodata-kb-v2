@@ -46,7 +46,7 @@ export function ProjectSelector() {
         <option value="">Select a project...</option>
         {data.projects.map((project) => (
           <option key={project.id} value={project.id}>
-            {project.display_name} ({project.job_count} jobs)
+            {project.display_name} ({project.job_count} components)
           </option>
         ))}
       </select>

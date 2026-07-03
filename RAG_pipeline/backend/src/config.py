@@ -185,6 +185,14 @@ class Settings(BaseSettings):
     talend_tmc_api_token_file: str = ""
     talend_tmc_request_timeout: float = 10.0
 
+    # Runtime source sync scheduler (Runtime-Agnostic Failure Intelligence Slice 7).
+    # Disabled by default. When enabled, the backend starts a background loop that
+    # runs one sync cycle per configured project every runtime_sync_interval_seconds.
+    runtime_sync_scheduler_enabled: bool = False
+    runtime_sync_interval_seconds: int = 60
+    runtime_sync_source_key: str = ""
+    runtime_sync_project_ids: str = ""
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"

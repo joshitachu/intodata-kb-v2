@@ -179,14 +179,32 @@ class FailurePatternCatalog(BaseModel):
         )
 
     @staticmethod
-    def render_next_checks(pattern: FailurePattern, *, host: str | None) -> list[str]:
+    def render_next_checks(
+        pattern: FailurePattern,
+        *,
+        host: str | None,
+        error_code: str | None = None,
+        exception_class: str | None = None,
+    ) -> list[str]:
         checks: list[str] = []
         for raw in pattern.next_checks:
             if "{host}" in raw:
                 if host:
-                    checks.append(raw.format(host=host))
+                    checks.append(
+                        raw.format(
+                            host=host,
+                            error_code=error_code or "",
+                            exception_class=exception_class or "",
+                        )
+                    )
                 continue
-            checks.append(raw)
+            checks.append(
+                raw.format(
+                    host=host or "",
+                    error_code=error_code or "",
+                    exception_class=exception_class or "",
+                )
+            )
         return checks
 
     @classmethod
@@ -316,6 +334,21 @@ _DEFAULT_PATTERNS: tuple[FailurePattern, ...] = (
         specificity=30,
     ),
     FailurePattern(
+        pattern_id="http.auth",
+        code_family="http",
+        code_pattern=r"^(401|403)$",
+        root_cause_template=(
+            "Downstream HTTP service rejected the request ({error_code}): authentication "
+            "or authorization failed for the configured integration credentials."
+        ),
+        next_checks=(
+            "Verify the API credential, token, or client certificate configured for this job",
+            "Confirm the service account is authorized for the requested endpoint",
+            "Check whether the credential was rotated, expired, revoked, or scoped incorrectly",
+        ),
+        specificity=35,
+    ),
+    FailurePattern(
         pattern_id="http.client_error",
         code_family="http",
         code_pattern=r"^4\d\d$",
@@ -343,6 +376,75 @@ _DEFAULT_PATTERNS: tuple[FailurePattern, ...] = (
             "Review the target system availability and firewall rules",
         ),
         specificity=25,
+    ),
+    FailurePattern(
+        pattern_id="network.timeout",
+        exception_contains="TimeoutException",
+        root_cause_template=(
+            "Network or downstream service timeout ({exception_class}): the target system did "
+            "not respond before the runtime timeout window."
+        ),
+        next_checks=(
+            "Check target service availability and latency from the runtime host",
+            "Review timeout and retry settings for this integration",
+            "Look for recent network, firewall, proxy, or DNS changes",
+        ),
+        specificity=28,
+    ),
+    FailurePattern(
+        pattern_id="source.offline",
+        exception_contains="OfflineException",
+        root_cause_template=(
+            "Runtime source or engine is unavailable ({exception_class}): the source reported "
+            "offline/unavailable while this execution was running."
+        ),
+        next_checks=(
+            "Check whether the runtime engine/source is online and accepting work",
+            "Verify the source heartbeat or agent registration status",
+            "Restart or reconnect the engine/source only after confirming no active run is stuck",
+        ),
+        specificity=28,
+    ),
+    FailurePattern(
+        pattern_id="jms.broker",
+        exception_contains="JMSException",
+        root_cause_template=(
+            "Message broker failure ({exception_class}): the queue or broker connection failed "
+            "during message processing."
+        ),
+        next_checks=(
+            "Check broker availability and queue depth",
+            "Verify queue/topic name and broker credentials",
+            "Inspect dead-letter queue and retry policy for the failed message",
+        ),
+        specificity=28,
+    ),
+    FailurePattern(
+        pattern_id="resource.memory",
+        exception_contains="OutOfMemoryError",
+        root_cause_template=(
+            "Runtime resource pressure ({exception_class}): the process ran out of memory or "
+            "exceeded its configured runtime limit."
+        ),
+        next_checks=(
+            "Check runtime memory limits, heap settings, and recent input volume",
+            "Review whether this job loads large datasets into memory",
+            "Scale the worker or split the workload before retrying high-volume runs",
+        ),
+        specificity=30,
+    ),
+    FailurePattern(
+        pattern_id="resource.disk",
+        message_contains=("no space left",),
+        root_cause_template=(
+            "Runtime resource pressure: disk or temporary storage was exhausted during execution."
+        ),
+        next_checks=(
+            "Check free disk space on the runtime host and temporary directories",
+            "Clean old working files or increase runtime storage",
+            "Review whether this job writes unusually large intermediate files",
+        ),
+        specificity=26,
     ),
     FailurePattern(
         pattern_id="generic.coded",

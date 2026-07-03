@@ -133,6 +133,13 @@ export const ModelListResponseSchema = z.object({
   models: z.array(ModelDescriptorSchema),
 });
 
+export const InstanceSettingsResponseSchema = z.object({
+  settings: z.record(z.string(), z.string()),
+});
+export const InstanceSettingsUpdateRequestSchema = z.object({
+  settings: z.record(z.string(), z.string().nullable()),
+});
+
 export const LogFileSchema = z.object({
   filename: z.string(),
   project_id: z.string(),

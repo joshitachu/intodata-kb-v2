@@ -2466,26 +2466,16 @@ def _derive_job_summary(
     component_types: list[str],
     external_systems: list[str],
 ) -> str:
-    """Rich summary from doc sections for the detail panel."""
-    # Try to find a relevant paragraph in doc sections
+    """Rich summary from doc sections for the detail panel.
+
+    Returns ``""`` if no paragraph looks like real purpose prose. This avoids
+    dumping metadata blobs (Module / Functions / Entry point bullets from
+    02_COMPONENT_INVENTORY.md) into the topology panel.
+    """
     for section in doc_sections:
         heading_lower = section.heading.lower()
         if not any(kw in heading_lower for kw in _DOC_SUMMARY_HEADINGS):
             continue
-        # Find paragraphs mentioning the job name
-        paragraphs = section.content.split("\n\n")
-        for para in paragraphs:
-            if job_name in para or job_name.lower() in para.lower():
-                clean = _MD_NOISE_RE.sub("", para).strip()
-                clean = re.sub(r"\s+", " ", clean)
-                if len(clean) < 20:
-                    continue
-                # Take first 2-3 sentences
-                sentences = re.split(r"(?<=[.!?])\s+", clean)
-                return " ".join(sentences[:3]).strip()
-
-    # Second pass: any section, first substantive paragraph mentioning the job
-    for section in doc_sections:
         paragraphs = section.content.split("\n\n")
         for para in paragraphs:
             if job_name not in para and job_name.lower() not in para.lower():
@@ -2494,17 +2484,33 @@ def _derive_job_summary(
             clean = re.sub(r"\s+", " ", clean)
             if len(clean) < 20:
                 continue
+            # Reject metadata-dump paragraphs (e.g. component entries that
+            # only enumerate Module / Functions / Entry point / Dependencies).
+            # These are not purpose prose; they describe structure.
+            if re.search(r"\bModule\b.*\bEntry point\b", clean):
+                continue
+            if re.search(r"\bFunctions?\b.*\bDependencies\b", clean):
+                continue
+            # The job name should appear early in the cleaned text (first
+            # ~80 chars) — that's a strong signal the paragraph is about
+            # the job, not a table that happens to mention it.
+            head = clean[:80].lower()
+            if job_name.lower() not in head:
+                continue
+            # Take first 2-3 sentences
             sentences = re.split(r"(?<=[.!?])\s+", clean)
-            return " ".join(sentences[:3]).strip()
+            candidate = " ".join(sentences[:3]).strip()
+            if len(candidate) < 20 or len(candidate) > 400:
+                continue
+            return candidate
 
-    # Fallback: synthesize from component data
-    if external_systems:
-        systems = ", ".join(external_systems[:4])
-        return f"Integration job connecting to {systems}."
-    if component_types:
-        types = ", ".join(component_types[:4])
-        return f"Processing job using {types}."
-    return ""
+    # Final fallback: synthesize a one-liner from scan signals so the panel
+    # shows *something* rather than dumping a metadata blob.
+    from mcp_server.services.summary_service import heuristic_summary
+    direction = "OnRamp" if any(
+        s.lower() in {"crm", "commerce", "http api", "geocoding"} for s in external_systems
+    ) else ""
+    return heuristic_summary(job_name, direction, external_systems, component_types)
 
 
 # Matches a "**Purpose**: ..." line and captures content up to the next blank
@@ -2808,10 +2814,18 @@ async def get_job_detail(project_id: str, job_name: str, request: Request):
         s for c in scan_data.get("components", [])
         for s in ([c.get("external_system")] if c.get("external_system") else [])
     })
-    # Prefer the structured Purpose line from 02_COMPONENT_INVENTORY.md.
-    # Fall back to the legacy heuristic for jobs missing from the inventory.
+    # Source priority mirrors the topology graph endpoint so the panel and the
+    # node tooltip show the same summary:
+    #   1. Cached component summary (Phase 2 prose / scan_data.purpose /
+    #      heuristic) — written by the async extractor, populated after every
+    #      scan and after every doc-generation swap. Richest source.
+    #   2. Structured Purpose line from 02_COMPONENT_INVENTORY.md.
+    #   3. Legacy paragraph scrape from doc sections.
+    #   4. Empty (panel hides the section).
+    cached_summaries = SummaryService.load_summaries(project_id)
     summary = (
-        _extract_job_purpose_from_inventory(project_id, job_name)
+        cached_summaries.get(job_name)
+        or _extract_job_purpose_from_inventory(project_id, job_name)
         or _derive_job_summary(job_name, doc_sections, comp_types, ext_systems)
         or ""
     )

@@ -68,7 +68,12 @@ def test_extract_phase2_prefers_job_section_over_group_summary():
     assert "CRM" in out or "staging" in out
 
 
-def test_extract_phase2_falls_back_to_group_summary_when_job_missing():
+def test_extract_phase2_skips_group_summary_fallback_for_missing_jobs():
+    """When no per-job prose exists we return empty (NOT the generic GROUP_SUMMARY
+    text). The downstream chain falls back to scan_data.purpose / heuristic, and
+    the panel hides the section when the final string is empty. Returning a
+    generic group-level line would be misleading on the per-job detail panel.
+    """
     group_md = textwrap.dedent(
         """\
         ## GROUP_SUMMARY
@@ -77,12 +82,153 @@ def test_extract_phase2_falls_back_to_group_summary_when_job_missing():
         """
     )
     out = extract_phase2_summary_for_job(group_md, "reconcile_orders")
-    assert "reconciliation" in out or "drift" in out
+    assert out == ""
 
 
 def test_extract_phase2_returns_empty_for_blank_input():
     assert extract_phase2_summary_for_job("", "any_job") == ""
     assert extract_phase2_summary_for_job("# heading only", "") == ""
+
+
+def test_extract_phase2_skips_coverage_metadata_section():
+    """Real Phase 2 files have a `## Coverage` list of job names. The extractor
+    must NOT pick up those bullets as the job summary (they say nothing about
+    what the job does)."""
+    group_md = textwrap.dedent(
+        """\
+        # Phase 2 Analysis: scripts
+
+        ## Coverage
+        - COVERED: archive_snapshots
+        - COVERED: enrich_geo
+        - COVERED: extract_customers
+
+        ## Model Analysis
+
+        #### Unit: `archive_snapshots`
+        Archive prior warehouse export files to AWS S3 cold object storage
+        before a new load. Acts as a pre-load cleanup/backup stage.
+
+        #### Unit: `enrich_geo`
+        Enrich staged customer data with geographic region and coordinates
+        from an external geocoding API.
+        """
+    )
+    summary = extract_phase2_summary_for_job(group_md, "archive_snapshots")
+    assert "S3" in summary or "cleanup" in summary
+    assert "COVERED" not in summary
+    assert "Coverage" not in summary
+
+
+def test_extract_phase2_prefers_unit_subsection_over_coverage_list():
+    """A job listed under Coverage must still get its Unit subsection prose."""
+    group_md = textwrap.dedent(
+        """\
+        ## Coverage
+        - COVERED: archive_snapshots
+
+        ## Model Analysis
+        #### Unit: archive_snapshots
+        Archive prior warehouse export files to AWS S3 cold object storage
+        before a new load. Acts as a pre-load cleanup/backup stage.
+        """
+    )
+    summary = extract_phase2_summary_for_job(group_md, "archive_snapshots")
+    assert "S3" in summary
+    assert "COVERED" not in summary
+
+
+def test_extract_phase2_extracts_purpose_from_unit_subsection():
+    """When a `#### Unit: <name>` subsection contains a `**Purpose**:` line,
+    the extractor must use ONLY the Purpose prose (not Unit/Path/Type boilerplate)."""
+    group_md = textwrap.dedent(
+        """\
+        ## Model Analysis
+        #### Unit: `archive_snapshots`
+        - **Unit**: `archive_snapshots`
+          **Path**: `scripts/archive_snapshots.py`
+          **Type**: Python script (CodeFile)
+          **Purpose**: Archive prior warehouse export files to AWS S3 cold
+          object storage before a new load. Acts as a pre-load cleanup stage.
+
+        #### Unit: `enrich_geo`
+        - **Unit**: `enrich_geo`
+          **Purpose**: Enrich staged customer data with geographic region.
+        """
+    )
+    summary = extract_phase2_summary_for_job(group_md, "archive_snapshots")
+    assert "S3" in summary
+    assert "**Path**" not in summary
+    assert "**Type**" not in summary
+    assert "**Unit**" not in summary
+
+
+def test_extract_phase2_extracts_purpose_from_components_bullet_list():
+    """config.md / root.md shape: a single COMPONENTS section with bullet
+    entries containing ``- **Unit**: <name>`` and ``**Purpose**: ...``."""
+    group_md = textwrap.dedent(
+        """\
+        ## Model Analysis
+
+        ### COMPONENTS
+
+        - **Unit**: `pipeline_config`
+          **Path**: `config/pipeline_config.yaml`
+          **Type**: `ConfigFile` (YAML)
+          **Purpose**: Central pipeline orchestration configuration defining
+          two data pipelines. Acts as the single source of truth for the
+          ETL pipeline topology and business rules.
+
+        - **Unit**: `README`
+          **Type**: DocumentFile
+          **Purpose**: Documents the customer-sync pipeline. Provides
+          high-level understanding for developers.
+
+        ### EXECUTION_FLOW
+
+        Some other section.
+        """
+    )
+    summary = extract_phase2_summary_for_job(group_md, "pipeline_config")
+    assert "orchestration" in summary
+    assert "**Path**" not in summary
+    assert "ConfigFile" not in summary  # boilerplate, not prose
+
+    readme_summary = extract_phase2_summary_for_job(group_md, "README")
+    assert "customer-sync" in readme_summary or "developer" in readme_summary
+    assert "DocumentFile" not in readme_summary
+
+
+def test_extract_phase2_finds_detailed_analysis_purpose():
+    """root.md shape: a 'Detailed analysis for <job>' section precedes a
+    bullet containing ``**Purpose**: ...``. The extractor must follow the
+    job mention to the nearest Purpose line."""
+    group_md = textwrap.dedent(
+        """\
+        ## Model Analysis
+
+        ### COMPONENTS
+
+        The following table enumerates all 13 canonical code units. The only
+        unit with full source content in this group is `README`.
+
+        **Detailed analysis for README** (the only unit with supplied source):
+
+        - **File**: `README.md`
+        - **Purpose**: Documents a customer-sync pipeline:
+          `extract_customers.py` (CRM REST API) → `transform_customers.sql`
+          (normalize/deduplicate) → `load_warehouse.py` (upsert to warehouse).
+        - **Tests**: None in evidence.
+
+        ### EXECUTION_FLOW
+
+        The README describes a linear pipeline with three steps.
+        """
+    )
+    summary = extract_phase2_summary_for_job(group_md, "README")
+    assert "customer-sync" in summary or "extract_customers" in summary
+    assert "**File**" not in summary
+    assert "**Tests**" not in summary
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +287,7 @@ def project_layout(tmp_path, monkeypatch):
 
     project_id = "test_proj"
     intodoc_dir = tmp_path / "intodoc-output" / project_id / "scan"
-    output_dir = tmp_path / "output" / project_id / "_rag_support" / "phase2_analysis"
+    output_dir = tmp_path / "output" / project_id / "docs" / "_rag_support" / "phase2_analysis"
     intodoc_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
@@ -188,6 +334,10 @@ def project_layout(tmp_path, monkeypatch):
             ## extract_customers
             extract_customers pulls paginated customer records from the
             CRM REST API and writes them to a staging JSON file.
+
+            ## load_warehouse
+            load_warehouse upserts transformed rows into the analytics
+            warehouse via parameterized INSERT ... ON CONFLICT.
             """
         ),
         encoding="utf-8",
@@ -213,8 +363,19 @@ async def test_build_component_summaries_uses_phase2_first_then_purpose_then_heu
     assert "no_prose_job" in summaries
     assert summaries["no_prose_job"]
 
-    cache_path = intodoc_dir / "summaries.json"
-    assert cache_path.exists()
-    payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert payload["job_count"] == 3
-    assert "phase2_prose" in payload["model"] or payload["model"] == "phase2_prose"
+
+async def test_phase2_prose_populates_every_job_in_group(project_layout):
+    """Regression: every job sharing a group must get its own Phase 2 prose,
+    not just the first job iterated. Previously `_phase2_prose_summaries`
+    short-circuited via `seen_groups` after extracting one job per group.
+    """
+    project_id, _ = project_layout
+    from mcp_server.services.summary_service import _phase2_prose_summaries
+
+    job_groups = {"extract_customers": "scripts", "load_warehouse": "scripts"}
+    summaries = _phase2_prose_summaries(project_id, job_groups)
+    assert "extract_customers" in summaries, summaries
+    assert "load_warehouse" in summaries, summaries
+    # Both should be Phase 2 prose, not heuristic.
+    assert "CRM" in summaries["extract_customers"] or "staging" in summaries["extract_customers"]
+    assert "warehouse" in summaries["load_warehouse"].lower()

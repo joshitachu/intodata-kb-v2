@@ -111,7 +111,7 @@ class TestRuntimeToolGuide:
         )
         assert out[0]["role"] == "system"
         assert "Base prompt." in out[0]["content"]
-        assert "get_execution_logs" in out[0]["content"]
+        assert "get_execution_logs" not in out[0]["content"]
         assert "execution_id" in out[0]["content"]
         assert out[1] == {"role": "user", "content": "hi"}  # rest untouched
 
@@ -135,23 +135,36 @@ class TestRuntimeToolGuide:
         assert "analyze_execution_failure" in content
         assert "get_execution_timeline" in content
         assert "get_runtime_incident" in content
+        assert "list_runtime_sync_status" in content
+        assert "list_runtime_health" in content
+        assert "list_runtime_unhealthy" in content
+        assert "list_runtime_engines" in content
+        assert "list_runtime_jobs" in content
+        assert "list_runtime_plans" in content
         assert "PRIMARY" in content
+
+    def test_guide_includes_estate_inventory_answer_discipline(self):
+        out = _with_runtime_guide([{"role": "system", "content": "Base."}])
+        content = out[0]["content"]
+        assert "which engines do we have" in content
+        assert "what is broken" in content
+        assert "say when a field is unknown" in content
 
     def test_guide_includes_answer_discipline_sections(self):
         out = _with_runtime_guide([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "Finding:" in content
+        assert "Freshness:" in content
         assert "Evidence:" in content
         assert "Likely Cause:" in content
         assert "Next Checks:" in content
 
-    def test_guide_steers_away_from_raw_logs_for_failure_questions(self):
+    def test_guide_excludes_raw_logs_for_failure_questions(self):
         out = _with_runtime_guide([{"role": "system", "content": "Base."}])
         content = out[0]["content"]
         assert "analyze_execution_failure" in content
-        assert "get_execution_logs" in content
-        # Guide must tell model to prefer analyze over raw logs
-        assert "prefer" in content.lower() or "ALWAYS" in content or "before" in content
+        assert "get_execution_logs" not in content
+        assert "Never dump or quote raw log text" in content
 
     def test_guide_includes_prior_runtime_summary_when_provided(self):
         summary = [{"tool_name": "detect_failures", "execution_id": "exec-7841", "job_name": "esb_order_sync_route", "state": "failed"}]

@@ -40,6 +40,41 @@ class RuntimeExecutionSummaryInsight(BaseModel):
     # Incident link (if an incident was derived for this execution)
     incident_id: str | None
     has_incident: bool
+    estate_context: "RuntimeFailureEstateContext"
+
+
+class RuntimeFailureEstateContext(BaseModel):
+    """Sanitized runtime-estate context for a failure or execution.
+
+    All fields are optional because adapters can provide partial inventory. The
+    frontend should render explicit unknown/not-reported values instead of
+    treating absence as an error.
+    """
+
+    source_key: str | None = None
+    source_label: str | None = None
+    source_type: str | None = None
+    source_status: str | None = None
+    source_is_demo: bool | None = None
+    source_last_synced_at: datetime.datetime | None = None
+    source_last_seen_at: datetime.datetime | None = None
+    environment_id: str | None = None
+    environment_name: str | None = None
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    engine_id: str | None = None
+    engine_name: str | None = None
+    engine_status: str | None = None
+    engine_version: str | None = None
+    engine_last_seen_at: datetime.datetime | None = None
+    job_id: str | None = None
+    job_name: str | None = None
+    job_display_name: str | None = None
+    job_run_id: str | None = None
+    plan_id: str | None = None
+    plan_name: str | None = None
+    plan_display_name: str | None = None
+    plan_run_id: str | None = None
 
 
 class RuntimeIncidentInsight(BaseModel):
@@ -62,6 +97,7 @@ class RuntimeIncidentInsight(BaseModel):
     # Joined from RuntimeExecutionRow
     job_name: str | None
     state: str | None
+    estate_context: RuntimeFailureEstateContext
 
 
 class RuntimeIncidentEvidence(BaseModel):
@@ -104,6 +140,7 @@ class RuntimeFailureAnalysis(BaseModel):
     cause_origin: str | None
     next_checks: list[str]
     evidence: list[RuntimeIncidentEvidence]
+    estate_context: RuntimeFailureEstateContext
 
 
 class RuntimeIncidentDetail(BaseModel):
@@ -116,15 +153,15 @@ class RuntimeIncidentDetail(BaseModel):
 class RuntimeTimelineEvent(BaseModel):
     """One timestamped event in an execution timeline.
 
-    Raw log fields are always present. Enriched fields (from the insight layer)
-    are None when insight rows have not been built or the log line had no strong
-    signals.
+    User-facing timeline signal. It intentionally omits raw log message text.
+    Enriched fields (from the insight layer) are None when insight rows have not
+    been built or the log line had no strong signals.
     """
 
     log_event_id: int
     timestamp: datetime.datetime
     severity: str
-    message: str
+    signal: str
     # From RuntimeEnrichedEventRow (nullable — left-join semantics)
     component_name: str | None
     error_code: str | None

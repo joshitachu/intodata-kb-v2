@@ -13,6 +13,10 @@ import ollama as ollama_lib
 from src.config import settings
 from src.generation.usage import UsageStats, StreamUsageStats
 from src.runtime.models import RuntimeToolDefinition
+from src.services.instance_settings_resolver import (
+    get_kimi_llm_model,
+    get_ollama_llm_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +116,9 @@ def _apply_images_ollama(messages: list[dict], images: list[str] | None) -> list
 async def _kimi_generate(messages: list[dict], images: list[str] | None = None) -> tuple[str, UsageStats]:
     client = await _get_kimi_client()
     t0 = time.perf_counter()
+    model = await get_kimi_llm_model()
     response = await client.chat.completions.create(
-        model=settings.kimi_llm_model,
+        model=model,
         messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
@@ -122,7 +127,7 @@ async def _kimi_generate(messages: list[dict], images: list[str] | None = None) 
     elapsed = int((time.perf_counter() - t0) * 1000)
     usage = UsageStats(
         provider="kimi",
-        model=settings.kimi_llm_model,
+        model=model,
         latency_ms=elapsed,
     )
     if response.usage:
@@ -135,8 +140,9 @@ async def _kimi_generate(messages: list[dict], images: list[str] | None = None) 
 async def _kimi_stream(messages: list[dict], images: list[str] | None = None) -> AsyncGenerator[str | UsageStats, None]:
     client = await _get_kimi_client()
     t0 = time.perf_counter()
+    model = await get_kimi_llm_model()
     stream = await client.chat.completions.create(
-        model=settings.kimi_llm_model,
+        model=model,
         messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
@@ -144,7 +150,7 @@ async def _kimi_stream(messages: list[dict], images: list[str] | None = None) ->
         stream_options={"include_usage": True},
         extra_body={"thinking": {"type": "disabled"}},
     )
-    acc = StreamUsageStats(provider="kimi", model=settings.kimi_llm_model)
+    acc = StreamUsageStats(provider="kimi", model=model)
     async for chunk in stream:
         if chunk.choices and chunk.choices[0].delta.content:
             yield chunk.choices[0].delta.content
@@ -159,15 +165,16 @@ async def _kimi_stream(messages: list[dict], images: list[str] | None = None) ->
 async def _ollama_generate(messages: list[dict], images: list[str] | None = None) -> tuple[str, UsageStats]:
     client = await _get_ollama_client()
     t0 = time.perf_counter()
+    model = await get_ollama_llm_model()
     response = await client.chat(
-        model=settings.ollama_llm_model,
+        model=model,
         messages=_apply_images_ollama(messages, images),
         options={"num_ctx": 32768, "temperature": 0.45},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
     usage = UsageStats(
         provider="ollama",
-        model=settings.ollama_llm_model,
+        model=model,
         input_tokens=response.get("prompt_eval_count", 0) or 0,
         output_tokens=response.get("eval_count", 0) or 0,
         latency_ms=elapsed,
@@ -178,13 +185,14 @@ async def _ollama_generate(messages: list[dict], images: list[str] | None = None
 async def _ollama_stream(messages: list[dict], images: list[str] | None = None) -> AsyncGenerator[str | UsageStats, None]:
     client = await _get_ollama_client()
     t0 = time.perf_counter()
+    model = await get_ollama_llm_model()
     stream = await client.chat(
-        model=settings.ollama_llm_model,
+        model=model,
         messages=_apply_images_ollama(messages, images),
         stream=True,
         options={"num_ctx": 32768, "temperature": 0.45},
     )
-    acc = StreamUsageStats(provider="ollama", model=settings.ollama_llm_model)
+    acc = StreamUsageStats(provider="ollama", model=model)
     async for chunk in stream:
         token = chunk["message"]["content"]
         if token:
@@ -242,9 +250,10 @@ async def _kimi_generate_with_tools(
 ) -> ToolAwareLLMResponse:
     client = await _get_kimi_client()
     t0 = time.perf_counter()
+    model = await get_kimi_llm_model()
     tools_schema = [_to_openai_tool_schema(t) for t in runtime_tools] if runtime_tools else None
     response = await client.chat.completions.create(
-        model=settings.kimi_llm_model,
+        model=model,
         messages=_apply_images_kimi(messages, images),
         temperature=settings.kimi_temperature,
         max_tokens=2048,
@@ -253,7 +262,7 @@ async def _kimi_generate_with_tools(
         extra_body={"thinking": {"type": "disabled"}},
     )
     elapsed = int((time.perf_counter() - t0) * 1000)
-    usage = UsageStats(provider="kimi", model=settings.kimi_llm_model, latency_ms=elapsed)
+    usage = UsageStats(provider="kimi", model=model, latency_ms=elapsed)
     if response.usage:
         usage.input_tokens = response.usage.prompt_tokens or 0
         usage.output_tokens = response.usage.completion_tokens or 0

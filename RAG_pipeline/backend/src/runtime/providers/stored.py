@@ -27,14 +27,34 @@ from src.runtime.models import (
     GetExecutionTimelineInput,
     GetRuntimeIncidentInput,
     ListExecutionsInput,
+    ListRuntimeArtifactsInput,
+    ListRuntimeConnectionsInput,
+    ListRuntimeDependenciesInput,
+    ListRuntimeEnginesInput,
+    ListRuntimeHealthInput,
+    ListRuntimeInventoryInput,
+    ListRuntimeJobsInput,
+    ListRuntimePlansInput,
+    ListRuntimeSyncStatusInput,
+    RuntimeArtifact,
+    RuntimeConnection,
+    RuntimeDependencySummary,
+    RuntimeEngine,
     RuntimeExecution,
     RuntimeFailure,
+    RuntimeHealthSummary,
+    RuntimeJob,
+    RuntimeJobDependency,
     RuntimeLogEvent,
+    RuntimePlan,
+    RuntimeSource,
+    RuntimeSyncState,
+    RuntimeUnhealthySummary,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.store import RuntimeRecordNotFoundError, RuntimeStoreRepository
 
-_TIMELINE_MESSAGE_MAX_CHARS = 200
+_TIMELINE_SIGNAL_MAX_CHARS = 200
 
 
 class StoredRuntimeProvider:
@@ -127,6 +147,7 @@ class StoredRuntimeProvider:
             cause_origin=incident.cause_origin if incident else None,
             next_checks=incident.next_checks if incident else [],
             evidence=evidence,
+            estate_context=summary.estate_context,
         )
 
     async def get_execution_timeline(
@@ -143,10 +164,10 @@ class StoredRuntimeProvider:
             )
         except RuntimeRecordNotFoundError as e:
             raise RuntimeProviderError(str(e)) from e
-        # Cap message length so timeline results cannot flood LLM context.
+        # Cap signal length so timeline results cannot flood LLM context.
         return [
-            event.model_copy(update={"message": event.message[:_TIMELINE_MESSAGE_MAX_CHARS]})
-            if len(event.message) > _TIMELINE_MESSAGE_MAX_CHARS
+            event.model_copy(update={"signal": event.signal[:_TIMELINE_SIGNAL_MAX_CHARS]})
+            if len(event.signal) > _TIMELINE_SIGNAL_MAX_CHARS
             else event
             for event in events
         ]
@@ -188,6 +209,134 @@ class StoredRuntimeProvider:
             return await repo.get_similar_failures_for_incident(scope, incident_id, limit=params.limit)
         except RuntimeRecordNotFoundError as e:
             raise RuntimeProviderError(str(e)) from e
+
+    async def list_runtime_sync_status(
+        self, params: ListRuntimeSyncStatusInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeSyncState]:
+        repo = self._store_repository(context)
+        return await repo.list_sync_states(
+            self._scope(context),
+            source_key=params.source_key,
+            project_id=params.project_id,
+            limit=params.limit,
+        )
+
+    async def list_runtime_health(
+        self, params: ListRuntimeHealthInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeHealthSummary]:
+        repo = self._store_repository(context)
+        return await repo.list_health_summaries(
+            self._scope(context),
+            source_key=params.source_key,
+            project_id=params.project_id,
+            limit=params.limit,
+        )
+
+    async def list_runtime_sources(
+        self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeSource]:
+        repo = self._store_repository(context)
+        return await repo.list_sources(
+            self._scope(context),
+            source_key=params.source_key,
+            project_id=params.project_id,
+            limit=params.limit,
+        )
+
+    async def list_runtime_engines(
+        self, params: ListRuntimeEnginesInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeEngine]:
+        repo = self._store_repository(context)
+        return await repo.list_engines(self._scope(context), params)
+
+    async def list_runtime_jobs(
+        self, params: ListRuntimeJobsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeJob]:
+        repo = self._store_repository(context)
+        return await repo.list_jobs(self._scope(context), params)
+
+    async def list_runtime_artifacts(
+        self, params: ListRuntimeArtifactsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeArtifact]:
+        repo = self._store_repository(context)
+        return await repo.list_artifacts(self._scope(context), params)
+
+    async def list_runtime_connections(
+        self, params: ListRuntimeConnectionsInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeConnection]:
+        repo = self._store_repository(context)
+        return await repo.list_connections(self._scope(context), params)
+
+    async def list_runtime_dependencies(
+        self, params: ListRuntimeDependenciesInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimeJobDependency]:
+        repo = self._store_repository(context)
+        return await repo.list_job_dependencies(self._scope(context), params)
+
+    async def get_runtime_dependency_summary(
+        self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeDependencySummary:
+        repo = self._store_repository(context)
+        return await repo.get_dependency_summary(self._scope(context), params)
+
+    async def list_runtime_plans(
+        self, params: ListRuntimePlansInput, context: RuntimeProviderContext | None = None
+    ) -> list[RuntimePlan]:
+        repo = self._store_repository(context)
+        return await repo.list_plans(self._scope(context), params)
+
+    async def list_runtime_unhealthy(
+        self, params: ListRuntimeInventoryInput, context: RuntimeProviderContext | None = None
+    ) -> RuntimeUnhealthySummary:
+        repo = self._store_repository(context)
+        scope = self._scope(context)
+        overview = await repo.get_estate_overview(scope, params)
+        sources = await repo.list_sources(
+            scope,
+            source_key=params.source_key,
+            project_id=params.project_id,
+            limit=params.limit,
+        )
+        engine_health = await repo.list_engine_health(
+            scope,
+            ListRuntimeEnginesInput(
+                source_key=params.source_key,
+                project_id=params.project_id,
+                limit=params.limit,
+            ),
+        )
+        job_health = await repo.list_job_health(
+            scope,
+            ListRuntimeJobsInput(
+                source_key=params.source_key,
+                project_id=params.project_id,
+                limit=params.limit,
+            ),
+        )
+        plan_health = await repo.list_plan_health(
+            scope,
+            ListRuntimePlansInput(
+                source_key=params.source_key,
+                project_id=params.project_id,
+                limit=params.limit,
+            ),
+        )
+        return RuntimeUnhealthySummary(
+            overview=overview,
+            sources=sources,
+            unhealthy_engines=[
+                item for item in engine_health
+                if item.failed_runs > 0 or item.current_failure_streak > 0
+            ][: params.limit],
+            unhealthy_jobs=[
+                item for item in job_health
+                if item.failed_runs > 0 or item.current_failure_streak > 0
+            ][: params.limit],
+            unhealthy_plans=[
+                item for item in plan_health
+                if item.failed_runs > 0 or item.current_failure_streak > 0
+            ][: params.limit],
+        )
 
 
 provider = StoredRuntimeProvider()

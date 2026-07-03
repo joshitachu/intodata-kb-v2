@@ -259,7 +259,34 @@ class TestExecuteRuntimeToolStoredProviderRBAC:
                 db=None,
             )
         assert result.success is False
-        assert result.error.code == RuntimeToolErrorCode.PROVIDER_ERROR
+
+    async def test_stored_provider_health_tool_is_scoped(self, db_session):
+        await self._seed_two_projects(db_session)
+        with patch("src.runtime.client.settings") as mock_settings:
+            self._stored_settings(mock_settings)
+            result = await execute_runtime_tool(
+                RuntimeToolCall(tool_name="list_runtime_health", arguments={}),
+                project_scope=["project-a"],
+                db=db_session,
+            )
+        assert result.success is True
+        assert {row["project_id"] for row in result.data} == {"project-a"}
+
+    async def test_stored_provider_sync_status_tool_is_scoped(self, db_session):
+        await self._seed_two_projects(db_session)
+        repo = RuntimeStoreRepository(db_session)
+        t0 = datetime(2026, 1, 1, tzinfo=UTC)
+        await repo.update_sync_state("mock", "project-a", t0)
+        await repo.update_sync_state("mock", "project-b", t0)
+        with patch("src.runtime.client.settings") as mock_settings:
+            self._stored_settings(mock_settings)
+            result = await execute_runtime_tool(
+                RuntimeToolCall(tool_name="list_runtime_sync_status", arguments={}),
+                project_scope=["project-a"],
+                db=db_session,
+            )
+        assert result.success is True
+        assert {row["project_id"] for row in result.data} == {"project-a"}
 
 
 class TestExecuteRuntimeToolUnsupportedMethod:

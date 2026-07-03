@@ -7,9 +7,24 @@ import {
   useRuntimeExecutionLogs,
   useRuntimeExecutionSummary,
   useRuntimeExecutionTimeline,
+  useRuntimeArtifacts,
+  useRuntimeConnections,
+  useRuntimeDependencies,
+  useRuntimeDependencySummary,
+  useRuntimeEngineHealth,
+  useRuntimeEngines,
+  useRuntimeHealth,
+  useRuntimeJobHealth,
+  useRuntimeJobRuns,
+  useRuntimeJobs,
   useRuntimeIncident,
   useRuntimeIncidentEvidence,
   useRuntimeFailures,
+  useRuntimeOverview,
+  useRuntimePlanHealth,
+  useRuntimePlanRuns,
+  useRuntimePlans,
+  useRuntimeSources,
   useRuntimeSimilarFailures,
 } from "@/hooks/useRuntimeLogs";
 
@@ -86,6 +101,464 @@ describe("useRuntimeLogs", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
   });
 
+  it("fetches runtime health with scoped filters", async () => {
+    const fetchSpy = mockFetchOnce({
+      health: [
+        {
+          project_id: "project-a",
+          source_key: "mock",
+          job_name: "orders",
+          total_executions: 2,
+          failed_executions: 1,
+          failure_rate: 0.5,
+          current_failure_streak: 1,
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeHealth({ projectId: "project-a", sourceKey: "mock", limit: 5 }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/health?");
+    expect(url).toContain("project_id=project-a");
+    expect(url).toContain("source_key=mock");
+    expect(result.current.data?.health[0].failure_rate).toBe(0.5);
+  });
+
+  it("fetches runtime sources with scoped filters", async () => {
+    const fetchSpy = mockFetchOnce({
+      sources: [
+        {
+          project_id: "project-a",
+          source_key: "mock",
+          source_type: "mock",
+          label: "Demo runtime source",
+          status: "success",
+          is_demo: true,
+          last_synced_at: "2026-07-02T10:00:00Z",
+          last_seen_at: "2026-07-02T10:00:00Z",
+          ingested_at: "2026-07-02T10:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeSources({ projectId: "project-a", sourceKey: "mock" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/sources?");
+    expect(url).toContain("project_id=project-a");
+    expect(result.current.data?.sources[0].is_demo).toBe(true);
+  });
+
+  it("fetches runtime engines", async () => {
+    const fetchSpy = mockFetchOnce({
+      engines: [
+        {
+          engine_id: "engine-prod-01",
+          source_key: "mock",
+          name: "remote-engine-prod-01",
+          status: "online",
+          version: "8.0.1",
+          environment_name: "Production",
+          last_seen_at: "2026-07-02T10:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useRuntimeEngines({ projectId: "project-a" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/engines?");
+    expect(result.current.data?.engines[0].status).toBe("online");
+  });
+
+  it("fetches runtime estate overview", async () => {
+    mockFetchOnce({
+      overview: {
+        project_id: "project-a",
+        sources_total: 1,
+        sources_failed: 0,
+        sources_partial: 0,
+        sources_demo: 1,
+        engines_total: 2,
+        engines_online: 1,
+        engines_degraded: 1,
+        engines_offline: 0,
+        engines_unknown: 0,
+        engines_unhealthy: 1,
+        jobs_unhealthy: 1,
+        plans_unhealthy: 1,
+        sources_stale: 1,
+        environments_total: 2,
+        workspaces_total: 1,
+        last_synced_at: "2026-07-02T10:00:00Z",
+      },
+    });
+
+    const { result } = renderHook(() => useRuntimeOverview({ projectId: "project-a" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.overview.engines_total).toBe(2);
+    expect(result.current.data?.overview.engines_unhealthy).toBe(1);
+  });
+
+  it("fetches runtime engine health", async () => {
+    const fetchSpy = mockFetchOnce({
+      health: [
+        {
+          project_id: "project-a",
+          source_key: "mock",
+          engine_id: "engine-prod-02",
+          engine_name: "remote-engine-prod-02",
+          engine_status: "degraded",
+          environment_name: "Production",
+          workspace_name: "ESB Main",
+          total_runs: 2,
+          failed_runs: 1,
+          failure_rate: 0.5,
+          current_failure_streak: 1,
+          latest_run_at: "2026-07-02T10:00:00Z",
+          latest_state: "failed",
+          p50_duration_ms: 32000,
+          p95_duration_ms: 32000,
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeEngineHealth({ projectId: "project-a", status: "degraded" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/engine-health?");
+    expect(url).toContain("status=degraded");
+    expect(result.current.data?.health[0].current_failure_streak).toBe(1);
+  });
+
+  it("fetches runtime jobs", async () => {
+    const fetchSpy = mockFetchOnce({
+      jobs: [
+        {
+          job_id: "job-order-sync",
+          source_key: "mock",
+          name: "esb_order_sync_route",
+          display_name: "Order Sync Route",
+          job_type: "task",
+          status: "active",
+          environment_name: "Production",
+          workspace_name: "ESB Main",
+          engine_id: "engine-prod-02",
+          engine_name: "remote-engine-prod-02",
+          owner: "integration-ops",
+          last_seen_at: "2026-07-02T10:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeJobs({ projectId: "project-a", engineId: "engine-prod-02" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/jobs?");
+    expect(url).toContain("project_id=project-a");
+    expect(url).toContain("engine_id=engine-prod-02");
+    expect(result.current.data?.jobs[0].display_name).toBe("Order Sync Route");
+  });
+
+  it("fetches runtime artifacts", async () => {
+    const fetchSpy = mockFetchOnce({
+      artifacts: [
+        {
+          artifact_id: "artifact-1",
+          source_key: "mock",
+          name: "orders_route",
+          artifact_type: "route",
+          version: "1.2.3",
+          workspace_name: "ESB Main",
+          owner: "integration-ops",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeArtifacts({ projectId: "project-a", artifactType: "route" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/artifacts?");
+    expect(url).toContain("artifact_type=route");
+    expect(result.current.data?.artifacts[0].version).toBe("1.2.3");
+  });
+
+  it("fetches runtime connections", async () => {
+    const fetchSpy = mockFetchOnce({
+      connections: [
+        {
+          connection_id: "conn-1",
+          source_key: "mock",
+          name: "Oracle Orders",
+          connection_type: "oracle",
+          workspace_name: "ESB Main",
+          owner: "dba",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeConnections({ projectId: "project-a", connectionType: "oracle" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/connections?");
+    expect(url).toContain("connection_type=oracle");
+    expect(result.current.data?.connections[0].name).toBe("Oracle Orders");
+  });
+
+  it("fetches runtime dependency usage", async () => {
+    const fetchSpy = mockFetchOnce({
+      dependencies: [
+        {
+          job_id: "job-1",
+          job_name: "nightly-load",
+          source_key: "mock",
+          dependency_type: "connection",
+          dependency_id: "conn-1",
+          dependency_name: "Oracle Orders",
+          dependency_kind: "oracle",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeDependencies({ dependencyType: "connection", dependencyId: "conn-1" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/dependencies?");
+    expect(url).toContain("dependency_type=connection");
+    expect(url).toContain("dependency_id=conn-1");
+    expect(result.current.data?.dependencies[0].job_name).toBe("nightly-load");
+  });
+
+  it("fetches runtime dependency summary", async () => {
+    const fetchSpy = mockFetchOnce({
+      summary: {
+        availability: {
+          artifacts_supported: true,
+          connections_supported: true,
+          schedules_supported: false,
+          promotions_supported: false,
+          clusters_supported: false,
+          unavailable: ["schedules", "promotions", "clusters"],
+        },
+        artifacts_total: 2,
+        connections_total: 1,
+        dependencies_total: 4,
+        stale_artifacts: [],
+        unowned_artifacts: [],
+        unowned_connections: [],
+      },
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeDependencySummary({ projectId: "project-a" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/dependency-summary?");
+    expect(result.current.data?.summary.availability.unavailable).toContain("schedules");
+  });
+
+  it("fetches runtime job runs", async () => {
+    const fetchSpy = mockFetchOnce({
+      runs: [
+        {
+          run_id: "esbmain-route-7841",
+          job_id: "job-order-sync",
+          job_name: "esb_order_sync_route",
+          source_key: "mock",
+          execution_id: "esbmain-route-7841",
+          state: "failed",
+          engine_name: "remote-engine-prod-02",
+          started_at: "2026-07-02T10:00:00Z",
+          ended_at: "2026-07-02T10:00:32Z",
+          duration_ms: 32000,
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimeJobRuns({ projectId: "project-a", state: "failed" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/job-runs?");
+    expect(url).toContain("state=failed");
+    expect(result.current.data?.runs[0].execution_id).toBe("esbmain-route-7841");
+  });
+
+  it("fetches runtime job health", async () => {
+    mockFetchOnce({
+      health: [
+        {
+          project_id: "project-a",
+          source_key: "mock",
+          job_id: "job-order-sync",
+          job_name: "esb_order_sync_route",
+          environment_name: "Production",
+          workspace_name: "ESB Main",
+          engine_name: "remote-engine-prod-02",
+          total_runs: 2,
+          failed_runs: 1,
+          failure_rate: 0.5,
+          current_failure_streak: 1,
+          latest_run_at: "2026-07-02T10:00:00Z",
+          latest_state: "failed",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useRuntimeJobHealth({ projectId: "project-a" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.health[0].current_failure_streak).toBe(1);
+  });
+
+  it("fetches runtime plans", async () => {
+    const fetchSpy = mockFetchOnce({
+      plans: [
+        {
+          plan_id: "plan-nightly-order-flow",
+          source_key: "mock",
+          name: "nightly_order_flow",
+          display_name: "Nightly Order Flow",
+          status: "active",
+          environment_name: "Production",
+          workspace_name: "ESB Main",
+          owner: "integration-ops",
+          step_count: 2,
+          steps: [
+            { step_id: "step-order-sync", name: "Run order sync", job_id: "job-order-sync", job_name: "esb_order_sync_route", order: 1 },
+          ],
+          last_seen_at: "2026-07-02T10:00:00Z",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useRuntimePlans({ projectId: "project-a" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/plans?");
+    expect(url).toContain("project_id=project-a");
+    expect(result.current.data?.plans[0].steps[0].job_id).toBe("job-order-sync");
+  });
+
+  it("fetches runtime plan runs", async () => {
+    const fetchSpy = mockFetchOnce({
+      runs: [
+        {
+          run_id: "plan-nightly-order-flow-7841",
+          plan_id: "plan-nightly-order-flow",
+          plan_name: "nightly_order_flow",
+          source_key: "mock",
+          state: "failed",
+          started_at: "2026-07-02T10:00:00Z",
+          ended_at: "2026-07-02T10:00:32Z",
+          duration_ms: 32000,
+          step_results: [
+            { step_id: "step-order-sync", job_id: "job-order-sync", job_name: "esb_order_sync_route", state: "failed", execution_id: "esbmain-route-7841" },
+          ],
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(
+      () => useRuntimePlanRuns({ projectId: "project-a", state: "failed" }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    const url = fetchSpy.mock.calls[0][0] as string;
+    expect(url).toContain("/api/runtime/plan-runs?");
+    expect(url).toContain("state=failed");
+    expect(result.current.data?.runs[0].step_results[0].execution_id).toBe("esbmain-route-7841");
+  });
+
+  it("fetches runtime plan health", async () => {
+    mockFetchOnce({
+      health: [
+        {
+          project_id: "project-a",
+          source_key: "mock",
+          plan_id: "plan-nightly-order-flow",
+          plan_name: "nightly_order_flow",
+          environment_name: "Production",
+          workspace_name: "ESB Main",
+          total_runs: 2,
+          failed_runs: 1,
+          failure_rate: 0.5,
+          current_failure_streak: 1,
+          latest_run_at: "2026-07-02T10:00:00Z",
+          latest_finish_at: "2026-07-02T10:00:32Z",
+          latest_state: "failed",
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useRuntimePlanHealth({ projectId: "project-a" }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.health[0].failure_rate).toBe(0.5);
+  });
+
   it("does not fetch logs when no execution is selected", () => {
     const fetchSpy = vi.spyOn(global, "fetch");
     renderHook(() => useRuntimeExecutionLogs(null, { minSeverity: "error" }), {
@@ -113,6 +586,33 @@ describe("useRuntimeLogs — insight hooks", () => {
   beforeEach(() => vi.resetAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
+  const ESTATE_CONTEXT = {
+    source_key: "mock",
+    source_label: "Demo runtime source",
+    source_type: "mock",
+    source_status: "success",
+    source_is_demo: true,
+    source_last_synced_at: "2026-06-17T10:00:00Z",
+    source_last_seen_at: "2026-06-17T10:00:00Z",
+    environment_id: "env-prod",
+    environment_name: "Production",
+    workspace_id: "ws-esb-main",
+    workspace_name: "ESB Main",
+    engine_id: "engine-prod-02",
+    engine_name: "remote-engine-prod-02",
+    engine_status: "online",
+    engine_version: "2.13.8",
+    engine_last_seen_at: "2026-06-17T10:00:00Z",
+    job_id: "job-order-sync",
+    job_name: "esb_order_sync_route",
+    job_display_name: "Order Sync Route",
+    job_run_id: "esbmain-route-7841",
+    plan_id: "plan-nightly-order-flow",
+    plan_name: "nightly_order_flow",
+    plan_display_name: "Nightly Order Flow",
+    plan_run_id: "plan-nightly-order-flow-7841",
+  };
+
   const SUMMARY_PAYLOAD = {
     summary: {
       project_id: "esbmain",
@@ -135,6 +635,7 @@ describe("useRuntimeLogs — insight hooks", () => {
       project_name: "esbmain",
       incident_id: "abc123def456abc123def456abc12300",
       has_incident: true,
+      estate_context: ESTATE_CONTEXT,
     },
   };
 
@@ -152,6 +653,7 @@ describe("useRuntimeLogs — insight hooks", () => {
       next_checks: ["Check Oracle listener", "Verify network path"],
       job_name: "esb_order_sync_route",
       state: "failed",
+      estate_context: ESTATE_CONTEXT,
     },
   };
 
@@ -176,7 +678,7 @@ describe("useRuntimeLogs — insight hooks", () => {
         log_event_id: 1,
         timestamp: "2026-06-17T10:00:30Z",
         severity: "error",
-        message: "[tOracleConnection_1] ORA-12170 Connect timeout",
+        signal: "component=tOracleConnection_1; error_code=ORA-12170",
         component_name: "tOracleConnection_1",
         error_code: "ORA-12170",
         exception_class: null,
@@ -221,6 +723,9 @@ describe("useRuntimeLogs — insight hooks", () => {
     expect(result.current.data?.summary.has_incident).toBe(true);
     expect(result.current.data?.summary.incident_id).toBe(
       "abc123def456abc123def456abc12300",
+    );
+    expect(result.current.data?.summary.estate_context.engine_name).toBe(
+      "remote-engine-prod-02",
     );
   });
 
@@ -275,6 +780,9 @@ describe("useRuntimeLogs — insight hooks", () => {
       "Source database TCP connection timeout",
     );
     expect(result.current.data?.incident.next_checks).toHaveLength(2);
+    expect(result.current.data?.incident.estate_context.plan_display_name).toBe(
+      "Nightly Order Flow",
+    );
   });
 
   it("useRuntimeIncidentEvidence does not fetch when incidentId is null", () => {

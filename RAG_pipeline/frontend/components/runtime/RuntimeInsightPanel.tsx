@@ -8,7 +8,12 @@ import {
   useRuntimeIncidentEvidence,
   useRuntimeSimilarFailures,
 } from "@/hooks/useRuntimeLogs";
-import type { RuntimeIncidentEvidence, RuntimeSimilarIncident, RuntimeTimelineEvent } from "@/types";
+import type {
+  RuntimeFailureEstateContext,
+  RuntimeIncidentEvidence,
+  RuntimeSimilarIncident,
+  RuntimeTimelineEvent,
+} from "@/types";
 import { cn } from "@/lib/utils";
 
 interface RuntimeInsightPanelProps {
@@ -98,6 +103,8 @@ export function RuntimeInsightPanel({ executionId }: RuntimeInsightPanelProps) {
           )}
         </div>
       </div>
+
+      <EstateContextSection context={s.estate_context} />
 
       {/* Incident / likely cause */}
       {summary.isSuccess && !hasIncident && (
@@ -200,6 +207,59 @@ export function RuntimeInsightPanel({ executionId }: RuntimeInsightPanelProps) {
   );
 }
 
+function EstateContextSection({ context }: { context: RuntimeFailureEstateContext }) {
+  const sourceLabel = context.source_label || context.source_key || "Unknown source";
+  const jobLabel = context.job_display_name || context.job_name || context.job_id || "Unknown job";
+  const planLabel = context.plan_display_name || context.plan_name || context.plan_id || "Not reported";
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Runtime Context
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1.5 text-xs">
+        <FactRow
+          label="Source"
+          value={`${sourceLabel}${context.source_is_demo ? " (demo)" : ""}`}
+          mono={!context.source_label}
+        />
+        <FactRow label="Source status" value={context.source_status || "Unknown"} />
+        <FactRow
+          label="Fresh as of"
+          value={
+            context.source_last_synced_at
+              ? formatTs(context.source_last_synced_at)
+              : "Not reported"
+          }
+        />
+        <FactRow
+          label="Environment"
+          value={context.environment_name || context.environment_id || "Unknown"}
+        />
+        <FactRow
+          label="Workspace"
+          value={context.workspace_name || context.workspace_id || "Unknown"}
+        />
+        <FactRow
+          label="Engine"
+          value={formatEngine(context)}
+          mono={!context.engine_name && Boolean(context.engine_id)}
+        />
+        <FactRow label="Job" value={jobLabel} mono={!context.job_display_name} />
+        <FactRow label="Job run" value={context.job_run_id || "Not reported"} mono />
+        <FactRow label="Plan" value={planLabel} mono={!context.plan_display_name} />
+        <FactRow label="Plan run" value={context.plan_run_id || "Not reported"} mono />
+      </div>
+    </div>
+  );
+}
+
+function formatEngine(context: RuntimeFailureEstateContext): string {
+  const label = context.engine_name || context.engine_id || "Unknown";
+  const details = [context.engine_status, context.engine_version].filter(Boolean);
+  return details.length > 0 ? `${label} (${details.join(", ")})` : label;
+}
+
 function RecurringBadge({ isRecurring, count }: { isRecurring: boolean; count: number }) {
   if (isRecurring) {
     return (
@@ -221,7 +281,7 @@ function SimilarTable({ incidents }: { incidents: RuntimeSimilarIncident[] }) {
       <thead>
         <tr className="border-b border-slate-200 text-left text-muted-foreground">
           <th className="py-1 pr-3 font-medium">When</th>
-          <th className="py-1 pr-3 font-medium">Job</th>
+          <th className="py-1 pr-3 font-medium">Component</th>
           <th className="py-1 font-medium">Likely cause</th>
         </tr>
       </thead>
@@ -323,7 +383,7 @@ function TimelineTable({ events }: { events: RuntimeTimelineEvent[] }) {
             <th className="text-left font-medium px-3 py-1.5 w-[9%]">Sev</th>
             <th className="text-left font-medium px-3 py-1.5 w-[16%]">Component</th>
             <th className="text-left font-medium px-3 py-1.5 w-[11%]">Error code</th>
-            <th className="text-left font-medium px-3 py-1.5">Message</th>
+            <th className="text-left font-medium px-3 py-1.5">Signal</th>
           </tr>
         </thead>
         <tbody>
@@ -341,8 +401,8 @@ function TimelineTable({ events }: { events: RuntimeTimelineEvent[] }) {
               <td className="px-3 py-1.5 font-mono truncate text-[10px]">
                 {ev.error_code ?? "—"}
               </td>
-              <td className="px-3 py-1.5 truncate font-mono text-[10px]" title={ev.message}>
-                {ev.message}
+              <td className="px-3 py-1.5 truncate font-mono text-[10px]" title={ev.signal}>
+                {ev.signal}
               </td>
             </tr>
           ))}

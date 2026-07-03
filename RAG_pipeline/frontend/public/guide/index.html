@@ -439,11 +439,9 @@
 
         <div class="section-label">Administration</div>
         <a href="#settings"><span class="idx">07</span> Settings &amp; Admin</a>
-        <a href="#dashboard"><span class="idx">08</span> Nexus Dashboard</a>
 
         <div class="section-label">Reference</div>
-        <a href="#architecture"><span class="idx">09</span> Architecture</a>
-        <a href="#faq"><span class="idx">10</span> FAQ</a>
+        <a href="#faq"><span class="idx">08</span> FAQ</a>
     </nav>
 </aside>
 
@@ -453,7 +451,7 @@
     <!-- Topbar -->
     <div class="topbar">
         <div class="crumb">Nexus <span>/ User Guide</span></div>
-        <div class="ver">Version 4.0 &mdash; July 2026</div>
+        <div class="ver">Version 4.1 &mdash; July 2026</div>
     </div>
 
     <!-- Hero -->
@@ -461,8 +459,8 @@
         <div class="hero-inner">
             <div class="eyebrow"><span></span> Integration Intelligence Platform</div>
             <h1>Nexus <em>Knowledge Base</em></h1>
-            <p>Your complete guide to the Nexus platform &mdash; upload documents, chat with AI about your integration projects, explore topology, and turn source code into searchable documentation.</p>
-            <div class="badge">Version 4.0 &mdash; July 2026</div>
+            <p>Your day-to-day guide to the Nexus Knowledge Base &mdash; log in, upload documents, ask questions with AI about your integration projects, read the generated project docs, and explore topology.</p>
+            <div class="badge">Version 4.1 &mdash; July 2026</div>
         </div>
     </header>
 
@@ -683,7 +681,7 @@
         <!-- 5. PROJECT DOCS -->
         <section id="project-docs">
             <div class="sec-head"><div class="sec-num">05</div><h2>Project Docs</h2></div>
-            <p>The Project Docs page shows <strong>automatically generated documentation</strong> about your integration projects. These documents are produced by the Nexus Dashboard.</p>
+            <p>The Project Docs page shows <strong>automatically generated documentation</strong> about your integration projects. Your administrators prepare these documents for each project; here you can read, preview and download them.</p>
 
             <div class="screenshot-container">
                 <img src="screenshots/project-docs.png" alt="Project Documentation overview">
@@ -710,7 +708,7 @@
             </ol>
 
             <h3>The generated document set</h3>
-            <p>A full generation run produces a numbered set of Markdown documents. The exact set depends on the profile chosen in the Dashboard; a typical run includes:</p>
+            <p>Each project has a numbered set of Markdown documents. The exact set can vary by project; a typical set includes:</p>
 
             <div class="doc-table">
                 <div class="doc-row"><div class="doc-icon">&#128202;</div><div class="doc-info"><h5>Executive Summary</h5><p>Management-level summary of the entire project</p></div></div>
@@ -854,148 +852,18 @@
             </div>
         </section>
 
-        <!-- 8. NEXUS DASHBOARD -->
-        <section id="dashboard">
-            <div class="sec-head"><div class="sec-num">08</div><h2>Nexus Dashboard</h2></div>
-            <p>The Nexus Dashboard is a <strong>separate management system</strong> where projects are scanned and documentation is automatically generated. It runs on a different URL than the Knowledge Base.</p>
-
-            <div class="screenshot-container">
-                <img src="screenshots/dashboard.png" alt="Nexus Dashboard with project overview">
-                <div class="screenshot-caption">The Nexus Dashboard: each card shows the project type (Talend / Workato), status and number of jobs/docs</div>
-            </div>
-
-            <h3>What do you see on the Dashboard?</h3>
-
-            <div class="feature-grid">
-                <div class="feature-card"><span class="icon">&#128194;</span><h4>Projects</h4><p>All registered projects with type, number of jobs and documents</p></div>
-                <div class="feature-card"><span class="icon">&#128221;</span><h4>Templates</h4><p>Reusable templates that determine what goes into the documentation</p></div>
-                <div class="feature-card"><span class="icon">&#128203;</span><h4>Profiles</h4><p>Combinations of templates for different documentation styles</p></div>
-                <div class="feature-card"><span class="icon">&#128196;</span><h4>Docs</h4><p>View and manage generated documentation per project</p></div>
-            </div>
-
-            <h3>Project card &mdash; actions per project</h3>
-
-            <div style="display:flex; gap:18px; flex-wrap:wrap; margin:24px 0;">
-                <div class="screenshot-container" style="flex:1; min-width:250px; margin:0;">
-                    <img src="screenshots/project-card.png" alt="Project card">
-                    <div class="screenshot-caption">A project card: name, type, status and number of jobs and docs</div>
-                </div>
-                <div class="screenshot-container" style="flex:1; min-width:250px; margin:0;">
-                    <img src="screenshots/project-card-buttons.png" alt="Project card action buttons">
-                    <div class="screenshot-caption">Hover a card to reveal the action buttons: Sync, Profile, Docs and RAG</div>
-                </div>
-            </div>
-
-            <table>
-                <thead>
-                    <tr><th>Button</th><th>Function</th><th>Description</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td><strong>&#x21BB; Sync</strong></td><td>Reload project data</td><td>Re-scans the source code and updates the job inventory</td></tr>
-                    <tr><td><strong>Profile &#9662;</strong></td><td>Choose profile</td><td>Selects the template profile used for documentation generation</td></tr>
-                    <tr><td><strong>&#128196; Docs</strong></td><td>Generate documentation</td><td>Starts the AI documentation process and produces the Markdown document set</td></tr>
-                    <tr><td><strong>RAG</strong></td><td>Push to Knowledge Base</td><td>Pushes the generated documents into the RAG store, making them searchable in Chat</td></tr>
-                </tbody>
-            </table>
-
-            <div class="info-box important">
-                <strong>Workflow: from source code to searchable documentation</strong>
-                <ol style="margin-top:8px; padding-left:20px; font-size:14px;">
-                    <li>Add a project via <strong>"Add Repo"</strong></li>
-                    <li>Click <strong>&#x21BB; Sync</strong> to scan the source code</li>
-                    <li>Choose a <strong>profile</strong> (or use "Default")</li>
-                    <li>Click <strong>&#128196; Docs</strong> to generate documentation</li>
-                    <li>Click <strong>RAG</strong> to push the docs to the Knowledge Base</li>
-                    <li>Open the Knowledge Base and chat about your new documents</li>
-                </ol>
-            </div>
-        </section>
-
-        <!-- 9. ARCHITECTURE -->
-        <section id="architecture">
-            <div class="sec-head"><div class="sec-num">09</div><h2>Architecture</h2></div>
-            <p>Nexus consists of two independent systems that share infrastructure:</p>
-
-            <div class="arch-diagram">
-<pre>
-                            <span class="highlight">USER</span>
-                            |
-               +------------+------------+
-               v                         v
-
-     +-------------------+     +--------------------+
-     | <span class="blue">Knowledge Base</span>    |     | <span class="blue">Nexus Dashboard</span>    |
-     | Next.js           |     | React              |
-     |                   |     |                    |
-     | - Chat            |     | - Projects         |
-     | - Documents       |     | - Templates        |
-     | - Project Docs    |     | - Profiles         |
-     | - Topology        |     | - Doc Generation   |
-     +---------+---------+     +---------+----------+
-               |                         |
-               v                         v
-
-     +-------------------+     +--------------------+
-     | <span class="green">Backend API</span>       |     | <span class="green">MCP Server</span>         |
-     | FastAPI           |     | REST + MCP         |
-     +---------+---------+     +--------------------+
-               |
-     +---------+----------+-------------------+
-     v                    v                   v
-
-  +----------+    +-----------+     +--------------------+
-  |<span class="highlight">PostgreSQL</span>|    | <span class="highlight">Qdrant</span>    |     | <span class="highlight">AI Providers</span>       |
-  |Database  |    | Vector DB |     | Embeddings + LLM   |
-  +----------+    +-----------+     +--------------------+
-</pre>
-            </div>
-
-            <table>
-                <thead>
-                    <tr><th>Component</th><th>What does it do?</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td><strong>Knowledge Base (Next.js)</strong></td><td>The web app you use &mdash; Chat, Documents, Project Docs, Topology</td></tr>
-                    <tr><td><strong>Nexus Dashboard (React)</strong></td><td>Manages projects, templates and documentation generation</td></tr>
-                    <tr><td><strong>Backend API (FastAPI)</strong></td><td>Search queries, document ingestion, authentication and access control</td></tr>
-                    <tr><td><strong>MCP Server</strong></td><td>Orchestrates AI documentation generation</td></tr>
-                    <tr><td><strong>PostgreSQL</strong></td><td>Stores users, documents, conversations and statistics</td></tr>
-                    <tr><td><strong>Qdrant</strong></td><td>Vector database that powers semantic search</td></tr>
-                    <tr><td><strong>AI Providers</strong></td><td>Generate embeddings and answers &mdash; configurable per deployment (see below)</td></tr>
-                </tbody>
-            </table>
-
-            <h3>AI providers &amp; data flow</h3>
-            <p>Nexus uses a <strong>configurable provider chain</strong> so each deployment can balance quality, cost and data residency:</p>
-            <table>
-                <thead>
-                    <tr><th>Stage</th><th>Default (cloud)</th><th>Local-only option</th></tr>
-                </thead>
-                <tbody>
-                    <tr><td><strong>Embeddings</strong></td><td>Voyage AI <code>voyage-4-large</code></td><td>Ollama <code>nomic-embed-text</code></td></tr>
-                    <tr><td><strong>Reranking</strong></td><td>Voyage AI <code>rerank-2.5</code></td><td>Disabled / local</td></tr>
-                    <tr><td><strong>Answer generation</strong></td><td>Cloud LLM (e.g. Anthropic Claude)</td><td>Ollama (e.g. <code>gemma3:12b</code>)</td></tr>
-                </tbody>
-            </table>
-
-            <div class="info-box important">
-                <strong>Data residency</strong>
-                When cloud providers are enabled, query text and relevant document chunks are sent to those providers to compute embeddings and answers. If your data must not leave your environment, your deployment can run <strong>fully local</strong> using Ollama for both embeddings and generation. Ask your administrator which configuration is active, and validate any regulatory requirements (e.g. GDPR) with your compliance team.
-            </div>
-        </section>
-
-        <!-- 10. FAQ -->
+        <!-- 8. FAQ -->
         <section id="faq">
-            <div class="sec-head"><div class="sec-num">10</div><h2>Frequently Asked Questions</h2></div>
+            <div class="sec-head"><div class="sec-num">08</div><h2>Frequently Asked Questions</h2></div>
 
-            <h4>How do I add a new project?</h4>
-            <p>Open the <strong>Nexus Dashboard</strong>, click <strong>"Add Repo"</strong>, enter the project name and path to the source code, select the platform type (Talend, Workato, etc.) and save.</p>
+            <h4>How do I get a new project added?</h4>
+            <p>Projects are set up for you by your administrator. Once a project exists and you have access to it, it appears in the project dropdowns on the Chat, Documents, Project Docs and Topology pages.</p>
 
             <h4>Why am I not getting results?</h4>
             <p>Check that documents have been uploaded for the selected project, try different phrasing, and confirm the correct project is selected in the filter. On the Documents page, verify that documents show a chunk count (meaning they were ingested).</p>
 
             <h4>How do I make documents searchable?</h4>
-            <p>Two ways: (1) <strong>Manual</strong> &mdash; upload files on the Documents page; or (2) <strong>Automatic</strong> &mdash; generate documentation in the Nexus Dashboard and click "RAG" to push it to the Knowledge Base.</p>
+            <p>Go to the <strong>Documents</strong> page, select a project, and upload your file. Nexus automatically splits it into chunks and embeds them, so it becomes searchable in Chat within moments. Project Docs prepared by your administrator are already searchable.</p>
 
             <h4>Can I delete documents?</h4>
             <p>Yes. On the <strong>Documents</strong> page, click the trash icon next to a document. It is removed from both the database and the vector store.</p>
@@ -1009,8 +877,8 @@
             <h4>How do I reset my password?</h4>
             <p>Contact an admin &mdash; they can reset your password from the Admin panel.</p>
 
-            <h4>Which AI models does Nexus use?</h4>
-            <p>Nexus uses a <strong>configurable provider chain</strong>. A typical cloud configuration uses Voyage AI for embeddings and reranking and a cloud LLM (such as Anthropic Claude) for answers, each with a local <a href="#architecture">Ollama</a> fallback. Deployments that must keep all data on-premise can run <strong>fully local</strong> with Ollama for both embeddings (<code>nomic-embed-text</code>) and generation (<code>gemma3:12b</code>). See <a href="#architecture">Architecture</a> for how this affects data flow, and check with your administrator which providers are active.</p>
+            <h4>Where do the answers come from?</h4>
+            <p>Every answer is generated from <strong>your own documents</strong> &mdash; the files uploaded on the Documents page and the Project Docs prepared for your projects. Nexus finds the most relevant sections and cites them as numbered sources so you can verify each answer. It never invents projects or facts that aren't in your knowledge base. The specific AI models and whether they run locally or in the cloud are configured by your administrator; ask them if you need to know for a compliance review.</p>
         </section>
 
     </div>
@@ -1018,7 +886,7 @@
     <!-- Footer -->
     <footer class="footer">
         <p><strong>Nexus Knowledge Base</strong> &mdash; IntoData &copy; 2026</p>
-        <p style="margin-top:4px;">User Guide version 4.0 &mdash; July 2026</p>
+        <p style="margin-top:4px;">User Guide version 4.1 &mdash; July 2026</p>
     </footer>
 
 </div>

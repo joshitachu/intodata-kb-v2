@@ -47,7 +47,7 @@ class TestStoredEndToEnd:
         assert len(result.data) > 0
         assert all("job_name" in f for f in result.data)
 
-    async def test_get_execution_logs_returns_seeded_logs(self, db_session):
+    async def test_get_execution_logs_is_not_user_facing(self, db_session):
         await seed_mock_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
         failures = await _call("detect_failures", db_session, project_scope=[_PROJECT])
         execution_id = failures.data[0]["execution_id"]
@@ -55,8 +55,8 @@ class TestStoredEndToEnd:
             "get_execution_logs", db_session, project_scope=[_PROJECT],
             arguments={"execution_id": execution_id},
         )
-        assert result.success is True
-        assert len(result.data) > 0
+        assert result.success is False
+        assert result.error.code == RuntimeToolErrorCode.UNKNOWN_TOOL
 
     async def test_other_project_scope_cannot_read_seeded_rows(self, db_session):
         await seed_mock_runtime_data(db_session, project_id=_PROJECT, synced_at=_SYNCED_AT)
@@ -97,11 +97,56 @@ class TestStoredHighLevelTools:
         assert data["root_cause_candidate"] is not None
         assert data["confidence"] in ("high", "medium", "low")
         assert isinstance(data["next_checks"], list)
+        assert data["estate_context"]["source_key"] == "mock"
+        assert data["estate_context"]["environment_name"] == "Production"
+        assert data["estate_context"]["workspace_name"] == "ESB Main"
+        assert data["estate_context"]["engine_name"] == "remote-engine-prod-02"
+        assert data["estate_context"]["job_display_name"] == "Order Sync Route"
+        assert data["estate_context"]["plan_display_name"] == "Nightly Order Flow"
         # Evidence must be bounded — never raw log dumps
         assert isinstance(data["evidence"], list)
         for ev in data["evidence"]:
             if ev.get("excerpt"):
                 assert len(ev["excerpt"]) <= 300
+
+    async def test_chat_estate_tools_answer_engine_inventory_from_seeded_db(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call("list_runtime_engines", db_session, project_scope=[_ESB])
+
+        assert result.success is True
+        assert {engine["name"] for engine in result.data} == {
+            "remote-engine-prod-01",
+            "remote-engine-prod-02",
+        }
+        assert {engine["environment_name"] for engine in result.data} == {"Production"}
+
+    async def test_chat_unhealthy_tool_returns_jobs_plans_and_freshness(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        result = await _call("list_runtime_unhealthy", db_session, project_scope=[_ESB])
+
+        assert result.success is True
+        data = result.data
+        assert data["overview"]["engines_unhealthy"] == 1
+        assert data["overview"]["jobs_unhealthy"] == 1
+        assert data["overview"]["plans_unhealthy"] == 1
+        assert data["sources"][0]["last_synced_at"] == _SYNCED_AT.isoformat().replace("+00:00", "Z")
+        assert [engine["engine_name"] for engine in data["unhealthy_engines"]] == ["remote-engine-prod-02"]
+        assert [job["job_name"] for job in data["unhealthy_jobs"]] == ["esb_order_sync_route"]
+        assert [plan["plan_name"] for plan in data["unhealthy_plans"]] == ["nightly_order_flow"]
+
+    async def test_chat_estate_tool_arguments_cannot_widen_scope(self, db_session):
+        await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
+        await seed_rich_runtime_data(db_session, project_id="private-project", synced_at=_SYNCED_AT, build_insights=True)
+
+        result = await _call(
+            "list_runtime_engines",
+            db_session,
+            project_scope=[_ESB],
+            arguments={"project_id": "private-project"},
+        )
+
+        assert result.success is True
+        assert result.data == []
 
     async def test_analyze_execution_failure_success_exec_has_no_incident(self, db_session):
         await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)
@@ -155,7 +200,8 @@ class TestStoredHighLevelTools:
         )
         assert result.success is True
         for event in result.data:
-            assert len(event["message"]) <= 200
+            assert "message" not in event
+            assert len(event["signal"]) <= 200
 
     async def test_get_execution_timeline_cross_project_returns_provider_error(self, db_session):
         await seed_rich_runtime_data(db_session, project_id=_ESB, synced_at=_SYNCED_AT, build_insights=True)

@@ -4,7 +4,6 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthContext } from "@/components/AuthProvider";
 import { useTenantContext } from "@/contexts/TenantContext";
-import { EnvironmentBadge } from "@/components/TenantMark";
 import { AuthUserSchema } from "@/types";
 
 type Mode = "loading" | "login" | "code" | "mfa" | "bootstrap";
@@ -39,7 +38,6 @@ function AuthHeader({
   subtitle?: string;
   hint?: string;
 }) {
-  const { tenant, isProduction } = useTenantContext();
   return (
     <div className="mb-7 flex flex-col items-center text-center">
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -48,11 +46,6 @@ function AuthHeader({
         alt="Intodata"
         className="h-9 w-auto dark:brightness-0 dark:invert"
       />
-      {!isProduction && (
-        <div className="mt-3">
-          <EnvironmentBadge environment={tenant.environment} />
-        </div>
-      )}
       {subtitle && (
         <p className="mt-4 text-sm text-muted-foreground">{subtitle}</p>
       )}

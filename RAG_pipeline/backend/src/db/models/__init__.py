@@ -15,17 +15,26 @@ from src.db.models.conversation import Conversation, ConversationMessage
 from src.db.models.query_usage import QueryUsage
 from src.db.models.benchmark import BenchmarkRun
 from src.db.models.onboarding import UserOnboarding, Notification
-from src.db.models.system_config import SystemConfig
+from src.db.models.system_config import InstanceSetting, SystemConfig
 from src.db.models.wizard_event import WizardEvent
 from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
 from src.db.models.entity_alias import EntityAlias
 from src.db.models.doc_gap_event import DocGapEvent
 from src.db.models.runtime_data import (
+    RuntimeComponentMetricRow,
+    RuntimeEngineRow,
+    RuntimeEnvironmentRow,
     RuntimeExecutionRow,
     RuntimeFailureRow,
+    RuntimeJobRow,
+    RuntimeJobRunRow,
     RuntimeLogEventRow,
+    RuntimePlanRow,
+    RuntimePlanRunRow,
+    RuntimeSourceRow,
     RuntimeSyncStateRow,
+    RuntimeWorkspaceRow,
 )
 from src.db.models.runtime_insights import (
     RuntimeEnrichedEventRow,
@@ -54,6 +63,7 @@ __all__ = [
     "UserOnboarding",
     "Notification",
     "SystemConfig",
+    "InstanceSetting",
     "WizardEvent",
     "Feedback",
     "AccessRequest",
@@ -65,6 +75,15 @@ __all__ = [
     "RuntimeFailureRow",
     "RuntimeLogEventRow",
     "RuntimeSyncStateRow",
+    "RuntimeSourceRow",
+    "RuntimeEnvironmentRow",
+    "RuntimeWorkspaceRow",
+    "RuntimeEngineRow",
+    "RuntimeJobRow",
+    "RuntimeJobRunRow",
+    "RuntimePlanRow",
+    "RuntimePlanRunRow",
+    "RuntimeComponentMetricRow",
     "RuntimeEnrichedEventRow",
     "RuntimeErrorSignatureRow",
     "RuntimeExecutionSummaryRow",

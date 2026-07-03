@@ -18,6 +18,7 @@ from src.logging_config import configure_logging
 from src.api.routes import health, query, documents, ingest, conversations, benchmark, usage, projects_api, memory, ops_metrics as ops_metrics_routes
 from src.api.routes import auth as auth_routes
 from src.api.routes import admin as admin_routes
+from src.api.routes import instance_settings as instance_settings_routes
 from src.api.routes import usage_admin as usage_admin_routes
 from src.api.routes import sso as sso_routes
 from src.api.routes import onboarding as onboarding_routes
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown events."""
     configure_logging(settings.log_level)
     logger.info("Starting IntoData KB API")
+    runtime_scheduler = None
 
     # Ensure Qdrant collection and payload indexes exist
     from src.api.dependencies import get_qdrant
@@ -102,8 +104,42 @@ async def lifespan(app: FastAPI):
             logger.info("No permissions table data yet, skipping RBAC seed (run migration 006)")
         # Note: admin role permissions are managed by migrations (012+).
 
+    if settings.runtime_sync_scheduler_enabled:
+        from src.db.session import async_session_factory
+        from src.runtime.sync import RuntimeSyncScheduler, parse_project_ids
+
+        project_ids = parse_project_ids(settings.runtime_sync_project_ids)
+        if settings.runtime_sync_source_key == "talend_tmc" and project_ids:
+            from src.runtime.providers.talend_tmc import provider as talend_tmc_provider
+
+            runtime_scheduler = RuntimeSyncScheduler(
+                session_factory=async_session_factory,
+                adapter_factory=lambda: talend_tmc_provider,
+                source_key="talend_tmc",
+                project_ids=project_ids,
+                interval_seconds=settings.runtime_sync_interval_seconds,
+            )
+            runtime_scheduler.start_background()
+            logger.info("Runtime sync scheduler started for source=talend_tmc")
+        elif settings.runtime_sync_source_key == "mock" and project_ids:
+            from src.runtime.providers.mock import provider as mock_runtime_provider
+
+            runtime_scheduler = RuntimeSyncScheduler(
+                session_factory=async_session_factory,
+                adapter_factory=lambda: mock_runtime_provider,
+                source_key="mock",
+                project_ids=project_ids,
+                interval_seconds=settings.runtime_sync_interval_seconds,
+            )
+            runtime_scheduler.start_background()
+            logger.info("Runtime sync scheduler started for source=mock")
+        else:
+            logger.info("Runtime sync scheduler enabled but no supported source/projects configured")
+
     yield
     logger.info("Shutting down IntoData KB API")
+    if runtime_scheduler is not None:
+        await runtime_scheduler.stop()
     # Cleanup: close Qdrant client if open
     from src.api.dependencies import _qdrant_client
     if _qdrant_client is not None:
@@ -193,6 +229,7 @@ app.include_router(health.router)
 app.include_router(auth_routes.router, prefix="/api/v1")
 app.include_router(sso_routes.router, prefix="/api/v1")
 app.include_router(admin_routes.router, prefix="/api/v1")
+app.include_router(instance_settings_routes.router, prefix="/api/v1")
 app.include_router(usage_admin_routes.router, prefix="/api/v1")
 app.include_router(query.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")

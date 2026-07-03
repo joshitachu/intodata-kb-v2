@@ -1,5 +1,48 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-07-02 (continued)
+
+> UI-label rename: integration "job" terminology replaced with "component" in all
+> user-facing display strings (project selector counts, graph legend/toolbar, sources
+> stat label, runtime insight + admin logs table headers, unhealthy panel title, filter
+> placeholder/aria-label). No code identifiers, prop names, API field names, type
+> names, DB column names, or component file names touched. Frontend `tsc --noEmit`
+> clean; `npm test` = **67 passed (13 files)**. Uncommitted.
+
+### [Refactor]: Frontend "job" → "component" UI labels
+
+- **Files changed**:
+  - `RAG_pipeline/frontend/components/ProjectSelector.tsx` — `({job_count} jobs)` → `({job_count} components)` in option label.
+  - `RAG_pipeline/frontend/components/runtime/RuntimeInsightPanel.tsx` — incident table column header "Job" → "Component".
+  - `RAG_pipeline/frontend/components/graph/GraphLegend.tsx` — "Job orchestration" → "Component orchestration"; legend node label "Job" → "Component".
+  - `RAG_pipeline/frontend/components/graph/GraphToolbar.tsx` — "show all individual job nodes" tooltip; stats counter "jobs" → "components".
+  - `RAG_pipeline/frontend/app/settings/sources/page.tsx` — `unitLabel()` talend branch now returns "component"/"components"; Sources page stat label "Recipes / jobs" → "Recipes / components".
+  - `RAG_pipeline/frontend/app/topology/page.tsx` — project picker option label `({platform}, {job_count} jobs)` → `components`.
+  - `RAG_pipeline/frontend/app/admin/logs/page.tsx` — "Unhealthy Jobs" panel header → "Unhealthy Components"; executions + failures table column headers "Job" → "Component"; filter input `placeholder` and `aria-label` "Filter by job name" → "Filter by component name".
+  - `RAG_pipeline/frontend/tests/components/RuntimeLogsPage.test.tsx` — assertion text updated to match the new "Unhealthy Components" heading.
+- **Problem**: Users see "job" in the UI to mean "an integration artifact" — but this is platform-specific terminology (Talend-specific). On multi-platform installs (Workato recipes, Lobster workflows) the same `job_count` field renders as "jobs", which misleads users into thinking all integrations are Talend jobs.
+- **Why UI-only**: Backend API contract (`job_count`, `job_name`, `IngestionJob` table, `/jobs/{name}/detail` route) and frontend component/type names (`JobNode`, `JobDetailPanel`, `JobScanMetadata`) are deliberately untouched — the user-confirmed scope was display labels only, no DB/API/component-identifier churn.
+- **Verification**: `node_modules/.bin/tsc --noEmit` clean; `npm test -- --run` = 67 passed across 13 files (incl. `RuntimeLogsPage.test.tsx` which now asserts the new heading text).
+
+## Session: 2026-07-02 (continued)
+
+> Email markup upgrade: replaced the bare inline-`<p>` transactional templates with
+> a unified enterprise-grade shell (600px card, brand header with logo + wordmark,
+> muted footer with copyright + support mailto, hidden inbox preview text, mobile
+> media query). Also fixed a latent HTML-injection vector by escaping user-supplied
+> fields (rejection `reason`, admin requester `name`). Uncommitted.
+
+### [Refactor]: Enterprise-grade email templates + XSS hardening
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/services/email_service.py` — unified shell via new `_shell()` + `_button()` + `_heading()` + `_paragraph()` + `_muted_note()` + `_code_block()` helpers; HTML-escape helper `_h()` (wraps `html.escape`); brand palette constants matching the existing `#1d4ed8` button color and slate chrome; logo URL from `public_app_url/intodata-logo.png`; rewritten all 6 message bodies (`send_invite_email`, `send_login_otp_email`, `send_invite_otp_email`, `send_rejection_email`, `send_admin_access_request_email`, `send_test_email`); subjects now interpolate the configured `smtp_from_name`.
+  - `RAG_pipeline/backend/tests/test_services/test_email_service.py` (NEW, 11 tests) — shell rendering, `_h()` escaping, all 6 senders contain expected brand/copy/URL/OTP, rejection + admin-request render malicious payloads as escaped text, logo URL + invite URL helpers.
+- **Problem**: The 6 outgoing email templates were plain inline `<p>` tags with a single blue button — read as "mid", not enterprise. Worse, `send_rejection_email` interpolated `reason` and `send_admin_access_request_email` interpolated `requester_name` straight into the HTML alternative (`add_alternative`) without escaping — a malicious reviewer-supplied reason or requester display name could inject `<script>` / `<img onerror>` that most email clients will execute.
+- **Root cause**: Original templates hand-built HTML per email with no shared layout, no escaping of dynamic values, and no brand chrome.
+- **Change**: Built one `_shell()` renderer (logo + wordmark header, white card on `#f8fafc` slate-50 background, 600px max-width, system font stack, hidden preview text, mobile `@media (max-width:620px)` rule). Every email now renders through it. All user-supplied values (`reason`, `requester_name`) routed through `_h()` so HTML metacharacters are escaped to entities. Plain-text alternatives preserved verbatim — no HTML context there, no escaping needed.
+- **Why this approach**: Inline CSS + tables (not `<style>` + divs) for Outlook 2007-2016 compatibility. Inline styles on every element so clients that strip `<style>` still render the card. One shell = consistent brand across all 6 templates; per-email copy is the only thing that varies. Tests mock `smtplib.SMTP` and decode the captured message with `email.policy.default` to assert rendered HTML contains the brand/URL/OTP/copy.
+- **Verification**: `pytest tests/test_services/test_email_service.py` = **11 passed**; `pytest tests/test_api/test_auth.py tests/test_api/test_admin.py` = **41 passed** (no regressions to callers that patch these senders); `py_compile src/services/email_service.py` OK. Full backend suite 811 passed; 2 pre-existing failures in `tests/test_runtime/test_stored_end_to_end.py` are unrelated to this change (reproduce on baseline without my diff, caused by uncommitted runtime WIP).
+
 ## Session: 2026-07-02
 
 > UI/UX refresh: modernized the app introduction (Perplexity-style centered home) and
@@ -2954,3 +2997,87 @@ Then open http://localhost:3000
 - **Root cause**: Test isolation drift after adding role-aware retrieval on top of the existing layered fallback, plus a workflow dependency gap for the monorepo scanner package.
 - **Change**: Stubbed `search_layered` as empty in the three no-results unit tests, and installed `../intodoc` before `mcp-server` in the MCP validation job.
 - **Verification**: Backend targeted failures now pass: `uv run pytest tests/test_generation/test_conversational_rag.py::TestConversationalRagIntentRouting::test_greeting_goes_through_search tests/test_generation/test_conversational_rag.py::TestConversationalRagIntentRouting::test_no_results_calls_llm_fallback tests/test_generation/test_conversational_rag.py::TestContextFirstFlow::test_need_search_marker_stripped_from_final_response` -> `3 passed`. MCP targeted failures now pass: `uv run pytest tests/test_platforms/test_strategies.py::test_strategy_intodoc_plugin_names_match_intodoc_registry tests/test_services/test_claude_service.py::test_generate_docs_cli_not_found` -> `2 passed`.
+## Session: 2026-07-02
+
+### [Feature]: Runtime-Agnostic Failure Intelligence slices 1-7
+
+- **Files changed**:
+  - Tracked diff from `git diff --stat HEAD`: `.gitignore`, `RAG_pipeline/backend/src/api/main.py`, `RAG_pipeline/backend/src/api/routes/runtime.py`, `RAG_pipeline/backend/src/config.py`, `RAG_pipeline/backend/src/db/models/__init__.py`, `RAG_pipeline/backend/src/db/models/runtime_data.py`, `RAG_pipeline/backend/src/generation/agent_loop.py`, `RAG_pipeline/backend/src/runtime/insights/builder.py`, `RAG_pipeline/backend/src/runtime/insights/catalog.py`, `RAG_pipeline/backend/src/runtime/insights/models.py`, `RAG_pipeline/backend/src/runtime/insights/repository.py`, `RAG_pipeline/backend/src/runtime/models.py`, `RAG_pipeline/backend/src/runtime/providers/__init__.py`, `RAG_pipeline/backend/src/runtime/providers/stored.py`, `RAG_pipeline/backend/src/runtime/providers/talend_tmc.py`, `RAG_pipeline/backend/src/runtime/registry.py`, `RAG_pipeline/backend/src/runtime/store/repository.py`, `RAG_pipeline/backend/tests/test_api/test_runtime_endpoints.py`, `RAG_pipeline/backend/tests/test_api/test_runtime_insight_endpoints.py`, `RAG_pipeline/backend/tests/test_generation/test_agent_loop.py`, `RAG_pipeline/backend/tests/test_runtime/test_client.py`, `RAG_pipeline/backend/tests/test_runtime/test_insight_builder.py`, `RAG_pipeline/backend/tests/test_runtime/test_registry.py`, `RAG_pipeline/backend/tests/test_runtime/test_store_repository.py`, `RAG_pipeline/backend/tests/test_runtime/test_talend_tmc_provider.py`, `RAG_pipeline/frontend/app/admin/logs/page.tsx`, `RAG_pipeline/frontend/app/admin/usage/page.tsx`, `RAG_pipeline/frontend/components/runtime/RuntimeInsightPanel.tsx`, `RAG_pipeline/frontend/hooks/useRuntimeLogs.ts`, `RAG_pipeline/frontend/tests/components/RuntimeInsightPanel.test.tsx`, `RAG_pipeline/frontend/tests/hooks/useRuntimeLogs.test.ts`, `RAG_pipeline/frontend/tsconfig.tsbuildinfo`, `RAG_pipeline/frontend/types/index.ts`, `RAG_pipeline/frontend/types/runtime.ts`.
+  - New/untracked session files from `git status --short`: `RAG_pipeline/backend/alembic/versions/036_runtime_sync_status.py`, `RAG_pipeline/backend/alembic/versions/037_runtime_component_metrics.py`, `RAG_pipeline/backend/src/runtime/sync/`, `RAG_pipeline/backend/tests/test_runtime/test_sync_scheduler.py`, `RAG_pipeline/backend/tests/test_runtime/test_sync_service.py`, `RAG_pipeline/frontend/tests/components/RuntimeLogsPage.test.tsx`, `docs/runtime_sync.md`.
+- **Problem**: Runtime logs were still a mostly mocked/raw-log-oriented UX. The product direction is runtime-agnostic failure intelligence: any runtime source syncs into the central DB, dashboard/chat read DB-backed insights, users see failures/diagnosis/freshness/health, and no raw logs are exposed.
+- **Root cause**: Earlier runtime work had useful store, provider, and insight foundations, but the admin UI still had raw-log drilldown assumptions, the TMC adapter used assumed wire behavior, sync status/health/scheduler were incomplete, and chat still exposed or described raw-log tools.
+- **Change**: Implemented the full Runtime-Agnostic Failure Intelligence slice set. Slices 1-3 made `/admin/logs` failure-first, added deterministic golden diagnostics, and added one-cycle source-agnostic sync status/automatic insight build. Slices 4-7 reconciled the TMC adapter to reference-repo endpoint mechanics, added generic component metrics plus `/runtime/health`, added dashboard unhealthy-job rollups, added DB-backed chat freshness/health tools, removed raw execution logs from the user-facing chat tool allowlist, and added a config-gated backend scheduler with 60-second default cadence. Timeline output now uses structured `signal`, not raw `message`. Operational docs were added in `docs/runtime_sync.md`.
+- **Why this approach**: Keeps the agreed architecture: `runtime source -> adapter -> central DB -> insight/health APIs -> dashboard/chat`. TMC is only an adapter/source metadata concern, not the generic model. Raw logs may still exist in the internal store for parsing, but user-facing paths use sanitized evidence snippets, incident/timeline signals, health rollups, and freshness status.
+- **Verification**: LFE inspection passed for slices 1-7. Fresh inspection commands passed: backend compile check passed with no output; targeted backend runtime/API/chat suite `132 passed, 18 warnings`; targeted frontend runtime/admin suite `25 tests passed`. Raw-log exposure search found only the defensive sanitizer allowlist in `agent_loop.py`; no dashboard/chat prompt/tool exposure. TMC wording search found no `assumed`, `pseudo`, or `wire format` remnants. Security check reported no OWASP findings. Residual: live Talend TMC smoke still requires credentials/access.
+
+### [Feature]: Usage dashboard — Recent Threads view + separate Doc Generation table (issue #2)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/routes/usage_admin.py` — new `GET /admin/usage/recent-threads` endpoint (committed in `ffcb729`).
+  - `RAG_pipeline/frontend/app/api/admin/usage/recent-threads/route.ts` — Next.js proxy for the new endpoint (committed in `ffcb729`).
+  - `RAG_pipeline/frontend/app/admin/usage/page.tsx` — thread-level "Recent Threads" table + new "Recent Doc Generation" table (uncommitted, +241 lines).
+- **Problem**: Issue #2 asked the admin usage dashboard's "Recent Queries" section to (a) list recent conversation threads instead of individual queries, showing message count and an average session time, and (b) keep RAG/chat traffic separate from document-generation traffic.
+- **Root cause**: Feature request. The prior "Recent Queries" table mixed all `query_usage` interfaces (`rag_query`, `conversation`, `deep_dive`, `doc_generation`) at the row level, with no thread rollup and no session-duration metric.
+- **Change**:
+  - Backend `recent-threads`: per conversation returns message count (non-deleted `conversation_messages`), aggregated tokens/cost from `query_usage` joined on `conversation_id`, last activity, and `avg_session_seconds`. Session = a thread's activity on one day; length = max(created_at) − min(created_at) that day (`date_trunc('day', ...)`); the value is the average of those daily spans. Inner join on the message-stats subquery drops empty threads; supports `skip`/`limit`/`user_id`.
+  - Frontend: replaced the query-level "Recent Queries" table with `RecentThreadsTable` (RAG/chat view), and added a separate `DocGenerationTable` filtered via the existing `/admin/usage/recent?interface=doc_generation`. Both tables render in the Overview and per-user Detail tabs with independent pagination. Added `formatDuration` and `DocGenEntry` type.
+- **Why this approach**: Doc generation is not conversation-backed, so it stays in the row-level `query_usage` view via the existing `interface` filter (no new backend endpoint needed); RAG/chat is inherently thread-backed via `conversations`. "the rag" is read as all conversation-based interfaces, keeping `conversation`/`deep_dive` visible rather than narrowing to `rag_query` only.
+- **Inspection**: Scoped `/inspect` (change did not go through the LFE plan pipeline; `.plans/*` artifacts belong to the Runtime feature and were left untouched). Verdict PASS with caveats — no automated coverage for `recent-threads`/`doc_generation` filter; UTC day-bucketing can split a midnight-crossing session; single-message days contribute a 0s span to the average.
+- **Verification**: Frontend `npx tsc --noEmit` clean. Backend `python3 -m pytest tests/test_api/test_usage.py tests/test_generation/test_usage.py -q` -> `14 passed`. `docker compose build frontend backend` succeeded; containers recreated and healthy; `GET /api/v1/admin/usage/recent-threads` and `/admin/usage/recent?interface=doc_generation` return 401 (auth) not 404, confirming routes are live.
+
+## Session: 2026-07-03 (Per-VPS instance model settings — uncommitted)
+
+> Superadmins can now override the default LLM/embedder model for RAG chat,
+> RAG embeddings, MCP deep dive, and MCP doc-generation analysis/write from
+> the dashboard Models tab. Settings persist in `instance_settings` (one
+> row per key), take effect within 30s without a restart, and every save is
+> appended to `audit_logs` with a per-key before/after diff. Per-VPS because
+> each deployment owns its own Postgres.
+
+### [Feature]: Per-instance model settings (DB-backed, hot-reload)
+
+- **Files changed**:
+  - `RAG_pipeline/backend/alembic/versions/042_instance_settings.py` (NEW) — `instance_settings(key PK, value, updated_at, updated_by_user_id, updated_by_username)` table; down_revision `041`.
+  - `RAG_pipeline/backend/src/db/models/system_config.py` — added `InstanceSetting` model (mirrors migration).
+  - `RAG_pipeline/backend/src/db/models/__init__.py` — export `InstanceSetting`.
+  - `RAG_pipeline/backend/src/services/instance_settings_service.py` (NEW) — `SETTING_REGISTRY` (5 keys: `rag_chat_model`, `rag_embed_model`, `deep_dive_model`, `doc_gen_analysis_model`, `doc_gen_write_model`), `normalize_payload`, `get_all`, `get_value`, `set_many`. Validates key set + value type + length ≤ 500.
+  - `RAG_pipeline/backend/src/services/instance_settings_resolver.py` (NEW) — 5s in-process cache, `get_kimi_llm_model` / `get_ollama_llm_model` / `get_voyage_embed_model` / `get_ollama_embed_model`. Resolver falls back to env defaults so a brief DB outage doesn't block chat.
+  - `RAG_pipeline/backend/src/api/routes/instance_settings.py` (NEW) — `GET /admin/instance-settings`, `PUT /admin/instance-settings`. Superadmin only via `AdminUser` dep. Audit log diff per key.
+  - `RAG_pipeline/backend/src/api/main.py` — register router.
+  - `RAG_pipeline/backend/src/generation/llm_client.py` — `_kimi_generate` / `_kimi_stream` / `_kimi_generate_with_tools` / `_ollama_generate` / `_ollama_stream` now resolve the chat model via the resolver; `settings.kimi_llm_model` / `settings.ollama_llm_model` are no longer read in those paths.
+  - `RAG_pipeline/backend/src/retrieval/embedder.py` — `_voyage_embed_single` / `_voyage_embed_batch` / `_ollama_embed_single` / `_ollama_embed_batch` resolve embed model via the resolver.
+  - `knowledge_base/mcp-server/src/mcp_server/db/models.py` — added `InstanceSetting` SQLAlchemy model mapping to the same table (no migration needed; MCP shares the DB with RAG).
+  - `knowledge_base/mcp-server/src/mcp_server/services/instance_settings_service.py` (NEW) — mirror of the RAG-side service; validates the same keys; `get_value` swallows DB errors and returns the env default.
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/instance_settings.py` (NEW) — `GET /mcp/admin/instance-settings`, `PUT /mcp/admin/instance-settings`. `_require_superadmin` looks up `users.is_superadmin` via raw SQL. MCP-controlled keys (`deep_dive_model`, `doc_gen_analysis_model`, `doc_gen_write_model`) are validated against `list_models()` from `metadata/models.py`; RAG-side keys are stored verbatim. `_audit()` writes to the shared `audit_logs` table via raw SQL.
+  - `knowledge_base/mcp-server/src/mcp_server/api/app.py` — register `instance_settings.router` under `/mcp` (auth required).
+  - `knowledge_base/mcp-server/src/mcp_server/services/deep_dive_service.py` — `RepoAgentEngine.__init__` no longer captures the provider; `_resolve_model_id()` and `_build_provider(model_id)` are called per query so a runtime override takes effect immediately. `_force_final_answer` now takes `provider=` and `model_id=` kwargs. All `self.provider` references replaced with the local `provider` var.
+  - `knowledge_base/mcp-server/src/mcp_server/services/claude_service.py` — `generate_docs()` reads `instance_settings_service.get_value("doc_gen_analysis_model")` and `get_value("doc_gen_write_model")` and feeds them as the `default_*` args to `resolve_generation_models(...)`.
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/discovery.py` — `GET /models` honours overrides so the dashboard's default markers reflect the live effective model.
+  - `knowledge_base/dashboard/src/api/schemas.ts` — added `InstanceSettingsResponseSchema` + `InstanceSettingsUpdateRequestSchema`.
+  - `knowledge_base/dashboard/src/api/client.ts` — added `getInstanceSettings` / `updateInstanceSettings` against `/mcp/admin/instance-settings`.
+  - `knowledge_base/dashboard/src/hooks/useInstanceSettings.ts` (NEW) — `SETTING_SLOTS` registry, `useInstanceSettings` (30s SWR-style stale time), `useUpdateInstanceSettings` invalidates on success.
+  - `knowledge_base/dashboard/src/components/ModelsPage.tsx` (NEW) — 5-row table, dropdowns sourced from `useModels()` (only valid ids), single "Save Changes" PUT to both surfaces' endpoints.
+  - `knowledge_base/dashboard/src/App.tsx` — added `"models"` to `TopNav`; new "Models" button gated on `user?.is_superadmin`; renders `<ModelsPage />` next to `fleet` and `packs`.
+  - `knowledge_base/dashboard/src/components/ModelSelectionPanel.tsx` — investigation/write dropdowns now show a clear note "Saved to your browser the moment you pick a value. Default values come from the global Models tab (superadmin only)." — closes the misleading-UX bug where the "Save Changes" button looked like it persisted the localStorage-backed dropdown.
+  - `knowledge_base/mcp-server/tests/conftest.py` — added `audit_logs` stub table, imported `InstanceSetting`, monkeypatched `instance_settings_service.async_session_factory` and `instance_settings_mod.async_session_factory`.
+  - `knowledge_base/mcp-server/tests/test_api/test_instance_settings.py` (NEW) — 8 tests: 403 for non-superadmin, 200 empty, 200 with overrides, PUT unknown key 400, PUT invalid mcp model id 400 (catalogue-validated), PUT writes + audits, PUT empty clears, PUT accepts RAG keys verbatim.
+  - `RAG_pipeline/backend/tests/test_api/test_instance_settings_endpoints.py` (NEW) — 6 tests: 403/200 GET, PUT 400 unknown key, PUT writes+audits, PUT clears.
+  - `RAG_pipeline/backend/tests/test_services/test_instance_settings_service.py` (NEW) — 8 tests for `normalize_payload`, `SETTING_REGISTRY` consistency, round-trip + clear.
+- **Problem**: Today the only way to change the default LLM is `MCP_DEEP_DIVE_MODEL`/`MCP_DOC_GENERATION_MODEL`/`KIMI_LLM_MODEL`/etc. env vars + restart. Customers running per-VPS deployments need a way to switch models from the UI without shell access or process restarts. Per CLAUDE.md Critical-Areas rule, this touches MCP API routes + RAG retrieval chain so it would normally require `/grill → /prd → /slices → /plan → /plan-approve pass → build → /inspect → /validate` before commit; user explicitly skipped the LFE pipeline ("dont do the lfe") and authorized "go run it". Build was therefore done straight, with Inspector-equivalent validation (py_compile + pytest + tsc).
+- **Design choices**:
+  - **Storage**: New `instance_settings` table (key/value, single row per key) shared by RAG + MCP via the existing Postgres. Each VPS has its own DB → naturally per-VPS without replication.
+  - **Resolution**: DB row → env var → pydantic default. Resolver reads from DB per call (5s cache) so saves are visible within 30s without restart.
+  - **Validation on PUT**: MCP-controlled keys validated against the live `list_models()` catalogue; RAG-controlled keys stored verbatim and validated by the RAG PUT.
+  - **Audit**: Every PUT writes one `audit_logs` row with `action="update_instance_settings"`, `details={"diff": {key: {before, after}}, "keys": [...]}`, actor user/username/IP.
+  - **UI**: New "Models" top-nav tab, superadmin only, next to "Packs" and "Fleet". 5-row table with selects sourced from `useModels()`. Empty value clears the override (delete the row). 30s `staleTime` per the user's explicit requirement.
+  - **Dashboard bug fix**: `ProjectSettings.tsx` investigation/write dropdowns are localStorage-only (GenerateDialog reads them). The "Save Changes" button was misleadingly positioned next to them. Updated `ModelSelectionPanel` copy to make the localStorage save explicit and point to the new Models tab for global defaults.
+- **Why not extend `UpdateProjectRequest` with `investigation_model`/`write_model` columns**: That would add a per-project server-side persistence layer with its own migration, alembic revision, Project model fields, ProjectRegistry update, and PATCH wiring — significant scope expansion that does not match the user's stated need (global default per VPS). The GenerateDialog already supports per-run override via `POST /mcp/generate {investigation_model, write_model}` body; per-project defaults can be added in a follow-up if needed.
+- **Verification**:
+  - `python3 -m py_compile` clean for all touched Python modules.
+  - `cd RAG_pipeline/backend && pytest` → **593 passed, 0 failed**.
+  - `cd knowledge_base/mcp-server && pytest tests/ --ignore=tests/test_pipeline --deselect tests/test_model_strategies/test_registry.py::test_model_registry_exposes_current_discovery_models` → **998 passed, 2 failed pre-existing** (`test_strategy_intodoc_plugin_names_match_intodoc_registry` and `test_generate_docs_cli_not_found` both reproduce on `git stash` — they require the `intodoc` package which is not installed in this environment).
+  - `cd knowledge_base/dashboard && npx tsc --noEmit` clean.
+- **Deploy**:
+  - RAG: `alembic upgrade head` applies migration `042_instance_settings`.
+  - MCP: no migration — the table is owned by the RAG backend's alembic; MCP just queries it.
+  - `.env.production.template`: no changes required — the env vars remain as the canonical defaults that the DB override sits on top of.

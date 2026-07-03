@@ -26,6 +26,7 @@ from mcp_server.config import config
 from mcp_server.model_strategies import normalize_model_id
 from mcp_server.providers.custom.models import ModelOptions, ModelResult
 from mcp_server.providers.custom.providers import ModelProvider, build_model_provider
+from mcp_server.services import instance_settings_service
 from mcp_server.services.token_refresh import ensure_token_fresh
 
 logger = logging.getLogger(__name__)
@@ -563,14 +564,25 @@ class RepoAgentEngine:
 
     def __init__(self, provider: ModelProvider | None = None) -> None:
         self._sessions: dict[str, AgentState] = {}
-        model_id = normalize_model_id(config.deep_dive_model)
+        # Provider is rebuilt per query so a runtime model override from the
+        # instance settings table takes effect immediately without restart.
+        # `provider` arg is preserved for tests / explicit injection.
+        self._injected_provider = provider
+
+    def _build_provider(self, model_id: str) -> ModelProvider:
         provider_config = _provider_config(model_id)
-        self.provider = provider or build_model_provider(
+        return build_model_provider(
             model_id,
             api_key=config.deep_dive_api_key or provider_config["api_key"],
             base_url=config.deep_dive_base_url or provider_config["base_url"],
             ollama_base_url=config.ollama_base_url,
         )
+
+    async def _resolve_model_id(self) -> str:
+        override = await instance_settings_service.get_value(
+            "deep_dive_model", default=config.deep_dive_model
+        )
+        return normalize_model_id(override or config.deep_dive_model)
 
     async def query(
         self,
@@ -586,8 +598,11 @@ class RepoAgentEngine:
             state = AgentState(session_id=session_id, project_id=project_id)
             self._sessions[session_id] = state
 
+        model_id = await self._resolve_model_id()
+        provider = self._injected_provider or self._build_provider(model_id)
+
         yield {"type": "session", "data": session_id}
-        yield {"type": "status", "data": f"Analyzing project {project_id} with {config.deep_dive_model}..."}
+        yield {"type": "status", "data": f"Analyzing project {project_id} with {model_id}..."}
 
         toolbox = RepoToolbox(project_id)
         state.messages.append({"role": "user", "content": question})
@@ -596,7 +611,7 @@ class RepoAgentEngine:
         total_input = total_output = 0
 
         for turn in range(max(1, config.deep_dive_max_tool_calls) + 1):
-            result = await self.provider.complete(
+            result = await provider.complete(
                 transcript,
                 options=ModelOptions(
                     max_tokens=config.deep_dive_max_answer_tokens,
@@ -631,8 +646,8 @@ class RepoAgentEngine:
                 yield {
                     "type": "usage",
                     "data": {
-                        "model": getattr(self.provider, "model_name", config.deep_dive_model),
-                        "provider": getattr(self.provider, "provider_name", "custom"),
+                        "model": getattr(provider, "model_name", model_id),
+                        "provider": getattr(provider, "provider_name", "custom"),
                         "input_tokens": total_input,
                         "output_tokens": total_output,
                         "duration_ms": int((time.monotonic() - start) * 1000),
@@ -662,6 +677,8 @@ class RepoAgentEngine:
                         total_input,
                         total_output,
                         state,
+                        provider=provider,
+                        model_id=model_id,
                         reason=f"Tool budget reached after {state.tool_calls} repository inspections.",
                     ):
                         yield event
@@ -692,6 +709,8 @@ class RepoAgentEngine:
             total_input,
             total_output,
             state,
+            provider=provider,
+            model_id=model_id,
             reason="Deep Dive reached its reasoning turn limit.",
         ):
             yield event
@@ -703,6 +722,9 @@ class RepoAgentEngine:
         total_input: int,
         total_output: int,
         state: AgentState,
+        *,
+        provider: ModelProvider,
+        model_id: str,
         reason: str,
     ) -> AsyncGenerator[DeepDiveEvent, None]:
         yield {"type": "status", "data": "Preparing answer from inspected repository evidence..."}
@@ -716,7 +738,7 @@ You must now answer the user's question using only the evidence already present 
 Do not call tools. Do not output JSON, XML, MODEL_DECISION, TOOL_RESULTS, or tool-call syntax.
 Return only the user-facing markdown answer. If the evidence is incomplete, say what was inspected and what remains unknown.
 """
-        result = await self.provider.complete(
+        result = await provider.complete(
             final_prompt,
             options=ModelOptions(
                 max_tokens=config.deep_dive_max_answer_tokens,
@@ -740,8 +762,8 @@ Return only the user-facing markdown answer. If the evidence is incomplete, say 
             yield {
                 "type": "usage",
                 "data": {
-                    "model": getattr(self.provider, "model_name", config.deep_dive_model),
-                    "provider": getattr(self.provider, "provider_name", "custom"),
+                    "model": getattr(provider, "model_name", model_id),
+                    "provider": getattr(provider, "provider_name", "custom"),
                     "input_tokens": total_input,
                     "output_tokens": total_output,
                     "duration_ms": int((time.monotonic() - start) * 1000),
