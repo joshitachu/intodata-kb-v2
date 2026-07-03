@@ -47,6 +47,10 @@ def _to_ollama_tool_schema(tool: RuntimeToolDefinition) -> dict:
 
 class OllamaProvider(ChatProvider):
     provider_id = "ollama"
+    # Tool support in Ollama is per-MODEL, not per-provider (e.g. llama3.1/qwen
+    # support tools; gemma3 does not). We advertise True so tool-capable models
+    # are attempted, and fall back per-model on the "does not support tools" 400
+    # (cached below so it is attempted at most once per model).
     supports_tools = True
 
     def __init__(self, *, base_url: str, timeout: float = 300.0) -> None:
@@ -54,6 +58,9 @@ class OllamaProvider(ChatProvider):
         self._timeout = timeout
         self._client = None
         self._lock = asyncio.Lock()
+        # Models known (this process) not to support tools — skip the doomed
+        # tool call and degrade gracefully without re-hitting the 400 each turn.
+        self._no_tool_models: set[str] = set()
 
     async def _get_client(self):
         if self._client is None:
@@ -115,14 +122,26 @@ class OllamaProvider(ChatProvider):
         runtime_tools: list[RuntimeToolDefinition],
         images: list[str] | None = None,
     ) -> ToolAwareLLMResponse:
+        # Model already known not to support tools → degrade without a call.
+        if model in self._no_tool_models:
+            return ToolAwareLLMResponse(provider="ollama", no_tool_support=True)
         client = await self._get_client()
         tools_schema = [_to_ollama_tool_schema(t) for t in runtime_tools] if runtime_tools else None
-        response = await client.chat(
-            model=model,
-            messages=_apply_images(messages, images),
-            tools=tools_schema,
-            options={"num_ctx": 32768, "temperature": 0.45},
-        )
+        try:
+            response = await client.chat(
+                model=model,
+                messages=_apply_images(messages, images),
+                tools=tools_schema,
+                options={"num_ctx": 32768, "temperature": 0.45},
+            )
+        except ollama_lib.ResponseError as e:
+            # Ollama returns 400 "<model> does not support tools" for models
+            # without tool support. Remember it and degrade — not an error.
+            if "does not support tools" in str(e):
+                self._no_tool_models.add(model)
+                logger.info("ollama model %s does not support tools; degrading to plain generation", model)
+                return ToolAwareLLMResponse(provider="ollama", no_tool_support=True)
+            raise
         usage = UsageStats(
             provider="ollama",
             model=model,
