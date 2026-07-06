@@ -30,7 +30,11 @@ export function ChatLayout() {
 
   useEffect(() => {
     if (urlState.isNew) {
-      if (activeConversationId !== null) {
+      if (
+        activeConversationId !== null &&
+        activeConversation !== null &&
+        !isLoadingConversation
+      ) {
         setActiveConversationId(null);
       }
       return;
