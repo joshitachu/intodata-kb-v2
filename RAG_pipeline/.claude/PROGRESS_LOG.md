@@ -14,6 +14,26 @@
 - **Verification**: `alembic upgrade head` → rev `048_runtime_meta_ts`; columns confirmed present on all four tables; `SELECT created_at,updated_at` succeeds on each; endpoints now return 401 (auth gate) instead of 500; zero `UndefinedColumnError` in logs post-fix. Backend image rebuilt (`docker-compose build backend`) — migration 048 confirmed baked into the clean image and container recreated healthy at head 048.
 - **Note**: Schema change applied outside the LFE full pipeline on explicit user acceptance (minor fix). Logged to `.plans/PROTOCOL_DEBT.md`; clear with `/debt-resolve`.
 
+## Session: 2026-07-06 (Parallel tool-call support in the runtime tool loop — uncommitted)
+
+### [Fix]: Runtime tool loop 400s when the model issues parallel tool calls
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/generation/providers/types.py` — `ToolAwareLLMResponse.tool_call: RuntimeToolCallRequest | None` replaced by `tool_calls: list[RuntimeToolCallRequest]` (wire order; every call_id must later get a tool message).
+  - `RAG_pipeline/backend/src/generation/providers/openai_compat.py` — return ALL `message.tool_calls` as requests (was `tool_calls[0]` only, while assistant_message echoed all of them — the direct cause of the bug).
+  - `RAG_pipeline/backend/src/generation/providers/anthropic_provider.py` — collect all `tool_use` blocks (was first-only; silently dropped siblings).
+  - `RAG_pipeline/backend/src/generation/providers/google_provider.py` — `_first_function_call` → `_function_calls`; synthesized ids now index-suffixed (`google_{name}_{i}`) so parallel same-tool calls don't collide.
+  - `RAG_pipeline/backend/src/generation/providers/ollama_provider.py` — all tool_calls returned; ids `ollama_{name}_{i}`.
+  - `RAG_pipeline/backend/src/generation/agent_loop.py` — loop executes every call in the turn sequentially (shared AsyncSession cannot run concurrent queries), appends one `role:"tool"` message per call_id; calls beyond the cap get a synthetic `tool_call_budget_exceeded` tool result (never dropped).
+  - `RAG_pipeline/backend/src/config.py` — new `runtime_tool_max_parallel_calls: int = 5`.
+  - Tests updated: `test_agent_loop.py` (+2 parallel/overflow tests), `test_llm_client.py`, all 4 provider tests, `test_conversational_rag_runtime_tools.py`, `test_conversational_rag_runtime_insights.py`, `test_stored_end_to_end.py`.
+- **Problem**: Chat turn "how many remote engines are there here and have they been filling?" → UI "Chat response failed. Please try again." Backend: `openai.BadRequestError: 400 ... tool_call_ids did not have response messages: list_runtime_sync_status:1` from kimi/kimi-k2.5.
+- **Root cause**: kimi issued TWO parallel tool calls (`list_runtime_engines`, `list_runtime_sync_status`) in one assistant message. `openai_compat.generate_with_tools` surfaced only `tool_calls[0]` for execution but echoed the full tool_calls array in `assistant_message`; `agent_loop` appended exactly one tool response, leaving a dangling tool_call_id — invalid OpenAI history, rejected on the next call (both the tool-aware retry and the plain `generate_answer` fallback, hence the stream abort). Same defect in ollama provider; anthropic silently dropped sibling calls; contract-level cause: singular `tool_call` field.
+- **Fix**: contract carries all tool calls; loop answers every call_id (executes up to `runtime_tool_max_parallel_calls`, default 5; overflow gets a synthetic budget-exceeded tool message telling the model to re-issue next turn). Worst case per turn = 4 iterations × 5 calls = 20 stored-provider DB reads.
+- **Verification**: `py_compile` clean; targeted generation/runtime suites **84 passed**; full backend suite **920 passed, 5 failed** — all 5 failures are PRE-EXISTING flaky tests in `test_conversational_rag.py` (identical `AttributeError: 'coroutine' object has no attribute 'id'` at `src/retrieval/metadata_retriever.py:119`; baseline without this diff oscillates 3↔5 failures across runs — mock plumbing in the retrieval-ladder tests, untouched by this change). Backend container rebuilt to apply live.
+- **Note**: change bypassed the LFE pipeline on explicit user instruction ("just fix it no grilling"); `.plans/*` artifacts belong to the mobile-frontend/GitHub-App work and were left untouched. Follow-up candidate: fix the flaky retrieval-ladder tests (AsyncMock fetchone plumbing).
+- **Unrelated files also uncommitted in the tree** (pre-existing WIP from a prior session, NOT this change): `RAG_pipeline/frontend/components/ChatLayout.tsx` (guards the `?new` reset — only clears `activeConversationId` when a conversation is actually loaded and not mid-load) and `RAG_pipeline/frontend/tsconfig.tsbuildinfo` (build artifact); untracked `RAG_pipeline/backend/alembic/versions/048_runtime_metadata_timestamps.py`. Keep these out of the parallel-tool-calls commit.
+
 ## Session: 2026-07-03 (superadmin/admin RBAC — integrated onto master)
 
 ### [Feature]: Superadmin/admin RBAC (3-tier) — merged after the runtime feature

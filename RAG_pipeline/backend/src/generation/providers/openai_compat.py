@@ -165,16 +165,20 @@ class OpenAICompatibleProvider(ChatProvider):
 
         message = response.choices[0].message
         if message.tool_calls:
-            call = message.tool_calls[0]
-            try:
-                arguments = json.loads(call.function.arguments or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
+            requests = []
+            for call in message.tool_calls:
+                try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    arguments = {}
+                requests.append(
+                    RuntimeToolCallRequest(
+                        call_id=call.id, tool_name=call.function.name, arguments=arguments
+                    )
+                )
             return ToolAwareLLMResponse(
                 provider=self.provider_id,
-                tool_call=RuntimeToolCallRequest(
-                    call_id=call.id, tool_name=call.function.name, arguments=arguments
-                ),
+                tool_calls=requests,
                 assistant_message={
                     "role": "assistant",
                     "content": message.content or "",

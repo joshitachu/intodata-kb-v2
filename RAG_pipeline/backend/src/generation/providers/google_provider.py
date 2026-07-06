@@ -105,12 +105,8 @@ def _text(resp) -> str:
     return "".join(getattr(p, "text", "") or "" for p in _parts(resp))
 
 
-def _first_function_call(resp):
-    for p in _parts(resp):
-        fc = getattr(p, "function_call", None)
-        if fc is not None:
-            return fc
-    return None
+def _function_calls(resp) -> list:
+    return [fc for p in _parts(resp) if (fc := getattr(p, "function_call", None)) is not None]
 
 
 def _usage(resp, model: str) -> UsageStats:
@@ -206,19 +202,25 @@ class GoogleProvider(ChatProvider):
             model=model, contents=contents, config=self._config(system, tools)
         )
         usage = _usage(resp, model)
-        fc = _first_function_call(resp)
-        if fc is not None:
-            name = fc.name
-            args = dict(fc.args or {})
-            call_id = f"google_{name}"
-            openai_tool_calls = [{
-                "id": call_id,
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(args)},
-            }]
+        fcs = _function_calls(resp)
+        if fcs:
+            requests = []
+            openai_tool_calls = []
+            for i, fc in enumerate(fcs):
+                name = fc.name
+                args = dict(fc.args or {})
+                # Gemini has no tool-call id; synthesize one, index-suffixed so
+                # parallel calls to the same tool stay distinguishable.
+                call_id = f"google_{name}_{i}"
+                requests.append(RuntimeToolCallRequest(call_id=call_id, tool_name=name, arguments=args))
+                openai_tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                })
             return ToolAwareLLMResponse(
                 provider="google",
-                tool_call=RuntimeToolCallRequest(call_id=call_id, tool_name=name, arguments=args),
+                tool_calls=requests,
                 assistant_message={"role": "assistant", "content": _text(resp), "tool_calls": openai_tool_calls},
                 usage=usage,
             )

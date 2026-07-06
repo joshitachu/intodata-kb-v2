@@ -319,23 +319,54 @@ async def run_runtime_tool_loop(
         decision = await generate_answer_with_runtime_tools(working_messages, tools, images=images)
         usage = _accumulate_usage(usage, decision.usage)
 
-        if decision.tool_call is not None:
-            call = RuntimeToolCall(tool_name=decision.tool_call.tool_name, arguments=decision.tool_call.arguments)
-            progress.append(RuntimeProgressEvent("runtime_tool_call", call.model_dump()))
+        if decision.tool_calls:
+            # Every call_id in the assistant message must get a tool message —
+            # OpenAI-compat APIs 400 on any dangling tool_call_id. So the cap
+            # answers overflow calls with a synthetic budget error instead of
+            # dropping them.
+            max_parallel = max(1, settings.runtime_tool_max_parallel_calls)
+            executed = decision.tool_calls[:max_parallel]
+            overflow = decision.tool_calls[max_parallel:]
+            tool_messages: list[dict] = []
 
-            result = await execute_runtime_tool(call, project_scope=project_scope, db=db)
-            result_payload = result.model_dump(mode="json")
-            progress.append(RuntimeProgressEvent("runtime_tool_result", result_payload))
+            # Sequential on purpose: executions share one AsyncSession, which
+            # cannot run concurrent queries.
+            for request in executed:
+                call = RuntimeToolCall(tool_name=request.tool_name, arguments=request.arguments)
+                progress.append(RuntimeProgressEvent("runtime_tool_call", call.model_dump()))
+
+                result = await execute_runtime_tool(call, project_scope=project_scope, db=db)
+                result_payload = result.model_dump(mode="json")
+                progress.append(RuntimeProgressEvent("runtime_tool_result", result_payload))
+
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": request.call_id,
+                    "content": json.dumps(result_payload, default=str),
+                })
+
+            if overflow:
+                logger.warning(
+                    "Runtime tool loop: %d parallel tool calls exceed the cap of %d; "
+                    "answering overflow calls (%s) with tool_call_budget_exceeded",
+                    len(decision.tool_calls), max_parallel,
+                    ", ".join(r.tool_name for r in overflow),
+                )
+            for request in overflow:
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": request.call_id,
+                    "content": json.dumps({
+                        "error": "tool_call_budget_exceeded",
+                        "detail": (
+                            f"Only the first {max_parallel} tool calls per turn are "
+                            "executed. Re-issue this call in your next turn if still needed."
+                        ),
+                    }),
+                })
 
             assistant_message = decision.assistant_message or {"role": "assistant", "content": ""}
-            working_messages = working_messages + [
-                assistant_message,
-                {
-                    "role": "tool",
-                    "tool_call_id": decision.tool_call.call_id,
-                    "content": json.dumps(result_payload, default=str),
-                },
-            ]
+            working_messages = working_messages + [assistant_message, *tool_messages]
             continue
 
         if decision.text is not None:

@@ -25,7 +25,7 @@ async def test_tool_call_unsupported_model_degrades_gracefully():
         resp = await provider.generate_with_tools(model="gemma3:12b", messages=MSGS, runtime_tools=TOOLS)
 
     assert resp.no_tool_support is True
-    assert resp.tool_call is None
+    assert resp.tool_calls == []
     assert "gemma3:12b" in provider._no_tool_models
 
 
@@ -66,5 +66,5 @@ async def test_tool_capable_model_returns_tool_call():
     with patch.object(provider, "_get_client", AsyncMock(return_value=client)):
         resp = await provider.generate_with_tools(model="llama3.1", messages=MSGS, runtime_tools=TOOLS)
 
-    assert resp.tool_call.tool_name == "f"
-    assert resp.tool_call.arguments == {"a": 1}
+    assert resp.tool_calls[0].tool_name == "f"
+    assert resp.tool_calls[0].arguments == {"a": 1}

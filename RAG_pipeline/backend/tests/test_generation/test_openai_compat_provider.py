@@ -80,6 +80,6 @@ async def test_generate_with_tools_returns_tool_call():
     with patch.object(provider, "_get_client", AsyncMock(return_value=fake_client)):
         resp = await provider.generate_with_tools(model="gpt-4o", messages=MESSAGES, runtime_tools=tools)
 
-    assert resp.tool_call.tool_name == "list_executions"
-    assert resp.tool_call.arguments == {"limit": 5}
+    assert resp.tool_calls[0].tool_name == "list_executions"
+    assert resp.tool_calls[0].arguments == {"limit": 5}
     assert resp.no_tool_support is False

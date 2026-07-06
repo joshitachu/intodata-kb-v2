@@ -185,20 +185,23 @@ class AnthropicProvider(ChatProvider):
         )
         usage.calculate_cost()
 
-        tool_use = next((b for b in resp.content if getattr(b, "type", None) == "tool_use"), None)
-        if tool_use is not None:
+        tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+        if tool_uses:
             text = _text_from_content(resp.content)
             # Return assistant_message in OpenAI shape for loop consistency.
             openai_tool_calls = [{
-                "id": tool_use.id,
+                "id": tu.id,
                 "type": "function",
-                "function": {"name": tool_use.name, "arguments": json.dumps(tool_use.input or {})},
-            }]
+                "function": {"name": tu.name, "arguments": json.dumps(tu.input or {})},
+            } for tu in tool_uses]
             return ToolAwareLLMResponse(
                 provider="anthropic",
-                tool_call=RuntimeToolCallRequest(
-                    call_id=tool_use.id, tool_name=tool_use.name, arguments=dict(tool_use.input or {})
-                ),
+                tool_calls=[
+                    RuntimeToolCallRequest(
+                        call_id=tu.id, tool_name=tu.name, arguments=dict(tu.input or {})
+                    )
+                    for tu in tool_uses
+                ],
                 assistant_message={"role": "assistant", "content": text, "tool_calls": openai_tool_calls},
                 usage=usage,
             )

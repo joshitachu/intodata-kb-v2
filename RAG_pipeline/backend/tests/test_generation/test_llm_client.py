@@ -131,14 +131,14 @@ async def test_tool_aware_returns_tool_call():
     provider = FakeProvider(provider_id="kimi", supports_tools=True)
     provider.generate_with_tools.return_value = ToolAwareLLMResponse(
         provider="kimi",
-        tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="list_executions", arguments={}),
+        tool_calls=[RuntimeToolCallRequest(call_id="call_1", tool_name="list_executions", arguments={})],
         usage=UsageStats(provider="kimi", model="kimi-k2.5"),
     )
     p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
     with p_id, p_resolve:
         response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
 
-    assert response.tool_call.tool_name == "list_executions"
+    assert response.tool_calls[0].tool_name == "list_executions"
     assert response.no_tool_support is False
     provider.generate_with_tools.assert_awaited_once_with(
         model="kimi-k2.5", messages=MESSAGES, runtime_tools=RUNTIME_TOOLS, images=None

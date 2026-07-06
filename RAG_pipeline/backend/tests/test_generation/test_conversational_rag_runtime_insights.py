@@ -101,17 +101,17 @@ class TestHighLevelToolLoop:
         decisions = [
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(call_id="c1", tool_name="detect_failures", arguments={}),
+                tool_calls=[RuntimeToolCallRequest(call_id="c1", tool_name="detect_failures", arguments={})],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
             ),
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(
+                tool_calls=[RuntimeToolCallRequest(
                     call_id="c2",
                     tool_name="analyze_execution_failure",
                     arguments={"execution_id": "esbmain-route-7841"},
-                ),
+                )],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=15, output_tokens=5),
             ),
@@ -146,6 +146,7 @@ class TestHighLevelToolLoop:
             mock_client_settings.runtime_tool_timeout = 10.0
             mock_client_settings.runtime_tool_result_max_chars = 12000
             mock_loop_settings.runtime_tool_loop_max_iterations = 5
+            mock_loop_settings.runtime_tool_max_parallel_calls = 5
 
             response = await run_conversational_rag(
                 conversation=_mock_conversation(),
@@ -172,11 +173,11 @@ class TestHighLevelToolLoop:
         decisions = [
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(
+                tool_calls=[RuntimeToolCallRequest(
                     call_id="c1",
                     tool_name="analyze_execution_failure",
                     arguments={"execution_id": "esbmain-route-7841"},
-                ),
+                )],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
             ),
@@ -207,6 +208,7 @@ class TestHighLevelToolLoop:
             mock_client_settings.runtime_tool_timeout = 10.0
             mock_client_settings.runtime_tool_result_max_chars = 12000
             mock_loop_settings.runtime_tool_loop_max_iterations = 3
+            mock_loop_settings.runtime_tool_max_parallel_calls = 5
 
             await run_conversational_rag(
                 conversation=_mock_conversation(),
@@ -233,11 +235,11 @@ class TestHighLevelToolLoop:
         decisions = [
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(
+                tool_calls=[RuntimeToolCallRequest(
                     call_id="c1",
                     tool_name="analyze_execution_failure",
                     arguments={"execution_id": "esbmain-route-7841"},
-                ),
+                )],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
             ),
@@ -269,6 +271,7 @@ class TestHighLevelToolLoop:
             mock_client_settings.runtime_tool_timeout = 10.0
             mock_client_settings.runtime_tool_result_max_chars = 12000
             mock_loop_settings.runtime_tool_loop_max_iterations = 3
+            mock_loop_settings.runtime_tool_max_parallel_calls = 5
 
             events = []
             async for event_type, data in run_conversational_rag_stream(

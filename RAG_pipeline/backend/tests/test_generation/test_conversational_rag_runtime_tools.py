@@ -65,7 +65,7 @@ class TestNonStreamingRuntimeLoop:
         decisions = [
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={}),
+                tool_calls=[RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={})],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
             ),
@@ -234,7 +234,7 @@ class TestRuntimeToolSummaryPersistence:
         decisions = [
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={}),
+                tool_calls=[RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={})],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
             ),
@@ -369,7 +369,7 @@ class TestStreamingRuntimeLoop:
         decisions = [
             ToolAwareLLMResponse(
                 provider="kimi",
-                tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={}),
+                tool_calls=[RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={})],
                 assistant_message={"role": "assistant", "content": "", "tool_calls": []},
                 usage=UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
             ),

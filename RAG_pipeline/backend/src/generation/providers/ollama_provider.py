@@ -151,23 +151,27 @@ class OllamaProvider(ChatProvider):
         message = response["message"]
         tool_calls = message.get("tool_calls") or []
         if tool_calls:
-            call = tool_calls[0]
-            fn = call["function"]
-            # Ollama has no tool-call id; synthesize a stable one.
-            call_id = f"ollama_{fn['name']}"
-            arguments = fn.get("arguments") or {}
-            if isinstance(arguments, str):
-                import json
+            import json
 
-                try:
-                    arguments = json.loads(arguments)
-                except json.JSONDecodeError:
-                    arguments = {}
+            requests = []
+            for i, call in enumerate(tool_calls):
+                fn = call["function"]
+                arguments = fn.get("arguments") or {}
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                # Ollama has no tool-call id; synthesize one, index-suffixed so
+                # parallel calls to the same tool stay distinguishable.
+                requests.append(
+                    RuntimeToolCallRequest(
+                        call_id=f"ollama_{fn['name']}_{i}", tool_name=fn["name"], arguments=arguments
+                    )
+                )
             return ToolAwareLLMResponse(
                 provider="ollama",
-                tool_call=RuntimeToolCallRequest(
-                    call_id=call_id, tool_name=fn["name"], arguments=arguments
-                ),
+                tool_calls=requests,
                 assistant_message={
                     "role": "assistant",
                     "content": message.get("content") or "",

@@ -80,6 +80,6 @@ async def test_generate_with_tools_returns_tool_call():
             model="gemini-2.5-flash", messages=[{"role": "user", "content": "go"}], runtime_tools=tools
         )
 
-    assert resp.tool_call.tool_name == "list_executions"
-    assert resp.tool_call.arguments == {"limit": 2}
+    assert resp.tool_calls[0].tool_name == "list_executions"
+    assert resp.tool_calls[0].arguments == {"limit": 2}
     assert resp.assistant_message["tool_calls"][0]["function"]["name"] == "list_executions"

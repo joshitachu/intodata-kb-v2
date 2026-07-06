@@ -80,7 +80,7 @@ async def test_generate_with_tools_returns_tool_call():
             model="claude-sonnet-4-6", messages=[{"role": "user", "content": "go"}], runtime_tools=tools
         )
 
-    assert resp.tool_call.tool_name == "list_executions"
-    assert resp.tool_call.arguments == {"limit": 3}
+    assert resp.tool_calls[0].tool_name == "list_executions"
+    assert resp.tool_calls[0].arguments == {"limit": 3}
     # assistant_message is OpenAI-shaped for loop consistency
     assert resp.assistant_message["tool_calls"][0]["function"]["name"] == "list_executions"

@@ -201,6 +201,12 @@ class Settings(BaseSettings):
     # within one turn while staying bounded.
     runtime_tool_loop_max_iterations: int = 4
 
+    # Cap on tool calls executed from a single assistant turn (models may issue
+    # several in parallel). Calls beyond the cap are NOT dropped — they receive a
+    # synthetic budget-exceeded tool result, because OpenAI-compat APIs reject any
+    # history where a tool_call_id has no tool message.
+    runtime_tool_max_parallel_calls: int = 5
+
     # Runtime insight LLM fallback (EP-005 slice 4) — opt-in, off by default.
     # When True, an incident whose deterministic confidence is "low" escalates to a
     # SINGLE bounded, redacted LLM call (via the provider-neutral generate_answer).

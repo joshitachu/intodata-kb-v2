@@ -21,10 +21,11 @@ TOOLS = [
 ]
 
 
-def _decision(tool_call=None, text=None, no_tool_support=False, usage=None):
+def _decision(tool_call=None, tool_calls=None, text=None, no_tool_support=False, usage=None):
+    calls = tool_calls if tool_calls is not None else ([tool_call] if tool_call else [])
     return ToolAwareLLMResponse(
         provider="kimi",
-        tool_call=tool_call,
+        tool_calls=calls,
         text=text,
         assistant_message={"role": "assistant", "content": text or "", "tool_calls": []},
         no_tool_support=no_tool_support,
@@ -353,11 +354,85 @@ class TestRuntimeToolLoopBounds:
             patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             mock_settings.runtime_tool_loop_max_iterations = 2
+            mock_settings.runtime_tool_max_parallel_calls = 5
             outcome = await run_runtime_tool_loop(MESSAGES)
 
         assert outcome.final_answer == "Final synthesized answer"
         assert mock_decide.await_count == 2  # capped, not unbounded
         assert outcome.used_runtime_data is True
+
+
+class TestRuntimeToolLoopParallelCalls:
+    async def test_parallel_calls_each_get_a_tool_message(self):
+        """Two tool calls in one assistant turn → both execute and BOTH call_ids
+        get a tool message, so the follow-up request is valid OpenAI history."""
+        decisions = [
+            _decision(tool_calls=[
+                RuntimeToolCallRequest(call_id="list_runtime_engines:0", tool_name="detect_failures", arguments={}),
+                RuntimeToolCallRequest(call_id="list_runtime_sync_status:1", tool_name="detect_failures", arguments={}),
+            ]),
+            _decision(text="done"),
+        ]
+        tool_result = RuntimeToolResult(tool_name="detect_failures", success=True, data=[], latency_ms=1)
+        captured_messages = []
+
+        async def _fake_decide(messages, tools, images=None):
+            captured_messages.append(messages)
+            return decisions[len(captured_messages) - 1]
+
+        with (
+            patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", side_effect=_fake_decide),
+            patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)) as exec_mock,
+        ):
+            outcome = await run_runtime_tool_loop(MESSAGES)
+
+        assert outcome.final_answer == "done"
+        assert exec_mock.await_count == 2
+        tool_messages = [m for m in captured_messages[1] if m["role"] == "tool"]
+        assert [m["tool_call_id"] for m in tool_messages] == [
+            "list_runtime_engines:0",
+            "list_runtime_sync_status:1",
+        ]
+        # call/result progress events for both calls, in order
+        assert [e.event_type for e in outcome.progress_events] == [
+            "runtime_tool_call", "runtime_tool_result",
+            "runtime_tool_call", "runtime_tool_result",
+        ]
+
+    async def test_calls_beyond_cap_get_synthetic_budget_response_not_dropped(self):
+        """Calls past the parallel cap are answered with tool_call_budget_exceeded —
+        never dropped, or the next request 400s on the dangling tool_call_id."""
+        many_calls = [
+            RuntimeToolCallRequest(call_id=f"call_{i}", tool_name="detect_failures", arguments={})
+            for i in range(4)
+        ]
+        decisions = [_decision(tool_calls=many_calls), _decision(text="done")]
+        tool_result = RuntimeToolResult(tool_name="detect_failures", success=True, data=[], latency_ms=1)
+        captured_messages = []
+
+        async def _fake_decide(messages, tools, images=None):
+            captured_messages.append(messages)
+            return decisions[len(captured_messages) - 1]
+
+        with (
+            patch("src.generation.agent_loop.settings") as mock_settings,
+            patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", side_effect=_fake_decide),
+            patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)) as exec_mock,
+        ):
+            mock_settings.runtime_tool_loop_max_iterations = 4
+            mock_settings.runtime_tool_max_parallel_calls = 2
+            outcome = await run_runtime_tool_loop(MESSAGES)
+
+        assert outcome.final_answer == "done"
+        assert exec_mock.await_count == 2  # only the first two executed
+        tool_messages = [m for m in captured_messages[1] if m["role"] == "tool"]
+        assert [m["tool_call_id"] for m in tool_messages] == ["call_0", "call_1", "call_2", "call_3"]
+        assert "tool_call_budget_exceeded" in tool_messages[2]["content"]
+        assert "tool_call_budget_exceeded" in tool_messages[3]["content"]
+        # overflow calls never reach progress events (nothing executed for them)
+        assert len(outcome.progress_events) == 4
 
 
 class TestRuntimeToolLoopNoToolSupport:
