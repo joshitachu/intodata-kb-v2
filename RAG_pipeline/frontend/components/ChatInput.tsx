@@ -124,7 +124,10 @@ export function ChatInput({
     (message.trim().length > 0 || images.length > 0) && !isLoading && !disabled;
 
   return (
-    <div className="px-6 pb-5 pt-2 w-full" data-tour="chat-input">
+    <div
+      className="px-3 sm:px-6 pb-3 sm:pb-5 pt-2 w-full bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-t border-border/60"
+      data-tour="chat-input"
+    >
       <form onSubmit={handleSubmit}>
         <div
           className={cn(
@@ -171,18 +174,19 @@ export function ChatInput({
             rows={1}
             className={cn(
               "w-full resize-none bg-transparent px-4 pt-3 pb-2",
-              "text-sm placeholder:text-muted-foreground",
+              "text-base sm:text-sm placeholder:text-muted-foreground",
               "focus:outline-none",
               "disabled:cursor-not-allowed disabled:opacity-50",
-              "min-h-[44px] max-h-[200px]",
+              "min-h-[44px] max-h-[120px] sm:max-h-[200px]",
             )}
             disabled={isLoading || disabled}
             style={{ height: "auto", overflow: "hidden" }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
+              const max = window.matchMedia("(min-width: 640px)").matches ? 200 : 120;
               target.style.height = "auto";
               target.style.height =
-                Math.min(target.scrollHeight, 200) + "px";
+                Math.min(target.scrollHeight, max) + "px";
             }}
           />
 
@@ -223,7 +227,7 @@ export function ChatInput({
               disabled={!canSend}
               aria-label="Send message"
               className={cn(
-                "flex items-center justify-center w-8 h-8 rounded-full transition-colors",
+                "flex items-center justify-center w-10 h-10 sm:w-8 sm:h-8 rounded-full transition-colors",
                 canSend
                   ? "bg-primary text-primary-foreground hover:bg-primary/90"
                   : "bg-muted text-muted-foreground cursor-not-allowed",
