@@ -178,6 +178,8 @@ None currently.
 
 ## Lessons Learned / Gotchas
 
+- The declarative `Base` (`src/db/base.py`) auto-declares `created_at` AND `updated_at` on EVERY model. So any migration that `create_table`s a new model-backed table MUST include both columns (`TIMESTAMPTZ NOT NULL`, `server_default=sa.func.now()`) — otherwise every SELECT on that table 500s with `asyncpg UndefinedColumnError: column <table>.created_at does not exist`. This bit `runtime_component_metrics`, `runtime_artifacts`, `runtime_connections`, `runtime_job_dependencies` (migrations 037/043 omitted them; fixed in 048). When adding a table or reviewing a create_table migration, cross-check the two `Base` timestamp columns are present.
+
 - PostgreSQL `JSONB` → generic `JSON` for SQLite test compat (still works as JSONB on Postgres)
 - SQLAlchemy does not reliably persist in-place JSONB list/dict mutations; assign the updated value and call `flag_modified(model, "column")` or use a mutable extension. This matters for marking backup codes as used.
 - Refresh JWTs need a nonce/`jti`; `sub` + `type` + second-resolution `exp` can produce identical tokens during rapid repeated logins and collide on the stored token hash.

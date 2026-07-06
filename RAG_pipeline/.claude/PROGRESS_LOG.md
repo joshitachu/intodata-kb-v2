@@ -1,5 +1,19 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-07-06 (Runtime metadata timestamp schema drift — minor fix, live)
+
+### [Fix]: Admin → Logs page 500s ("Failed to load runtime health" / "Failed to load dependency metadata")
+
+- **Files changed**:
+  - `RAG_pipeline/backend/alembic/versions/048_runtime_metadata_timestamps.py` — NEW migration (rev `048_runtime_meta_ts`, down_revision `047_workspace_map`); adds `created_at` + `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`) to `runtime_component_metrics`, `runtime_artifacts`, `runtime_connections`, `runtime_job_dependencies`.
+  - `.plans/PROTOCOL_DEBT.md` — NEW; logged this pipeline-bypassing fix.
+- **Problem**: Admin → Logs page showed two red banners — "Failed to load runtime health" and "Failed to load dependency metadata". Backend returned HTTP 500 on `/api/v1/runtime/{health,artifacts,connections,dependencies,dependency-summary}`.
+- **Root cause**: Schema drift. The shared declarative `Base` (`RAG_pipeline/backend/src/db/base.py`) declares `created_at`/`updated_at` on every model, but migrations `037_runtime_component_metrics` and `043_runtime_extended_metadata` created their four tables without those columns. Every SELECT therefore raised `asyncpg UndefinedColumnError: column runtime_<table>.created_at does not exist`. Older runtime tables (sources/engines/jobs + 10 others) had the columns, so only these four endpoints failed.
+- **Change**: Single additive migration adding the two timestamp columns to exactly the four drifted tables (all 15 `runtime_*` tables audited; only these four were affected). No model or query changes — the schema was brought into line with the existing model contract.
+- **Why this approach**: Fix at the schema level (root cause) rather than stripping timestamps from `Base` or special-casing queries. Additive + server-default so existing rows backfill and NOT NULL holds. Matches the timestamp definition already used by sibling runtime migrations.
+- **Verification**: `alembic upgrade head` → rev `048_runtime_meta_ts`; columns confirmed present on all four tables; `SELECT created_at,updated_at` succeeds on each; endpoints now return 401 (auth gate) instead of 500; zero `UndefinedColumnError` in logs post-fix. Backend image rebuilt (`docker-compose build backend`) — migration 048 confirmed baked into the clean image and container recreated healthy at head 048.
+- **Note**: Schema change applied outside the LFE full pipeline on explicit user acceptance (minor fix). Logged to `.plans/PROTOCOL_DEBT.md`; clear with `/debt-resolve`.
+
 ## Session: 2026-07-03 (superadmin/admin RBAC — integrated onto master)
 
 ### [Feature]: Superadmin/admin RBAC (3-tier) — merged after the runtime feature
