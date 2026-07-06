@@ -1,6 +1,25 @@
 # KB Sub-project Context
 
-## Last Completed (2026-07-02) -- Living-Document Reingestion (Slices 1-5) + live-E2E bug fixes (uncommitted)
+## Last Completed (2026-07-06) -- Talend ESB/Camel route vs DI job classification (uncommitted)
+
+Talend ESB/Camel route detection moved from a late mcp-server heuristic
+(`talend_intelligence.py` re-deriving component types from raw `scan_result.json`)
+to a scanner-computed fact: `ParsedJob.is_esb_route` / `esb_component_types` are
+now set in `TalendParser._parse_job` and flow through `scan_result.json`.
+`talend_intelligence.py` now only consumes those fields (duplicated component
+set removed). Wired into actual doc generation: `ESB_ROUTES` is now a real
+conditional Phase 2 section (`CONDITIONAL_SECTION_NAMES`) with prompt guidance
+in `phase2_platform_sections/talend.md` covering routing rules, endpoints, EIP
+patterns, and error channels -- collapsing the old 3-synonym validator regex
+(`ROUTE_GRAPH`/`ESB_ROUTES`/`ESB_ROUTE_GRAPH`) into the shared `_has_section`
+coverage check, enforced only when the scanner flags at least one route job.
+`knowledge_base/CLAUDE.md` doc/code mismatch (talend_intelligence.py previously
+unnamed) fixed. See `.claude/PROGRESS_LOG.md` 2026-07-06 for full file list and
+verification. Pipeline gate was explicitly waived by the user for this change
+(implemented by a delegated Opus subagent, diff reviewed line-by-line before
+logging) -- not a `/lfe-force` emergency patch, so not added to `PROTOCOL_DEBT.md`.
+
+## Previous (2026-07-02) -- Living-Document Reingestion (Slices 1-5) + live-E2E bug fixes (uncommitted)
 
 Built Living-Document Reingestion S1-S5 (impact router + threshold retirement;
 diff-fidelity guard G5; synthesis-doc amendment G6; doc versioning/change-history;
@@ -195,6 +214,17 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Immediate Next Steps
 
+0. **Talend ESB/DI classification — live verification + commit**: Unit-tested only
+   so far (no `vaxxinova-talend` fixture in this checkout, so the pre-existing
+   `test_talend_parser.py` integration tests stayed skipped). Before commit: (a) run
+   a real scan + generation on a Talend project containing actual `cRoute`/`cREST`/
+   `cJMS`-style components and confirm `is_esb_route`/`esb_component_types` appear
+   in `scan_result.json`, `talend_esb_facts.json` is written, and Phase 2 output for
+   that project actually contains a non-empty `ESB_ROUTES` section (not just the
+   "No ESB/Camel routes" placeholder); (b) confirm a pure-DI Talend project is
+   never flagged and never hard-fails on `ESB_ROUTES`; (c) decide whether to keep
+   this uncommitted alongside the unrelated Living-Document Reingestion changes
+   below or split into its own commit.
 1. **Living-Document Reingestion — finish verification + commit**: All fixes are in
    the working tree (uncommitted). Before commit: (a) top up the deepseek balance (or
    point doc-gen at a funded provider) and run one single-group webhook on

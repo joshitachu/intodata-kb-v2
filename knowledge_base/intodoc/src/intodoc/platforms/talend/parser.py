@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -110,6 +111,42 @@ _STRIP_SUFFIXES = (
     "Input", "Output", "Connection", "Close", "Open", "Row",
     "BulkExec", "CDC", "Commit", "Rollback", "Lookup",
 )
+
+
+# ── ESB / Camel Route Classification ─────────────────────────────────
+#
+# Talend Studio serializes both regular DI Jobs and ESB Routes (Camel-based)
+# into the same .item/.properties format under process/. There is no file-type
+# distinction; the only signal that a job is an ESB/Camel route is its use of
+# c-prefixed Camel components (versus t-prefixed Talend DI components). This is
+# the single source of truth for that detection -- the mcp-server consumes the
+# computed is_esb_route / esb_component_types fields rather than re-deriving them.
+_ESB_COMPONENT_TYPES: frozenset[str] = frozenset({
+    # Route structure
+    "cRoute", "cRouteWhen", "cRouteOtherwise",
+    # REST / HTTP endpoints
+    "cREST", "cRESTClient",
+    # Messaging
+    "cJMS", "cJMSOutput", "cActiveMQ", "cKafkaOutput", "cKafkaInput",
+    "cMQConnectionFactory", "cMessagingEndpoint",
+    # Camel EIP patterns
+    "cMessageRouter", "cSplitter", "cAggregator", "cRecipientList",
+    "cWireTap", "cDirect",
+    # Transformation / enrichment
+    "cProcessor", "cSetBody", "cSetHeader", "cSetProperty", "cRemoveHeader",
+    "cConvertBodyTo", "cMarshal", "cUnmarshal",
+    # Infrastructure
+    "cBeanRegister", "cBeanValidate", "cConfig", "cLog", "cTalendJob",
+})
+
+
+def classify_esb_components(component_types: Iterable[str]) -> list[str]:
+    """Return the sorted, de-duplicated set of ESB/Camel component types present.
+
+    An empty result means the job is a plain DI job; a non-empty result means the
+    job is an ESB/Camel route.
+    """
+    return sorted({t for t in component_types if t in _ESB_COMPONENT_TYPES})
 
 
 def _extract_talend_external_system(component_type: str) -> str | None:
@@ -426,6 +463,12 @@ class TalendParser(BaseParser):
                 self._parse_node(elem, job)
             elif tag == "connection":
                 self._parse_connection(elem, job)
+
+        # Classify DI job vs ESB/Camel route from the parsed component types.
+        job.esb_component_types = classify_esb_components(
+            c.component_type for c in job.components
+        )
+        job.is_esb_route = bool(job.esb_component_types)
 
         return job
 

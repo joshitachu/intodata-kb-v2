@@ -22,6 +22,27 @@ For EVERY job:
 - Iteration patterns: tFlowToIterate / tLoop / tForEach -- what they iterate over and with what bounds
 - Dead paths: components or subjobs with no reachable trigger chain from any entry point
 
+### ESB_ROUTES
+CONDITIONAL -- applies ONLY to jobs the scanner classified as ESB/Camel routes
+(is_esb_route=true; identifiable by c-prefixed Camel components such as cRoute, cREST,
+cJMS, cKafkaInput, cSplitter, cAggregator, cWireTap, cProcessor). If NO job in this group
+is an ESB route, write this heading and state "No ESB/Camel routes in this group" -- do NOT
+force plain DI (tMap/t*) jobs into route framing.
+
+For EVERY ESB route job, do NOT use the source -> transform -> target -> schema framing used
+for DI jobs. Instead document the routing semantics:
+- Routing rules: the from() endpoint and each to()/route destination; content-based routing
+  (cMessageRouter / cRouteWhen / cRouteOtherwise) with the FULL predicate/condition expression
+- Endpoint definitions: every inbound and outbound endpoint URI (cREST/cRESTClient paths and
+  verbs, cJMS/cActiveMQ queues/topics, cKafkaInput/cKafkaOutput topics, cDirect/cVM channels,
+  file/FTP endpoints) -- mask credentials
+- EIP patterns in use: splitter (cSplitter), aggregator (cAggregator + correlation/completion
+  criteria), recipient list (cRecipientList), wire tap (cWireTap), message translator
+  (cProcessor / cSetBody / cMarshal / cUnmarshal) -- name the pattern and its configuration
+- Error / exception channels: onException / dead-letter routing, cErrorHandler usage, redelivery
+  policy, and which routes have NO exception handling (flag each explicitly)
+- Route-to-route and route-to-DI-job invocation (cTalendJob, cDirect between routes)
+
 ### DATA_FLOWS
 For EVERY tMap component:
 - Source table.column -> target table.column mapping (full column-level lineage)

@@ -9,7 +9,7 @@ from typing import Any
 
 from mcp_server.config import config
 from mcp_server.platforms import get_platform_strategy
-from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
+from mcp_server.providers.custom.constants import ESB_ROUTES_SECTION, GROUP_SUMMARY_SECTION
 from mcp_server.providers.custom.models import CoverageReport, FactsManifest, InvestigationReport, UnitFact
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_catalog
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, REQUIRED_SECTION_NAMES
@@ -468,6 +468,21 @@ def validate_analysis_depth(
     )
 
 
+def _esb_detected(esb_facts_path: Path) -> bool:
+    """Return True if the harness recorded ESB/Camel routes for this Talend run.
+
+    Reads the harness-written ``_preprocess/talend_esb_facts.json`` (whose
+    esb_detected flag is derived from the scanner's per-job is_esb_route field).
+    Absent or unreadable file means no ESB routes were detected.
+    """
+    if not esb_facts_path.exists():
+        return False
+    try:
+        return bool(json.loads(esb_facts_path.read_text(encoding="utf-8")).get("esb_detected"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
 def validate_analysis_guide_sections(
     analysis_dir: Path,
     facts: FactsManifest,
@@ -560,27 +575,21 @@ def validate_analysis_guide_sections(
             group_units = [u.name for u in group_facts]
         covered_ids.update(_unit_id(unit) for unit in group_facts if unit.name in model_text)
 
-    # If ESB components were detected in this Talend project, require ROUTE_GRAPH or ESB_ROUTES section.
-    esb_facts_path = analysis_dir.parent / "_preprocess" / "talend_esb_facts.json"
-    if esb_facts_path.exists():
-        try:
-            esb_data = json.loads(esb_facts_path.read_text(encoding="utf-8"))
-            if esb_data.get("esb_detected"):
-                full_analysis_text = " ".join(
-                    p.read_text(encoding="utf-8", errors="replace")
-                    for p in sorted(analysis_dir.glob("*.md"))
-                    if not p.name.startswith("_") and "_chunk_" not in p.name
-                )
-                has_route_section = bool(
-                    re.search(r"(?i)^#{1,6}\s*(ROUTE_GRAPH|ESB_ROUTES|ESB_ROUTE_GRAPH)", full_analysis_text, re.MULTILINE)
-                )
-                if not has_route_section:
-                    errors.append(
-                        "Talend ESB components detected (see talend_esb_facts.json) but Phase 2 analysis "
-                        "is missing a ROUTE_GRAPH or ESB_ROUTES section"
-                    )
-        except (json.JSONDecodeError, OSError):
-            pass
+    # ESB_ROUTES is a project-wide conditional section: required only when the scanner
+    # flagged at least one job as an ESB/Camel route (esb_detected). It uses the same
+    # _has_section coverage check as the required sections above -- one code path, one
+    # canonical section name (no ROUTE_GRAPH / ESB_ROUTE_GRAPH synonyms).
+    if _esb_detected(analysis_dir.parent / "_preprocess" / "talend_esb_facts.json"):
+        full_analysis_text = "\n".join(
+            p.read_text(encoding="utf-8", errors="replace")
+            for p in sorted(analysis_dir.glob("*.md"))
+            if not p.name.startswith("_") and "_chunk_" not in p.name
+        )
+        if not _has_section(full_analysis_text, ESB_ROUTES_SECTION):
+            errors.append(
+                f"Talend ESB/Camel routes detected but Phase 2 analysis is missing an "
+                f"{ESB_ROUTES_SECTION} section"
+            )
 
     return _coverage_report_from_identities(
         facts=facts,

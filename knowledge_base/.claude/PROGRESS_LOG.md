@@ -3,6 +3,28 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-07-06
+
+### [Feature]: Talend ESB/Camel route vs DI job classification (scanner-computed)
+
+- **Files changed** (from `git diff --stat HEAD`, plus two new untracked test files):
+  - `knowledge_base/CLAUDE.md` (Current Custom Harness Notes: names `talend_intelligence.py`, documents scanner-computed detection + `ESB_ROUTES` conditional section, fixing a prior doc/code mismatch)
+  - `knowledge_base/intodoc/src/intodoc/models.py` (`ParsedJob.is_esb_route: bool`, `ParsedJob.esb_component_types: list[str]`)
+  - `knowledge_base/intodoc/src/intodoc/platforms/talend/parser.py` (`_ESB_COMPONENT_TYPES` frozenset + `classify_esb_components()`; `_parse_job` sets both new fields from parsed component types)
+  - `knowledge_base/mcp-server/data/prompt_templates/phase2_platform_sections/talend.md` (new conditionally-worded `### ESB_ROUTES` section body: routing rules, endpoint definitions, EIP patterns, error/exception channels)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/constants.py` (new `ESB_ROUTES_SECTION = "ESB_ROUTES"`)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/prompt_packs.py` (`ESB_ROUTES_SECTION` added to existing `CONDITIONAL_SECTION_NAMES`)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/talend_intelligence.py` (`detect_talend_esb_patterns` now reads scanner-computed `is_esb_route`/`esb_component_types` per job instead of re-deriving; removed duplicated `_ESB_COMPONENT_TYPES` set)
+  - `knowledge_base/mcp-server/src/mcp_server/providers/custom/validators.py` (`validate_analysis_guide_sections`: new `_esb_detected()` helper; 3-synonym regex `ROUTE_GRAPH|ESB_ROUTES|ESB_ROUTE_GRAPH` replaced with the shared `_has_section(text, ESB_ROUTES_SECTION)` check used by required-section coverage)
+  - `knowledge_base/mcp-server/tests/test_providers/test_custom_provider.py` (3 new tests: ESB_ROUTES required-when-detected / passes-when-present / skipped-when-not-detected)
+  - New: `knowledge_base/intodoc/tests/test_platforms/test_talend_esb_classification.py` (7 tests: DI-only, single/multi ESB component, defaults, JSON round-trip)
+  - New: `knowledge_base/mcp-server/tests/test_providers/test_talend_intelligence.py` (6 tests: read-not-recompute behavior, old-cache defensive read, file-write gating)
+- **Problem**: Generated docs treated Talend ESB/Camel route jobs identically to plain DI jobs (source -> transform -> target -> schema framing), losing routing rules, endpoint definitions, EIP patterns, and error-channel semantics that actually matter for routes.
+- **Root cause**: Talend serializes both DI Jobs and ESB Routes into the same `.item`/`.properties` format; the only signal is `c`-prefixed Camel component usage vs `t`-prefixed DI components. That heuristic previously lived only in `talend_intelligence.py` as a late mcp-server-side sidecar (post-hoc `_ESB_COMPONENT_TYPES` match over raw `scan_result.json`), producing a `talend_esb_facts.json` file consumed only by a 3-synonym regex in the validator that hoped the LLM would organically add a matching heading — no prompt template or doc-catalog entry ever actually asked for one.
+- **Change**: Moved classification to the scanner (single source of truth): `TalendParser._parse_job` now computes `is_esb_route`/`esb_component_types` per job from its parsed components, flowing through `scan_result.json`. `talend_intelligence.py` now only aggregates those pre-computed fields (duplicated constant removed). Registered `ESB_ROUTES` as the one canonical section name in `CONDITIONAL_SECTION_NAMES` (same mechanism as `SOURCE_SQL`/`CUSTOM_CODE`), added real prompt guidance for it in the Talend platform prompt section, and consolidated the validator's bespoke regex into the existing `_has_section` coverage path — enforced only when the scanner flagged at least one route job, never on pure-DI projects.
+- **Why this approach**: Per this repo's "no workarounds / generalize fixes / use existing design patterns" rules, a second late heuristic would have compounded the original problem. Computing the fact where jobs are actually parsed makes it available to grouping, prompts, and doc catalog uniformly, and reusing `CONDITIONAL_SECTION_NAMES`/`_has_section` avoids a parallel one-off coverage code path.
+- **Verification**: `python3 -m py_compile` clean on all touched files; `git diff --check` clean. Independently re-run (not just agent-reported): `test_talend_esb_classification.py` 7 passed, `test_talend_intelligence.py` 6 passed, full `test_custom_provider.py` 208 passed. Pre-existing `test_talend_parser.py` integration tests skipped (8) — `vaxxinova-talend` fixture absent in this checkout, unrelated to this change. Implemented by a delegated Opus subagent per user instruction (pipeline gate explicitly waived for this change — not logged as protocol debt since the user directed the shortcut directly, not an emergency patch); diff was read and reviewed line-by-line before this log entry, not accepted on the agent's summary alone.
+
 ## Session: 2026-07-02
 
 ### [Feature + Fix]: Living-Document Reingestion (Slices 1-5) + live-E2E bug fixes

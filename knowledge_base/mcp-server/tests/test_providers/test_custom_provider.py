@@ -1529,6 +1529,71 @@ def test_analysis_guide_section_gate_passes_with_all_talend_sections(tmp_path):
     assert report.ok
 
 
+def _write_esb_facts(preprocess_dir: Path, *, detected: bool) -> None:
+    preprocess_dir.mkdir(parents=True, exist_ok=True)
+    (preprocess_dir / "talend_esb_facts.json").write_text(
+        json.dumps({"esb_detected": detected, "esb_component_types": ["cRoute"] if detected else []}),
+        encoding="utf-8",
+    )
+
+
+def test_analysis_guide_section_gate_requires_esb_routes_when_detected(tmp_path):
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    _write_esb_facts(tmp_path / "_preprocess", detected=True)
+    # All required Talend sections present EXCEPT ESB_ROUTES.
+    names = [n for n in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY") if n != "ESB_ROUTES"]
+    body = "\n".join(f"### {name}\ncontent for {name} and a.\n" for name in names)
+    (analysis_dir / "A.md").write_text(
+        "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n" + body,
+        encoding="utf-8",
+    )
+
+    report = validate_analysis_guide_sections(analysis_dir, facts)
+
+    assert not report.ok
+    assert any("ESB_ROUTES" in error for error in report.errors)
+
+
+def test_analysis_guide_section_gate_passes_with_esb_routes_when_detected(tmp_path):
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    _write_esb_facts(tmp_path / "_preprocess", detected=True)
+    # ANALYSIS_SECTION_NAMES now includes ESB_ROUTES.
+    body = "\n".join(f"### {name}\ncontent for {name} and a.\n" for name in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY"))
+    (analysis_dir / "A.md").write_text(
+        "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n" + body,
+        encoding="utf-8",
+    )
+
+    report = validate_analysis_guide_sections(analysis_dir, facts)
+
+    assert report.ok
+
+
+def test_analysis_guide_section_gate_skips_esb_routes_when_not_detected(tmp_path):
+    _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
+    facts = build_facts_manifest("proj", tmp_path / "scan")
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    # No talend_esb_facts.json -> ESB_ROUTES not required even though it is absent.
+    names = [n for n in (*ANALYSIS_SECTION_NAMES, "GROUP_SUMMARY") if n != "ESB_ROUTES"]
+    body = "\n".join(f"### {name}\ncontent for {name} and a.\n" for name in names)
+    (analysis_dir / "A.md").write_text(
+        "## Coverage\n\n- COVERED: a\n\n## Model Analysis\n\n" + body,
+        encoding="utf-8",
+    )
+
+    report = validate_analysis_guide_sections(analysis_dir, facts)
+
+    assert report.ok
+    assert not any("ESB_ROUTES" in error for error in report.errors)
+
+
 def test_normalize_analysis_guide_headings_accepts_model_heading_level(tmp_path):
     _write_scan(tmp_path / "scan", platform="talend", jobs=[_job("a", "A")])
     facts = build_facts_manifest("proj", tmp_path / "scan")

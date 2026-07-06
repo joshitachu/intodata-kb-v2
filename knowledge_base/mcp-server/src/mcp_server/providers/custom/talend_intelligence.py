@@ -15,24 +15,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-_ESB_COMPONENT_TYPES = {
-    # Route structure
-    "cRoute", "cRouteWhen", "cRouteOtherwise",
-    # REST / HTTP endpoints
-    "cREST", "cRESTClient",
-    # Messaging
-    "cJMS", "cJMSOutput", "cActiveMQ", "cKafkaOutput", "cKafkaInput",
-    "cMQConnectionFactory", "cMessagingEndpoint",
-    # Camel EIP patterns
-    "cMessageRouter", "cSplitter", "cAggregator", "cRecipientList",
-    "cWireTap", "cDirect",
-    # Transformation / enrichment
-    "cProcessor", "cSetBody", "cSetHeader", "cSetProperty", "cRemoveHeader",
-    "cConvertBodyTo", "cMarshal", "cUnmarshal",
-    # Infrastructure
-    "cBeanRegister", "cBeanValidate", "cConfig", "cLog", "cTalendJob",
-}
-
 _RECYCLE_BIN_RE = re.compile(r"(?i)(recycle.?bin|_recycle_|\.recycle)", re.IGNORECASE)
 _COPY_OF_RE = re.compile(r"^Copy_of_", re.IGNORECASE)
 _ENCRYPTED_VALUE_RE = re.compile(r"enc:[a-zA-Z0-9._]+:")
@@ -57,24 +39,30 @@ class TalendActivityFlags(BaseModel):
 
 
 def detect_talend_esb_patterns(scan_result: dict[str, Any]) -> TalendESBFacts:
-    """Scan a Talend scan_result dict for ESB component usage.
+    """Aggregate ESB/Camel route facts from a Talend scan_result dict.
 
-    Returns a TalendESBFacts describing what was found.  If no ESB components
-    are present the result has esb_detected=False and empty lists.
+    Consumes the scanner-computed ``is_esb_route`` / ``esb_component_types`` fields
+    on each job (the single source of truth lives in the intodoc Talend parser).
+    Jobs are not re-classified here; the component-type heuristic is intentionally
+    not duplicated. A scan cache produced before those fields existed simply has
+    ``is_esb_route`` absent, so the job is treated as a plain DI job -- a defensive
+    read across the intodoc/mcp-server JSON boundary, not a re-derivation fallback.
+
+    Returns a TalendESBFacts describing what was found. If no ESB routes are present
+    the result has esb_detected=False and empty lists.
     """
     jobs: list[dict[str, Any]] = scan_result.get("jobs") or []
     esb_job_names: list[str] = []
     esb_type_set: set[str] = set()
 
     for job in jobs:
+        if not job.get("is_esb_route"):
+            continue
         job_name: str = str(job.get("name") or job.get("job_name") or "")
-        components: list[dict[str, Any]] = job.get("components") or []
-        for comp in components:
-            comp_type: str = str(comp.get("type") or comp.get("component_type") or "")
-            if comp_type in _ESB_COMPONENT_TYPES:
-                esb_type_set.add(comp_type)
-                if job_name and job_name not in esb_job_names:
-                    esb_job_names.append(job_name)
+        if job_name and job_name not in esb_job_names:
+            esb_job_names.append(job_name)
+        for comp_type in job.get("esb_component_types") or []:
+            esb_type_set.add(str(comp_type))
 
     return TalendESBFacts(
         esb_detected=bool(esb_job_names),

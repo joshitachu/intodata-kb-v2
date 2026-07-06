@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mcp_server.providers.custom.constants import ESB_ROUTES_SECTION
+
 
 REQUIRED_SECTION_NAMES: tuple[str, ...] = (
     "COMPONENTS",
@@ -26,10 +28,14 @@ REQUIRED_SECTION_NAMES: tuple[str, ...] = (
     "RISK_FLAGS",
 )
 
-# Only required when the group actually contains SQL queries or custom code
+# Only required when the group actually contains SQL queries, custom code, or ESB
+# routes. ESB_ROUTES is prompted for on every Talend run (conditionally worded in
+# the platform section) but only enforced by the validator when the scanner flagged
+# at least one job as is_esb_route=true.
 CONDITIONAL_SECTION_NAMES: tuple[str, ...] = (
     "SOURCE_SQL",
     "CUSTOM_CODE",
+    ESB_ROUTES_SECTION,
 )
 
 ANALYSIS_SECTION_NAMES: tuple[str, ...] = REQUIRED_SECTION_NAMES + CONDITIONAL_SECTION_NAMES

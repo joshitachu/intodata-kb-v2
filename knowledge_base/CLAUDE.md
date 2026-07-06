@@ -117,6 +117,20 @@ This is the primary method for generating project documentation. Follow it exact
   and are rendered via `providers/custom/prompt_renderer.py` (`${SLOT}` substitution).
   Plugin packs can override individual phase prompts by placing `.md` files in
   `{plugin_pack_dir}/prompts/`.
+- **Talend ESB detection (`providers/custom/talend_intelligence.py`)**: Talend serializes
+  DI Jobs and ESB/Camel Routes into the same `.item` format; the only signal is c-prefixed
+  Camel component usage. Classification is now **scanner-computed** -- the intodoc Talend
+  parser (`intodoc/src/intodoc/platforms/talend/parser.py`, `_ESB_COMPONENT_TYPES` +
+  `classify_esb_components`) sets `is_esb_route` / `esb_component_types` on each `ParsedJob`,
+  and these flow through `scan_result.json`. `talend_intelligence.py::detect_talend_esb_patterns`
+  only **consumes** those fields (no duplicated component set); `write_talend_intelligence`
+  writes `_preprocess/talend_esb_facts.json` when any route is detected. Guidance is wired
+  into Phase 2 via a conditional `ESB_ROUTES` section (`ESB_ROUTES_SECTION` in `constants.py`,
+  registered in `CONDITIONAL_SECTION_NAMES`, with a conditionally-worded body in
+  `data/prompt_templates/phase2_platform_sections/talend.md` covering routing rules, endpoints,
+  EIP patterns, and error/exception channels). `validators.py::validate_analysis_guide_sections`
+  enforces the single canonical `ESB_ROUTES` heading (via the shared `_has_section` check) only
+  when `talend_esb_facts.json` reports `esb_detected` -- pure-DI projects never hard-fail on it.
 
 ### Steven Project Finding
 

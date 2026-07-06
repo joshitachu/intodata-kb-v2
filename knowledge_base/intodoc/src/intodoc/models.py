@@ -112,6 +112,10 @@ class ParsedJob(BaseModel):
     group: str = ""
     subgroup: str = ""
     active: bool = True
+    # ESB/Camel route classification (Talend serializes DI Jobs and ESB Routes in
+    # the same .item format; the only signal is c-prefixed Camel component usage).
+    is_esb_route: bool = False
+    esb_component_types: list[str] = Field(default_factory=list)
 
 
 class MetadataConnection(BaseModel):
