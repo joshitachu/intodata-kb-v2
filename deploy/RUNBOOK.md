@@ -409,6 +409,96 @@ block, logs, or the repo. It is read from a mounted file.
 
 To disable again, set `RUNTIME_PROVIDER_KEY=` (empty) and restart the backend.
 
+## 14. Enable GitHub App Repo Connection (Optional)
+
+Skip unless the client connects repositories via the GitHub App instead of
+per-project Personal Access Tokens. When enabled, a repo connects by installing
+the App on the owner's org; the backend stores only a non-secret installation id
+and mints short-lived (~1h) installation tokens on demand. PAT connection remains
+a fallback and is unaffected.
+
+Requires a public HTTPS domain (section 9). The browser connect flow needs a
+reachable callback URL — it does NOT work against `localhost`/`127.0.0.1`
+(GitHub rejects them). The domain from section 1/5 is what makes it work.
+
+1. Register the GitHub App at `https://github.com/settings/apps` → **New GitHub App**:
+   - **Callback URL**: `https://${CLIENT}.${NEXUS_BASE}/api/source/github/callback`
+     (the frontend route — nginx returns 404 for `/mcp/` on customer domains, so the
+     callback must go through the Next.js app, not the MCP path).
+   - Check **"Request user authorization (OAuth) during installation"** (required —
+     it makes GitHub return the `code` the ownership check uses).
+   - Leave **Setup URL** blank.
+   - **Webhook** → Active; URL `https://${CLIENT}.${NEXUS_BASE}/webhook/github/webhook`
+     (nginx proxies `/webhook/` → MCP); Secret = the `MCP_GITHUB_WEBHOOK_SECRET` value.
+   - **Repository permissions**: Contents = Read-only, Metadata = Read-only.
+   - **Subscribe to events**: Push, Pull request (these appear only after Contents is set).
+   - **Where can this GitHub App be installed?**: Any account (multi-tenant — customers
+     install on their own orgs).
+   - After creating: note **App ID**, **Client ID**; generate a **Client secret** and a
+     **private key** (`.pem`).
+
+2. Store the private key as a mounted file (never in `.env`, the Compose block, or the repo):
+
+   ```bash
+   sudo install -d -m 700 /opt/intodata/secrets
+   sudo install -m 600 /dev/null /opt/intodata/secrets/github-app-private-key.pem
+   sudo tee /opt/intodata/secrets/github-app-private-key.pem >/dev/null   # paste .pem contents, then Ctrl-D
+   ```
+
+   Bind-mount it into the `mcp-server` service in `docker-compose.yml` (or an override):
+
+   ```yaml
+   mcp-server:
+     volumes:
+       - /opt/intodata/secrets/github-app-private-key.pem:/run/secrets/github-app-private-key.pem:ro
+   ```
+
+3. Set the App variables in `.env` (the private key is referenced by path, not inline):
+
+   ```bash
+   MCP_GITHUB_APP_ID=<App ID>
+   MCP_GITHUB_APP_SLUG=<app URL slug>
+   MCP_GITHUB_APP_CLIENT_ID=<Client ID>
+   MCP_GITHUB_APP_CLIENT_SECRET=<Client secret>
+   MCP_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app-private-key.pem
+   # leave MCP_GITHUB_APP_POST_INSTALL_REDIRECT empty — the frontend owns the redirect
+   # MCP_PUBLIC_URL and MCP_GITHUB_WEBHOOK_SECRET are already set (sections 1/6)
+   ```
+
+   `MCP_GITHUB_APP_CLIENT_ID`/`_SECRET` are mandatory for multi-tenant deployments:
+   the callback verifies the connecting user actually controls the installation via
+   their own `GET /user/installations` before binding it. Without them the callback
+   binds without verification (single-tenant only) and logs a warning.
+
+4. Apply migrations and recreate the affected services (env change needs `up -d`, not
+   `restart`; code is already in the images built in section 6):
+
+   ```bash
+   docker compose exec -w /app mcp-server alembic upgrade head   # adds 019 + 020
+   docker compose up -d mcp-server frontend
+   ```
+
+5. Verify the App auth works (should print `configured: True | oauth_configured: True`
+   and a JWT length):
+
+   ```bash
+   docker compose exec mcp-server python -c "from mcp_server.utils.github_app import build_app_jwt, github_app_configured, github_app_oauth_configured; print('configured:', github_app_configured(), '| oauth_configured:', github_app_oauth_configured()); print('jwt len:', len(build_app_jwt()))"
+   ```
+
+6. End-to-end check: log into the app, Settings → Sources → **Connect with GitHub App**
+   → install on an org → GitHub redirects back to the callback → pick a repo →
+   **Connect & scan**. The project appears under "Existing sources" with
+   `connection_kind=app` and no stored token.
+
+Notes:
+- **First-time install** redirects cleanly. Re-configuring an already-installed App from
+  GitHub's own settings page does not redirect back — connect from within Nexus instead.
+- If the alembic upgrade reports `github_app_installations already exists` (a prior
+  `create_all` made it), run `alembic upgrade 019_add_github_app_installation` then
+  `alembic stamp 020_add_github_app_installations`.
+- To disable, unset the `MCP_GITHUB_APP_*` variables and `docker compose up -d mcp-server`;
+  PAT-connected repos keep working.
+
 ## Gap Capture
 
 If a deployment step fails:
