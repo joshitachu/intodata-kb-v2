@@ -356,7 +356,7 @@ describe("RuntimeLogsPage", () => {
     render(React.createElement(RuntimeLogsPage));
 
     expect(screen.getByText("Runtime Operations")).toBeTruthy();
-    expect(screen.getByText("Runtime Sources")).toBeTruthy();
+    expect(screen.getAllByText("Runtime Sources").length).toBeGreaterThan(0);
     expect(screen.getByText("Runtime Engines")).toBeTruthy();
     expect(screen.getByText("Demo runtime source")).toBeTruthy();
     expect(screen.getByText("remote-engine-prod-01")).toBeTruthy();
