@@ -34,6 +34,8 @@ class ProjectResponse(BaseModel):
     auto_reingest_error: str | None = None
     git_update_summary: dict | None = None
     has_github_token: bool = False
+    connection_kind: str = "pat"  # "pat" | "app"
+    github_account_login: str | None = None
     webhook_status: str | None = None  # "active" | "not_registered" | "unknown" | None
     instruction_pack_dir: str | None = None
     plugin_pack_id: int | None = None
@@ -89,7 +91,11 @@ class AddRepoRequest(BaseModel):
     )
     platform: str = Field(default="talend", description="Integration platform (talend|workato|lobster|generic)")
     display_name: str | None = None
-    github_token: str | None = Field(None, description="GitHub PAT for private repos and webhook auto-registration")
+    github_token: str | None = Field(None, description="GitHub PAT (fallback connection for private repos and webhook auto-registration)")
+    installation_id: int | None = Field(
+        None,
+        description="GitHub App installation id (preferred connection; short-lived tokens are minted on demand)",
+    )
 
     @field_validator("platform")
     @classmethod
@@ -104,6 +110,24 @@ class AddRepoRequest(BaseModel):
 
 class UpdateGithubTokenRequest(BaseModel):
     github_token: str = Field(..., min_length=1, description="GitHub Personal Access Token")
+
+
+class GithubAppConnectResponse(BaseModel):
+    """Where to send the user to install/authorize the GitHub App."""
+    install_url: str = Field(..., description="GitHub App install URL carrying a signed state token")
+
+
+class GithubAppRepoItem(BaseModel):
+    full_name: str | None = None
+    clone_url: str | None = None
+    private: bool | None = None
+    default_branch: str | None = None
+
+
+class GithubAppReposResponse(BaseModel):
+    installation_id: int
+    account_login: str | None = None
+    repositories: list[GithubAppRepoItem] = Field(default_factory=list)
 
 
 class ReingestionReadinessResponse(BaseModel):

@@ -56,6 +56,24 @@ class MCPServerConfig(BaseSettings):
     dev_webhook_skip_signature: bool = False  # MCP_DEV_WEBHOOK_SKIP_SIGNATURE
     token_encryption_key: str = ""            # MCP_TOKEN_ENCRYPTION_KEY — Fernet key for PAT storage
     public_url: str = ""                      # MCP_PUBLIC_URL — public-facing base URL for webhook callbacks
+
+    # GitHub App (repo connection via install flow instead of stored PATs).
+    # When configured, repos connect by installing this App on the owner's org;
+    # the backend stores only a non-secret installation id and mints short-lived
+    # installation tokens on demand. PAT connection remains a fallback.
+    github_app_id: str = ""                   # MCP_GITHUB_APP_ID — numeric App ID (the JWT issuer)
+    github_app_slug: str = ""                 # MCP_GITHUB_APP_SLUG — App URL slug, for the install redirect
+    github_app_private_key: str = ""          # MCP_GITHUB_APP_PRIVATE_KEY — PEM (literal or with \n escapes)
+    github_app_private_key_file: str = ""     # MCP_GITHUB_APP_PRIVATE_KEY_FILE — path to PEM (preferred over inline)
+    # App OAuth client (user-authorization during install). Used to verify — via the
+    # connecting user's own GET /user/installations — that they actually control the
+    # installation before binding it. Required for multi-tenant deployments.
+    github_app_client_id: str = ""            # MCP_GITHUB_APP_CLIENT_ID
+    github_app_client_secret: str = ""        # MCP_GITHUB_APP_CLIENT_SECRET
+    # Frontend URL to send the browser back to after a GitHub App install. The
+    # callback appends ?installation_id=... so the UI can show the repo picker.
+    # Empty = the callback returns JSON instead of redirecting.
+    github_app_post_install_redirect: str = ""  # MCP_GITHUB_APP_POST_INSTALL_REDIRECT
     allowed_origins: str = "http://localhost:3000,http://localhost:5173,http://localhost:8001"
 
     # Network hardening — mirror of RAG backend. Empty ALLOWED_IPS = disabled.
@@ -369,6 +387,18 @@ def validate_production_secrets() -> None:
         raise ValueError(
             "CRITICAL: MCP_INGEST_API_KEY is empty. "
             "Set a strong random key in production (used to push generated docs to RAG)."
+        )
+    # GitHub App is optional (PAT fallback exists), but a PARTIAL configuration is a
+    # latent failure: the install redirect or token minting will break at runtime.
+    _app_id = bool(config.github_app_id)
+    _app_key = bool(config.github_app_private_key or config.github_app_private_key_file)
+    _app_slug = bool(config.github_app_slug)
+    if (_app_id or _app_key or _app_slug) and not (_app_id and _app_key and _app_slug):
+        raise ValueError(
+            "CRITICAL: GitHub App is partially configured. Set all of "
+            "MCP_GITHUB_APP_ID, MCP_GITHUB_APP_SLUG, and "
+            "MCP_GITHUB_APP_PRIVATE_KEY (or MCP_GITHUB_APP_PRIVATE_KEY_FILE), "
+            "or leave all unset to use PAT connection only."
         )
 
 

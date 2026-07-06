@@ -21,7 +21,7 @@ _currently_generating: set[str] = set()
 _generation_tasks: dict[str, asyncio.Task] = {}
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import func, select, text
 
 from contextlib import nullcontext
@@ -43,6 +43,9 @@ from mcp_server.schemas import (
     DocReview,
     FullRebuildRequest,
     GenerateRequest,
+    GithubAppConnectResponse,
+    GithubAppRepoItem,
+    GithubAppReposResponse,
     GenerateRunListResponse,
     GenerateRunResponse,
     GenerateSummariesResponse,
@@ -80,6 +83,7 @@ from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.git_remote_service import (
     ReingestionReadinessReport,
     authenticated_url,
+    authenticated_url_plaintext,
     git_subprocess_env,
     inspect_reingestion_readiness,
     pull_remote_ff_only,
@@ -135,6 +139,8 @@ def _project_to_response(p) -> ProjectResponse:
         auto_reingest_error=sanitize_git_error(p.auto_reingest_error) if p.auto_reingest_error else p.auto_reingest_error,
         git_update_summary=p.git_update_summary,
         has_github_token=bool(getattr(p, "github_token_enc", None)),
+        connection_kind=getattr(p, "connection_kind", "pat") or "pat",
+        github_account_login=getattr(p, "github_account_login", None),
         webhook_status=webhook_status,
         instruction_pack_dir=getattr(p, "instruction_pack_dir", None),
         plugin_pack_id=getattr(p, "plugin_pack_id", None),
@@ -290,6 +296,18 @@ def _build_reingestion_status_response(
 @router.post("/add-repo", response_model=ProjectResponse)
 async def add_repo(req: AddRepoRequest, request: Request):
     """Register a project (URL, local path, or 'zip')."""
+    # Multi-tenant guard: a caller may only use a GitHub App installation they own.
+    if req.installation_id:
+        _auth_payload = getattr(request.state, "auth_payload", None)
+        _uid = int(_auth_payload.get("sub", 0)) if _auth_payload else 0
+        from mcp_server.services.github_app_ownership import authorize_installation
+        async with async_session_factory() as _authdb:
+            if not await authorize_installation(_authdb, int(req.installation_id), _uid):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not have access to this GitHub App installation",
+                )
+
     url = req.url
     path = Path(url)
 
@@ -318,14 +336,30 @@ async def add_repo(req: AddRepoRequest, request: Request):
         repo_url = strip_url_credentials(url)
         clone_dir = config.repos_dir / req.project_id
         if not clone_dir.exists():
-            _token_enc_tmp: str | None = None
-            if req.github_token:
+            # Resolve a clone credential. GitHub App installation (preferred): mint a
+            # short-lived token; PAT (fallback): inject the encrypted token. Neither:
+            # attempt an unauthenticated clone (public repo).
+            if req.installation_id:
+                from mcp_server.utils.github_app import mint_installation_token
+                try:
+                    _minted = await mint_installation_token(int(req.installation_id))
+                except Exception as exc:
+                    logger.warning("Installation token mint failed for %s: %s", req.project_id, exc)
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Could not authenticate via the GitHub App installation",
+                    )
+                clone_url = authenticated_url_plaintext(repo_url or url, _minted)
+            elif req.github_token:
                 from mcp_server.utils.encryption import encrypt_token as _encrypt_token
+                _token_enc_tmp: str | None = None
                 try:
                     _token_enc_tmp = _encrypt_token(req.github_token)
                 except Exception:
                     _token_enc_tmp = None
-            clone_url = authenticated_url(repo_url or url, _token_enc_tmp)
+                clone_url = authenticated_url(repo_url or url, _token_enc_tmp)
+            else:
+                clone_url = repo_url or url
             _clone_proc = await asyncio.create_subprocess_exec(
                 "git", "clone", "--", clone_url, str(clone_dir),
                 stdout=asyncio.subprocess.PIPE,
@@ -361,6 +395,16 @@ async def add_repo(req: AddRepoRequest, request: Request):
         except Exception as exc:
             logger.warning("Failed to encrypt GitHub token for %s: %s", req.project_id, exc)
 
+    # Resolve the connection kind. A GitHub App installation is preferred and stores
+    # only a non-secret installation id; the account login is best-effort for display.
+    account_login: str | None = None
+    if source_type == "git" and req.installation_id:
+        try:
+            from mcp_server.utils.github_app import get_installation_account_login
+            account_login = await get_installation_account_login(int(req.installation_id))
+        except Exception as exc:
+            logger.warning("Could not resolve installation account for %s: %s", req.project_id, exc)
+
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
         project = await registry.add_project(
@@ -374,6 +418,12 @@ async def add_repo(req: AddRepoRequest, request: Request):
 
         if token_enc:
             project.github_token_enc = token_enc
+
+        if source_type == "git" and req.installation_id:
+            project.connection_kind = "app"
+            project.github_installation_id = int(req.installation_id)
+            if account_login:
+                project.github_account_login = account_login
 
         # Auto-assign creator to the new project so they can see it
         auth_payload = getattr(request.state, "auth_payload", None)
@@ -392,7 +442,9 @@ async def add_repo(req: AddRepoRequest, request: Request):
         await db.commit()
         await db.refresh(project)
 
-    # Auto-register webhook after project is committed (best-effort, non-blocking)
+    # Auto-register a per-project webhook only for PAT connections. App connections
+    # receive events via the App-level webhook, so this block is skipped for them
+    # (guarded by req.github_token, which App-only connections do not set).
     if source_type == "git" and req.github_token and repo_url and config.public_url and config.github_webhook_secret:
         webhook_url = config.public_url.rstrip("/") + "/webhook/github/webhook"
         try:
@@ -1002,6 +1054,164 @@ async def get_github_webhook_status(project_id: str, request: Request):
             await db2.commit()
 
     return {"project_id": project_id, "webhook_status": status, "webhook_id": project.github_webhook_id}
+
+
+# --- GitHub App install lifecycle --------------------------------------------
+
+_APP_STATE_PURPOSE = "github_app_install"
+
+
+def _sign_app_state(project_id: str | None) -> str:
+    """Sign a short-lived state token carrying the (optional) project to attach."""
+    from jose import jwt as _jwt
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    claims = {
+        "purpose": _APP_STATE_PURPOSE,
+        "pid": project_id or "",
+        "exp": int((now + datetime.timedelta(minutes=15)).timestamp()),
+        "iat": int(now.timestamp()),
+    }
+    return _jwt.encode(claims, config.jwt_secret_key, algorithm=config.jwt_algorithm)
+
+
+def _verify_app_state(state: str | None) -> str | None:
+    """Validate the install state token and return its project id (or None)."""
+    if not state:
+        return None
+    from jose import JWTError, jwt as _jwt
+
+    try:
+        claims = _jwt.decode(state, config.jwt_secret_key, algorithms=[config.jwt_algorithm])
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired install state")
+    if claims.get("purpose") != _APP_STATE_PURPOSE:
+        raise HTTPException(status_code=400, detail="Invalid install state")
+    return claims.get("pid") or None
+
+
+@router.get("/github/app/connect", response_model=GithubAppConnectResponse)
+async def github_app_connect(request: Request, project_id: str | None = Query(None)):
+    """Return the GitHub App install URL (carrying signed state) to redirect the user to."""
+    from mcp_server.utils.github_app import github_app_configured, install_url
+
+    if not github_app_configured():
+        raise HTTPException(status_code=503, detail="GitHub App is not configured on this server")
+    if project_id:
+        await require_project_access(request, project_id)
+    return GithubAppConnectResponse(install_url=install_url(_sign_app_state(project_id)))
+
+
+@router.get("/github/app/callback")
+async def github_app_callback(
+    request: Request,
+    installation_id: int = Query(...),
+    setup_action: str | None = Query(None),
+    state: str | None = Query(None),
+    code: str | None = Query(None),
+):
+    """Post-install redirect: verify the user owns the installation, bind it, and bounce to the UI."""
+    from mcp_server.utils.github_app import (
+        exchange_user_access_token,
+        get_installation_account_login,
+        github_app_oauth_configured,
+        user_can_access_installation,
+    )
+    from mcp_server.services.github_app_ownership import record_installation_owner
+
+    project_id = _verify_app_state(state)
+
+    auth_payload = getattr(request.state, "auth_payload", None)
+    user_id = int(auth_payload.get("sub", 0)) if auth_payload else 0
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Multi-tenant guard: prove the connecting user actually controls this installation
+    # (their own GET /user/installations) before binding it to them. Without the OAuth
+    # client configured we cannot verify — that is only safe on single-tenant deployments.
+    if github_app_oauth_configured():
+        if not code:
+            raise HTTPException(
+                status_code=400,
+                detail="Authorization code missing — enable 'Request user authorization during installation' on the GitHub App",
+            )
+        try:
+            user_token = await exchange_user_access_token(code)
+            owns = await user_can_access_installation(user_token, int(installation_id))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("Installation ownership verification failed for %s: %s", installation_id, exc)
+            raise HTTPException(status_code=502, detail="Could not verify installation ownership with GitHub")
+        if not owns:
+            raise HTTPException(status_code=403, detail="You do not have access to this GitHub App installation")
+    else:
+        logger.warning(
+            "GitHub App OAuth is not configured — binding installation %s without ownership "
+            "verification. This is only safe on a single-tenant deployment.",
+            installation_id,
+        )
+
+    account_login: str | None = None
+    try:
+        account_login = await get_installation_account_login(int(installation_id))
+    except Exception as exc:
+        logger.warning("Could not resolve installation account for %s: %s", installation_id, exc)
+
+    from sqlalchemy import update as _update
+    from mcp_server.db.models import Project as _Project
+    async with async_session_factory() as db:
+        await record_installation_owner(db, int(installation_id), user_id, account_login)
+        if project_id:
+            await require_project_access(request, project_id)
+            await db.execute(
+                _update(_Project)
+                .where(_Project.id == project_id)
+                .values(
+                    connection_kind="app",
+                    github_installation_id=int(installation_id),
+                    github_account_login=account_login,
+                )
+            )
+        await db.commit()
+
+    redirect = config.github_app_post_install_redirect
+    if redirect:
+        sep = "&" if "?" in redirect else "?"
+        return RedirectResponse(f"{redirect}{sep}installation_id={installation_id}&connected=1")
+    return {"installation_id": installation_id, "project_id": project_id, "account_login": account_login, "connected": True}
+
+
+@router.get("/github/app/installations/{installation_id}/repos", response_model=GithubAppReposResponse)
+async def github_app_installation_repos(installation_id: int, request: Request):
+    """List repositories an installation can access (for the connect repo-picker)."""
+    from mcp_server.utils.github_app import (
+        get_installation_account_login,
+        github_app_configured,
+        list_installation_repositories,
+    )
+
+    if not github_app_configured():
+        raise HTTPException(status_code=503, detail="GitHub App is not configured on this server")
+
+    auth_payload = getattr(request.state, "auth_payload", None)
+    user_id = int(auth_payload.get("sub", 0)) if auth_payload else 0
+    from mcp_server.services.github_app_ownership import authorize_installation
+    async with async_session_factory() as db:
+        if not await authorize_installation(db, int(installation_id), user_id):
+            raise HTTPException(status_code=403, detail="You do not have access to this GitHub App installation")
+
+    try:
+        repos = await list_installation_repositories(int(installation_id))
+        account_login = await get_installation_account_login(int(installation_id))
+    except Exception as exc:
+        logger.warning("Failed to list installation repos for %s: %s", installation_id, exc)
+        raise HTTPException(status_code=502, detail="Could not list repositories for this installation")
+    return GithubAppReposResponse(
+        installation_id=int(installation_id),
+        account_login=account_login,
+        repositories=[GithubAppRepoItem(**r) for r in repos],
+    )
 
 
 _PERMANENT_HTTP_CODES = {400, 401, 403, 404, 422}

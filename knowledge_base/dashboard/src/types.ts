@@ -21,6 +21,8 @@ export interface Project {
   auto_reingest_error: string | null;
   git_update_summary: Record<string, unknown> | null;
   has_github_token: boolean;
+  connection_kind: "pat" | "app";
+  github_account_login: string | null;
   webhook_status: "active" | "not_registered" | "unknown" | null;
   instruction_pack_dir: string | null;
   plugin_pack_id: number | null;

@@ -60,6 +60,12 @@ class Project(Base):
     )
     github_token_enc: Mapped[str | None] = mapped_column(String(500), nullable=True)
     github_webhook_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # GitHub App connection (repo access via installation instead of a stored PAT).
+    # connection_kind: "pat" (default, legacy/fallback) | "app". github_installation_id
+    # is a non-secret reference used to mint short-lived tokens on demand.
+    connection_kind: Mapped[str] = mapped_column(String(10), default="pat", server_default="pat", nullable=False)
+    github_installation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    github_account_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
     instruction_pack_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     plugin_pack_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("plugin_packs.id", ondelete="SET NULL"), nullable=True
@@ -78,6 +84,23 @@ class Project(Base):
     doc_rag_hashes: Mapped[list[ProjectDocRagHash]] = relationship(
         back_populates="project", passive_deletes=True
     )
+
+
+class GithubAppInstallation(Base):
+    """Ownership binding for a GitHub App installation.
+
+    Records which user connected an installation (verified at callback time via the
+    user's own GET /user/installations). Multi-tenant deployments authorize the
+    repos / add-repo / callback endpoints against this so a user cannot use another
+    tenant's (enumerable) installation id. owner_user_id references the RAG users
+    table, which MCP accesses via raw SQL, so it is a plain indexed column (no FK).
+    """
+
+    __tablename__ = "github_app_installations"
+
+    installation_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    owner_user_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    account_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class ScanRun(Base):

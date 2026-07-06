@@ -104,11 +104,25 @@ export const api = {
       InstanceSettingsResponseSchema
     ),
 
-  addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string; github_token?: string }) =>
+  addRepo: (data: { url: string; project_id: string; platform?: string; display_name?: string; github_token?: string; installation_id?: number }) =>
     request<import("../types").Project>("/mcp/add-repo", {
       method: "POST",
       body: JSON.stringify(data),
     }, ProjectSchema),
+
+  // GitHub App connect: get the install URL to redirect the operator to.
+  getGithubAppInstallUrl: (projectId?: string) =>
+    request<{ install_url: string }>(
+      `/mcp/github/app/connect${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+
+  // List repos an installation can access (for the repo-picker).
+  listGithubAppRepos: (installationId: number) =>
+    request<{
+      installation_id: number;
+      account_login: string | null;
+      repositories: { full_name: string | null; clone_url: string | null; private: boolean | null; default_branch: string | null }[];
+    }>(`/mcp/github/app/installations/${installationId}/repos`),
 
   updateGithubToken: (projectId: string, github_token: string) =>
     request<import("../types").Project>(`/mcp/projects/${projectId}/github-token`, {
