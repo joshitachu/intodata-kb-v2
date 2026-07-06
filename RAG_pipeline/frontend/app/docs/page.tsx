@@ -5,13 +5,17 @@ import { BookOpen } from "lucide-react";
 import { DocsProjectSelector } from "@/components/DocsProjectSelector";
 import { DocList } from "@/components/DocList";
 import { DocPreview } from "@/components/DocPreview";
+import { MobileTopBar } from "@/components/mobile/MobileTopBar";
 import { useProjectDocs } from "@/hooks/useProjectDocs";
 import { useChatContext } from "@/contexts/ChatContext";
+import { useViewport } from "@/hooks/useViewport";
+import { cn } from "@/lib/utils";
 
 export default function DocsPage() {
   const { selectedProject: projectId } = useChatContext();
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const { data } = useProjectDocs(projectId);
+  const { isMobile } = useViewport();
 
   // Clear selected doc when project changes
   useEffect(() => {
@@ -22,20 +26,29 @@ export default function DocsPage() {
 
   return (
     <div className="flex flex-col h-full" data-tour="project-docs-page">
+      {isMobile && <MobileTopBar title="Project Docs" backHref="/" />}
+
       {/* Page header */}
-      <div className="p-4 border-b">
+      <div className="p-3 sm:p-4 border-b">
         <div className="flex items-center gap-2 mb-3">
           <BookOpen className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">Project Documentation</h1>
+          <h1 className="hidden sm:block text-lg font-semibold">Project Documentation</h1>
         </div>
         <DocsProjectSelector />
       </div>
 
       {/* Content area */}
       {projectId ? (
-        <div className="flex flex-1 min-h-0">
+        <div className="flex flex-col sm:flex-row flex-1 min-h-0">
           {/* Left panel: doc list */}
-          <div className="w-[40%] border-r flex flex-col min-h-0">
+          <div className={cn(
+            "flex flex-col min-h-0",
+            isMobile
+              ? selectedDoc
+                ? "h-[35%] border-b"
+                : "h-[50%] border-b"
+              : "w-[40%] border-r",
+          )}>
             <DocList
               projectId={projectId}
               selectedDoc={selectedDoc}
@@ -44,7 +57,10 @@ export default function DocsPage() {
           </div>
 
           {/* Right panel: preview */}
-          <div className="w-[60%] flex flex-col min-h-0">
+          <div className={cn(
+            "flex flex-col min-h-0",
+            isMobile ? "flex-1" : "w-[60%]",
+          )}>
             {selectedDoc ? (
               <DocPreview
                 projectId={projectId}
@@ -53,7 +69,7 @@ export default function DocsPage() {
                 onClose={() => setSelectedDoc(null)}
               />
             ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+              <div className="flex items-center justify-center h-full text-muted-foreground text-sm p-4">
                 Select a document to preview
               </div>
             )}

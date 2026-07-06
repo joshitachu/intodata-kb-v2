@@ -7,6 +7,8 @@ import { useAuthContext } from "@/components/AuthProvider";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MobileTopBar } from "@/components/mobile/MobileTopBar";
+import { useViewport } from "@/hooks/useViewport";
 
 type PasswordState =
   | { kind: "idle" }
@@ -32,6 +34,7 @@ export default function ProfilePage() {
   const [pwState, setPwState] = useState<PasswordState>({ kind: "idle" });
 
   if (!user) return null;
+  const { isMobile } = useViewport();
 
   const newPasswordTooShort = newPassword.length > 0 && newPassword.length < 12;
   const passwordsMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
@@ -73,16 +76,18 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-10 space-y-6">
-      <h1 className="text-2xl font-semibold text-foreground">Profile</h1>
+    <>
+      {isMobile && <MobileTopBar title="Profile" backHref="/settings" />}
+      <div className="max-w-2xl mx-auto px-3 sm:px-4 py-6 sm:py-10 space-y-6">
+        <h1 className="hidden sm:block text-2xl font-semibold text-foreground">Profile</h1>
 
-      {/* Profile info */}
-      <Card>
-        <CardHeader>
-          <h2 className="text-sm font-semibold text-foreground">Account</h2>
-        </CardHeader>
-        <CardBody>
-          <dl className="grid grid-cols-[140px_1fr] gap-y-3 text-sm">
+        {/* Profile info */}
+        <Card>
+          <CardHeader>
+            <h2 className="text-sm font-semibold text-foreground">Account</h2>
+          </CardHeader>
+          <CardBody>
+            <dl className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-y-3 text-sm">
             <dt className="text-muted-foreground">Username</dt>
             <dd className="text-foreground font-medium">{user.username}</dd>
 
@@ -233,6 +238,7 @@ export default function ProfilePage() {
           </div>
         </CardBody>
       </Card>
-    </div>
+      </div>
+    </>
   );
 }

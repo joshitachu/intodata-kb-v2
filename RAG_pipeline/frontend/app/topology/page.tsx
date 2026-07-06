@@ -25,6 +25,10 @@ import { GroupSummaryNode } from "@/components/graph/GroupSummaryNode";
 import { GraphLegend } from "@/components/graph/GraphLegend";
 import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { JobDetailPanel } from "@/components/graph/JobDetailPanel";
+import { MobileTopBar } from "@/components/mobile/MobileTopBar";
+import { MobileBottomSheet } from "@/components/mobile/MobileBottomSheet";
+import { useViewport } from "@/hooks/useViewport";
+import { Maximize2 } from "lucide-react";
 import {
   manifestToFlow,
   manifestToCollapsedFlow,
@@ -111,6 +115,7 @@ function TopologyContent() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView, getNodes } = useReactFlow();
+  const { isMobile } = useViewport();
 
   // Write to both local and global state when user picks a project
   const setSelectedProject = useCallback((id: string) => {
@@ -721,9 +726,26 @@ function TopologyContent() {
 
   return (
     <div className="flex flex-col h-full" data-tour="topology-page">
+      {isMobile && (
+        <MobileTopBar
+          title="Topology"
+          backHref="/"
+          rightAction={
+            <button
+              onClick={() => fitView({ padding: 0.15, duration: 300 })}
+              className="p-2 rounded-md text-foreground hover:bg-muted transition-colors min-h-[40px] min-w-[40px] flex items-center justify-center"
+              aria-label="Fit to screen"
+              title="Fit to screen"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </button>
+          }
+        />
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-4 px-4 py-3 border-b">
-        <h1 className="text-lg font-semibold">Project Topology</h1>
+        <h1 className="hidden sm:block text-lg font-semibold">Project Topology</h1>
         <div className="relative inline-block">
           <select
             value={selectedProject}
@@ -812,8 +834,11 @@ function TopologyContent() {
           onNodeMouseLeave={handleNodeMouseLeave}
           nodeTypes={nodeTypes}
           fitView
-          minZoom={0.1}
-          maxZoom={2}
+          minZoom={0.05}
+          maxZoom={4}
+          panOnDrag
+          zoomOnPinch
+          panActivationKeyCode={null}
           proOptions={{ hideAttribution: true }}
           className="bg-background"
         >
@@ -834,7 +859,22 @@ function TopologyContent() {
         </ReactFlow>
 
         {/* Job Detail Panel */}
-        {selectedJob && selectedProject && (
+        {selectedJob && selectedProject && isMobile && (
+          <MobileBottomSheet
+            open={true}
+            onClose={handleClosePanel}
+            title="Component Detail"
+            ariaLabel="Component Detail"
+          >
+            <JobDetailPanel
+              projectId={selectedProject}
+              jobName={selectedJob}
+              onClose={handleClosePanel}
+              metadata={graphData?.job_metadata?.[selectedJob]}
+            />
+          </MobileBottomSheet>
+        )}
+        {selectedJob && selectedProject && !isMobile && (
           <JobDetailPanel
             projectId={selectedProject}
             jobName={selectedJob}

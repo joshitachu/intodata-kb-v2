@@ -9,6 +9,8 @@ import { useCompleteOnboarding } from "@/hooks/useOnboarding";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MobileTopBar } from "@/components/mobile/MobileTopBar";
+import { useViewport } from "@/hooks/useViewport";
 import { cn } from "@/lib/utils";
 
 type SetupState =
@@ -115,18 +117,21 @@ export default function SecuritySettingsPage() {
   }
 
   const setupOnly = !mfaEnabled;
+  const { isMobile } = useViewport();
 
   return (
-    <div
-      className={cn(
-        "mx-auto w-full max-w-2xl p-6 space-y-6",
-        setupOnly && "flex min-h-screen flex-col justify-center",
-      )}
-    >
-      <div className={cn(setupOnly && "text-center")}>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {setupOnly ? "Secure your account" : "Security"}
-        </h1>
+    <>
+      {isMobile && !setupOnly && <MobileTopBar title="Security" backHref="/settings" />}
+      <div
+        className={cn(
+          "mx-auto w-full max-w-2xl p-3 sm:p-6 space-y-6",
+          setupOnly && "flex min-h-screen flex-col justify-center",
+        )}
+      >
+        <div className={cn(setupOnly && "text-center", !setupOnly && "hidden sm:block")}>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {setupOnly ? "Secure your account" : "Security"}
+          </h1>
         {setupOnly && (
           <p className="mt-2 text-sm text-muted-foreground">
             Two-factor authentication is required before you can use the app.
@@ -264,6 +269,7 @@ export default function SecuritySettingsPage() {
           {message && <p className="text-sm text-muted-foreground">{message}</p>}
         </CardBody>
       </Card>
-    </div>
+      </div>
+    </>
   );
 }

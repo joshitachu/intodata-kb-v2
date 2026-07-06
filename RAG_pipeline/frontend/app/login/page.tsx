@@ -12,20 +12,20 @@ type SignInMethod = "otp" | "password";
 
 // Shared token-driven styles so every auth mode looks identical and adapts to dark mode.
 const inputCls =
-  "w-full rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground shadow-elevation-xs transition focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring";
+  "w-full rounded-lg border border-input bg-background px-3 py-3 sm:py-2.5 text-base sm:text-sm text-foreground placeholder:text-muted-foreground shadow-elevation-xs transition focus:outline-none focus:ring-2 focus:ring-ring focus:border-ring min-h-[44px] sm:min-h-0";
 const codeInputCls = `${inputCls} text-center font-mono tracking-[0.4em]`;
 const labelCls = "block text-sm font-medium text-foreground/80 mb-1.5";
 const primaryBtn =
-  "w-full rounded-lg bg-primary py-2.5 px-4 text-sm font-semibold text-primary-foreground shadow-elevation-xs transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background disabled:opacity-50 disabled:cursor-not-allowed";
+  "w-full rounded-lg bg-primary py-3 sm:py-2.5 px-4 text-sm font-semibold text-primary-foreground shadow-elevation-xs transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] sm:min-h-0";
 const linkBtn =
-  "w-full text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-50";
+  "w-full text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-50 min-h-[44px] sm:min-h-0";
 const errorBox =
   "text-sm text-destructive bg-destructive/10 border border-destructive/20 px-3 py-2.5 rounded-lg";
 const noteBox = "text-sm text-foreground/80 bg-muted px-3 py-2.5 rounded-lg";
 
 function AuthCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="animate-hero-enter rounded-2xl border bg-card p-7 shadow-elevation-lg">
+    <div className="animate-hero-enter rounded-2xl border bg-card p-5 sm:p-7 shadow-elevation-lg">
       {children}
     </div>
   );
@@ -466,7 +466,7 @@ function LoginForm() {
     <AuthCard>
       <AuthHeader subtitle={`Access ${tenant.name}`} />
 
-      <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+      <div className="mb-6 flex flex-wrap gap-1 rounded-lg bg-muted p-1">
         <button
           type="button"
           onClick={() => {
@@ -474,7 +474,7 @@ function LoginForm() {
             setError("");
             setAccessMessage("");
           }}
-          className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
+          className={`flex-1 min-w-[100px] rounded-md px-3 py-2.5 sm:py-2 text-sm font-semibold transition min-h-[40px] ${
             activeTab === "signin"
               ? "bg-background text-foreground shadow-elevation-xs"
               : "text-muted-foreground hover:text-foreground"
@@ -490,7 +490,7 @@ function LoginForm() {
             setAccessMessage("");
             setAccessSubmitted(false);
           }}
-          className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
+          className={`flex-1 min-w-[100px] rounded-md px-3 py-2.5 sm:py-2 text-sm font-semibold transition min-h-[40px] ${
             activeTab === "signup"
               ? "bg-background text-foreground shadow-elevation-xs"
               : "text-muted-foreground hover:text-foreground"
