@@ -84,8 +84,14 @@ def authenticated_url(repo_url: str, token_enc: str | None) -> str:
 
 
 def authenticated_url_plaintext(repo_url: str, token: str | None) -> str:
-    """Build an in-memory token-authenticated URL from a sanitized remote URL (plaintext token)."""
-    return inject_plaintext_token(strip_url_credentials(repo_url) or repo_url, token)
+    """Build an in-memory token-authenticated URL from a sanitized remote URL (plaintext token).
+
+    Uses the ``x-access-token`` username, required for GitHub App installation tokens
+    (and accepted for PATs), since this path carries provider-resolved plaintext tokens.
+    """
+    return inject_plaintext_token(
+        strip_url_credentials(repo_url) or repo_url, token, username="x-access-token"
+    )
 
 
 def canonical_remote_key(repo_url: str | None) -> str | None:

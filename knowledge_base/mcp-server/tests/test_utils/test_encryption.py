@@ -27,6 +27,13 @@ def test_inject_plaintext_token_preserves_port():
     assert out == "https://tok@ghe.example.com:8443/acme/repo.git"
 
 
+def test_inject_plaintext_token_with_username_for_installation_token():
+    out = encryption.inject_plaintext_token(
+        "https://github.com/acme/repo.git", "ghs_inst_tok", username="x-access-token"
+    )
+    assert out == "https://x-access-token:ghs_inst_tok@github.com/acme/repo.git"
+
+
 def test_inject_plaintext_token_noop_without_token():
     url = "https://github.com/acme/repo.git"
     assert encryption.inject_plaintext_token(url, None) == url

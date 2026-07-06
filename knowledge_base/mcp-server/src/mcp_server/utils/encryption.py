@@ -27,12 +27,14 @@ def decrypt_token(ciphertext: str) -> str:
     return _fernet().decrypt(ciphertext.encode()).decode()
 
 
-def inject_plaintext_token(repo_url: str, token: str | None) -> str:
+def inject_plaintext_token(repo_url: str, token: str | None, *, username: str | None = None) -> str:
     """Return repo_url with a plaintext token injected as HTTPS credentials (in-memory only).
 
-    This is the single URL-building implementation. Both the PAT path
-    (``inject_token``) and the GitHub App path (minted installation tokens) funnel
-    through here so credential injection behaves identically regardless of source.
+    Single URL-building implementation for both credential sources. A PAT is used as
+    the userinfo directly (``https://<pat>@host``). A GitHub App installation token
+    must be paired with the ``x-access-token`` username
+    (``https://x-access-token:<token>@host``) — GitHub rejects an installation token
+    placed in the username position. Callers pass ``username`` for that case.
     """
     if not token:
         return repo_url
@@ -41,7 +43,8 @@ def inject_plaintext_token(repo_url: str, token: str | None) -> str:
     if parsed.scheme not in ("http", "https"):
         return repo_url
 
-    authed = parsed._replace(netloc=f"{token}@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else ""))
+    creds = f"{username}:{token}" if username else token
+    authed = parsed._replace(netloc=f"{creds}@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else ""))
     return urlunparse(authed)
 
 

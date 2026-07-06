@@ -74,9 +74,10 @@ async def test_no_credential_yields_none():
 # --- plaintext-token git path -------------------------------------------------
 
 def test_authenticated_url_plaintext_strips_then_injects():
+    # Installation tokens must use the x-access-token username, not token-as-username.
     tokenized = "https://old:cred@github.com/acme/repo.git"
     out = service.authenticated_url_plaintext(tokenized, "fresh_tok")
-    assert out == "https://fresh_tok@github.com/acme/repo.git"
+    assert out == "https://x-access-token:fresh_tok@github.com/acme/repo.git"
 
 
 async def test_temporary_authenticated_origin_token_sets_and_restores():
