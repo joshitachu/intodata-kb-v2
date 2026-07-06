@@ -70,7 +70,9 @@ tmpclaude-*
 .claude/commands/
 .claude/hooks/
 .opencode/
-.codex/
+.codex/*
+!.codex/skills/
+!.codex/skills/**
 .plans/
 opencode.json
 AGENTS.md
@@ -87,3 +89,9 @@ knowledge_base/mcp-server/data/logs/
 mission_control/clients.json
 mission_control/snapshots/
 knowledge_base/dashboard/tsconfig.tsbuildinfo
+.claude/.session_end_nudge
+
+# GitHub App private key (runtime secret — never commit)
+knowledge_base/mcp-server/data/*.pem
+*.private-key.pem
+.env.bak*

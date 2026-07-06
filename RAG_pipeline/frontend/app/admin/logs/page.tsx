@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
-import { RefreshCw, AlertTriangle, Activity } from "lucide-react";
+import { RefreshCw, AlertTriangle, Activity, ArrowRight } from "lucide-react";
 import {
   useRuntimeExecution,
   useRuntimeExecutions,
@@ -146,13 +147,22 @@ export default function RuntimeLogsPage() {
           <Activity className="h-6 w-6" />
           Runtime Operations
         </h1>
-        <button
-          onClick={refresh}
-          className="flex items-center gap-2 px-3 py-2 border rounded-md text-sm hover:bg-muted transition-colors"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/admin/runtime"
+            className="flex items-center gap-2 px-3 py-2 border rounded-md text-sm hover:bg-muted transition-colors"
+          >
+            <ArrowRight className="h-4 w-4" />
+            Runtime Sources
+          </Link>
+          <button
+            onClick={refresh}
+            className="flex items-center gap-2 px-3 py-2 border rounded-md text-sm hover:bg-muted transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* View tabs */}

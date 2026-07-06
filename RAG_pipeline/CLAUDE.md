@@ -23,7 +23,7 @@ RAG_pipeline/
 │   │   │   # auth, query, ingest, admin, conversations, benchmark,
 │   │   │   # health, feedback, documents, notifications, telemetry,
 │   │   │   # projects_api, tenant, memory, usage,
-│   │   │   # onboarding, company_onboarding
+│   │   │   # onboarding, company_onboarding, runtime source management
 │   │   ├── auth/              # JWT auth (service.py, security.py, totp.py)
 │   │   ├── services/          # audit, email, notification, onboarding, system_config
 │   │   ├── db/models/         # user, access, benchmark, conversation, document,
@@ -33,6 +33,8 @@ RAG_pipeline/
 │   │   ├── retrieval/         # Vector search + embedder + reranker + query_expander
 │   │   ├── generation/        # LLM client, usage tracking, RAG chain, conversational RAG
 │   │   ├── memory/            # Hindsight long-context memory (hindsight_client.py)
+│   │   ├── runtime/           # Runtime mirror, source connectors, encrypted credentials,
+│   │   │   #                    source sync, source audit, provider contracts
 │   │   └── rbac/              # Access control (permissions.py, auth.py)
 │   ├── benchmark/             # Benchmarking framework (runner, judge, report, corpus)
 │   └── tests/

@@ -13,7 +13,11 @@ from src.auth.security import decode_token
 from src.config import settings
 from src.db.session import get_db
 from src.db.models import User
-from src.rbac.permissions import has_permission
+from src.rbac.permissions import (
+    RUNTIME_SOURCES_READ,
+    RUNTIME_SOURCES_WRITE,
+    has_permission,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,3 +130,5 @@ AuditViewer = Annotated[User, Depends(require_permission("view_audit_logs"))]
 # Admins + superadmins can create projects (they become the owner). Ownership of
 # an *existing* project is enforced separately via rbac.permissions.can_manage_project.
 ProjectCreator = Annotated[User, Depends(require_permission("create_projects"))]
+RuntimeSourceReader = Annotated[User, Depends(require_permission(RUNTIME_SOURCES_READ))]
+RuntimeSourceWriter = Annotated[User, Depends(require_permission(RUNTIME_SOURCES_WRITE))]

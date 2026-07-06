@@ -21,6 +21,8 @@ QUERY_RAG = "query_rag"
 INGEST_DOCUMENTS = "ingest_documents"
 VIEW_AUDIT_LOGS = "view_audit_logs"
 CREATE_PROJECTS = "create_projects"
+RUNTIME_SOURCES_READ = "runtime_sources:read"
+RUNTIME_SOURCES_WRITE = "runtime_sources:write"
 
 ALL_PERMISSIONS = {
     MANAGE_USERS,
@@ -33,6 +35,8 @@ ALL_PERMISSIONS = {
     INGEST_DOCUMENTS,
     VIEW_AUDIT_LOGS,
     CREATE_PROJECTS,
+    RUNTIME_SOURCES_READ,
+    RUNTIME_SOURCES_WRITE,
 }
 
 

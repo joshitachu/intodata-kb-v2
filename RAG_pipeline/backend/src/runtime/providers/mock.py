@@ -7,6 +7,7 @@ validation — never reads env secrets or calls the network.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, Mapping
 
 from src.runtime.models import (
     DetectFailuresInput,
@@ -30,6 +31,7 @@ from src.runtime.models import (
     RuntimeSyncStatus,
     RuntimeWorkspace,
 )
+from src.runtime.providers.base import CredentialField
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.sync import RuntimeSyncBatch
 
@@ -101,6 +103,27 @@ _SEVERITY_RANK = list(RuntimeLogSeverity)
 
 class MockRuntimeProvider:
     """Deterministic fixture-backed provider. No network, no secrets."""
+
+    def provider_key(self) -> str:
+        return "mock"
+
+    def provider_label(self) -> str:
+        return "Mock"
+
+    def credential_schema(self) -> list[CredentialField]:
+        return []
+
+    def container_key_field(self) -> str:
+        return "workspace_id"
+
+    def static_ref_strategy(self) -> None:
+        return None
+
+    async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
+        return True, None
+
+    async def sync(self, *, credentials: Mapping[str, Any], project_id: str) -> RuntimeSyncBatch:
+        return await self.fetch_runtime_batch(project_id=project_id)
 
     async def list_executions(
         self, params: ListExecutionsInput, context: RuntimeProviderContext | None = None

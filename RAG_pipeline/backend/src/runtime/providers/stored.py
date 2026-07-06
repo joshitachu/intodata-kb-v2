@@ -11,6 +11,8 @@ populates the store through the repository write-port; this provider only reads.
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from src.runtime.insights.models import (
     RuntimeFailureAnalysis,
     RuntimeIncidentDetail,
@@ -51,6 +53,7 @@ from src.runtime.models import (
     RuntimeSyncState,
     RuntimeUnhealthySummary,
 )
+from src.runtime.providers.base import CredentialField
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.store import RuntimeRecordNotFoundError, RuntimeStoreRepository
 
@@ -59,6 +62,27 @@ _TIMELINE_SIGNAL_MAX_CHARS = 200
 
 class StoredRuntimeProvider:
     """Reads held runtime data via the repository, scoped per request."""
+
+    def provider_key(self) -> str:
+        return "stored"
+
+    def provider_label(self) -> str:
+        return "Stored Runtime Data"
+
+    def credential_schema(self) -> list[CredentialField]:
+        return []
+
+    def container_key_field(self) -> str:
+        return "workspace_id"
+
+    def static_ref_strategy(self) -> None:
+        return None
+
+    async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
+        return True, None
+
+    async def sync(self, *, credentials: Mapping[str, Any], project_id: str):
+        raise RuntimeProviderError("stored runtime provider is read-only and cannot sync a live source")
 
     @staticmethod
     def _store_repository(context: RuntimeProviderContext | None) -> RuntimeStoreRepository:

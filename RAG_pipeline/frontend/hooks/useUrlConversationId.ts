@@ -29,9 +29,6 @@ function buildSearch(state: ConversationUrlState): string {
   if (state.activeId !== null) {
     return `?${CONVERSATION_PARAM}=${state.activeId}`;
   }
-  if (state.isNew) {
-    return `?${CONVERSATION_PARAM}=new`;
-  }
   return "";
 }
 
@@ -50,13 +47,11 @@ export function useSyncUrlConversationId(
 
   useEffect(() => {
     if (pathname !== "/") return;
+    if (activeId === null) return;
+
     const next = buildSearch({ activeId, isNew });
     if (lastWrittenRef.current === next) return;
     lastWrittenRef.current = next;
-    if (next) {
-      router.replace(`${pathname}${next}`);
-    } else {
-      router.replace(pathname);
-    }
+    router.replace(`${pathname}${next}`);
   }, [activeId, isNew, pathname, router]);
 }

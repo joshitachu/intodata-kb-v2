@@ -109,15 +109,32 @@ export const RuntimeEngineStatusSchema = z.enum([
 export type RuntimeEngineStatus = z.infer<typeof RuntimeEngineStatusSchema>;
 
 export const RuntimeSourceSchema = z.object({
+  id: z.number().optional(),
   project_id: z.string(),
   source_key: z.string(),
   source_type: z.string(),
   label: z.string(),
-  status: RuntimeSyncStatusSchema,
+  status: z.string(),
+  enabled: z.boolean().optional(),
+  sync_interval_seconds: z.number().optional(),
+  auto_disable_threshold: z.number().optional(),
+  disabled_reason: z.string().nullable().optional(),
   is_demo: z.boolean().optional().default(false),
   last_synced_at: z.string().nullable().optional(),
   last_seen_at: z.string().nullable().optional(),
   ingested_at: z.string(),
+  health: z
+    .object({
+      last_attempt_at: z.string().nullable().optional(),
+      last_success_at: z.string().nullable().optional(),
+      last_failure_at: z.string().nullable().optional(),
+      consecutive_failures: z.number().optional().default(0),
+      last_failure_sanitized: z.string().nullable().optional(),
+      total_cycles: z.number().optional().default(0),
+      total_records_ingested: z.number().optional().default(0),
+    })
+    .nullable()
+    .optional(),
 });
 export type RuntimeSource = z.infer<typeof RuntimeSourceSchema>;
 

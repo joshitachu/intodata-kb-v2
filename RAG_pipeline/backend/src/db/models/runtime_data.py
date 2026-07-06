@@ -17,12 +17,15 @@ import datetime
 
 from sqlalchemy import (
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     JSON,
+    Boolean,
+    LargeBinary,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -142,10 +145,73 @@ class RuntimeSourceRow(Base):
     source_type: Mapped[str] = mapped_column(String(100), nullable=False)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sync_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    auto_disable_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    disabled_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     is_demo: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_synced_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RuntimeSourceCredentialsRow(Base):
+    """Encrypted scheduler-only credentials for one runtime source."""
+
+    __tablename__ = "runtime_source_credentials"
+    __table_args__ = (
+        UniqueConstraint("source_id", name="uq_runtime_source_credentials_source"),
+        Index("ix_runtime_source_credentials_source_id", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("runtime_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    credential_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    encrypted_payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    encryption_key_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rotated_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rotated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class RuntimeSourceHealthRow(Base):
+    """Per-source lifecycle health used by source management UI and scheduler."""
+
+    __tablename__ = "runtime_source_health"
+
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("runtime_sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_attempt_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_failure_sanitized: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_records_ingested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class RuntimeWorkspaceProjectMapRow(Base):
+    """Maps one source container/workspace to a Nexus project for future writes."""
+
+    __tablename__ = "runtime_workspace_project_map"
+    __table_args__ = (
+        UniqueConstraint("source_id", "container_key", name="uq_runtime_workspace_project_map_source_container"),
+        Index("ix_runtime_workspace_project_map_source_id", "source_id"),
+        Index("ix_runtime_workspace_project_map_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("runtime_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    container_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    container_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class RuntimeEnvironmentRow(Base):

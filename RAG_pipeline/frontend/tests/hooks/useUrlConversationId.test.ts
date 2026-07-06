@@ -58,14 +58,14 @@ describe("useSyncUrlConversationId", () => {
     expect(mockReplace).toHaveBeenCalledWith("/?c=42");
   });
 
-  it("writes ?c=new when isNew is true and activeId is null", () => {
+  it("does not write ?c=new when isNew is true and activeId is null", () => {
     renderHook(() => useSyncUrlConversationId(null, true));
-    expect(mockReplace).toHaveBeenCalledWith("/?c=new");
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it("clears the query when both activeId and isNew are falsy", () => {
+  it("does not clear the query when both activeId and isNew are falsy", () => {
     renderHook(() => useSyncUrlConversationId(null, false));
-    expect(mockReplace).toHaveBeenCalledWith("/");
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 
   it("coalesces rapid changes (single write per value)", () => {

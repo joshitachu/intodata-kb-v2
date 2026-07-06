@@ -35,6 +35,7 @@ from src.runtime.models import (
     RuntimeWorkspace,
 )
 from src.runtime.store import RuntimeStoreRepository
+from src.runtime.store import RuntimeRecordNotFoundError
 
 _MAX_ERROR_SUMMARY = 240
 _TOKENISH_RE = re.compile(
@@ -98,6 +99,219 @@ class RuntimeSyncAdapter(Protocol):
 
     async def fetch_runtime_batch(self, *, project_id: str) -> RuntimeSyncBatch:
         """Return normalized runtime rows for this source/project."""
+
+
+class _RuntimeSourceAdapter:
+    def __init__(self, provider, credentials: dict) -> None:
+        self._provider = provider
+        self._credentials = credentials
+
+    async def fetch_runtime_batch(self, *, project_id: str) -> RuntimeSyncBatch:
+        return await self._provider.sync(credentials=self._credentials, project_id=project_id)
+
+
+def _record_count(result: RuntimeSyncCycleResult) -> int:
+    return (
+        result.executions_written
+        + result.failures_written
+        + result.log_events_written
+        + result.component_metrics_written
+        + result.sources_written
+        + result.environments_written
+        + result.workspaces_written
+        + result.engines_written
+        + result.jobs_written
+        + result.artifacts_written
+        + result.connections_written
+        + result.job_dependencies_written
+        + result.job_runs_written
+        + result.plans_written
+        + result.plan_runs_written
+    )
+
+
+async def run_runtime_source_sync_cycle(
+    session: AsyncSession,
+    *,
+    source_id: int,
+    now: datetime.datetime | None = None,
+) -> RuntimeSyncCycleResult:
+    """Run one source-configured sync cycle and update source health."""
+
+    cycle_at = _as_utc(now or datetime.datetime.now(datetime.UTC))
+    from src.runtime.source_registry import get_source_provider
+
+    repo = RuntimeStoreRepository(session)
+    source = await repo.get_source_config(source_id, None)
+    if not source.enabled:
+        raise RuntimeRecordNotFoundError(f"Runtime source {source_id} is disabled")
+    provider = get_source_provider(source.source_type)
+    if provider is None:
+        raise RuntimeRecordNotFoundError(f"Runtime source provider not found: {source.source_type}")
+    await repo.record_source_sync_attempt(source_id, cycle_at)
+    try:
+        credentials, _key_id = await repo.read_credentials(source_id)
+        batch = await provider.sync(credentials=credentials, project_id=source.project_id)
+        result = await _persist_source_batch_with_project_map(
+            session,
+            repo=repo,
+            source_id=source_id,
+            source_key=source.source_type,
+            default_project_id=source.project_id,
+            container_key_field=provider.container_key_field(),
+            batch=batch,
+            cycle_at=cycle_at,
+        )
+    except Exception as exc:
+        error_summary = sanitize_sync_error(str(exc) or exc.__class__.__name__)
+        await repo.record_source_sync_failure(
+            source_id,
+            failed_at=cycle_at,
+            sanitized_error=error_summary,
+        )
+        return RuntimeSyncCycleResult(
+            source_key=source.source_type,
+            project_id=source.project_id,
+            status=RuntimeSyncStatus.FAILED,
+            last_synced_at=None,
+            failure_reason_code=exc.__class__.__name__[:80],
+            error_summary=error_summary,
+        )
+    if result.status == RuntimeSyncStatus.SUCCESS:
+        await repo.record_source_sync_success(
+            source_id,
+            succeeded_at=result.last_synced_at or cycle_at,
+            records_ingested=_record_count(result),
+        )
+    else:
+        await repo.record_source_sync_failure(
+            source_id,
+            failed_at=cycle_at,
+            sanitized_error=result.error_summary,
+        )
+        updated = await repo.get_source_config(source_id, None)
+        if updated.disabled_reason == "auto-disabled":
+            from src.runtime.audit import log_runtime_source_event
+
+            await log_runtime_source_event(
+                session,
+                user=None,
+                action="source_disabled_auto",
+                source_id=source_id,
+                details={
+                    "failure_reason": result.error_summary,
+                    "consecutive_failures": updated.health.consecutive_failures if updated.health else None,
+                },
+            )
+    return result
+
+
+async def _persist_source_batch_with_project_map(
+    session: AsyncSession,
+    *,
+    repo: RuntimeStoreRepository,
+    source_id: int,
+    source_key: str,
+    default_project_id: str,
+    container_key_field: str,
+    batch: RuntimeSyncBatch,
+    cycle_at: datetime.datetime,
+) -> RuntimeSyncCycleResult:
+    synced_at = _as_utc(batch.synced_at or cycle_at)
+    status = RuntimeSyncStatus.PARTIAL if batch.partial else RuntimeSyncStatus.SUCCESS
+    failure_reason = _clean_reason_code(batch.failure_reason_code) if batch.partial else None
+    error_summary = sanitize_sync_error(batch.error_summary) if batch.error_summary else None
+
+    for runtime_source in batch.sources:
+        await repo.upsert_source(default_project_id, runtime_source, synced_at)
+    for environment in batch.environments:
+        await repo.upsert_environment(default_project_id, environment, source_key, synced_at)
+    for workspace in batch.workspaces:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, workspace.workspace_id)
+        await repo.upsert_workspace(project_id, workspace, source_key, synced_at)
+    for engine in batch.engines:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(engine, container_key_field))
+        await repo.upsert_engine(project_id, engine, source_key, synced_at)
+    for job in batch.jobs:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(job, container_key_field))
+        await repo.upsert_job(project_id, job, source_key, synced_at)
+    for artifact in batch.artifacts:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(artifact, container_key_field))
+        await repo.upsert_artifact(project_id, artifact, source_key, synced_at)
+    for connection in batch.connections:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(connection, container_key_field))
+        await repo.upsert_connection(project_id, connection, source_key, synced_at)
+    for dependency in batch.job_dependencies:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(dependency, container_key_field))
+        await repo.upsert_job_dependency(project_id, dependency, source_key, synced_at)
+    for plan in batch.plans:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(plan, container_key_field))
+        await repo.upsert_plan(project_id, plan, source_key, synced_at)
+    for execution in batch.executions:
+        await repo.upsert_execution(default_project_id, execution, source_key, synced_at)
+    for failure in batch.failures:
+        await repo.upsert_failure(default_project_id, failure, source_key, synced_at)
+    for job_run in batch.job_runs:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(job_run, container_key_field))
+        await repo.upsert_job_run(project_id, job_run, source_key, synced_at)
+    for plan_run in batch.plan_runs:
+        project_id, _unmapped = await repo.resolve_project_id(source_id, _container_key(plan_run, container_key_field))
+        await repo.upsert_plan_run(project_id, plan_run, source_key, synced_at)
+    for event in batch.log_events:
+        await repo.upsert_log_event(default_project_id, event, source_key, synced_at)
+    for metric in batch.component_metrics:
+        await repo.upsert_component_metric(default_project_id, metric, source_key, synced_at)
+
+    built = 0
+    for execution in batch.executions:
+        result: InsightBuildResult = await build_runtime_insights_for_execution(
+            session,
+            project_id=default_project_id,
+            execution_id=execution.execution_id,
+            source_key=source_key,
+            ingested_at=synced_at,
+        )
+        if result.enriched_events or result.had_incident:
+            built += 1
+
+    await repo.record_sync_state(
+        source_key=source_key,
+        project_id=default_project_id,
+        status=status,
+        last_synced_at=synced_at if status == RuntimeSyncStatus.SUCCESS else None,
+        failure_reason_code=failure_reason,
+        error_summary=error_summary,
+        updated_at=cycle_at,
+    )
+    return RuntimeSyncCycleResult(
+        source_key=source_key,
+        project_id=default_project_id,
+        status=status,
+        last_synced_at=synced_at if status == RuntimeSyncStatus.SUCCESS else None,
+        executions_written=len(batch.executions),
+        failures_written=len(batch.failures),
+        log_events_written=len(batch.log_events),
+        component_metrics_written=len(batch.component_metrics),
+        sources_written=len(batch.sources),
+        environments_written=len(batch.environments),
+        workspaces_written=len(batch.workspaces),
+        engines_written=len(batch.engines),
+        jobs_written=len(batch.jobs),
+        artifacts_written=len(batch.artifacts),
+        connections_written=len(batch.connections),
+        job_dependencies_written=len(batch.job_dependencies),
+        job_runs_written=len(batch.job_runs),
+        plans_written=len(batch.plans),
+        plan_runs_written=len(batch.plan_runs),
+        insights_built=built,
+        failure_reason_code=failure_reason,
+        error_summary=error_summary,
+    )
+
+
+def _container_key(record, field_name: str) -> str | None:
+    value = getattr(record, field_name, None)
+    return value if isinstance(value, str) and value else None
 
 
 async def run_runtime_sync_cycle(

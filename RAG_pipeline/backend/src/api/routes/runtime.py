@@ -67,6 +67,7 @@ from src.runtime.models import (
     RuntimePlanHealth,
     RuntimePlanRun,
     RuntimeSource,
+    RuntimeSourceRead,
     RuntimeSyncState,
     RuntimeStatusResponse,
 )
@@ -112,7 +113,7 @@ class HealthSummaryResponse(BaseModel):
 
 
 class RuntimeSourceListResponse(BaseModel):
-    sources: list[RuntimeSource]
+    sources: list[RuntimeSourceRead]
     total: int
 
 
@@ -343,12 +344,13 @@ async def list_runtime_sources(
 ) -> RuntimeSourceListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    sources = await repo.list_sources(
+    sources = await repo.list_source_configs(
         _intersect_scope(scope, project_id),
-        source_key=source_key,
         project_id=project_id,
         limit=limit,
     )
+    if source_key is not None:
+        sources = [source for source in sources if source.source_key == source_key]
     return RuntimeSourceListResponse(sources=sources, total=len(sources))
 
 

@@ -5,6 +5,7 @@ from src.runtime.sync.service import (
     RuntimeSyncBatch,
     RuntimeSyncCycleResult,
     run_runtime_sync_cycle,
+    run_runtime_source_sync_cycle,
 )
 from src.runtime.sync.scheduler import RuntimeSyncScheduler, parse_project_ids
 
@@ -13,6 +14,7 @@ __all__ = [
     "RuntimeSyncBatch",
     "RuntimeSyncCycleResult",
     "run_runtime_sync_cycle",
+    "run_runtime_source_sync_cycle",
     "RuntimeSyncScheduler",
     "parse_project_ids",
 ]

@@ -11,3 +11,19 @@ export async function GET(request: NextRequest) {
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.status });
 }
+
+export async function POST(request: NextRequest) {
+  const body = await request.text();
+  const res = await fetch(`${FASTAPI_URL}/api/v1/runtime/sources`, {
+    method: "POST",
+    headers: {
+      ...backendProxyHeaders(request),
+      "content-type": request.headers.get("content-type") ?? "application/json",
+    },
+    body,
+    cache: "no-store",
+  });
+
+  const data = await res.json().catch(() => ({}));
+  return NextResponse.json(data, { status: res.status });
+}

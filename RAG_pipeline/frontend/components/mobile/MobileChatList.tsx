@@ -23,12 +23,10 @@ export function MobileChatList() {
   }, [chat?.conversations]);
 
   function open(id: number) {
-    chat?.setActiveConversationId(id);
     router.push(`/?c=${id}`);
   }
 
   function startNew() {
-    chat?.setActiveConversationId(null);
     router.push("/?c=new");
   }
 
@@ -101,6 +99,9 @@ export function MobileChatList() {
         confirmLabel="Delete"
         onConfirm={() => {
           if (deleteTarget && chat) {
+            if (chat.activeConversationId === deleteTarget.id) {
+              router.replace("/?c=new");
+            }
             chat.deleteConversation(deleteTarget.id);
           }
           setDeleteTarget(null);

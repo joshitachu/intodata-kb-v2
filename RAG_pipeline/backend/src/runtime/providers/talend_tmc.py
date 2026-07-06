@@ -19,9 +19,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import httpx
 
@@ -54,6 +55,7 @@ from src.runtime.models import (
     RuntimeWorkspace,
 )
 from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
+from src.runtime.providers.base import CredentialField
 from src.runtime.sync import RuntimeSyncBatch
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,50 @@ class TalendTmcRuntimeProvider:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._transport = transport
         self._token: str | None = None
+
+    def provider_key(self) -> str:
+        return "tmc"
+
+    def provider_label(self) -> str:
+        return "Talend Management Console"
+
+    def credential_schema(self) -> list[CredentialField]:
+        return [
+            {"name": "api_token", "type": "secret", "label": "API token", "required": True},
+            {"name": "base_url", "type": "url", "label": "Base URL", "required": True},
+        ]
+
+    def container_key_field(self) -> str:
+        return "workspace_id"
+
+    def static_ref_strategy(self) -> None:
+        return None
+
+    async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
+        token = str(credentials.get("api_token") or "").strip()
+        base_url = str(credentials.get("base_url") or "").strip().rstrip("/")
+        if not token or not base_url:
+            return False, "Missing required TMC credentials"
+        try:
+            async with httpx.AsyncClient(
+                base_url=base_url,
+                timeout=10.0,
+                transport=self._transport,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as client:
+                response = await client.get("/orchestration/environments")
+            if response.status_code == 200:
+                return True, None
+            return False, _sanitize_tmc_error(f"{response.status_code} {response.reason_phrase}", token)
+        except httpx.TimeoutException:
+            return False, "Connection timed out after 10s"
+        except httpx.HTTPError as e:
+            return False, _sanitize_tmc_error(str(e), token)
+
+    async def sync(self, *, credentials: Mapping[str, Any], project_id: str) -> RuntimeSyncBatch:
+        # Existing sync reads operator-managed TMC settings. Per-source
+        # credential injection is wired when source CRUD lands in Slice 2.
+        return await self.fetch_runtime_batch(project_id=project_id)
 
     def _read_token(self) -> str:
         if self._token is not None:
@@ -417,6 +463,15 @@ class TalendTmcRuntimeProvider:
 def _extract_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     raw = data.get("items", data.get("data", data.get("logs", [])))
     return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def _sanitize_tmc_error(message: str, token: str | None = None) -> str:
+    sanitized = message
+    if token:
+        sanitized = sanitized.replace(token, "[redacted]")
+    sanitized = re.sub(r"Authorization:\s*Bearer\s+\S+", "Authorization: Bearer [redacted]", sanitized, flags=re.I)
+    sanitized = re.sub(r"([?&](?:api[_-]?key|token|secret)=)[^&\s]+", r"\1[redacted]", sanitized, flags=re.I)
+    return sanitized
 
 
 def _dict_field(item: dict[str, Any], *names: str) -> dict[str, Any]:

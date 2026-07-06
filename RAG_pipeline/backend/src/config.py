@@ -224,6 +224,14 @@ class Settings(BaseSettings):
     runtime_sync_source_key: str = ""
     runtime_sync_project_ids: str = ""
 
+    # Runtime source credentials. The primary Fernet key encrypts newly-written
+    # source credentials; the previous key is optional and used only during lazy
+    # rotation of old rows.
+    source_credentials_encryption_key: str = ""
+    source_credentials_encryption_key_previous: str = ""
+    source_credentials_encryption_key_id: str = "primary"
+    source_credentials_encryption_key_previous_id: str = "previous"
+
     @property
     def is_dev(self) -> bool:
         return self.app_env == "development"
@@ -246,6 +254,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CRITICAL: MCP_INGEST_API_KEY is empty. "
                 "Set a strong random key in production (used by MCP server to push docs)."
+            )
+        if not self.source_credentials_encryption_key:
+            raise ValueError(
+                "CRITICAL: SOURCE_CREDENTIALS_ENCRYPTION_KEY is empty. "
+                "Set a Fernet key before enabling runtime source credentials in production."
             )
         if "localhost" in self.public_app_url or "127.0.0.1" in self.public_app_url:
             raise ValueError(

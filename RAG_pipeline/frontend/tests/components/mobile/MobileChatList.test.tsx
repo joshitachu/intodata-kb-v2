@@ -56,20 +56,20 @@ describe("MobileChatList", () => {
     expect(items[0].textContent).toContain("newer");
   });
 
-  it("routes to /?c={id} and sets active on tap", () => {
+  it("routes to /?c={id} on tap", () => {
     mockState.conversations = [
       { id: 7, title: "alpha", updated_at: "2026-07-01T00:00:00Z" },
     ];
     wrap(<MobileChatList />);
     fireEvent.click(screen.getByText("alpha"));
-    expect(mockSetActive).toHaveBeenCalledWith(7);
+    expect(mockSetActive).not.toHaveBeenCalled();
     expect(mockPush).toHaveBeenCalledWith("/?c=7");
   });
 
   it("routes to /?c=new when New Chat is tapped", () => {
     wrap(<MobileChatList />);
     fireEvent.click(screen.getByText("New Chat"));
-    expect(mockSetActive).toHaveBeenCalledWith(null);
+    expect(mockSetActive).not.toHaveBeenCalled();
     expect(mockPush).toHaveBeenCalledWith("/?c=new");
   });
 });

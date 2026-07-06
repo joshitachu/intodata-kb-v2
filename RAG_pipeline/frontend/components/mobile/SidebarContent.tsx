@@ -98,12 +98,12 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
   const conversations = chat.conversations;
 
   function handleSelectConversation(id: number) {
-    chat.setActiveConversationId(id);
+    router.push(`/?c=${id}`);
     onNavigate?.();
   }
 
   function handleNewChat() {
-    chat.setActiveConversationId(null);
+    router.push("/?c=new");
     onNavigate?.();
   }
 
@@ -274,6 +274,9 @@ export function SidebarContent({ onNavigate }: SidebarContentProps) {
         confirmLabel="Delete"
         onConfirm={() => {
           if (deleteTarget) {
+            if (chat.activeConversationId === deleteTarget.id) {
+              router.replace("/?c=new");
+            }
             chat.deleteConversation(deleteTarget.id);
           }
           setDeleteTarget(null);

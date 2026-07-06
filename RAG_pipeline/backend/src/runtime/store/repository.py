@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import math
+import uuid
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
@@ -34,6 +36,9 @@ from src.db.models.runtime_data import (
     RuntimePlanRow,
     RuntimePlanRunRow,
     RuntimeSourceRow,
+    RuntimeSourceCredentialsRow,
+    RuntimeSourceHealthRow,
+    RuntimeWorkspaceProjectMapRow,
     RuntimeSyncStateRow,
     RuntimeWorkspaceRow,
 )
@@ -78,9 +83,18 @@ from src.runtime.models import (
     RuntimePlanRunStepResult,
     RuntimePlanStep,
     RuntimeSource,
+    RuntimeSourceHealth,
+    RuntimeSourceRead,
+    RuntimeSourceUpdate,
+    RuntimeWorkspaceProjectMap,
     RuntimeSyncState,
     RuntimeSyncStatus,
     RuntimeWorkspace,
+)
+from src.runtime.secrets import (
+    current_key_id,
+    decrypt_and_rotate_if_needed,
+    encrypt,
 )
 from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError
 
@@ -334,6 +348,273 @@ class RuntimeStoreRepository:
         stmt = stmt.order_by(RuntimeSourceRow.last_seen_at.desc().nullslast()).limit(limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_source(row) for row in rows]
+
+    # --- source management (credentials never returned) ---
+
+    async def create_source_config(
+        self,
+        *,
+        project_id: str,
+        source_type: str,
+        label: str,
+        sync_interval_seconds: int = 60,
+    ) -> RuntimeSourceRead:
+        now = datetime.datetime.now(datetime.UTC)
+        source_key = f"{source_type}-{uuid.uuid4().hex[:12]}"
+        row = RuntimeSourceRow(
+            project_id=project_id,
+            source_key=source_key,
+            source_type=source_type,
+            label=label,
+            status=RuntimeSyncStatus.SUCCESS.value,
+            enabled=True,
+            sync_interval_seconds=max(sync_interval_seconds, 30),
+            auto_disable_threshold=3,
+            is_demo=1 if source_type == "mock" else 0,
+            ingested_at=now,
+            last_seen_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        health = RuntimeSourceHealthRow(source_id=row.id)
+        self._session.add(health)
+        await self._session.flush()
+        return _to_source_read(row, health)
+
+    async def get_source_config(self, source_id: int, scope: ProjectScope) -> RuntimeSourceRead:
+        row = await self._get_source_row(source_id, scope)
+        health = await self._get_source_health_row(row.id)
+        return _to_source_read(row, health)
+
+    async def list_source_configs(
+        self,
+        scope: ProjectScope,
+        *,
+        project_id: str | None = None,
+        limit: int = 100,
+    ) -> list[RuntimeSourceRead]:
+        if self._denies_all(scope):
+            return []
+        stmt = select(RuntimeSourceRow)
+        stmt = self._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
+        if project_id is not None:
+            stmt = stmt.where(RuntimeSourceRow.project_id == project_id)
+        stmt = stmt.order_by(RuntimeSourceRow.ingested_at.desc()).limit(limit)
+        rows = list((await self._session.execute(stmt)).scalars().all())
+        health_rows = {
+            row.source_id: row
+            for row in (
+                await self._session.execute(
+                    select(RuntimeSourceHealthRow).where(
+                        RuntimeSourceHealthRow.source_id.in_([row.id for row in rows] or [-1])
+                    )
+                )
+            ).scalars().all()
+        }
+        return [_to_source_read(row, health_rows.get(row.id)) for row in rows]
+
+    async def update_source_config(
+        self,
+        source_id: int,
+        scope: ProjectScope,
+        update: RuntimeSourceUpdate,
+    ) -> RuntimeSourceRead:
+        row = await self._get_source_row(source_id, scope)
+        if update.label is not None:
+            row.label = update.label
+        if update.enabled is not None:
+            row.enabled = update.enabled
+            row.disabled_reason = None if update.enabled else "manual"
+            if update.enabled:
+                health = await self._get_source_health_row(row.id)
+                if health is not None:
+                    health.consecutive_failures = 0
+        if update.sync_interval_seconds is not None:
+            row.sync_interval_seconds = max(update.sync_interval_seconds, 30)
+        await self._session.flush()
+        return _to_source_read(row, await self._get_source_health_row(row.id))
+
+    async def delete_source_config(self, source_id: int, scope: ProjectScope) -> None:
+        row = await self._get_source_row(source_id, scope)
+        await self._session.execute(delete(RuntimeSourceCredentialsRow).where(RuntimeSourceCredentialsRow.source_id == row.id))
+        await self._session.execute(delete(RuntimeSourceHealthRow).where(RuntimeSourceHealthRow.source_id == row.id))
+        await self._session.execute(delete(RuntimeWorkspaceProjectMapRow).where(RuntimeWorkspaceProjectMapRow.source_id == row.id))
+        await self._session.delete(row)
+        await self._session.flush()
+
+    async def add_container_mapping(
+        self,
+        *,
+        source_id: int,
+        container_key: str,
+        container_name: str | None,
+        project_id: str,
+        created_by: str | None,
+    ) -> RuntimeWorkspaceProjectMap:
+        now = datetime.datetime.now(datetime.UTC)
+        stmt = select(RuntimeWorkspaceProjectMapRow).where(
+            RuntimeWorkspaceProjectMapRow.source_id == source_id,
+            RuntimeWorkspaceProjectMapRow.container_key == container_key,
+        )
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            row = RuntimeWorkspaceProjectMapRow(
+                source_id=source_id,
+                container_key=container_key,
+                created_at=now,
+                created_by=created_by,
+            )
+            self._session.add(row)
+        row.container_name = container_name
+        row.project_id = project_id
+        await self._session.flush()
+        return _to_workspace_project_map(row)
+
+    async def list_mappings(self, source_id: int) -> list[RuntimeWorkspaceProjectMap]:
+        rows = (
+            await self._session.execute(
+                select(RuntimeWorkspaceProjectMapRow)
+                .where(RuntimeWorkspaceProjectMapRow.source_id == source_id)
+                .order_by(RuntimeWorkspaceProjectMapRow.container_key.asc())
+            )
+        ).scalars().all()
+        return [_to_workspace_project_map(row) for row in rows]
+
+    async def delete_mapping(self, source_id: int, container_key: str) -> None:
+        await self._session.execute(
+            delete(RuntimeWorkspaceProjectMapRow).where(
+                RuntimeWorkspaceProjectMapRow.source_id == source_id,
+                RuntimeWorkspaceProjectMapRow.container_key == container_key,
+            )
+        )
+        await self._session.flush()
+
+    async def resolve_project_id(self, source_id: int, container_key: str | None) -> tuple[str, bool]:
+        source = await self._get_source_row(source_id, None)
+        if container_key:
+            row = (
+                await self._session.execute(
+                    select(RuntimeWorkspaceProjectMapRow).where(
+                        RuntimeWorkspaceProjectMapRow.source_id == source_id,
+                        RuntimeWorkspaceProjectMapRow.container_key == container_key,
+                    )
+                )
+            ).scalars().first()
+            if row is not None:
+                return row.project_id, False
+        return source.project_id, True
+
+    async def write_credentials(
+        self,
+        *,
+        source_id: int,
+        plaintext_payload: dict,
+        credential_type: str,
+        rotated_by: str | None,
+    ) -> None:
+        now = datetime.datetime.now(datetime.UTC)
+        payload = json.dumps(plaintext_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        key_id = current_key_id()
+        encrypted_payload = encrypt(payload, key_id)
+        stmt = select(RuntimeSourceCredentialsRow).where(RuntimeSourceCredentialsRow.source_id == source_id)
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            row = RuntimeSourceCredentialsRow(
+                source_id=source_id,
+                credential_type=credential_type,
+                created_at=now,
+            )
+            self._session.add(row)
+        row.encrypted_payload = encrypted_payload
+        row.encryption_key_id = key_id
+        row.rotated_at = now
+        row.rotated_by = rotated_by
+        await self._session.flush()
+
+    async def read_credentials(self, source_id: int) -> tuple[dict, str]:
+        stmt = select(RuntimeSourceCredentialsRow).where(RuntimeSourceCredentialsRow.source_id == source_id)
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            raise RuntimeRecordNotFoundError(f"Credentials not found for runtime source {source_id}")
+        result = decrypt_and_rotate_if_needed(row.encrypted_payload, row.encryption_key_id)
+        if result.rotated:
+            row.encrypted_payload = result.ciphertext
+            row.encryption_key_id = result.encryption_key_id
+            row.rotated_at = datetime.datetime.now(datetime.UTC)
+            await self._session.flush()
+        return json.loads(result.plaintext.decode("utf-8")), row.encryption_key_id
+
+    async def _get_source_row(self, source_id: int, scope: ProjectScope) -> RuntimeSourceRow:
+        if self._denies_all(scope):
+            raise RuntimeRecordNotFoundError(f"Runtime source not found: {source_id}")
+        stmt = select(RuntimeSourceRow).where(RuntimeSourceRow.id == source_id)
+        stmt = self._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            raise RuntimeRecordNotFoundError(f"Runtime source not found: {source_id}")
+        return row
+
+    async def _get_source_health_row(self, source_id: int) -> RuntimeSourceHealthRow | None:
+        return (
+            await self._session.execute(
+                select(RuntimeSourceHealthRow).where(RuntimeSourceHealthRow.source_id == source_id)
+            )
+        ).scalars().first()
+
+    async def record_source_sync_attempt(self, source_id: int, attempted_at: datetime.datetime) -> None:
+        health = await self._ensure_source_health_row(source_id)
+        health.last_attempt_at = attempted_at
+        await self._session.flush()
+
+    async def record_source_sync_success(
+        self,
+        source_id: int,
+        *,
+        succeeded_at: datetime.datetime,
+        records_ingested: int,
+    ) -> RuntimeSourceRead:
+        row = await self._get_source_row(source_id, None)
+        health = await self._ensure_source_health_row(source_id)
+        health.last_success_at = succeeded_at
+        health.consecutive_failures = 0
+        health.last_failure_sanitized = None
+        health.total_cycles += 1
+        health.total_records_ingested += records_ingested
+        row.last_synced_at = succeeded_at
+        row.last_seen_at = succeeded_at
+        row.status = RuntimeSyncStatus.SUCCESS.value
+        row.enabled = True
+        row.disabled_reason = None
+        await self._session.flush()
+        return _to_source_read(row, health)
+
+    async def record_source_sync_failure(
+        self,
+        source_id: int,
+        *,
+        failed_at: datetime.datetime,
+        sanitized_error: str | None,
+    ) -> RuntimeSourceRead:
+        row = await self._get_source_row(source_id, None)
+        health = await self._ensure_source_health_row(source_id)
+        health.last_failure_at = failed_at
+        health.consecutive_failures += 1
+        health.last_failure_sanitized = sanitized_error
+        health.total_cycles += 1
+        row.status = RuntimeSyncStatus.FAILED.value
+        if health.consecutive_failures >= row.auto_disable_threshold:
+            row.enabled = False
+            row.disabled_reason = "auto-disabled"
+        await self._session.flush()
+        return _to_source_read(row, health)
+
+    async def _ensure_source_health_row(self, source_id: int) -> RuntimeSourceHealthRow:
+        row = await self._get_source_health_row(source_id)
+        if row is None:
+            row = RuntimeSourceHealthRow(source_id=source_id)
+            self._session.add(row)
+            await self._session.flush()
+        return row
 
     async def list_engines(
         self,
@@ -1408,6 +1689,52 @@ def _to_source(row: RuntimeSourceRow) -> RuntimeSource:
         last_synced_at=_as_utc(row.last_synced_at),
         last_seen_at=_as_utc(row.last_seen_at),
         ingested_at=_as_utc(row.ingested_at),
+    )
+
+
+def _to_source_health(row: RuntimeSourceHealthRow | None) -> RuntimeSourceHealth | None:
+    if row is None:
+        return None
+    return RuntimeSourceHealth(
+        last_attempt_at=_as_utc(row.last_attempt_at),
+        last_success_at=_as_utc(row.last_success_at),
+        last_failure_at=_as_utc(row.last_failure_at),
+        consecutive_failures=row.consecutive_failures,
+        last_failure_sanitized=row.last_failure_sanitized,
+        total_cycles=row.total_cycles,
+        total_records_ingested=row.total_records_ingested,
+    )
+
+
+def _to_source_read(row: RuntimeSourceRow, health: RuntimeSourceHealthRow | None) -> RuntimeSourceRead:
+    return RuntimeSourceRead(
+        id=row.id,
+        project_id=row.project_id,
+        source_key=row.source_key,
+        source_type=row.source_type,
+        label=row.label,
+        status=row.status,
+        enabled=row.enabled,
+        sync_interval_seconds=row.sync_interval_seconds,
+        auto_disable_threshold=row.auto_disable_threshold,
+        disabled_reason=row.disabled_reason,
+        is_demo=bool(row.is_demo),
+        last_synced_at=_as_utc(row.last_synced_at),
+        last_seen_at=_as_utc(row.last_seen_at),
+        ingested_at=_as_utc(row.ingested_at),
+        health=_to_source_health(health),
+    )
+
+
+def _to_workspace_project_map(row: RuntimeWorkspaceProjectMapRow) -> RuntimeWorkspaceProjectMap:
+    return RuntimeWorkspaceProjectMap(
+        id=row.id,
+        source_id=row.source_id,
+        container_key=row.container_key,
+        container_name=row.container_name,
+        project_id=row.project_id,
+        created_at=_as_utc(row.created_at),
+        created_by=row.created_by,
     )
 
 

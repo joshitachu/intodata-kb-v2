@@ -67,6 +67,81 @@ class RuntimeSource(BaseModel):
     ingested_at: datetime
 
 
+class RuntimeSourceCredentialField(BaseModel):
+    name: str
+    type: str
+    label: str | None = None
+    required: bool = True
+
+
+class RuntimeSourceTypeInfo(BaseModel):
+    provider_key: str
+    provider_label: str
+    credential_schema: list[RuntimeSourceCredentialField]
+
+
+class RuntimeSourceHealth(BaseModel):
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_failure_at: datetime | None = None
+    consecutive_failures: int = 0
+    last_failure_sanitized: str | None = None
+    total_cycles: int = 0
+    total_records_ingested: int = 0
+
+
+class RuntimeSourceCreate(BaseModel):
+    project_id: str
+    provider_key: str
+    label: str
+    credentials: dict[str, Any] = Field(default_factory=dict)
+    sync_interval_seconds: int = Field(default=60, ge=30)
+
+
+class RuntimeSourceUpdate(BaseModel):
+    label: str | None = None
+    enabled: bool | None = None
+    sync_interval_seconds: int | None = Field(default=None, ge=30)
+
+
+class RuntimeSourceRotateCredentials(BaseModel):
+    credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeSourceRead(BaseModel):
+    id: int
+    project_id: str
+    source_key: str
+    source_type: str
+    label: str
+    status: str
+    enabled: bool
+    sync_interval_seconds: int
+    auto_disable_threshold: int
+    disabled_reason: str | None = None
+    is_demo: bool = False
+    last_synced_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    ingested_at: datetime
+    health: RuntimeSourceHealth | None = None
+
+
+class RuntimeWorkspaceProjectMap(BaseModel):
+    id: int
+    source_id: int
+    container_key: str
+    container_name: str | None = None
+    project_id: str
+    created_at: datetime
+    created_by: str | None = None
+
+
+class RuntimeWorkspaceProjectMapCreate(BaseModel):
+    container_key: str
+    container_name: str | None = None
+    project_id: str
+
+
 class RuntimeEnvironment(BaseModel):
     environment_id: str
     source_key: str

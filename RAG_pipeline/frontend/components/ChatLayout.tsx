@@ -17,14 +17,57 @@ export function ChatLayout() {
   const urlState = useUrlConversationId();
   const router = useRouter();
   const { keyboardHeight } = useVisualViewport();
+  const {
+    activeConversation,
+    activeConversationId,
+    conversations,
+    isLoading,
+    isLoadingConversation,
+    setActiveConversationId,
+  } = chat;
 
-  useSyncUrlConversationId(chat.activeConversationId, urlState.isNew);
+  useSyncUrlConversationId(activeConversationId, urlState.isNew);
 
   useEffect(() => {
-    if (chat.activeConversationId !== urlState.activeId) {
-      chat.setActiveConversationId(urlState.activeId);
+    if (urlState.isNew) {
+      if (activeConversationId !== null) {
+        setActiveConversationId(null);
+      }
+      return;
     }
-  }, [urlState.activeId, chat]);
+
+    if (urlState.activeId !== null) {
+      const existsInList = conversations.some(
+        (conversation) => conversation.id === urlState.activeId,
+      );
+      const selectedMissing =
+        activeConversationId === urlState.activeId &&
+        !isLoadingConversation &&
+        activeConversation === null;
+
+      if (!isLoading && !existsInList && (activeConversationId !== urlState.activeId || selectedMissing)) {
+        if (activeConversationId !== null) {
+          setActiveConversationId(null);
+        }
+        router.replace("/?c=new");
+        return;
+      }
+
+      if (activeConversationId !== urlState.activeId) {
+        setActiveConversationId(urlState.activeId);
+      }
+    }
+  }, [
+    activeConversation,
+    activeConversationId,
+    conversations,
+    isLoading,
+    isLoadingConversation,
+    router,
+    setActiveConversationId,
+    urlState.activeId,
+    urlState.isNew,
+  ]);
 
   const isListView =
     isMobile && urlState.activeId === null && !urlState.isNew;
@@ -34,7 +77,7 @@ export function ChatLayout() {
   }
 
   const title =
-    chat.activeConversation?.title || (urlState.isNew ? "New Chat" : "Chat");
+    activeConversation?.title || (urlState.isNew ? "New Chat" : "Chat");
 
   return (
     <div className="flex flex-col h-full">
@@ -44,7 +87,6 @@ export function ChatLayout() {
           leftAction={
             <button
               onClick={() => {
-                chat.setActiveConversationId(null);
                 router.push("/");
               }}
               className="-ml-2 p-2 rounded-md text-foreground hover:bg-muted transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
