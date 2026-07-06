@@ -256,7 +256,10 @@ export const AddGithubSourceSchema = z.object({
   project_id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/),
   platform: z.string().min(1),
   display_name: z.string().trim().min(1).max(160).optional(),
-  github_token: z.string().min(1),
+  // PAT connection (fallback). Omitted for GitHub App connections.
+  github_token: z.string().min(1).optional(),
+  // GitHub App connection (preferred). Set after installing the App.
+  installation_id: z.number().int().positive().optional(),
 });
 
 export type AddGithubSource = z.infer<typeof AddGithubSourceSchema>;
@@ -266,6 +269,30 @@ export const UpdateGithubTokenSchema = z.object({
 });
 
 export type UpdateGithubToken = z.infer<typeof UpdateGithubTokenSchema>;
+
+// --- GitHub App connection ---
+
+export const GithubAppConnectResponseSchema = z.object({
+  install_url: z.string().url(),
+});
+
+export type GithubAppConnectResponse = z.infer<typeof GithubAppConnectResponseSchema>;
+
+export const GithubAppRepoItemSchema = z.object({
+  full_name: z.string().nullable().optional(),
+  clone_url: z.string().nullable().optional(),
+  private: z.boolean().nullable().optional(),
+  default_branch: z.string().nullable().optional(),
+});
+
+export const GithubAppReposResponseSchema = z.object({
+  installation_id: z.number(),
+  account_login: z.string().nullable().optional(),
+  repositories: z.array(GithubAppRepoItemSchema),
+});
+
+export type GithubAppReposResponse = z.infer<typeof GithubAppReposResponseSchema>;
+export type GithubAppRepoItem = z.infer<typeof GithubAppRepoItemSchema>;
 
 // --- User Projects (RAG project selector) ---
 

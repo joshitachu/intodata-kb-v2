@@ -24,7 +24,10 @@ export interface GithubSourceArgs {
   projectId: string;
   platform: string;
   displayName?: string;
-  githubToken: string;
+  // PAT connection (fallback). Omit for GitHub App connections.
+  githubToken?: string;
+  // GitHub App connection (preferred). Set after installing the App.
+  installationId?: number;
 }
 
 export interface SourceProject {
@@ -184,12 +187,45 @@ export async function addGithubSource(args: GithubSourceArgs): Promise<SourcePro
       platform: args.platform,
       display_name: args.displayName,
       github_token: args.githubToken,
+      installation_id: args.installationId,
     }),
   });
   if (!res.ok) {
     throw new Error(`/api/source/github failed (${res.status}): ${await res.text()}`);
   }
   return res.json();
+}
+
+// Start a GitHub App install: returns the URL to redirect the browser to.
+export async function getGithubAppInstallUrl(projectId?: string): Promise<string> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await fetch(`/api/source/github/connect${qs}`, { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(`/api/source/github/connect failed (${res.status}): ${await res.text()}`);
+  }
+  const data = await res.json();
+  return data.install_url as string;
+}
+
+export interface GithubAppRepo {
+  full_name: string | null;
+  clone_url: string | null;
+  private: boolean | null;
+  default_branch: string | null;
+}
+
+// List repositories an installation can access (for the repo-picker).
+export async function listGithubAppRepos(
+  installationId: number,
+): Promise<{ account_login: string | null; repositories: GithubAppRepo[] }> {
+  const res = await fetch(`/api/source/github/installations/${installationId}/repos`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(`/api/source/github/installations failed (${res.status}): ${await res.text()}`);
+  }
+  const data = await res.json();
+  return { account_login: data.account_login ?? null, repositories: data.repositories ?? [] };
 }
 
 export async function updateGithubToken(

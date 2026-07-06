@@ -27,13 +27,14 @@ def decrypt_token(ciphertext: str) -> str:
     return _fernet().decrypt(ciphertext.encode()).decode()
 
 
-def inject_token(repo_url: str, token_enc: str | None) -> str:
-    """Return repo_url with the PAT injected as HTTPS credentials (in-memory only)."""
-    if not token_enc:
-        return repo_url
-    try:
-        token = decrypt_token(token_enc)
-    except Exception:
+def inject_plaintext_token(repo_url: str, token: str | None) -> str:
+    """Return repo_url with a plaintext token injected as HTTPS credentials (in-memory only).
+
+    This is the single URL-building implementation. Both the PAT path
+    (``inject_token``) and the GitHub App path (minted installation tokens) funnel
+    through here so credential injection behaves identically regardless of source.
+    """
+    if not token:
         return repo_url
 
     parsed = urlparse(repo_url)
@@ -42,3 +43,14 @@ def inject_token(repo_url: str, token_enc: str | None) -> str:
 
     authed = parsed._replace(netloc=f"{token}@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else ""))
     return urlunparse(authed)
+
+
+def inject_token(repo_url: str, token_enc: str | None) -> str:
+    """Return repo_url with a stored (encrypted) PAT injected as HTTPS credentials."""
+    if not token_enc:
+        return repo_url
+    try:
+        token = decrypt_token(token_enc)
+    except Exception:
+        return repo_url
+    return inject_plaintext_token(repo_url, token)

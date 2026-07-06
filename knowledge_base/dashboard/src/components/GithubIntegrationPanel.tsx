@@ -17,6 +17,23 @@ export default function GithubIntegrationPanel({
   registerWebhook,
   updateGithubToken,
 }: Props) {
+  // App-connected projects authenticate via a GitHub App installation: no PAT to
+  // store and webhooks are delivered at the App level, so the token/webhook
+  // controls below do not apply.
+  if (project.connection_kind === "app") {
+    return (
+      <div className="bg-surface-raised rounded border border-white/[0.07] p-3">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+          <span className="text-sm text-emerald-400">
+            Connected via GitHub App{project.github_account_login ? ` (${project.github_account_login})` : ""}
+            {" "}— no token stored, access managed in GitHub
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-surface-raised rounded border border-white/[0.07] p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">

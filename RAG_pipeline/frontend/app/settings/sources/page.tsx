@@ -40,6 +40,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { GithubAppConnectPanel } from "./GithubAppConnectPanel";
 
 type RowStage =
   | "pending"
@@ -566,6 +567,12 @@ export default function SourcesSettingsPage() {
           background.
         </p>
       </div>
+
+      <GithubAppConnectPanel
+        platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
+        defaultPlatform={activeAddPlatform}
+        onConnected={() => qc.invalidateQueries({ queryKey: ["source-projects"] })}
+      />
 
       <section className="space-y-3">
         <div>

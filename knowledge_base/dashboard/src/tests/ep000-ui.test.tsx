@@ -189,6 +189,8 @@ describe("EP-000 dashboard panels", () => {
       auto_reingest_error: null,
       git_update_summary: null,
       has_github_token: false,
+      connection_kind: "pat",
+      github_account_login: null,
       webhook_status: null,
       instruction_pack_dir: null,
       plugin_pack_id: null,

@@ -21,6 +21,8 @@ export const ProjectSchema = z.object({
   auto_reingest_error: z.string().nullable(),
   git_update_summary: z.record(z.string(), z.unknown()).nullable(),
   has_github_token: z.boolean(),
+  connection_kind: z.enum(["pat", "app"] as const).default("pat"),
+  github_account_login: z.string().nullable().default(null),
   webhook_status: z.enum(["active", "not_registered", "unknown"] as const).nullable(),
   instruction_pack_dir: z.string().nullable(),
   plugin_pack_id: z.number().nullable(),
