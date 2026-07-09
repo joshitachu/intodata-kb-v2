@@ -1,9 +1,9 @@
 # ADR-001: MCP Agent Over CLI Analyzer for Documentation Generation
 
 ## Status
-Accepted (Feb 2026)
+Accepted (Feb 2026); superseded for active generation by the custom harness.
 
-**Partially superseded**: The rationale "No API keys needed — Claude Code IS the LLM" no longer holds universally. A second provider (`custom`) was added (Apr 2026) supporting Anthropic API, OpenAI, Gemini, and DeepSeek directly. See `PROJECT_MEMORY.md` "Two-provider doc gen design" for the follow-on decision.
+**Current state**: this ADR records the historical move away from the CLI analyzer. The project no longer uses Claude Code as the active doc-generation path. The current path is the custom harness in `providers/custom/harness.py`, routed by `DocGenerationCoordinator`, with direct provider/model adapters.
 
 ## Context
 The original intodoc architecture used a CLI-based LLM analyzer pipeline:
@@ -14,15 +14,16 @@ The original intodoc architecture used a CLI-based LLM analyzer pipeline:
 - Quality: constrained by template rigidity and single-pass context windows
 
 ## Decision
-Replace the CLI analyzer with an MCP-based Claude Code agent for documentation generation.
+Replace the CLI analyzer with an MCP-based agent for documentation generation.
 
-The MCP server exposes scan data via 8 tools. Claude Code acts as both the orchestrator
-and the LLM, reading analysis prompts and writing documentation directly.
+Historically, Claude Code acted as both orchestrator and LLM. That has since been
+replaced by the repository-owned custom harness: MCP/server code owns orchestration,
+phase state, staging, validation, and provider selection; LLM providers only author
+analysis and documentation text inside bounded tasks.
 
 ## Rationale
 
-- **No API keys needed** -- Claude Code IS the LLM; no external API calls
-- **No cost tracking** -- included in Claude Code subscription
+- **Historical rationale only** -- the original Claude Code path avoided API keys and separate cost tracking
 - **Better quality** -- agent can reason across groups, adapt to project structure
 - **Parallel sub-agents** -- one per group for analysis, one per theme for writing
 - **Direct .md writing** -- no Jinja2 template constraints
@@ -32,10 +33,10 @@ and the LLM, reading analysis prompts and writing documentation directly.
 ## Consequences
 
 - Legacy CLI path (analyzer + generator) is retained but no longer the primary workflow
-- Documentation generation requires Claude Code (not just any LLM)
-- MCP server must be running and configured (`.mcp.json`)
+- Documentation generation uses the custom harness and configured provider/model adapters
+- MCP REST/server components must be available for dashboard-driven generation
 - Analysis prompts (p01-p22) and reference docs remain the quality backbone
-- Budget concerns eliminated for the MCP path
+- Budget/cost tracking is handled by the active provider/runtime path
 
 ## Alternatives Considered
 

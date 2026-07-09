@@ -130,14 +130,6 @@ export function Sidebar() {
         className="w-14 border-r bg-card flex flex-col h-full transition-all duration-200"
         data-tour="sidebar"
       >
-        <div className="px-2 py-3 flex items-center justify-center border-b border-border/60">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/favicon.svg"
-            alt="Intodata"
-            className="h-7 w-7 rounded-md shadow-elevation-xs"
-          />
-        </div>
         <div className="p-2 flex items-center justify-center">
           <button
             onClick={() => setExpanded(true)}
@@ -155,10 +147,10 @@ export function Sidebar() {
             title="New chat"
             aria-label="New chat"
             className={cn(
-              "flex items-center justify-center w-8 h-8 rounded-md transition-colors",
+              "flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-muted hover:text-foreground",
               isChatPage && !chat.activeConversationId
-                ? "bg-secondary text-secondary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                ? "text-foreground"
+                : "text-muted-foreground",
             )}
           >
             <Plus className="h-4 w-4" />

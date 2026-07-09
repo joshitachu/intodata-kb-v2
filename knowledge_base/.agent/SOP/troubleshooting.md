@@ -37,9 +37,9 @@ on 9 chunks can exceed $5 with larger models.
 ## MCP Server Issues
 
 ### MCP server not connecting
-**Symptom**: Claude Code can't find intodoc MCP tools.
+**Symptom**: An MCP client can't find intodoc MCP tools.
 **Fix**: Verify `.mcp.json` exists in the working directory and points to the
-correct `mcp-server/` path. Restart Claude Code to reload MCP config.
+correct `mcp-server/` path. Restart the MCP client to reload MCP config.
 
 ### "Project not found" errors
 **Symptom**: MCP tools return `{"error": "Project not found: ..."}`.

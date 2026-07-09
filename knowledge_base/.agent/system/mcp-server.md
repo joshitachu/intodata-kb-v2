@@ -1,13 +1,13 @@
 # MCP Server
 
-The MCP server (`mcp-server/`) exposes scan data to Claude Code via the MCP protocol
-and provides a REST API for the dashboard.
+The MCP server (`mcp-server/`) exposes scan data to the custom documentation harness,
+keeps optional MCP tooling available, and provides a REST API for the dashboard.
 
 ## Dual Mode
 
 The server runs in two modes via `python -m mcp_server`:
 
-- `--mcp` -- MCP stdio server for Claude Code (configured in `.mcp.json`)
+- `--mcp` -- MCP stdio server for optional/debug tool access (configured in `.mcp.json`)
 - `--serve` -- REST API on port 8001 for the dashboard
 
 ## MCP Tools (14 tools)
@@ -47,7 +47,7 @@ All endpoints are under `/mcp/` prefix:
 | POST | `/mcp/add-repo` | Register a project |
 | POST | `/mcp/upload-zip` | Upload ZIP, unpack, register |
 | POST | `/mcp/scan` | Trigger scan (background task) |
-| POST | `/mcp/generate` | Spawn Claude Code CLI for doc generation |
+| POST | `/mcp/generate` | Run the configured doc-generation provider/harness |
 | POST | `/mcp/push-to-rag` | Push docs to RAG pipeline |
 | POST | `/mcp/reset-status` | Reset stuck generating/scanning project to error |
 | GET | `/mcp/status/{project_id}` | Get project scan status |
@@ -89,7 +89,7 @@ mcp-server/src/mcp_server/
     project_registry.py -- DB operations for projects + scan/generate runs
     scanner_service.py  -- Run intodoc scan, read scan cache/chunks
     rag_bridge.py       -- Push docs to RAG pipeline
-    claude_service.py   -- Route doc generation to active provider
+    claude_service.py   -- DocGenerationCoordinator; resolves models and routes generation to the active provider
     log_manager.py      -- Log file management + streaming
     assessment_service.py, deep_dive_service.py, doc_quality_scorer.py
     auto_doc_update.py, git_poller.py, git_reingestion.py
@@ -97,8 +97,8 @@ mcp-server/src/mcp_server/
     model_pricing.py, ops_telemetry.py, validation_service.py
   providers/           -- Doc generation backends
     base.py            -- Abstract provider interface
-    claude_cli/        -- Spawns Claude Code CLI subprocess
-    custom/            -- API-based harness (agent_runtime.py, harness.py)
+    claude_cli/        -- Legacy unsupported Claude Code CLI path retained in source
+    custom/            -- Current API-based harness (agent_runtime.py, harness.py)
   db/
     models.py          -- SQLAlchemy models (Project, ScanRun, GenerateRun, PluginPack)
     session.py         -- Async session factory

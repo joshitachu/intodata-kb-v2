@@ -23,6 +23,23 @@ _SUMMARY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_RUNTIME_KEYWORD_PATTERN = re.compile(
+    r"\b(job|pipeline|execution|engine|workspace|orchestration|"
+    r"run|ran|rerun|sync|failed|failure|fail|error|errors|incident|"
+    r"log|logs|status|health|unhealthy|downstream|upstream|"
+    r"talend|workato|lobster|tmc)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_runtime_keywords(query: str) -> bool:
+    """Recall backstop for the runtime-intent gate: catches phrasing the LLM
+    classifier might miss (misspellings, unusual wording). A hit only routes
+    the turn into the (still-correct) tool loop -- false positives cost
+    latency, not correctness. Starting keyword set; tune from gate-decision
+    logs, not speculation."""
+    return bool(_RUNTIME_KEYWORD_PATTERN.search(query))
+
 CLASSIFIER_SYSTEM_PROMPT = """\
 You are an intent classifier for a knowledge-base system. The system has:
 - **Projects**: registered source code projects (with metadata like platform, status, scan history)
@@ -49,8 +66,19 @@ Note: When a "[Context: ...]" note is appended to the message indicating an acti
 
 Note: Questions asking "why", "how", "what is this based on", "explain the methodology", or "what are the details" about a project's scores, findings, or assessments are **search** queries (they need document content), not **project_detail** (which is for structural metadata like platform, status, scan dates).
 
+Separately from the action above, also decide **runtime**: true only if the
+user is asking to check LIVE, currently-running system state -- an active
+monitoring/observability question such as "is job X running right now",
+"what's the current status of the nightly sync", "show recent execution
+errors", or "which engines are online". A question about what a job or
+component *does*, is documented to do, or is designed to do (even if that
+behavior involves failure handling) is NOT a runtime question -- it is
+whatever action category it would otherwise be (usually search or
+project_detail). This flag never changes which action you picked above; it
+is an independent yes/no judgment.
+
 Respond with ONLY a JSON object, no markdown, no explanation:
-{"action": "search|project_list|project_detail|document_stats|document_list|system_overview|hybrid|my_profile|summary|conversation_summary", "project": "name_or_null"}
+{"action": "search|project_list|project_detail|document_stats|document_list|system_overview|hybrid|my_profile|summary|conversation_summary", "project": "name_or_null", "runtime": true_or_false}
 """
 
 
@@ -89,6 +117,10 @@ class QueryAnalysis:
     query_type: QueryType = QueryType.QA
     metadata_intent: MetadataIntent | None = None
     extracted_project: str | None = None
+    runtime_intent: bool = False
+    """LLM-classifier signal that this query is about live job/pipeline/log
+    data. Combined with a keyword backstop in conversational_rag.py to gate
+    entry into the runtime tool loop."""
 
 
 def _detect_query_type(query: str) -> QueryType:
@@ -98,10 +130,10 @@ def _detect_query_type(query: str) -> QueryType:
     return QueryType.QA
 
 
-def _parse_classifier_response(raw: str) -> tuple[str, str | None]:
+def _parse_classifier_response(raw: str) -> tuple[str, str | None, bool]:
     """Parse JSON response from the LLM classifier.
 
-    Returns (action_str, project_name_or_none).
+    Returns (action_str, project_name_or_none, runtime_intent).
     Raises ValueError if unparseable.
     """
     # Strip markdown fences if the LLM wrapped it
@@ -119,11 +151,15 @@ def _parse_classifier_response(raw: str) -> tuple[str, str | None]:
             project = None
     else:
         project = None
-    return action, project
+    runtime_intent = data.get("runtime")
+    runtime_intent = runtime_intent is True
+    return action, project, runtime_intent
 
 
-async def _llm_classify(query: str, conversation_context: str | None = None) -> tuple[str, str | None]:
-    """Call the LLM to classify the query. Returns (action_str, project)."""
+async def _llm_classify(
+    query: str, conversation_context: str | None = None
+) -> tuple[str, str | None, bool]:
+    """Call the LLM to classify the query. Returns (action_str, project, runtime_intent)."""
     import httpx
     from src.config import settings
 
@@ -179,6 +215,8 @@ async def _llm_classify(query: str, conversation_context: str | None = None) -> 
     raise RuntimeError("All intent classifier providers failed")
 
 
+
+
 def analyze_query(query: str, conversation_context: str | None = None) -> QueryAnalysis:
     """Synchronous fast-path for empty queries only.
 
@@ -210,7 +248,7 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
 
     try:
         t0 = time.perf_counter()
-        action_str, project = await _llm_classify(stripped, conversation_context)
+        action_str, project, runtime_intent = await _llm_classify(stripped, conversation_context)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
         if action_str == "conversation_summary":
@@ -221,6 +259,7 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
             return QueryAnalysis(
                 action=Action.CONVERSATION_SUMMARY,
                 cleaned_query=stripped,
+                runtime_intent=runtime_intent,
             )
         elif action_str == "summary":
             logger.info(
@@ -231,6 +270,7 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
                 action=Action.SEARCH,
                 cleaned_query=stripped,
                 query_type=QueryType.SUMMARY,
+                runtime_intent=runtime_intent,
             )
         elif action_str in _METADATA_ACTIONS:
             intent = MetadataIntent(action_str)
@@ -243,6 +283,7 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
                 cleaned_query=stripped,
                 metadata_intent=intent,
                 extracted_project=project,
+                runtime_intent=runtime_intent,
             )
         else:
             logger.info(
@@ -253,6 +294,7 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
                 action=Action.SEARCH,
                 cleaned_query=stripped,
                 query_type=query_type,
+                runtime_intent=runtime_intent,
             )
 
     except Exception as e:

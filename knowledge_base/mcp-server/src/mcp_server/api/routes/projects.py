@@ -44,6 +44,8 @@ from mcp_server.schemas import (
     FullRebuildRequest,
     GenerateRequest,
     GithubAppConnectResponse,
+    GithubAppInstallationItem,
+    GithubAppInstallationsResponse,
     GithubAppRepoItem,
     GithubAppReposResponse,
     GenerateRunListResponse,
@@ -1180,6 +1182,29 @@ async def github_app_callback(
         sep = "&" if "?" in redirect else "?"
         return RedirectResponse(f"{redirect}{sep}installation_id={installation_id}&connected=1")
     return {"installation_id": installation_id, "project_id": project_id, "account_login": account_login, "connected": True}
+
+
+@router.get("/github/app/installations", response_model=GithubAppInstallationsResponse)
+async def github_app_installations(request: Request):
+    """List GitHub App installations already bound to the current Nexus user."""
+    from mcp_server.db.models import GithubAppInstallation
+    from mcp_server.services.github_app_ownership import _is_superadmin
+
+    auth_payload = getattr(request.state, "auth_payload", None)
+    user_id = int(auth_payload.get("sub", 0)) if auth_payload else 0
+    async with async_session_factory() as db:
+        query = select(GithubAppInstallation)
+        if not await _is_superadmin(db, user_id):
+            query = query.where(GithubAppInstallation.owner_user_id == user_id)
+        result = await db.execute(query.order_by(GithubAppInstallation.account_login))
+        installations = [
+            GithubAppInstallationItem(
+                installation_id=int(row.installation_id),
+                account_login=row.account_login,
+            )
+            for row in result.scalars().all()
+        ]
+    return GithubAppInstallationsResponse(installations=installations)
 
 
 @router.get("/github/app/installations/{installation_id}/repos", response_model=GithubAppReposResponse)
@@ -3102,7 +3127,7 @@ async def _run_summaries_background(project_id: str, platform: str) -> None:
 
 @router.post("/deep-dive")
 async def deep_dive_query(req: DeepDiveRequest, request: Request):
-    """Stream deep-dive analysis via Claude Code CLI (SSE)."""
+    """Stream deep-dive analysis via the configured repo-owned engine (SSE)."""
     await require_project_access(request, req.project_id)
     # Validate project exists and has scan data
     async with async_session_factory() as db:

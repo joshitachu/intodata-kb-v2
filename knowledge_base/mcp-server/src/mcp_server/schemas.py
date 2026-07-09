@@ -130,6 +130,15 @@ class GithubAppReposResponse(BaseModel):
     repositories: list[GithubAppRepoItem] = Field(default_factory=list)
 
 
+class GithubAppInstallationItem(BaseModel):
+    installation_id: int
+    account_login: str | None = None
+
+
+class GithubAppInstallationsResponse(BaseModel):
+    installations: list[GithubAppInstallationItem] = Field(default_factory=list)
+
+
 class ReingestionReadinessResponse(BaseModel):
     project_id: str
     source_type: str

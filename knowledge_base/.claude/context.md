@@ -1,6 +1,48 @@
 # KB Sub-project Context
 
-## Last Completed (2026-07-06) -- Talend ESB/Camel route vs DI job classification (uncommitted)
+## Last Completed (2026-07-08) -- Talend ESB/Camel: two scanner bugs found and fixed (uncommitted)
+
+**Bug 1 (classification coverage)**: the 2026-07-06 scanner-computed classification
+used a hardcoded ~25-entry allowlist of known Camel component type names. A real
+customer-scanned route file on disk uses `cHttp`, a real Camel component absent from
+that list -- it still classified correctly only because the same job also used
+allowlisted components alongside it. Fixed per repo convention (no workarounds/
+generalize fixes): `parser.py`'s `classify_esb_components()` now matches the
+`c[A-Z]` prefix convention via `_ESB_COMPONENT_PATTERN` regex instead of intersecting
+against a fixed set -- every DI-job component in this codebase is `t`-prefixed, so
+the prefix split itself is the real signal, not a curated subset of it.
+
+**Bug 2 (routes/ never scanned at all -- bigger than Bug 1)**: found while working
+out how to verify Bug 1's fix end-to-end. A real Talend ESB Studio project on disk
+has Route Designs under a separate top-level `routes/` directory, sibling to
+`process/` -- `_parse_all_jobs` only ever walked `process/`, so all 5 real ESB
+routes in that project were completely invisible to the scanner (never parsed as
+jobs at all, not merely misclassified). This also means the earlier claim that
+"Jobs and Routes have no folder-level distinction" was wrong for real Studio
+exports -- true only of the raw `.item`/XMI file format, not the repository layout.
+Fixed: `_parse_all_jobs`/`_find_talend_root` now walk/recognize both `process/` and
+`routes/`.
+
+Added synthetic (non-customer) fixtures under `intodoc/tests/fixtures/talend_sample/`
+covering both bugs (`routes/Service/`-nested route using only `cTimer`+`cHttp`, plus
+a `process/DI/` plain job). **Real-data verification** (local, read-only, no
+Docker/containers touched per user instruction, no LLM calls): ran `intodoc scan`
+directly against the real project. Before: 2 jobs found, 0 routes. After: 7 jobs
+found, all 5 real routes correctly flagged `is_esb_route: true` with correct
+component types including `cHttp`. Full `intodoc` suite: 380 passed, 8 skipped
+(pre-existing, see below). Also investigated (did not act on) the `vaxxinova-talend`
+submodule: added as a bare gitlink with no `.gitmodules` in `2d4ce2a`, never
+resolved, fully removed in `4a45b4d`; no remote URL recoverable and it named a
+specific customer, so left for the user to decide. **Not done**: full pipeline
+verification that `talend_esb_facts.json` + the `ESB_ROUTES` Phase 2 doc section
+render correctly requires the MCP doc-generation harness (Docker + LLM call) --
+intentionally not attempted this session per explicit user instruction not to
+rebuild/restart containers without being told. Also noted but out of scope: Route
+-> Job calls via `cTalendJob` aren't resolved into `trunjob_refs`/`job_calls` the
+way `tRunJob` is for DI jobs. See `.claude/PROGRESS_LOG.md` 2026-07-08 for full
+file lists and verification detail on both fixes.
+
+## Previous (2026-07-06) -- Talend ESB/Camel route vs DI job classification (uncommitted)
 
 Talend ESB/Camel route detection moved from a late mcp-server heuristic
 (`talend_intelligence.py` re-deriving component types from raw `scan_result.json`)
@@ -214,17 +256,26 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 
 ## Immediate Next Steps
 
-0. **Talend ESB/DI classification — live verification + commit**: Unit-tested only
-   so far (no `vaxxinova-talend` fixture in this checkout, so the pre-existing
-   `test_talend_parser.py` integration tests stayed skipped). Before commit: (a) run
-   a real scan + generation on a Talend project containing actual `cRoute`/`cREST`/
-   `cJMS`-style components and confirm `is_esb_route`/`esb_component_types` appear
-   in `scan_result.json`, `talend_esb_facts.json` is written, and Phase 2 output for
-   that project actually contains a non-empty `ESB_ROUTES` section (not just the
-   "No ESB/Camel routes" placeholder); (b) confirm a pure-DI Talend project is
-   never flagged and never hard-fails on `ESB_ROUTES`; (c) decide whether to keep
-   this uncommitted alongside the unrelated Living-Document Reingestion changes
-   below or split into its own commit.
+0. **Talend ESB/DI classification — full pipeline verification + commit**:
+   Scanner-level fix is now verified against real data (2026-07-08: `intodoc scan`
+   run directly against a real Talend ESB Studio project confirmed all 5 real
+   routes are found and correctly classified, including the `cHttp` gap case).
+   No `vaxxinova-talend` fixture in this checkout, so the pre-existing
+   `test_talend_parser.py` integration tests stayed skipped -- confirmed
+   unrecoverable, see 2026-07-08 above. Still before commit: (a) run the actual
+   MCP doc-generation harness (needs Docker + a working LLM provider -- explicitly
+   NOT attempted 2026-07-08 per user instruction not to rebuild/restart containers
+   without being told) on a Talend project containing real Camel/ESB routes and
+   confirm `talend_esb_facts.json` is written and Phase 2 output actually contains
+   a non-empty `ESB_ROUTES` section (not just the "No ESB/Camel routes"
+   placeholder); (b) confirm a pure-DI Talend project is never flagged and never
+   hard-fails on `ESB_ROUTES`; (c) decide whether to delete the 8
+   permanently-skipped `vaxxinova-talend` integration tests in
+   `test_talend_parser.py` now that the fixture is confirmed unrecoverable; (d)
+   decide whether to keep this uncommitted alongside the unrelated Living-Document
+   Reingestion changes below or split into its own commit; (e) optional follow-up,
+   not blocking: Route -> Job calls via `cTalendJob` aren't resolved into
+   `trunjob_refs`/`job_calls` the way `tRunJob` is for DI jobs.
 1. **Living-Document Reingestion — finish verification + commit**: All fixes are in
    the working tree (uncommitted). Before commit: (a) top up the deepseek balance (or
    point doc-gen at a funded provider) and run one single-group webhook on

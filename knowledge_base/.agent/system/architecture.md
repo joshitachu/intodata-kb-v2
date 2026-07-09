@@ -21,10 +21,10 @@ The platform operates in two modes:
 - Read-only tool -- scans source code, does not generate documentation
 - Supported platforms: Talend, Workato, Generic, Lobster
 
-### Mode 2: Documentation Agent (MCP + provider)
+### Mode 2: Documentation Harness (MCP + provider)
 
 - MCP server (`mcp-server/`) exposes scan data via 14 tools (`get_chunks`, `fetch_chunk`, etc.)
-- Two provider backends in `providers/`: `claude_cli` (Claude Code subprocess) and `custom` (API harness)
+- The current provider path is `custom` (API harness). `claude_cli` is a legacy unsupported code path and is not part of normal operation.
 - Phase 1: Setup (load scan data via MCP)
 - Phase 2: Group Analysis (parallel per-group tasks, configurable concurrency via `MCP_AGENT_PHASE2_CONCURRENCY`)
 - Phase 3: Write Docs (parallel per-document tasks via `MCP_AGENT_PHASE3_CONCURRENCY`)
@@ -59,7 +59,7 @@ Source Code (XML, properties, configs, etc.)
     -> Platform Parser (platform-specific plugin)
     -> Scan Cache (intodoc-output/ JSON files)
     -> MCP Server (serves chunks, manifest, connections)
-    -> Doc Generation Provider (claude_cli or custom API harness, analyzes chunks)
+    -> Doc Generation Provider (custom API harness, analyzes chunks)
     -> Documentation (9 enterprise markdown docs in output/{project_id}/docs_staging/)
     -> Enterprise gates + audit bundle
     -> Server swaps docs_staging/ -> docs/ only on success, then pushes to RAG via RagBridge
@@ -74,7 +74,7 @@ knowledge_base/                     -- Platform root
     SOP/                            -- Standard operating procedures
     tasks/                          -- Phase FRDs
     decisions/                      -- Architecture Decision Records
-  .claude/                          -- Claude Code settings + session logs
+  .claude/                          -- legacy agent settings + session logs
   .mcp.json                         -- MCP server configuration
   CLAUDE.md                         -- Platform rules and quick reference
   mcp-server/                       -- MCP + REST API server
@@ -104,7 +104,7 @@ knowledge_base/                     -- Platform root
 
 ## Integration Points
 
-- **MCP Server** -- Exposes scan data to Claude Code agent via MCP protocol
+- **MCP Server** -- Exposes scan data to the custom harness and optional MCP tools
 - **REST API** -- Dashboard communicates with MCP server via REST (:8001)
 - **Dashboard** -- React control panel for project lifecycle management
 - **RAG Pipeline** -- Ingests generated markdown docs for knowledge base search

@@ -16,7 +16,7 @@ triggering scans, viewing logs, generating docs, and reviewing quality.
 - **Project list** -- View all registered projects with status badges
 - **Add project** -- Register via dialog (local path, git URL, or ZIP upload)
 - **Trigger scan** -- Start `intodoc scan` for a project
-- **Generate docs** -- Trigger doc generation via active provider (claude-cli or custom API)
+- **Generate docs** -- Trigger doc generation via the custom harness and selected provider/model
 - **Provider/model selection** -- Choose backend and model before generation
 - **View logs** -- Real-time log streaming via SSE during scan/generation
 - **Run history** -- Per-project scan and generation run history

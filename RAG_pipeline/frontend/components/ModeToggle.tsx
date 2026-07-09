@@ -13,35 +13,35 @@ interface ModeToggleProps {
 export function ModeToggle({ mode, onModeChange }: ModeToggleProps) {
   return (
     <div
-      className="inline-flex rounded-lg border border-input bg-background p-0.5"
+      className="inline-flex items-center gap-0.5"
       data-tour="mode-toggle"
     >
       <button
         type="button"
         onClick={() => onModeChange("chat")}
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors",
-          "min-h-[36px] sm:min-h-0 px-3 sm:px-2.5 py-1.5 sm:py-1",
+          "inline-flex items-center gap-1 text-xs font-medium transition-colors",
+          "px-1.5 py-0.5 rounded",
           mode === "chat"
-            ? "bg-primary text-primary-foreground"
-            : "text-muted-foreground hover:text-foreground",
+            ? "text-foreground"
+            : "text-muted-foreground/70 hover:text-muted-foreground",
         )}
       >
-        <MessageSquare className="h-3.5 w-3.5" />
+        <MessageSquare className="h-3 w-3" />
         Chat
       </button>
       <button
         type="button"
         onClick={() => onModeChange("deep-dive")}
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-md text-xs font-medium transition-colors",
-          "min-h-[36px] sm:min-h-0 px-3 sm:px-2.5 py-1.5 sm:py-1",
+          "inline-flex items-center gap-1 text-xs font-medium transition-colors",
+          "px-1.5 py-0.5 rounded",
           mode === "deep-dive"
-            ? "bg-primary text-primary-foreground"
-            : "text-muted-foreground hover:text-foreground",
+            ? "text-foreground"
+            : "text-muted-foreground/70 hover:text-muted-foreground",
         )}
       >
-        <Code className="h-3.5 w-3.5" />
+        <Code className="h-3 w-3" />
         Deep Dive
       </button>
     </div>

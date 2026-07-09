@@ -12,13 +12,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.generation.llm_client import generate_answer, generate_answer_with_runtime_tools, get_last_usage
+from src.generation.llm_client import (
+    generate_answer_stream,
+    generate_answer_with_runtime_tools,
+    get_last_usage,
+)
 from src.generation.usage import UsageStats
 from src.runtime.client import execute_runtime_tool, list_runtime_tools
 from src.runtime.models import RuntimeToolCall
@@ -258,6 +263,13 @@ class RuntimeProgressEvent:
 
 
 @dataclass
+class RuntimeAnswerChunk:
+    """One streamed piece of the final synthesized answer."""
+
+    text: str
+
+
+@dataclass
 class RuntimeLoopOutcome:
     final_answer: str | None
     """None when no provider in the chain offered structured tool support and
@@ -290,24 +302,34 @@ def _accumulate_usage(total: UsageStats | None, usage: UsageStats | None) -> Usa
     return total
 
 
-async def run_runtime_tool_loop(
+async def run_runtime_tool_loop_stream(
     messages: list[dict],
     images: list[str] | None = None,
     *,
     project_scope: ProjectScope = None,
     db: AsyncSession | None = None,
     prior_runtime_summary: list[dict] | None = None,
-) -> RuntimeLoopOutcome:
-    """Run a bounded generate -> tool-call -> execute -> continue loop.
+) -> AsyncGenerator[RuntimeProgressEvent | RuntimeAnswerChunk | RuntimeLoopOutcome, None]:
+    """Run a bounded generate -> tool-call -> execute -> continue loop, yielding
+    each step live so a streaming caller can show progress as it happens.
 
     `project_scope` and `db` are threaded into every runtime tool execution so the
     DB-backed `stored` provider can enforce RBAC and read the held store. They are
     keyword-only and supplied by authenticated chat code — never from tool arguments.
 
-    Returns final_answer=None when the active provider chain has no
-    structured tool-call support and no tool was ever called, so the caller
-    can fall back to the existing non-runtime answer path without claiming
-    live data.
+    Yields, in order: zero or more `RuntimeProgressEvent`s (a "runtime_tool_call"
+    immediately followed by its "runtime_tool_result", per tool call, across
+    iterations), then zero or more `RuntimeAnswerChunk`s carrying the streamed
+    final answer, and always terminates with exactly one `RuntimeLoopOutcome`.
+
+    Exception: when the very first decision returns plain text with no tool
+    calls ever made (`progress` empty), the outcome is yielded directly with
+    no `RuntimeAnswerChunk`s — nothing ran that needs a re-synthesis pass.
+
+    A terminal `RuntimeLoopOutcome(final_answer=None, ...)` means the active
+    provider chain has no structured tool-call support and no tool was ever
+    called, so the caller should fall back to the existing non-runtime answer
+    path without claiming live data.
     """
     tools = list_runtime_tools()
     progress: list[RuntimeProgressEvent] = []
@@ -333,11 +355,15 @@ async def run_runtime_tool_loop(
             # cannot run concurrent queries.
             for request in executed:
                 call = RuntimeToolCall(tool_name=request.tool_name, arguments=request.arguments)
-                progress.append(RuntimeProgressEvent("runtime_tool_call", call.model_dump()))
+                call_event = RuntimeProgressEvent("runtime_tool_call", call.model_dump())
+                progress.append(call_event)
+                yield call_event
 
                 result = await execute_runtime_tool(call, project_scope=project_scope, db=db)
                 result_payload = result.model_dump(mode="json")
-                progress.append(RuntimeProgressEvent("runtime_tool_result", result_payload))
+                result_event = RuntimeProgressEvent("runtime_tool_result", result_payload)
+                progress.append(result_event)
+                yield result_event
 
                 tool_messages.append({
                     "role": "tool",
@@ -370,27 +396,67 @@ async def run_runtime_tool_loop(
             continue
 
         if decision.text is not None:
-            return RuntimeLoopOutcome(
-                final_answer=decision.text,
-                used_runtime_data=bool(progress),
-                progress_events=progress,
-                usage=usage,
-            )
+            if not progress:
+                # No tool ever ran: nothing to re-synthesize, deliver as-is.
+                yield RuntimeLoopOutcome(
+                    final_answer=decision.text,
+                    used_runtime_data=False,
+                    progress_events=[],
+                    usage=usage,
+                )
+                return
+            break  # Tools ran; fall through to the shared streamed synthesis tail.
 
         if not progress:
             # No tool call, no text, no prior tool results: the provider
             # chain has no structured tool support for this turn.
-            return RuntimeLoopOutcome(final_answer=None, used_runtime_data=False, usage=usage)
+            yield RuntimeLoopOutcome(final_answer=None, used_runtime_data=False, usage=usage)
+            return
 
         break  # Have tool results but the provider gave neither text nor another call.
 
-    # Iteration cap reached, or stalled with tool data but no final text:
-    # synthesize a plain-text answer from everything gathered so far.
-    final_text = await generate_answer(working_messages, images=images)
+    # Iteration cap reached, decision loop ended with text after >=1 tool
+    # call, or stalled with tool data but no final text: synthesize the
+    # final answer from everything gathered so far, streamed token-by-token.
+    # Single shared tail for all three cases -- not duplicated per exit path.
+    final_chunks: list[str] = []
+    async for token in generate_answer_stream(working_messages, images=images):
+        final_chunks.append(token)
+        yield RuntimeAnswerChunk(token)
     usage = _accumulate_usage(usage, get_last_usage())
-    return RuntimeLoopOutcome(
-        final_answer=final_text,
+    yield RuntimeLoopOutcome(
+        final_answer="".join(final_chunks),
         used_runtime_data=bool(progress),
         progress_events=progress,
         usage=usage,
     )
+
+
+async def run_runtime_tool_loop(
+    messages: list[dict],
+    images: list[str] | None = None,
+    *,
+    project_scope: ProjectScope = None,
+    db: AsyncSession | None = None,
+    prior_runtime_summary: list[dict] | None = None,
+) -> RuntimeLoopOutcome:
+    """Non-streaming convenience wrapper over `run_runtime_tool_loop_stream` for
+    callers that only need the final outcome (the REST endpoint).
+
+    Drains the same generator the streaming caller consumes live, so tool
+    execution logic is never duplicated between the two.
+    """
+    outcome: RuntimeLoopOutcome | None = None
+    async for event in run_runtime_tool_loop_stream(
+        messages,
+        images=images,
+        project_scope=project_scope,
+        db=db,
+        prior_runtime_summary=prior_runtime_summary,
+    ):
+        if isinstance(event, RuntimeLoopOutcome):
+            outcome = event
+    assert outcome is not None, (
+        "run_runtime_tool_loop_stream must always terminate with a RuntimeLoopOutcome"
+    )
+    return outcome

@@ -10,16 +10,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/joshuakabel/Documents/repos/nexus/intodata-kb-v2/.claude/hooks/session_end_nudge.sh"
-          }
-        ]
-      }
     ]
   }
 }

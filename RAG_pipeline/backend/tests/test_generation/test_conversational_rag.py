@@ -1,4 +1,7 @@
+import asyncio
 import datetime
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +10,13 @@ from src.db.models import Conversation, ConversationMessage
 from src.generation.agent_loop import RuntimeLoopOutcome
 from src.generation.intent_classifier import Action, QueryAnalysis, QueryType
 from src.generation.conversational_rag import (
+    _NEED_SEARCH_MARKER,
+    _SNIFF_BUFFER_CHARS,
+    _SniffResult,
+    _drain_stripping_late_marker,
+    _ends_with_partial_marker,
+    _prepare_rag_context,
+    _sniff_stream_sufficiency,
     build_context,
     build_context_from_document_sources,
     build_conversational_messages,
@@ -14,6 +24,7 @@ from src.generation.conversational_rag import (
     get_previous_sources,
     needs_new_search,
     run_conversational_rag,
+    run_conversational_rag_stream,
     truncate_history,
 )
 from src.schemas import DocumentSource, Source
@@ -712,7 +723,20 @@ class TestRetrievalLadder:
     ):
         from src.db.models import DocGapEvent
 
+        # This test exercises rung-1/rung-2 ladder logic, not intent
+        # classification or the runtime gate — pin the classifier's output so
+        # the assertions below don't depend on live-model sampling variance
+        # (this query is genuinely borderline between search/project_detail
+        # for the real classifier) or on the runtime keyword backstop (the
+        # query contains "failure", a runtime keyword, which is irrelevant to
+        # what this test verifies).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What does tDBOutput_1 do on failure?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
@@ -742,7 +766,18 @@ class TestRetrievalLadder:
     ):
         from src.db.models import DocGapEvent
 
+        # Pin the classifier + runtime gate for the same reason as
+        # test_rung1_sufficient_answer_skips_rung2 above: this query contains
+        # "job"/"fails", which the runtime keyword backstop is intentionally
+        # broad enough to match (an accepted false-positive per
+        # .plans/02_prd.md), but this test verifies ladder descent, not gating.
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What does the job do when the insert fails?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
@@ -780,7 +815,15 @@ class TestRetrievalLadder:
     async def test_missing_identifiers_triggers_rung2(
         self, mock_conversation, mock_db, disable_new_features
     ):
+        # Pin the classifier + runtime gate — see test_rung1_sufficient_answer_skips_rung2
+        # for why this is necessary (live-classifier borderline query).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What does tSetGlobalVar_4 store?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
@@ -808,7 +851,15 @@ class TestRetrievalLadder:
     ):
         from src.db.models import DocGapEvent
 
+        # Pin the classifier + runtime gate — see test_rung1_sufficient_answer_skips_rung2
+        # for why this is necessary (isolates ladder logic from classification).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What is the unknown thing?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
@@ -835,7 +886,15 @@ class TestRetrievalLadder:
         self, mock_conversation, mock_db, disable_new_features
     ):
         """Vision input must reach the rung-1 generation call (inspection finding)."""
+        # Pin the classifier + runtime gate — see test_rung1_sufficient_answer_skips_rung2
+        # for why this is necessary (isolates ladder logic from classification).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What does tDBOutput_1 show in this screenshot?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
         ):
@@ -877,7 +936,15 @@ class TestLadderEntityMatching:
         from src.retrieval.entity_matcher import EntityMatchResult
 
         match = self._match(alias="tDBOutput_9", unit="sjItem_OnRamp", entity_type="component")
+        # Pin the classifier + runtime gate — see test_rung1_sufficient_answer_skips_rung2
+        # for why this is necessary (isolates ladder logic from classification).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What does tDBOutput_9 do?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.match_query_entities", new_callable=AsyncMock) as mock_match,
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
@@ -909,7 +976,15 @@ class TestLadderEntityMatching:
     ):
         from src.retrieval.entity_matcher import EntityMatchResult
 
+        # Pin the classifier + runtime gate — see test_rung1_sufficient_answer_skips_rung2
+        # for why this is necessary (isolates ladder logic from classification).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="Is JavaScript used in the OffRamp frontend?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.match_query_entities", new_callable=AsyncMock) as mock_match,
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
@@ -935,7 +1010,15 @@ class TestLadderEntityMatching:
     ):
         from src.retrieval.entity_matcher import EntityMatchResult
 
+        # Pin the classifier + runtime gate — see test_rung1_sufficient_answer_skips_rung2
+        # for why this is necessary (isolates ladder logic from classification).
+        search_analysis = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="What does tSetGlobalVar_9 store?",
+        )
         with (
+            patch("src.generation.conversational_rag.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
             patch("src.generation.conversational_rag.match_query_entities", new_callable=AsyncMock) as mock_match,
             patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
             patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
@@ -959,3 +1042,672 @@ class TestLadderEntityMatching:
 
         mock_layered.assert_awaited_once()
         assert response.doc_gap is True
+
+
+class TestRuntimeIntentGate:
+    """Chat response-time fix (.plans/04_active_plan.md, Slice 1): the
+    runtime-intent gate is the single source of truth for tool-loop entry,
+    replacing the old "any non-cached turn" heuristic."""
+
+    @pytest.fixture(autouse=True)
+    def disable_new_features(self):
+        with patch("src.generation.conversational_rag.settings") as mock_settings:
+            mock_settings.query_expansion_enabled = False
+            mock_settings.reranker_enabled = False
+            mock_settings.hybrid_search_enabled = False
+            mock_settings.system_knowledge_injection = False
+            yield mock_settings
+
+    @pytest.fixture
+    def mock_conversation(self):
+        conv = MagicMock(spec=Conversation)
+        conv.id = 1
+        conv.messages = []
+        conv.title = None
+        return conv
+
+    @staticmethod
+    def _runtime_analysis(query: str) -> QueryAnalysis:
+        return QueryAnalysis(action=Action.SEARCH, query_type=QueryType.QA, cleaned_query=query, runtime_intent=True)
+
+    @staticmethod
+    def _search_analysis(query: str) -> QueryAnalysis:
+        return QueryAnalysis(action=Action.SEARCH, query_type=QueryType.QA, cleaned_query=query, runtime_intent=False)
+
+    async def test_runtime_gated_turn_with_zero_documents_still_gates_in(self, mock_conversation):
+        """A pure runtime question that retrieves no matching documents must
+        still reach the tool loop -- not the old ladder's refusal path."""
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._runtime_analysis("why did the nightly sync fail?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=True),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as mock_search,
+        ):
+            mock_search.return_value = []
+
+            ctx = await _prepare_rag_context(
+                conversation=mock_conversation,
+                query="why did the nightly sync fail?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+            )
+
+        assert ctx.allow_runtime_tools is True
+        assert ctx.precomputed_answer is None
+        assert ctx.document_sources == []
+
+    async def test_runtime_gated_turn_attaches_retrieved_documents(self, mock_conversation):
+        """Mixed questions (doc + runtime) must still carry document context
+        into the tool loop."""
+        source = Source(
+            document_id=1, filename="runbook.pdf", chunk_index=0, score=0.8,
+            text="Retry the job after a transient DB timeout.",
+            source_layer="canonical_docs", project_id="phase2",
+            display_name="runbook.pdf (Project: phase2)",
+        )
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._runtime_analysis("the job failed, what does the runbook say?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=True),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as mock_search,
+        ):
+            mock_search.return_value = [source]
+
+            ctx = await _prepare_rag_context(
+                conversation=mock_conversation,
+                query="the job failed, what does the runbook say?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+            )
+
+        assert ctx.allow_runtime_tools is True
+        assert ctx.precomputed_answer is None
+        assert len(ctx.document_sources) == 1
+        assert ctx.document_sources[0].filename == "runbook.pdf"
+
+    async def test_non_runtime_qa_turn_generates_exactly_once(self, mock_conversation):
+        """Regression test for the double-generation bug: a non-runtime QA
+        turn must call generate_answer exactly once for the whole turn."""
+        source = Source(
+            document_id=1, filename="policy.pdf", chunk_index=0, score=0.8,
+            text="Vacation requests go through the manager.",
+            source_layer="canonical_docs", project_id="hr",
+            display_name="policy.pdf (Project: hr)",
+        )
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("what is the vacation policy?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            mock_search.return_value = [source]
+            mock_gen.return_value = "Vacation requests go through your manager [1]."
+
+            ctx = await _prepare_rag_context(
+                conversation=mock_conversation,
+                query="what is the vacation policy?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+            )
+
+        assert mock_gen.await_count == 1, "non-runtime QA must pay exactly one LLM call"
+        assert ctx.allow_runtime_tools is False
+        assert ctx.precomputed_answer == "Vacation requests go through your manager [1]."
+
+    async def test_chitchat_streaming_turn_never_enters_tool_loop(self, mock_conversation):
+        """RESPOND turns on the streaming path (precomputed_answer=None) must
+        stream directly -- never invoke the runtime tool loop, never pay for
+        tool schemas."""
+        from src.generation.conversational_rag import run_conversational_rag_stream
+
+        async def fake_stream(messages, images=None):
+            for token in ["Hello", "!"]:
+                yield token
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=QueryAnalysis(action=Action.RESPOND, cleaned_query="hi"),
+            ),
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", new_callable=AsyncMock) as mock_loop,
+            patch("src.generation.conversational_rag.generate_answer_stream", side_effect=fake_stream),
+        ):
+            db = AsyncMock()
+            added: list = []
+            db.add = MagicMock(side_effect=added.append)
+
+            async def fake_flush():
+                for obj in added:
+                    if getattr(obj, "id", None) is None:
+                        obj.id = 1
+                    if getattr(obj, "created_at", None) is None:
+                        obj.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+
+            db.flush = AsyncMock(side_effect=fake_flush)
+
+            events = []
+            async for event_type, data in run_conversational_rag_stream(
+                conversation=mock_conversation,
+                query="hi",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                db=db,
+            ):
+                events.append((event_type, data))
+
+        mock_loop.assert_not_called()
+        token_payloads = [data for etype, data in events if etype == "token"]
+        assert token_payloads == ['"Hello"', '"!"']
+
+    async def test_gate_decision_logged(self, mock_conversation, caplog):
+        """The gate decision (IN/OUT) must be observable in logs for
+        diagnosing false negatives in production."""
+        import logging
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._runtime_analysis("why did job X fail?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=True),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as mock_search,
+        ):
+            mock_search.return_value = []
+            with caplog.at_level(logging.INFO, logger="src.generation.conversational_rag"):
+                await _prepare_rag_context(
+                    conversation=mock_conversation,
+                    query="why did job X fail?",
+                    user_groups=["engineering"],
+                    qdrant=AsyncMock(),
+                )
+
+        gate_logs = [r.message for r in caplog.records if "Runtime gate" in r.message]
+        assert len(gate_logs) == 1
+        assert "IN" in gate_logs[0]
+
+
+def _chunked_stream(chunks: list[str]):
+    """Build a generate_answer_stream-compatible fake: an async-generator
+    *function* (messages, images=None) -> AsyncGenerator[str, None] that
+    yields the given chunks in order."""
+
+    async def _stream(messages, images=None):
+        for chunk in chunks:
+            yield chunk
+
+    return _stream
+
+
+class TestSniffBufferHelpers:
+    """Slice 2: unit tests for the sniff-buffer / late-marker helpers in
+    isolation, no run_conversational_rag_stream involved."""
+
+    def test_ends_with_partial_marker_true_for_prefix(self) -> None:
+        assert _ends_with_partial_marker("some text [NEED_SEA") is True
+        assert _ends_with_partial_marker("some text [") is True
+        assert _ends_with_partial_marker("some text [NEED_SEARCH") is True
+
+    def test_ends_with_partial_marker_false_for_complete_or_absent(self) -> None:
+        assert _ends_with_partial_marker("some text [NEED_SEARCH]") is False
+        assert _ends_with_partial_marker("some plain text") is False
+        assert _ends_with_partial_marker("") is False
+
+    async def test_sniff_sufficient_short_answer_exhausts_within_buffer(self) -> None:
+        """Stream ends before the buffer fills, no marker, no cant-answer
+        heuristic phrase -- sufficient, nothing left to drain."""
+        with patch(
+            "src.generation.conversational_rag.generate_answer_stream",
+            side_effect=_chunked_stream(["The vacation policy allows 20 days per year [1]."]),
+        ):
+            result = await _sniff_stream_sufficiency([{"role": "user", "content": "q"}])
+
+        assert result.insufficient is False
+        assert result.remainder is None
+        assert result.prefix == "The vacation policy allows 20 days per year [1]."
+
+    async def test_sniff_marker_within_buffer_window_is_insufficient(self) -> None:
+        with patch(
+            "src.generation.conversational_rag.generate_answer_stream",
+            side_effect=_chunked_stream([_NEED_SEARCH_MARKER]),
+        ):
+            result = await _sniff_stream_sufficiency([{"role": "user", "content": "q"}])
+
+        assert result.insufficient is True
+        assert result.remainder is None
+
+    async def test_sniff_short_cant_answer_heuristic_is_insufficient(self) -> None:
+        """Answer under 200 chars matching _CANT_ANSWER_PATTERNS, exhausted
+        inside the buffer window -- same safety net as needs_new_search()."""
+        with patch(
+            "src.generation.conversational_rag.generate_answer_stream",
+            side_effect=_chunked_stream(["I could not find that information in the documents."]),
+        ):
+            result = await _sniff_stream_sufficiency([{"role": "user", "content": "q"}])
+
+        assert result.insufficient is True
+        assert result.remainder is None
+
+    async def test_sniff_marker_split_across_buffer_boundary_detected(self) -> None:
+        """AC: marker exactly on the buffer boundary must not falsely pass
+        as sufficient. Chunk 1 crosses _SNIFF_BUFFER_CHARS mid-marker;
+        _ends_with_partial_marker must force one more read."""
+        chunk1 = "X" * 195 + "[NEED_"   # 201 chars total, ends mid-marker
+        chunk2 = "SEARCH] more text after the marker"
+        with patch(
+            "src.generation.conversational_rag.generate_answer_stream",
+            side_effect=_chunked_stream([chunk1, chunk2]),
+        ):
+            result = await _sniff_stream_sufficiency([{"role": "user", "content": "q"}])
+
+        assert result.insufficient is True
+        assert result.remainder is None
+
+    async def test_sniff_cant_answer_phrase_split_across_buffer_boundary_detected(self) -> None:
+        """Same boundary concern for the heuristic phrase: the exact split
+        point must not matter because chunk1 alone is well under 200 chars
+        (so the exhausted-in-buffer branch and its heuristic still apply)."""
+        chunk1 = "I could not find that "
+        chunk2 = "information anywhere in the documents."
+        with patch(
+            "src.generation.conversational_rag.generate_answer_stream",
+            side_effect=_chunked_stream([chunk1, chunk2]),
+        ):
+            result = await _sniff_stream_sufficiency([{"role": "user", "content": "q"}])
+
+        assert result.insufficient is True
+        assert result.remainder is None
+
+    async def test_sniff_heuristic_not_applied_once_stream_continues_past_buffer(self) -> None:
+        """AC/decision 2: if the buffer reaches _SNIFF_BUFFER_CHARS mid-phrase
+        but the stream keeps producing tokens past it, the original
+        needs_new_search() heuristic (len(stripped) < 200) would never have
+        fired for that answer either -- skipping it here introduces no gap."""
+        # Chunk 1 alone is >= _SNIFF_BUFFER_CHARS and contains the phrase, but
+        # the stream is NOT exhausted (chunk 2 follows) -- must break early
+        # without ever consulting the heuristic.
+        chunk1 = "I could not find that information in the documents. " + "X" * 150
+        assert len(chunk1) >= _SNIFF_BUFFER_CHARS
+        chunk2 = " but here is more context that follows anyway."
+        with patch(
+            "src.generation.conversational_rag.generate_answer_stream",
+            side_effect=_chunked_stream([chunk1, chunk2]),
+        ):
+            result = await _sniff_stream_sufficiency([{"role": "user", "content": "q"}])
+
+        assert result.insufficient is False
+        assert result.remainder is not None
+        await result.remainder.aclose()
+
+    async def test_drain_no_marker_yields_all_chunks(self) -> None:
+        async def remainder():
+            for chunk in ["hello ", "world"]:
+                yield chunk
+
+        out = []
+        async for chunk in _drain_stripping_late_marker(remainder()):
+            out.append(chunk)
+
+        assert "".join(out) == "hello world"
+
+    async def test_drain_marker_split_across_two_chunks_is_stripped(self, caplog) -> None:
+        """A marker whose halves arrive in separate yielded chunks must still
+        be detected via the rolling lookback window."""
+        async def remainder():
+            yield "prefix text [NEED_SEA"
+            yield "RCH] suffix text"
+
+        with caplog.at_level(logging.WARNING, logger="src.generation.conversational_rag"):
+            out = []
+            async for chunk in _drain_stripping_late_marker(remainder()):
+                out.append(chunk)
+
+        joined = "".join(out)
+        assert _NEED_SEARCH_MARKER not in joined
+        assert "prefix text" in joined
+        assert "suffix text" in joined
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Late" in r.message and "NEED_SEARCH" in r.message for r in warnings)
+
+    async def test_drain_marker_at_the_tail_of_a_large_chunk_is_stripped(self, caplog) -> None:
+        """Regression guard: a marker whose prefix lands at the very tail of
+        a LARGE provider chunk (much bigger than the marker itself, unlike
+        the small-chunk case above) and whose suffix arrives in the next
+        chunk must still be detected and stripped. This guards against an
+        algorithm that only checks a fixed-size slice for the marker instead
+        of scanning however much of the buffer is actually pending -- such
+        an algorithm can hand out the marker's prefix un-stripped before its
+        suffix ever arrives, once a chunk is bigger than the lookback
+        window."""
+        chunk1 = "some preamble text " + "X" * 200 + _NEED_SEARCH_MARKER[:6]
+        chunk2 = _NEED_SEARCH_MARKER[6:] + " and the rest of the answer follows here."
+
+        async def remainder():
+            yield chunk1
+            yield chunk2
+
+        with caplog.at_level(logging.WARNING, logger="src.generation.conversational_rag"):
+            out = []
+            async for chunk in _drain_stripping_late_marker(remainder()):
+                out.append(chunk)
+
+        joined = "".join(out)
+        assert _NEED_SEARCH_MARKER not in joined
+        assert "[NEED_SEA" not in joined, "marker prefix must not leak un-stripped"
+        assert "some preamble text" in joined
+        assert "and the rest of the answer follows here" in joined
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Late" in r.message and "NEED_SEARCH" in r.message for r in warnings)
+
+
+class TestStreamingSniffBuffer:
+    """Slice 2: streamed doc-QA answers via the sniff-buffer, exercised
+    end-to-end through run_conversational_rag_stream / run_conversational_rag."""
+
+    @pytest.fixture(autouse=True)
+    def disable_new_features(self):
+        with patch("src.generation.conversational_rag.settings") as mock_settings:
+            mock_settings.query_expansion_enabled = False
+            mock_settings.reranker_enabled = False
+            mock_settings.hybrid_search_enabled = False
+            mock_settings.system_knowledge_injection = False
+            yield mock_settings
+
+    @pytest.fixture
+    def mock_conversation(self):
+        conv = MagicMock(spec=Conversation)
+        conv.id = 1
+        conv.messages = []
+        conv.title = None
+        return conv
+
+    @pytest.fixture
+    def mock_conversation_with_sources(self):
+        conv = MagicMock(spec=Conversation)
+        conv.id = 1
+        conv.title = "Test conversation"
+        source_data = [
+            {"document_id": 1, "filename": "hr_policy.pdf", "score": 0.9,
+             "text": "Vacation policy: 20 days per year.", "reference_number": 1},
+        ]
+        conv.messages = [
+            _mock_message("user", "What is the vacation policy?"),
+            _mock_message("assistant", "The vacation policy allows 20 days per year [1].", sources=source_data),
+        ]
+        return conv
+
+    @pytest.fixture
+    def mock_db(self):
+        db = AsyncMock()
+        added: list = []
+        db.add = MagicMock(side_effect=added.append)
+        db.added_objects = added
+
+        async def fake_flush():
+            for obj in added:
+                if getattr(obj, "id", None) is None:
+                    obj.id = 1
+                if getattr(obj, "created_at", None) is None:
+                    obj.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+
+        db.flush = AsyncMock(side_effect=fake_flush)
+        return db
+
+    @staticmethod
+    def _canonical_source() -> Source:
+        return Source(
+            document_id=1, filename="phase2/06_OPERATIONS.md", chunk_index=0,
+            score=0.8, text="The job uses tDBOutput_1 with DIE_ON_ERROR=false.",
+            source_layer="canonical_docs", project_id="phase2",
+            display_name="06_OPERATIONS.md (Project: phase2)",
+        )
+
+    @staticmethod
+    def _internal_source() -> Source:
+        return Source(
+            document_id=12, filename="phase2/_internal/technical_analysis/Item.md",
+            chunk_index=3, score=0.6,
+            text="ERROR_HANDLING: tDBOutput_1 DIE_ON_ERROR=false, job continues.",
+            source_layer="technical_analysis", project_id="phase2", run_id=209,
+            display_name="Technical Analysis: Item (Project: phase2)",
+        )
+
+    @staticmethod
+    def _search_analysis(query: str) -> QueryAnalysis:
+        return QueryAnalysis(action=Action.SEARCH, query_type=QueryType.QA, cleaned_query=query)
+
+    async def _collect_until_first_token(self, agen):
+        """Pull events off an async generator until (and including) the
+        first "token" event, returning (events, remaining_agen_is_open)."""
+        events = []
+        while True:
+            event_type, data = await agen.__anext__()
+            events.append((event_type, data))
+            if event_type == "token":
+                return events
+
+    async def test_rung1_streams_tokens_before_generation_completes(
+        self, mock_conversation, mock_db
+    ):
+        """AC: a document question with sufficient context shows the first
+        token event before generation has fully resolved."""
+        release = asyncio.Event()
+
+        async def fake_stream(messages, images=None):
+            yield "X" * 205  # crosses the sniff buffer, no marker
+            await release.wait()
+            yield " -- the rest of the answer, delivered live."
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("What does tDBOutput_1 do?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.generate_answer_stream", side_effect=fake_stream),
+        ):
+            mock_search.return_value = [self._canonical_source()]
+
+            agen = run_conversational_rag_stream(
+                conversation=mock_conversation,
+                query="What does tDBOutput_1 do?",
+                user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+            )
+
+            events = await asyncio.wait_for(
+                self._collect_until_first_token(agen), timeout=2.0,
+            )
+            # The first token arrived without the release event ever being set --
+            # proof the whole answer was not awaited before the first chunk.
+            assert release.is_set() is False
+
+            release.set()
+            async for event_type, data in agen:
+                events.append((event_type, data))
+
+        token_payloads = [json.loads(data) for etype, data in events if etype == "token"]
+        accumulated = "".join(token_payloads)
+        assert "X" * 205 in accumulated
+        assert "the rest of the answer, delivered live" in accumulated
+
+        assistant_messages = [
+            o for o in mock_db.added_objects
+            if isinstance(o, ConversationMessage) and o.role == "assistant"
+        ]
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0].content == accumulated
+        assert any(etype == "done" for etype, _ in events)
+
+    async def test_previous_source_reuse_streams_before_generation_completes(
+        self, mock_conversation_with_sources, mock_db
+    ):
+        """AC: the previous-source-reuse streaming branch also streams
+        before the full generation resolves."""
+        release = asyncio.Event()
+
+        async def fake_stream(messages, images=None):
+            yield "Y" * 210
+            await release.wait()
+            yield " -- more from previous-source reuse."
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("How many vacation days do I get?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
+            patch("src.generation.conversational_rag.generate_answer_stream", side_effect=fake_stream),
+        ):
+            agen = run_conversational_rag_stream(
+                conversation=mock_conversation_with_sources,
+                query="How many vacation days do I get?",
+                user_groups=["all"], qdrant=AsyncMock(), db=mock_db,
+            )
+
+            events = await asyncio.wait_for(
+                self._collect_until_first_token(agen), timeout=2.0,
+            )
+            assert release.is_set() is False
+
+            release.set()
+            async for event_type, data in agen:
+                events.append((event_type, data))
+
+        token_payloads = [json.loads(data) for etype, data in events if etype == "token"]
+        accumulated = "".join(token_payloads)
+        assert "Y" * 210 in accumulated
+        assert "more from previous-source reuse" in accumulated
+
+    async def test_rung1_insufficient_sniff_emits_no_tokens_and_falls_to_rung2(
+        self, mock_conversation, mock_db
+    ):
+        """AC: an insufficient sniff result produces zero token events for
+        the aborted attempt and falls through to rung 2, matching the
+        existing non-streaming ladder-descent contract."""
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("What does the unknown widget do?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.search_layered", new_callable=AsyncMock) as mock_layered,
+            patch(
+                "src.generation.conversational_rag.generate_answer_stream",
+                side_effect=_chunked_stream([_NEED_SEARCH_MARKER]),
+            ),
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            mock_search.return_value = [self._canonical_source()]
+            mock_layered.return_value = [self._internal_source()]
+            mock_gen.return_value = "Per the internal analysis, the widget retries on failure [1]."
+
+            events = []
+            async for event_type, data in run_conversational_rag_stream(
+                conversation=mock_conversation,
+                query="What does the unknown widget do?",
+                user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+            ):
+                events.append((event_type, data))
+
+        mock_layered.assert_awaited_once()
+        token_payloads = [json.loads(data) for etype, data in events if etype == "token"]
+        assert token_payloads == ["Per the internal analysis, the widget retries on failure [1]."]
+        assert not any(_NEED_SEARCH_MARKER in t for t in token_payloads)
+
+        done_events = [json.loads(data) for etype, data in events if etype == "done"]
+        assert len(done_events) == 1
+        assert done_events[0]["doc_gap"] is True
+
+    async def test_late_need_search_marker_stripped_and_logged(
+        self, mock_conversation, mock_db, caplog
+    ):
+        """AC: a marker arriving after the sniff buffer has already flushed
+        is stripped from displayed output, logged at WARNING, and the rest
+        of the answer is delivered -- no crash, no onscreen artifact."""
+        async def fake_stream(messages, images=None):
+            yield "F" * 210  # clearly sufficient, crosses the buffer, no marker
+            yield f" then a late marker arrives {_NEED_SEARCH_MARKER} mid-stream"
+            yield " and more text follows normally."
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("What does tDBOutput_1 do on failure?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.generate_answer_stream", side_effect=fake_stream),
+        ):
+            mock_search.return_value = [self._canonical_source()]
+
+            with caplog.at_level(logging.WARNING, logger="src.generation.conversational_rag"):
+                events = []
+                async for event_type, data in run_conversational_rag_stream(
+                    conversation=mock_conversation,
+                    query="What does tDBOutput_1 do on failure?",
+                    user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+                ):
+                    events.append((event_type, data))
+
+        token_payloads = [json.loads(data) for etype, data in events if etype == "token"]
+        for payload in token_payloads:
+            assert _NEED_SEARCH_MARKER not in payload
+
+        accumulated = "".join(token_payloads)
+        assert "F" * 210 in accumulated
+        assert "then a late marker arrives" in accumulated
+        assert "mid-stream" in accumulated
+        assert "more text follows normally" in accumulated
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Late" in r.message and "NEED_SEARCH" in r.message for r in warnings)
+        assert any(etype == "done" for etype, _ in events)
+
+    async def test_precompute_true_rung1_unchanged_by_sniff_refactor(
+        self, mock_conversation, mock_db
+    ):
+        """Non-streaming parity: run_conversational_rag (REST) must never
+        touch generate_answer_stream -- it stays on the unchanged blocking
+        generate_answer path."""
+        async def _fail_if_called(*args, **kwargs):
+            raise AssertionError("REST path must not call generate_answer_stream")
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("What does tDBOutput_1 do?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=False),
+            patch("src.generation.conversational_rag.search_similar", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.generate_answer_stream", side_effect=_fail_if_called),
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", _no_tool_support_loop()),
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            mock_search.return_value = [self._canonical_source()]
+            mock_gen.return_value = "Grounded rung-1 answer [1]."
+
+            response = await run_conversational_rag(
+                conversation=mock_conversation,
+                query="What does tDBOutput_1 do?",
+                user_groups=["g"], qdrant=AsyncMock(), db=mock_db,
+            )
+
+        assert response.content.startswith("Grounded rung-1 answer [1].")

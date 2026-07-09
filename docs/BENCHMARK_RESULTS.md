@@ -157,7 +157,7 @@
 ## 6. Architecture Summary (for slides)
 
 ```
-Source Code --> intodoc Scanner --> JSON Cache --> Claude Code --> Markdown Docs
+Source Code --> intodoc Scanner --> JSON Cache --> Custom Harness --> Markdown Docs
                                                                        |
                                                                        v
 Documents --> Ingest --> Chunk --> Embed (Voyage AI) --> Qdrant Cloud --> Query

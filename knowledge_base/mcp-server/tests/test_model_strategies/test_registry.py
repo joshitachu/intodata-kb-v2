@@ -25,6 +25,18 @@ def test_model_registry_exposes_current_discovery_models():
         "deepseek/deepseek-reasoner",
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-flash",
+        "route33/z-ai/glm-4.7-flash",
+        "route33/z-ai/glm-5.2",
+        "route33/deepseek/deepseek-v4-flash",
+        "route33/moonshotai/kimi-k2.7-code",
+        "route33/minimax/minimax-m3",
+        "route33/mistralai/mistral-medium-3.5",
+        "route33/nvidia/nemotron-3-ultra",
+        "route33/qwen/qwen3.7-max",
+        "route33/qwen/qwen3.7-plus",
+        "route33/google/gemini-3.1-pro-preview",
+        "route33/google/gemini-3.5-flash",
+        "route33/anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4-6",
         "anthropic/claude-opus-4-7",
         "google/gemini-3.1-pro-preview",
@@ -43,6 +55,8 @@ def test_model_registry_exposes_current_discovery_models():
         ("custom", "custom"),
         ("claude-cli", "claude-cli"),
         ("deepseek/deepseek-chat", "deepseek"),
+        ("route33/z-ai/glm-4.7-flash", "route33"),
+        ("route33/anthropic/claude-sonnet-5", "route33"),
         ("google/gemini-2.5-flash", "google"),
         ("openai/gpt-4o", "openai"),
         ("anthropic/claude-sonnet-4-6", "anthropic"),
@@ -140,6 +154,8 @@ def test_first_party_providers_use_official_adapters(monkeypatch):
     anthropic_provider = create_model_provider("anthropic/claude-sonnet-4-6")
     google_provider = create_model_provider("google/gemini-2.5-flash")
     deepseek_provider = create_model_provider("deepseek/deepseek-chat")
+    route33_openai_provider = create_model_provider("route33/z-ai/glm-4.7-flash")
+    route33_anthropic_provider = create_model_provider("route33/anthropic/claude-sonnet-5")
 
     assert type(openai_provider).__name__ == "OpenAIOfficialProvider"
     assert openai_provider.base_url == "https://api.openai.com/v1"
@@ -150,6 +166,12 @@ def test_first_party_providers_use_official_adapters(monkeypatch):
     assert google_provider.supports_tools is False
     assert type(deepseek_provider).__name__ == "OpenAICompatibleProvider"
     assert deepseek_provider.base_url == "https://api.deepseek.com/v1"
+    assert type(route33_openai_provider).__name__ == "OpenAICompatibleProvider"
+    assert route33_openai_provider.base_url == "https://api.route33.ai/v1"
+    assert route33_openai_provider.model_name == "z-ai/glm-4.7-flash"
+    assert type(route33_anthropic_provider).__name__ == "Route33AnthropicMessagesProvider"
+    assert route33_anthropic_provider.base_url == "https://api.route33.ai/v1"
+    assert route33_anthropic_provider.model_name == "anthropic/claude-sonnet-5"
 
 
 def test_legacy_openai_deepseek_id_normalizes_to_deepseek():

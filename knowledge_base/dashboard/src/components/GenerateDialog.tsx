@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useGenerate } from "../hooks/useProjects";
 import { useModels } from "../hooks/useDiscovery";
 import { usePluginPacks } from "../hooks/useProjects";
@@ -23,13 +24,28 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
 
   const [resume, setResume] = useState(true);
   const [packChoice, setPackChoice] = useState<PackChoice>({ kind: "project_default" });
+  const [runInvestigationModel, setRunInvestigationModel] = useState("");
+  const [runAnalysisModel, setRunAnalysisModel] = useState("");
+  const [runWriteModel, setRunWriteModel] = useState("");
 
   useEffect(() => {
     if (open) {
       setResume(true);
       setPackChoice({ kind: "project_default" });
+      setRunInvestigationModel("");
+      setRunAnalysisModel("");
+      setRunWriteModel("");
     }
   }, [open, project.id]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   const models = modelsData?.models ?? [];
   const defaultAnalysis = useMemo(
@@ -53,6 +69,8 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
     typeof window !== "undefined"
       ? localStorage.getItem(`project_write_model_${project.id}`) || null
       : null;
+  const analysisModels = models.filter((m) => m.supports_analysis);
+  const writingModels = models.filter((m) => m.supports_writing);
 
   const savedPluginPack = useMemo(
     () =>
@@ -75,9 +93,9 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
       {
         projectId: project.id,
         resume,
-        investigationModel: savedInvestigation,
-        model: null,
-        writeModel: savedWrite,
+        investigationModel: runInvestigationModel || savedInvestigation,
+        model: runAnalysisModel || null,
+        writeModel: runWriteModel || savedWrite,
         pluginPackId,
       },
       {
@@ -89,26 +107,46 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
     );
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md">
-      <div className="bg-surface-card border border-white/[0.07] rounded shadow-2xl w-full max-w-lg p-6 space-y-5 animate-fade-in">
-        <div className="flex items-start justify-between">
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface-raised border border-white/[0.14] rounded-lg shadow-2xl ring-1 ring-black/50 w-full max-w-2xl max-h-[90vh] flex flex-col animate-fade-in"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between px-7 pt-6 pb-4 border-b border-white/[0.08]">
           <div>
-            <h3 className="text-sm font-medium text-slate-200">Generate Docs</h3>
-            <p className="text-xs text-slate-500 mt-1 font-mono">{project.id}</p>
+            <h3 className="text-lg font-semibold text-slate-100">Generate Docs</h3>
+            <p className="text-xs text-slate-400 mt-1 font-mono">{project.id}</p>
           </div>
           <button
             type="button"
-            className="text-slate-500 hover:text-slate-300 text-xs"
+            aria-label="Close"
+            title="Close"
+            className="shrink-0 -mr-1.5 -mt-1 p-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-white/[0.08] transition-colors"
             onClick={onClose}
           >
-            Close
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
           </button>
         </div>
 
-        <section className="space-y-2">
-          <h4 className="font-mono uppercase tracking-wider text-[10px] text-slate-600">
-            Pack
+        <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
+        <section className="space-y-3">
+          <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
+            Plugin Pack
           </h4>
           <div className="space-y-1.5">
             <PackOption
@@ -143,66 +181,85 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
               />
             ))}
             {!pluginPacks?.length && (
-              <p className="text-xs text-slate-600 px-1">
+              <p className="text-sm text-slate-400 px-1">
                 No plugin packs registered. Ask a superadmin to register one on the Packs page.
               </p>
             )}
           </div>
         </section>
 
-        <section className="space-y-2">
-          <h4 className="font-mono uppercase tracking-wider text-[10px] text-slate-600">
+        <section className="space-y-3">
+          <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
             Models that will be used
           </h4>
           <ModelRow
             label="Phase 1 — Investigation"
-            effective={savedInvestigation ?? defaultInvestigation?.id ?? "server config"}
+            effective={runInvestigationModel || savedInvestigation || defaultInvestigation?.id || "server config"}
             defaultLabel={
               defaultInvestigation
                 ? `${defaultInvestigation.label} (${defaultInvestigation.id})`
                 : "server config"
             }
-            note={savedInvestigation ? "Override saved in local storage." : null}
+            note={runInvestigationModel ? "One-off override for this run." : savedInvestigation ? "Override saved in local storage." : null}
+          />
+          <ModelSelect
+            value={runInvestigationModel}
+            onChange={setRunInvestigationModel}
+            models={analysisModels}
+            placeholder="Use saved/default investigation model"
           />
           <ModelRow
             label="Phase 2 — Analysis"
-            effective={defaultAnalysis?.id ?? "server config"}
+            effective={runAnalysisModel || defaultAnalysis?.id || "server config"}
             defaultLabel={
               defaultAnalysis
                 ? `${defaultAnalysis.label} (${defaultAnalysis.id})`
                 : "server config"
             }
-            note={project.doc_generation_provider ? `Project provider: ${project.doc_generation_provider}` : null}
+            note={runAnalysisModel ? "One-off override for this run." : project.doc_generation_provider ? `Project provider: ${project.doc_generation_provider}` : null}
+          />
+          <ModelSelect
+            value={runAnalysisModel}
+            onChange={setRunAnalysisModel}
+            models={analysisModels}
+            placeholder="Use project/default analysis model"
           />
           <ModelRow
             label="Phase 3 — Doc Writing"
-            effective={savedWrite ?? defaultWriting?.id ?? "server config"}
+            effective={runWriteModel || savedWrite || defaultWriting?.id || "server config"}
             defaultLabel={
               defaultWriting
                 ? `${defaultWriting.label} (${defaultWriting.id})`
                 : "server config"
             }
-            note={savedWrite ? "Override saved in local storage." : null}
+            note={runWriteModel ? "One-off override for this run." : savedWrite ? "Override saved in local storage." : null}
+          />
+          <ModelSelect
+            value={runWriteModel}
+            onChange={setRunWriteModel}
+            models={writingModels}
+            placeholder="Use saved/default write model"
           />
         </section>
 
-        <label className="flex items-center gap-2 text-xs text-slate-400 select-none">
+        <label className="flex items-center gap-2.5 text-sm text-slate-300 select-none">
           <input
             type="checkbox"
             checked={resume}
             onChange={(e) => setResume(e.target.checked)}
-            className="h-3 w-3 accent-accent-primary"
+            className="h-4 w-4 accent-accent-primary"
           />
           Resume from staging checkpoint
         </label>
 
         {generate.isError && (
-          <p className="text-xs text-red-400 font-mono break-all">
+          <p className="text-sm text-red-400 font-mono break-all">
             {(generate.error as Error | null)?.message ?? "Generation failed to start."}
           </p>
         )}
+        </div>
 
-        <div className="flex items-center justify-end gap-2 pt-1">
+        <div className="flex items-center justify-end gap-2 px-7 py-4 border-t border-white/[0.06]">
           <button
             type="button"
             className="btn-ghost"
@@ -221,7 +278,36 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
+  );
+}
+
+function ModelSelect({
+  value,
+  onChange,
+  models,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  models: { id: string; label: string; available: boolean; unavailable_reason: string | null }[];
+  placeholder: string;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="input-dark"
+    >
+      <option value="">{placeholder}</option>
+      {models.map((model) => (
+        <option key={model.id} value={model.id}>
+          {model.label} ({model.id})
+          {model.available ? "" : " — credentials not configured"}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -238,21 +324,21 @@ function PackOption({
 }) {
   return (
     <label
-      className={`flex items-start gap-2.5 px-3 py-2 rounded border cursor-pointer transition-all ${
+      className={`flex items-start gap-3 px-3.5 py-2.5 rounded border cursor-pointer transition-all ${
         checked
-          ? "border-accent-primary/50 bg-accent-primary/[0.06]"
-          : "border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]"
+          ? "border-accent-primary/60 bg-accent-primary/[0.08]"
+          : "border-white/[0.08] hover:border-white/[0.18] hover:bg-white/[0.04]"
       }`}
     >
       <input
         type="radio"
         checked={checked}
         onChange={onCheck}
-        className="mt-0.5 h-3 w-3 accent-accent-primary"
+        className="mt-1 h-4 w-4 accent-accent-primary"
       />
       <div className="min-w-0">
-        <div className="text-sm text-slate-200">{title}</div>
-        <div className="text-xs text-slate-500 mt-0.5 break-all">{subtitle}</div>
+        <div className="text-sm font-medium text-slate-100">{title}</div>
+        <div className="text-xs text-slate-400 mt-1 break-words">{subtitle}</div>
       </div>
     </label>
   );
@@ -270,14 +356,18 @@ function ModelRow({
   note: string | null;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 text-xs">
-      <div className="font-mono text-slate-500 shrink-0">{label}</div>
+    <div className="flex items-start justify-between gap-4 py-1.5 border-b border-white/[0.05] last:border-b-0">
+      <div className="text-sm text-slate-300 shrink-0">{label}</div>
       <div className="text-right min-w-0">
-        <div className="font-mono text-accent-primary/70 truncate" title={effective}>
+        <div className="text-sm font-medium text-accent-primary truncate" title={effective}>
           {effective}
         </div>
-        <div className="text-slate-600 mt-0.5">default: {defaultLabel}</div>
-        {note && <div className="text-slate-600 mt-0.5">{note}</div>}
+        <div className="text-xs text-slate-500 mt-0.5">
+          <span className="text-slate-600">default:</span> {defaultLabel}
+        </div>
+        {note && (
+          <div className="text-xs text-slate-500 mt-0.5 italic">{note}</div>
+        )}
       </div>
     </div>
   );

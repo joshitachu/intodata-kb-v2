@@ -4,7 +4,9 @@ from src.generation.intent_classifier import (
     Action,
     QueryAnalysis,
     QueryType,
+    _parse_classifier_response,
     analyze_query,
+    detect_runtime_keywords,
 )
 
 
@@ -99,3 +101,63 @@ class TestAnalyzeQueryType:
     def test_normal_question_not_summary(self) -> None:
         result = analyze_query("how many vacation days do I get?")
         assert result.query_type == QueryType.QA
+
+
+class TestDetectRuntimeKeywords:
+    """Recall backstop for the runtime-intent gate (chat response-time fix,
+    .plans/04_active_plan.md, Slice 1)."""
+
+    def test_job_failure_phrasing_hits(self) -> None:
+        assert detect_runtime_keywords("why did the ETL job fail last night?") is True
+
+    def test_job_status_hits(self) -> None:
+        assert detect_runtime_keywords("what is the job status?") is True
+
+    def test_log_reference_hits(self) -> None:
+        assert detect_runtime_keywords("check the TMC log for errors") is True
+
+    def test_engine_health_hits(self) -> None:
+        assert detect_runtime_keywords("is the engine unhealthy right now?") is True
+
+    def test_case_insensitive(self) -> None:
+        assert detect_runtime_keywords("JOB FAILED") is True
+
+    def test_document_question_no_hit(self) -> None:
+        assert detect_runtime_keywords("what is the vacation policy?") is False
+
+    def test_greeting_no_hit(self) -> None:
+        assert detect_runtime_keywords("hello") is False
+
+    def test_summary_request_no_hit(self) -> None:
+        assert detect_runtime_keywords("summarize the HR policy") is False
+
+
+class TestParseClassifierResponseRuntimeField:
+    """The classifier's `runtime` JSON field feeds QueryAnalysis.runtime_intent."""
+
+    def test_runtime_true_parsed(self) -> None:
+        action, project, runtime = _parse_classifier_response(
+            '{"action": "search", "project": null, "runtime": true}'
+        )
+        assert action == "search"
+        assert project is None
+        assert runtime is True
+
+    def test_runtime_false_parsed(self) -> None:
+        action, project, runtime = _parse_classifier_response(
+            '{"action": "search", "project": null, "runtime": false}'
+        )
+        assert runtime is False
+
+    def test_runtime_missing_defaults_false(self) -> None:
+        """Older/malformed classifier output without the field must not raise."""
+        action, project, runtime = _parse_classifier_response(
+            '{"action": "search", "project": null}'
+        )
+        assert runtime is False
+
+    def test_runtime_non_bool_defaults_false(self) -> None:
+        action, project, runtime = _parse_classifier_response(
+            '{"action": "search", "project": null, "runtime": "yes"}'
+        )
+        assert runtime is False

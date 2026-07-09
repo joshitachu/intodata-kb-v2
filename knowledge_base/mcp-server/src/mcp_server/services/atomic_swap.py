@@ -3,7 +3,7 @@
 Each project keeps three sibling dirs under `output/{project_id}/`:
 
 - `docs/`         -- current published docs (read by RAG push, dashboard, users)
-- `docs_staging/` -- in-flight generation target (Claude Code writes here)
+- `docs_staging/` -- in-flight generation target (custom harness writes here)
 - `docs_prev/`    -- transient backup kept only during a swap; used for rollback
                     on mid-swap failure and for startup crash-recovery.
 
@@ -113,8 +113,8 @@ def recover_stale_backups(output_root: Path) -> int:
 def gc_abandoned_staging(output_root: Path, max_age_days: int) -> int:
     """Delete `docs_staging/` dirs older than `max_age_days`.
 
-    Resume-in-progress dirs get their mtime bumped when Claude Code writes to
-    them, so anything older than the cutoff is a truly abandoned run.
+    Resume-in-progress dirs get their mtime bumped when the generation harness
+    writes to them, so anything older than the cutoff is a truly abandoned run.
 
     Returns the number of staging dirs removed.
     """

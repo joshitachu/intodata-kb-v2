@@ -11,7 +11,7 @@
 | Area | Status | Sellable today? |
 |---|---|---|
 | **Plugin architecture** (Talend/Workato/Generic/Lobster) | Works, clean boundary | ✅ Yes, with honest messaging |
-| **Deep Dive** (Claude CLI subprocess) | Works end-to-end | ⚠️ Only if customer VPS has Claude CLI installed |
+| **Deep Dive** (repo-agent/provider path) | Works end-to-end | ✅ Yes, without requiring Claude Code |
 | **RBAC on every Qdrant query** | Works uniformly | ✅ Yes |
 | **Hindsight memory capture** | Load-bearing, reads + writes | ✅ Yes (input side) |
 | **Doc generation pipeline** | Works but not atomic | ⚠️ Data-loss risk on crash |
@@ -86,12 +86,10 @@ This is the differentiator the founder keeps describing. Closer than it looks �
 ### 🟡 GAP 4 — Benchmarking "dashboard" implies continuous monitoring it doesn't do
 `RAG_pipeline/frontend/app/admin/benchmark/page.tsx` shows "Best Precision@5", "Best Relevance", "Avg Latency" cards — looks like a live monitoring surface. Reality: `RAG_pipeline/backend/benchmark/runner.py` is a one-shot CLI against a hardcoded 10-question corpus (`benchmark/corpus/default.json`). No CI hook, no regression alerting, no multi-run A/B, no custom rubric. It's an eval framework, not a dashboard.
 
-### 🟡 GAP 5 — Deep Dive is 100% coupled to Claude CLI subprocess
-`knowledge_base/mcp-server/src/mcp_server/services/deep_dive_service.py:105-114` spawns `claude -p …`. Works today on dev boxes, but:
-- Customer VPS without Claude CLI → feature is dead.
-- No fallback to Anthropic SDK or LangGraph.
-- CLI version-drift can break streaming parsing any time.
-- Founder's instinct is right: this doesn't need Claude CLI to work. A native SDK path kills a whole class of support tickets.
+### 🟢 GAP 5 — Deep Dive Claude CLI coupling has been removed from the normal path
+**Current state**: Deep Dive uses the repo-owned agent/provider path. Claude Code is not part of the supported runtime.
+
+Historical finding from 2026-04-20: `knowledge_base/mcp-server/src/mcp_server/services/deep_dive_service.py` spawned `claude -p ...`, which made customer VPS installs depend on a local Claude Code login and CLI version. That is no longer the active architecture.
 
 ### 🟡 GAP 12 — Query intent classification is coarse
 `RAG_pipeline/backend/src/generation/intent_classifier.py:57-76` classifies into ~10 actions but only to **route retrieval** (vector vs Postgres vs skip). It doesn't distinguish task intent (troubleshooting / onboarding / compliance audit / architecture review) and doesn't adapt prompt tone/detail. An auditor and a new hire asking the same question get the same answer.
@@ -128,7 +126,7 @@ Impact: remove the claim from sales/marketing material, **or** build a real "Run
 Pitch: "our AI picks the right model for your codebase and continuously improves your docs." Reality:
 - `knowledge_base/mcp-server/src/mcp_server/config.py:52-53` hardcodes `doc_generation_model = "claude-sonnet-4-6"` and `doc_generation_write_model = "claude-opus-4-6"`. Same two models, every project, every run. No per-project / per-platform override, no A/B between models, no "try this with Gemma" knob.
 - The benchmark corpus measures **RAG retrieval quality** (precision@5, relevance) — not **generated doc quality**. Doc output has never been scored, regressed, or compared between models. A customer has no way to see "does this model actually produce good docs for my Talend codebase?"
-- Combined with Gap 5 (Claude CLI coupling): "AI-written documentation" is really "Claude-written documentation by way of an Anthropic CLI subprocess." Anthropic's IP produces the value; IntoData's IP orchestrates it. Worth being honest about in pitch.
+- Historical note: this originally overlapped with the Claude CLI coupling in Gap 5. Current doc generation uses the repo-owned custom harness and configured provider/model adapters, so the accurate pitch is provider-neutral AI documentation with explicit model configuration and cost tracking.
 - Gap 11 covers the missing chat→docs write-back loop; this is the separate concern of doc-gen quality measurement and model-choice transparency.
 
 Impact: downgrade the pitch to "generates docs once using Anthropic's Claude" (accurate), **or** add a doc-gen benchmark + model picker (Week 4+).
@@ -280,10 +278,10 @@ Impact: downgrade the pitch to "generates docs once using Anthropic's Claude" (a
 
 **Day 16-17 — Deep Dive SDK backend (Gap 5)**
 - [ ] Define `DeepDiveBackend` protocol in `deep_dive_service.py` with `start_session / send_message / stream_events`
-- [ ] Keep existing subprocess path as `ClaudeCodeBackend`
-- [ ] New `AnthropicSDKBackend` using Python SDK directly; map each MCP tool to an Anthropic tool definition
+- [x] Retire Claude Code from the supported Deep Dive runtime
+- [x] Deep Dive uses the repo-owned engine/provider abstraction rather than requiring Claude Code
 - [ ] Config flag `DEEP_DIVE_BACKEND` in `RAG_pipeline/backend/src/config.py`
-- [ ] Test on a box without Claude CLI installed — verify Deep Dive works with `DEEP_DIVE_BACKEND=anthropic_sdk`
+- [ ] Test on a box without Claude Code installed — verify Deep Dive works through the repo-owned provider path
 
 **Day 18 — Benchmark corpus expansion + auto-run (Gap 4)**
 - [ ] Split `benchmark/corpus/default.json` into per-platform corpora

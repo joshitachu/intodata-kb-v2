@@ -83,10 +83,11 @@ open http://localhost:5173
 
 Default dashboard credentials: `admin` / `admin`
 
-## Step 7: Configure Claude Code MCP
+## Step 7: Optional MCP stdio configuration
 
-The `.mcp.json` file in `knowledge_base/` configures the MCP server for Claude Code.
-Open Claude Code with `knowledge_base/` as the working directory so it picks up the config.
+The `.mcp.json` file in `knowledge_base/` configures the optional MCP stdio server.
+Normal dashboard-driven doc generation uses the REST API plus the custom harness, so
+Claude Code is not required.
 
 Test with:
 ```
@@ -95,7 +96,7 @@ Test with:
 
 ## Notes
 
-- The MCP server (stdio mode) is started automatically by Claude Code via `.mcp.json`
+- The MCP server (stdio mode) is optional/debug; the dashboard uses the REST API server
 - The REST API server (port 8001) must be started manually for the dashboard
 - Ollama must be running with `nomic-embed-text` pulled for RAG embeddings
 - Ollama is also used directly by the MCP server if `MCP_DOC_GENERATION_PROVIDER=ollama`

@@ -459,6 +459,11 @@ def _expander_provider_config(model_id: str) -> dict[str, str | None]:
             "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
             "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
         }
+    if provider == "route33":
+        return {
+            "api_key": config.doc_generation_route33_api_key or config.doc_generation_api_key,
+            "base_url": config.doc_generation_route33_base_url,
+        }
     if provider in {"openai", "anthropic", "google"}:
         return {"api_key": None, "base_url": None}
     return {

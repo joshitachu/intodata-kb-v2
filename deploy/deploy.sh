@@ -206,11 +206,10 @@ echo ""
 echo "Post-deploy manual steps:"
 echo "  1. Install Ollama:  curl -fsSL https://ollama.com/install.sh | sh"
 echo "  2. Pull models:     ollama pull nomic-embed-text && ollama pull gemma3:12b"
-echo "  3. Install Claude:  npm install -g @anthropic-ai/claude-code"
-echo "  4. Authenticate:    claude login"
-echo "  5. Configure Caddy: sudo bash deploy/caddy-install.sh <your-domain>"
+echo "  3. Configure doc-generation provider API keys/models in the MCP environment"
+echo "  4. Configure Caddy: sudo bash deploy/caddy-install.sh <your-domain>"
 echo ""
-echo "Claude Code MCP config (~/.claude.json or project .mcp.json):"
+echo "Optional MCP client config (~/.mcp.json or project .mcp.json):"
 echo '  {'
 echo '    "mcpServers": {'
 echo '      "intodoc": {'

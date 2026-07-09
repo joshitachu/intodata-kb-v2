@@ -39,7 +39,7 @@ Source Code --> Scanner CLI --> AI Doc Generation --> RAG Search --> Answers
 - **Search**: Upload docs to vector database, query with natural language, get cited answers
 - **Track**: Every AI call tracked for cost and quality
 
-> **Speaker notes:** What used to take days now takes minutes. The scanner handles the tedious parsing, Claude generates the docs, and users can immediately search through everything with natural language. The key insight: instead of reading code, ask questions about it.
+> **Speaker notes:** What used to take days now takes minutes. The scanner handles the tedious parsing, the documentation harness generates the docs through the configured AI provider, and users can immediately search through everything with natural language. The key insight: instead of reading code, ask questions about it.
 
 ---
 

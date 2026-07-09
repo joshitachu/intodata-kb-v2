@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -24,6 +24,7 @@ import {
   checkGithubWebhookStatus,
   deleteSourceProject,
   deleteGithubWebhook,
+  fetchSourceLogHistory,
   generateDocs,
   pushProjectToRag,
   registerGithubWebhook,
@@ -91,6 +92,15 @@ const STAGE_PROGRESS: Record<RowStage, number> = {
   complete: 100,
   failed: 100,
 };
+
+const ACTIVE_PIPELINES_STORAGE_KEY = "intodata.sourcePipelines.v1";
+
+interface PersistedPipeline {
+  projectId: string;
+  platformId: string;
+  stage: RowStage;
+  updatedAt: number;
+}
 
 function slugify(input: string): string {
   return (
@@ -177,6 +187,54 @@ function formatLogLine(ev: LogEvent): string {
   return `[${level}] ${type}${message}`;
 }
 
+function readPersistedPipelines(): Record<string, PersistedPipeline> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_PIPELINES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, item]) => {
+        const value = item as Partial<PersistedPipeline>;
+        return (
+          typeof value.projectId === "string" &&
+          typeof value.platformId === "string" &&
+          typeof value.stage === "string" &&
+          typeof value.updatedAt === "number"
+        );
+      }),
+    ) as Record<string, PersistedPipeline>;
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedPipelines(pipelines: Record<string, PersistedPipeline>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ACTIVE_PIPELINES_STORAGE_KEY, JSON.stringify(pipelines));
+}
+
+function upsertPersistedPipeline(pipeline: PersistedPipeline) {
+  const pipelines = readPersistedPipelines();
+  pipelines[pipeline.projectId] = pipeline;
+  writePersistedPipelines(pipelines);
+}
+
+function removePersistedPipeline(projectId: string) {
+  const pipelines = readPersistedPipelines();
+  if (!(projectId in pipelines)) return;
+  delete pipelines[projectId];
+  writePersistedPipelines(pipelines);
+}
+
+function stageFromProject(source: SourceProject): RowStage | null {
+  if (source.status === "scanning") return "scanning";
+  if (source.status === "generating") return "generating";
+  if (source.status === "error") return "failed";
+  return null;
+}
+
 async function fetchSourceProjects(): Promise<{ projects: SourceProject[]; total: number }> {
   const res = await fetch("/api/source/projects", { credentials: "include" });
   if (!res.ok) {
@@ -191,6 +249,12 @@ export default function SourcesSettingsPage() {
   const { data: sourceProjects, isLoading: projectsLoading } = useQuery({
     queryKey: ["source-projects"],
     queryFn: fetchSourceProjects,
+    refetchInterval: (query) =>
+      query.state.data?.projects.some((project) =>
+        project.status === "scanning" || project.status === "generating"
+      )
+        ? 5000
+        : false,
   });
   const qc = useQueryClient();
 
@@ -233,6 +297,7 @@ export default function SourcesSettingsPage() {
   const [rows, setRows] = useState<Record<string, RowState>>({});
   const [modes, setModes] = useState<Record<string, SourceMode>>({});
   const [githubForms, setGithubForms] = useState<Record<string, GithubState>>({});
+  const activePipelineRefs = useRef<Set<string>>(new Set());
 
   function patchRow(platformId: string, patch: Partial<RowState>) {
     setRows((prev) => ({
@@ -262,6 +327,18 @@ export default function SourcesSettingsPage() {
     });
   }
 
+  function appendLogHistory(platformId: string, lines: string[]) {
+    if (lines.length === 0) return;
+    setRows((prev) => {
+      const cur = prev[platformId];
+      if (!cur || cur.logs.length > 0) return prev;
+      return {
+        ...prev,
+        [platformId]: { ...cur, logs: lines.slice(-200), logsOpen: true },
+      };
+    });
+  }
+
   function patchGithub(platformId: string, patch: Partial<GithubState>) {
     setGithubForms((prev) => ({
       ...prev,
@@ -277,11 +354,30 @@ export default function SourcesSettingsPage() {
     }));
   }
 
-  async function runProjectPipeline(platformId: string, projectId: string) {
+  const monitorProjectPipeline = useCallback(async (
+    platformId: string,
+    projectId: string,
+    options: { startScan?: boolean; startGenerate?: boolean; initialStage?: RowStage } = {},
+  ) => {
+    if (activePipelineRefs.current.has(projectId)) return;
+    activePipelineRefs.current.add(projectId);
+    upsertPersistedPipeline({
+      projectId,
+      platformId,
+      stage: options.initialStage ?? (options.startGenerate ? "generating" : "scanning"),
+      updatedAt: Date.now(),
+    });
+
     const sub: { stop?: () => void } = {};
     try {
+      fetchSourceLogHistory(projectId)
+        .then((history) => appendLogHistory(platformId, history.lines))
+        .catch(() => {
+          // Log history is best-effort; live SSE/project status remains authoritative.
+        });
+
       await new Promise<void>((resolve, reject) => {
-        let generateTriggered = false;
+        let generateTriggered = options.initialStage === "generating" || options.startGenerate === true;
         let settled = false;
         sub.stop = subscribeToLogs(
           projectId,
@@ -295,6 +391,12 @@ export default function SourcesSettingsPage() {
             }
             if (next === "generating" && !generateTriggered) {
               generateTriggered = true;
+              upsertPersistedPipeline({
+                projectId,
+                platformId,
+                stage: "generating",
+                updatedAt: Date.now(),
+              });
               patchRow(platformId, {
                 stage: "generating",
                 progress: progressFromEvent(ev, "generating"),
@@ -302,6 +404,7 @@ export default function SourcesSettingsPage() {
               generateDocs(projectId).catch((err) => {
                 if (settled) return;
                 settled = true;
+                removePersistedPipeline(projectId);
                 patchRow(platformId, {
                   stage: "failed",
                   progress: STAGE_PROGRESS.failed,
@@ -310,6 +413,12 @@ export default function SourcesSettingsPage() {
                 reject(err);
               });
             } else if (next === "pushing") {
+              upsertPersistedPipeline({
+                projectId,
+                platformId,
+                stage: "pushing",
+                updatedAt: Date.now(),
+              });
               patchRow(platformId, {
                 stage: "pushing",
                 progress: progressFromEvent(ev, "pushing"),
@@ -317,11 +426,13 @@ export default function SourcesSettingsPage() {
             } else if (next === "complete") {
               if (settled) return;
               settled = true;
+              removePersistedPipeline(projectId);
               patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
               resolve();
             } else if (next === "failed") {
               if (settled) return;
               settled = true;
+              removePersistedPipeline(projectId);
               patchRow(platformId, {
                 stage: "failed",
                 progress: STAGE_PROGRESS.failed,
@@ -338,15 +449,21 @@ export default function SourcesSettingsPage() {
         );
 
         patchRow(platformId, {
-          stage: "scanning",
-          progress: STAGE_PROGRESS.scanning,
+          stage: options.initialStage ?? (options.startGenerate ? "generating" : "scanning"),
+          progress: STAGE_PROGRESS[options.initialStage ?? (options.startGenerate ? "generating" : "scanning")],
           error: null,
           logs: [],
           logsOpen: true,
         });
-        scanProject(projectId).catch((err) => {
+        const starter = options.startGenerate
+          ? generateDocs(projectId)
+          : options.startScan === false
+            ? Promise.resolve()
+            : scanProject(projectId);
+        starter.catch((err) => {
           if (settled) return;
           settled = true;
+          removePersistedPipeline(projectId);
           patchRow(platformId, {
             stage: "failed",
             progress: STAGE_PROGRESS.failed,
@@ -360,7 +477,12 @@ export default function SourcesSettingsPage() {
       qc.invalidateQueries({ queryKey: ["docs-projects"] });
     } finally {
       sub.stop?.();
+      activePipelineRefs.current.delete(projectId);
     }
+  }, [qc]);
+
+  async function runProjectPipeline(platformId: string, projectId: string) {
+    await monitorProjectPipeline(platformId, projectId, { startScan: true, initialStage: "scanning" });
   }
 
   async function runUpload(platformId: string, file: File) {
@@ -447,6 +569,12 @@ export default function SourcesSettingsPage() {
   async function runExistingGenerate(platformId: string, projectId: string) {
     const sub: { stop?: () => void } = {};
     try {
+      upsertPersistedPipeline({
+        projectId,
+        platformId,
+        stage: "generating",
+        updatedAt: Date.now(),
+      });
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         sub.stop = subscribeToLogs(
@@ -462,6 +590,7 @@ export default function SourcesSettingsPage() {
             } else if (next === "failed") {
               if (settled) return;
               settled = true;
+              removePersistedPipeline(projectId);
               patchRow(platformId, {
                 stage: "failed",
                 progress: STAGE_PROGRESS.failed,
@@ -476,6 +605,7 @@ export default function SourcesSettingsPage() {
             } else if (next === "complete") {
               if (settled) return;
               settled = true;
+              removePersistedPipeline(projectId);
               patchRow(platformId, { stage: "complete", progress: STAGE_PROGRESS.complete });
               resolve();
             } else if (next === "generating") {
@@ -500,6 +630,7 @@ export default function SourcesSettingsPage() {
         generateDocs(projectId).catch((err) => {
           if (settled) return;
           settled = true;
+          removePersistedPipeline(projectId);
           patchRow(platformId, {
             stage: "failed",
             progress: STAGE_PROGRESS.failed,
@@ -523,6 +654,12 @@ export default function SourcesSettingsPage() {
 
   async function runExistingPush(platformId: string, projectId: string) {
     try {
+      upsertPersistedPipeline({
+        projectId,
+        platformId,
+        stage: "pushing",
+        updatedAt: Date.now(),
+      });
       patchRow(platformId, {
         stage: "pushing",
         progress: STAGE_PROGRESS.pushing,
@@ -531,6 +668,7 @@ export default function SourcesSettingsPage() {
         logsOpen: true,
       });
       await pushProjectToRag(projectId);
+      removePersistedPipeline(projectId);
       patchRow(platformId, {
         stage: "complete",
         progress: STAGE_PROGRESS.complete,
@@ -539,6 +677,7 @@ export default function SourcesSettingsPage() {
       qc.invalidateQueries({ queryKey: ["source-projects"] });
       qc.invalidateQueries({ queryKey: ["docs-projects"] });
     } catch (err) {
+      removePersistedPipeline(projectId);
       patchRow(platformId, {
         stage: "failed",
         progress: STAGE_PROGRESS.failed,
@@ -546,6 +685,114 @@ export default function SourcesSettingsPage() {
       });
     }
   }
+
+  useEffect(() => {
+    if (!sourceProjects) return;
+
+    const persisted = readPersistedPipelines();
+    const nextPersisted: Record<string, PersistedPipeline> = {};
+    const now = Date.now();
+
+    for (const source of projects) {
+      const saved = persisted[source.id];
+      const liveStage = stageFromProject(source);
+      const lastScanAt = source.last_scan_at ? new Date(source.last_scan_at).getTime() : 0;
+      const lastGenerateAt = source.last_generate_at
+        ? new Date(source.last_generate_at).getTime()
+        : 0;
+      const scanNeedsGeneration =
+        source.status === "ready" &&
+        saved &&
+        (saved.stage === "scanning" || saved.stage === "generating") &&
+        lastScanAt > 0 &&
+        lastScanAt >= lastGenerateAt;
+
+      if (source.status === "error") {
+        if (saved) removePersistedPipeline(source.id);
+        patchRow(source.id, {
+          stage: "failed",
+          progress: STAGE_PROGRESS.failed,
+          error: source.error_message ?? "Source workflow failed",
+          logsOpen: true,
+        });
+        fetchSourceLogHistory(source.id)
+          .then((history) => appendLogHistory(source.id, history.lines))
+          .catch(() => {});
+        continue;
+      }
+
+      if (scanNeedsGeneration) {
+        nextPersisted[source.id] = {
+          projectId: source.id,
+          platformId: source.id,
+          stage: "generating",
+          updatedAt: now,
+        };
+        patchRow(source.id, {
+          stage: "generating",
+          progress: STAGE_PROGRESS.generating,
+          error: null,
+          logsOpen: true,
+        });
+        void monitorProjectPipeline(source.id, source.id, {
+          startGenerate: true,
+          initialStage: "generating",
+        });
+        continue;
+      }
+
+      const recoveredStage = liveStage ?? saved?.stage ?? null;
+      if (!recoveredStage) continue;
+
+      if (source.status === "ready" && saved) {
+        removePersistedPipeline(source.id);
+        patchRow(source.id, {
+          stage: "complete",
+          progress: STAGE_PROGRESS.complete,
+          error: null,
+          logsOpen: true,
+        });
+        fetchSourceLogHistory(source.id)
+          .then((history) => appendLogHistory(source.id, history.lines))
+          .catch(() => {});
+        continue;
+      }
+
+      if (saved || recoveredStage === "generating") {
+        nextPersisted[source.id] = {
+          projectId: source.id,
+          platformId: source.id,
+          stage: recoveredStage,
+          updatedAt: now,
+        };
+      }
+      patchRow(source.id, {
+        stage: recoveredStage,
+        progress: Math.max(STAGE_PROGRESS[recoveredStage], recoveredStage === "generating" ? 55 : 0),
+        error: null,
+        logsOpen: true,
+      });
+      if (saved || recoveredStage === "generating") {
+        void monitorProjectPipeline(source.id, source.id, {
+          startScan: false,
+          initialStage: recoveredStage,
+        });
+      } else {
+        fetchSourceLogHistory(source.id)
+          .then((history) => appendLogHistory(source.id, history.lines))
+          .catch(() => {});
+      }
+    }
+
+    const validIds = new Set(projects.map((project) => project.id));
+    for (const [projectId, pipeline] of Object.entries(persisted)) {
+      if (validIds.has(projectId)) continue;
+      if (now - pipeline.updatedAt < 24 * 60 * 60 * 1000) {
+        nextPersisted[projectId] = pipeline;
+      }
+    }
+    writePersistedPipelines(nextPersisted);
+  }, [monitorProjectPipeline, projects, sourceProjects]);
 
   if (statusLoading || projectsLoading) {
     return (
@@ -571,7 +818,11 @@ export default function SourcesSettingsPage() {
       <GithubAppConnectPanel
         platforms={platformOptions.map((id) => ({ id, label: platformLabel(id) }))}
         defaultPlatform={activeAddPlatform}
-        onConnected={() => qc.invalidateQueries({ queryKey: ["source-projects"] })}
+        existingProjects={projects}
+        onConnected={async (project) => {
+          qc.invalidateQueries({ queryKey: ["source-projects"] });
+          await runProjectPipeline(project.id, project.id);
+        }}
       />
 
       <section className="space-y-3">

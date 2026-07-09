@@ -95,6 +95,44 @@ class DeepSeekModelStrategy(ModelProviderStrategy):
         )
 
 
+class Route33ModelStrategy(ModelProviderStrategy):
+    provider_id = "route33"
+
+    def create_model_provider(
+        self,
+        model_id: str,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        ollama_base_url: str | None = None,
+    ):
+        from mcp_server.config import config
+        from mcp_server.providers.custom.providers import (
+            OpenAICompatibleProvider,
+            Route33AnthropicMessagesProvider,
+        )
+
+        model_name = self.parse_model_name(model_id)
+        resolved_api_key = (
+            api_key
+            or config.doc_generation_route33_api_key
+            or os.environ.get("ROUTE33_API_KEY")
+        )
+        if model_name.startswith("anthropic/"):
+            return Route33AnthropicMessagesProvider(
+                model_name,
+                api_key=resolved_api_key,
+                base_url=base_url or config.doc_generation_route33_base_url,
+            )
+
+        return OpenAICompatibleProvider(
+            model_name,
+            api_key=resolved_api_key,
+            base_url=base_url or config.doc_generation_route33_base_url,
+            provider_name="route33",
+        )
+
+
 class GoogleModelStrategy(ModelProviderStrategy):
     provider_id = "google"
 

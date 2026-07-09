@@ -14,18 +14,27 @@ export function useLogStream(projectId: string | null) {
   }, []);
 
   useEffect(() => {
-    // Reset done state when project changes
+    // Reset live state when project changes so one project's output never
+    // remains visible while another project is selected.
+    setLogs([]);
     setDone(false);
     setLogFile(null);
+    esRef.current?.close();
+    esRef.current = null;
 
     if (!projectId) return;
 
-    const es = new EventSource(`/logs/stream?project_id=${projectId}`);
+    const es = new EventSource(`/logs/stream?project_id=${encodeURIComponent(projectId)}`);
     esRef.current = es;
 
     es.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data) as Partial<LogEvent> & {
+          log_file?: string | null;
+        };
+        if (esRef.current !== es || data.project_id !== projectId) {
+          return;
+        }
         if (data.level === "done") {
           setDone(true);
           setLogFile(data.log_file ?? null);
