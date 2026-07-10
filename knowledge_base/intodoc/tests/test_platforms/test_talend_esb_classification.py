@@ -6,9 +6,13 @@ truth for the is_esb_route / esb_component_types fields on ParsedJob.
 """
 
 import json
+from pathlib import Path
 
 from intodoc.models import Component, ParsedJob
-from intodoc.platforms.talend.parser import classify_esb_components
+from intodoc.platforms.talend.parser import TalendParser, classify_esb_components
+from intodoc.scanner.credential_filter import CredentialFilter
+
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "talend_sample"
 
 
 class TestClassifyEsbComponents:
@@ -26,6 +30,11 @@ class TestClassifyEsbComponents:
     def test_camel_infrastructure_components_count_as_esb(self):
         # cProcessor / cLog etc. are still Camel components -> ESB route.
         assert classify_esb_components(["cProcessor", "cLog"]) == ["cLog", "cProcessor"]
+
+    def test_unlisted_camel_component_detected_by_prefix(self):
+        # cHttp / cTimer are real Camel components not covered by any hardcoded
+        # allowlist -- classification must key off the c-prefix convention itself.
+        assert classify_esb_components(["cTimer", "cHttp"]) == ["cHttp", "cTimer"]
 
 
 class TestParsedJobEsbFields:
@@ -71,3 +80,37 @@ class TestParsedJobEsbFields:
         data = json.loads(job.model_dump_json())
         assert data["is_esb_route"] is True
         assert data["esb_component_types"] == ["cREST", "cRoute", "cSplitter"]
+
+
+class TestTalendParserEsbIntegration:
+    """Runs the real TalendParser against synthetic fixture .item files.
+
+    The fixtures live under tests/fixtures/talend_sample/ rather than a real
+    customer project. Layout mirrors a real Talend Studio export: DI Job
+    Designs under process/, ESB/Camel Route Designs under a separate top-level
+    routes/ directory -- both must be walked by the scanner. Webhook_Route
+    only uses cTimer/cHttp, real Camel component types absent from any
+    hardcoded allowlist, so this also locks in that classification works off
+    the c-prefix convention rather than a list.
+    """
+
+    def setup_method(self):
+        self.parser = TalendParser(CredentialFilter())
+
+    def test_route_under_routes_dir_is_found_and_detected(self):
+        result = self.parser.parse(FIXTURES_DIR)
+        route = next(j for j in result.jobs if j.name == "Webhook_Route")
+        assert route.group == "Service"
+        assert route.is_esb_route is True
+        assert route.esb_component_types == ["cHttp", "cTimer"]
+
+    def test_plain_di_job_under_process_dir_is_not_classified_as_route(self):
+        result = self.parser.parse(FIXTURES_DIR)
+        di_job = next(j for j in result.jobs if j.name == "Sample_DI_Job")
+        assert di_job.group == "DI"
+        assert di_job.is_esb_route is False
+        assert di_job.esb_component_types == []
+
+    def test_both_process_and_routes_dirs_are_walked(self):
+        result = self.parser.parse(FIXTURES_DIR)
+        assert {j.name for j in result.jobs} == {"Webhook_Route", "Sample_DI_Job"}

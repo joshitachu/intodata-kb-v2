@@ -107,8 +107,7 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
         <div className="max-w-7xl mx-auto px-6 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2.5">
-              <img src="/intodata-logo.png" alt="Nexus" className="h-8 w-auto" />
-              <span className="text-sm font-medium text-slate-400 tracking-wide">Nexus</span>
+              <span className="text-sm font-semibold text-slate-200 tracking-wide">Nexus</span>
             </div>
             <nav className="flex items-center gap-1">
               {(["projects", "docs"] as TopNav[]).map((nav) => (

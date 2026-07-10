@@ -277,6 +277,9 @@ class TestStoredChatLoop:
             ),
         ]
 
+        async def _fake_stream(messages, images=None):
+            yield "The nightly_sync job failed."
+
         with (
             patch("src.runtime.client.settings") as mock_client_settings,
             patch("src.generation.agent_loop.settings") as mock_loop_settings,
@@ -285,6 +288,10 @@ class TestStoredChatLoop:
                 "src.generation.agent_loop.generate_answer_with_runtime_tools",
                 AsyncMock(side_effect=decisions),
             ),
+            # The loop's synthesis tail streams the final answer via
+            # generate_answer_stream once a tool has run (EP-004 slice 3).
+            patch("src.generation.agent_loop.generate_answer_stream", _fake_stream),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             _stored_settings(mock_client_settings)
             mock_loop_settings.runtime_tool_loop_max_iterations = 2

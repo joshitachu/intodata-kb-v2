@@ -8,14 +8,14 @@ etc.), generates comprehensive documentation, and feeds a RAG knowledge base.
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | Scanner CLI | `intodoc/` | Parses source code into structured scan cache JSON |
-| MCP Server | `mcp-server/` | Exposes scan data to Claude Code via MCP tools + REST API |
+| MCP Server | `mcp-server/` | Exposes scan data to the custom doc-generation harness, optional MCP tools, and the dashboard REST API |
 | Dashboard | `dashboard/` | React control panel for managing projects, scans, docs |
 | RAG Pipeline | `../RAG_pipeline/` | FastAPI + Qdrant for document search |
 
 ## Quick Commands
 
 ```bash
-# MCP server (stdio, for Claude Code)
+# MCP server (stdio, optional/debug)
 cd mcp-server && python -m mcp_server --mcp
 
 # REST API (port 8001, for dashboard)
@@ -120,9 +120,15 @@ This is the primary method for generating project documentation. Follow it exact
 - **Talend ESB detection (`providers/custom/talend_intelligence.py`)**: Talend serializes
   DI Jobs and ESB/Camel Routes into the same `.item` format; the only signal is c-prefixed
   Camel component usage. Classification is now **scanner-computed** -- the intodoc Talend
-  parser (`intodoc/src/intodoc/platforms/talend/parser.py`, `_ESB_COMPONENT_TYPES` +
-  `classify_esb_components`) sets `is_esb_route` / `esb_component_types` on each `ParsedJob`,
-  and these flow through `scan_result.json`. `talend_intelligence.py::detect_talend_esb_patterns`
+  parser (`intodoc/src/intodoc/platforms/talend/parser.py`, `_ESB_COMPONENT_PATTERN` +
+  `classify_esb_components`) sets `is_esb_route` / `esb_component_types` on each `ParsedJob`
+  by matching the `c[A-Z]` component-name prefix convention (not a hardcoded name list, so
+  unlisted Camel component types are still classified correctly),
+  and these flow through `scan_result.json`. **Job discovery** (`_parse_all_jobs`,
+  `_find_talend_root`) walks both `process/` (DI Job Designs) and a separate top-level
+  `routes/` directory (ESB/Camel Route Designs) -- real Talend Studio exports put Routes
+  in `routes/`, not under `process/`; before this, Route items in that layout were never
+  parsed at all (not merely misclassified). `talend_intelligence.py::detect_talend_esb_patterns`
   only **consumes** those fields (no duplicated component set); `write_talend_intelligence`
   writes `_preprocess/talend_esb_facts.json` when any route is detected. Guidance is wired
   into Phase 2 via a conditional `ESB_ROUTES` section (`ESB_ROUTES_SECTION` in `constants.py`,
@@ -143,13 +149,13 @@ This is the primary method for generating project documentation. Follow it exact
 
 Doc generation uses a **staging directory** (`docs_staging/`) to protect existing docs:
 
-1. Claude Code writes new docs to `output/{project_id}/docs_staging/`
+1. The custom harness writes new docs to `output/{project_id}/docs_staging/`
 2. On **success**: old `docs/` is removed, `docs_staging/` is renamed to `docs/`, then server pushes to RAG automatically
 3. On **failure**: `docs_staging/` is deleted, old `docs/` remains intact, `doc_count` unchanged
 
-Key files: `claude_service.py` (prompt + staging dir setup), `projects.py:_run_generate_background` (swap logic + server-side RAG push).
+Key files: `claude_service.py` / `DocGenerationCoordinator` (generation orchestration and provider selection), `providers/custom/harness.py` (custom harness setup/state), and `projects.py:_run_generate_background` (swap logic + server-side RAG push).
 
-**Do NOT** add `insert_to_rag` back to the Claude Code prompt -- RAG push is handled server-side in `_run_generate_background` via `RagBridge.push_docs()`.
+**Do NOT** add `insert_to_rag` back to doc-generation prompts -- RAG push is handled server-side in `_run_generate_background` via `RagBridge.push_docs()`.
 
 ### Debug Forensics (`MCP_PIPELINE_DEBUG`)
 
@@ -183,7 +189,7 @@ Set `MCP_PIPELINE_DEBUG=1` to materialize the full forensic record under `docs_s
 ```
 knowledge_base/                     -- Platform root
   .agent/                           -- Agent context docs (README, system, SOPs, tasks)
-  .claude/                          -- Claude Code settings + session logs
+  .claude/                          -- legacy agent settings + session logs
   .mcp.json                         -- MCP server configuration
   CLAUDE.md                         -- This file
   mcp-server/                       -- MCP + REST API server (Python, FastAPI)

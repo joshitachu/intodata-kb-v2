@@ -14,9 +14,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, ConversationMessage, DocGapEvent, QueryUsage
 from src.document_roles import AUXILIARY_DOCUMENT_ROLES, TEMPLATE_DOCUMENT_ROLES, has_template_intent
-from src.generation.agent_loop import build_runtime_tool_summary, run_runtime_tool_loop
+from src.generation.agent_loop import (
+    RuntimeAnswerChunk,
+    RuntimeLoopOutcome,
+    RuntimeProgressEvent,
+    build_runtime_tool_summary,
+    run_runtime_tool_loop,
+    run_runtime_tool_loop_stream,
+)
 from src.generation.agent_orchestrator import AgentStep, AgentTool, AgentTrace
-from src.generation.intent_classifier import Action, MetadataIntent, QueryAnalysis, QueryType, analyze_query_async
+from src.generation.intent_classifier import (
+    Action,
+    MetadataIntent,
+    QueryAnalysis,
+    QueryType,
+    analyze_query_async,
+    detect_runtime_keywords,
+)
 from src.generation.prompt_builder import build_conversation_summary_messages
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
@@ -137,7 +151,8 @@ CONTEXT_FIRST_SYSTEM_PROMPT = (
     "## CRITICAL RULES\n"
     "1. Answer ONLY using information from the retrieved context below. "
     "NEVER use your general knowledge or training data to fill gaps.\n"
-    "2. If the context does not contain the answer, respond with exactly "
+    "2. If the context does not contain the answer, your response MUST begin "
+    "with [NEED_SEARCH] as the very first word -- respond with exactly "
     "[NEED_SEARCH] and nothing else.\n"
     "3. NEVER invent details (SQL queries, API endpoints, config values, etc.) "
     "that are not explicitly in the context.\n"
@@ -234,16 +249,146 @@ _CANT_ANSWER_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_NEED_SEARCH_MARKER = "[NEED_SEARCH]"
+
 
 def needs_new_search(answer: str) -> bool:
     """Check if the LLM response indicates it needs more information."""
-    if "[NEED_SEARCH]" in answer:
+    if _NEED_SEARCH_MARKER in answer:
         return True
     # Safety net: catch "I don't know" style responses that should have been [NEED_SEARCH]
     stripped = answer.strip()
     if len(stripped) < 200 and _CANT_ANSWER_PATTERNS.search(stripped):
         return True
     return False
+
+
+# --- Streaming sniff-buffer (Slice 2) --------------------------------------
+#
+# Restores real token-by-token delivery for the document-QA streaming path.
+# generate_answer_stream() is awaited only up to _SNIFF_BUFFER_CHARS (plus a
+# look-ahead guard so the [NEED_SEARCH] marker can never be split across the
+# buffer boundary) before a sufficiency verdict is made using the same
+# semantics as needs_new_search(). On success the still-open stream is handed
+# back so the caller can keep draining it for genuine token-by-token delivery
+# after the sniffed prefix.
+
+_SNIFF_BUFFER_CHARS = 200
+
+
+def _partial_marker_suffix_len(buffer: str) -> int:
+    """Length of the longest suffix of ``buffer`` that is a non-empty proper
+    prefix of _NEED_SEARCH_MARKER (e.g. buffer ending in "...context. [NEED_SEA"
+    has a 7-char suffix match), or 0 when the tail cannot be the start of a
+    still-arriving marker. Bounded search (at most len(marker) - 1
+    comparisons) -- not an infinite-loop risk, just a few extra characters of
+    buffering while the marker might be mid-flight across a token boundary."""
+    max_check = min(len(_NEED_SEARCH_MARKER) - 1, len(buffer))
+    for i in range(max_check, 0, -1):
+        if buffer.endswith(_NEED_SEARCH_MARKER[:i]):
+            return i
+    return 0
+
+
+def _ends_with_partial_marker(buffer: str) -> bool:
+    """True when the tail of ``buffer`` might be the start of a
+    _NEED_SEARCH_MARKER occurrence still arriving across a token boundary."""
+    return _partial_marker_suffix_len(buffer) > 0
+
+
+@dataclass
+class _SniffResult:
+    """Result of sniffing a streamed answer for sufficiency."""
+
+    insufficient: bool
+    prefix: str
+    remainder: AsyncGenerator[str, None] | None
+    """The same still-open generate_answer_stream() generator to keep
+    draining. None when the stream was exhausted while sniffing (nothing
+    left) or when insufficient is True (caller must not resume -- the
+    marker case has already been closed by this helper; the heuristic case
+    has nothing left to close since the stream was already exhausted)."""
+
+
+async def _sniff_stream_sufficiency(
+    messages: list[dict[str, str]],
+    images: list[str] | None = None,
+    buffer_chars: int = _SNIFF_BUFFER_CHARS,
+) -> _SniffResult:
+    """Stream an answer via generate_answer_stream(), but only await up to
+    ``buffer_chars`` characters (extended if needed so [NEED_SEARCH] is never
+    split across the boundary) before deciding sufficiency -- same semantics
+    as needs_new_search(). Hands back the still-open stream on success so the
+    caller can keep draining it for real token-by-token delivery.
+
+    Invariant: every "insufficient after all" branch must close the stream
+    (either here, via .aclose(), or by the caller once it is done with the
+    returned remainder) to avoid leaking an open provider HTTP stream.
+    """
+    stream = generate_answer_stream(messages, images=images)
+    buffer = ""
+    async for token in stream:
+        buffer += token
+        if len(buffer) >= buffer_chars and not _ends_with_partial_marker(buffer):
+            break
+    else:
+        # Loop completed without break: stream exhausted inside the buffer
+        # window -- the buffer IS the whole answer.
+        if _NEED_SEARCH_MARKER in buffer:
+            return _SniffResult(insufficient=True, prefix=buffer, remainder=None)
+        stripped = buffer.strip()
+        if len(stripped) < 200 and _CANT_ANSWER_PATTERNS.search(stripped):
+            return _SniffResult(insufficient=True, prefix=buffer, remainder=None)
+        return _SniffResult(insufficient=False, prefix=buffer, remainder=None)
+
+    # Broke out early: buffer >= buffer_chars, stream still has more.
+    if _NEED_SEARCH_MARKER in buffer:
+        await stream.aclose()
+        return _SniffResult(insufficient=True, prefix=buffer, remainder=None)
+    return _SniffResult(insufficient=False, prefix=buffer, remainder=stream)
+
+
+async def _drain_stripping_late_marker(
+    remainder: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    """Drain a still-open sniffed stream, stripping a late-arriving
+    [NEED_SEARCH] marker (one the sniff buffer already missed because
+    sufficiency was validated before it appeared) so it never reaches the
+    user.
+
+    The marker is looked for in the *entire* pending buffer on every token,
+    not just in the portion about to be released -- checking only the
+    about-to-be-released slice would miss a marker whose halves straddle
+    that cut point when a chunk is larger than the lookback window (e.g. a
+    marker spanning from the middle of one large provider chunk into the
+    next). Only a genuine partial-marker suffix (one that could still
+    complete into a full marker with more incoming text) is ever held back
+    from release, bounded to at most len(marker) - 1 characters. Logs a
+    single WARNING if a late marker was found; the rest of the answer is
+    delivered normally."""
+    pending = ""
+    late_marker_seen = False
+    async for token in remainder:
+        pending += token
+        if _NEED_SEARCH_MARKER in pending:
+            late_marker_seen = True
+            pending = pending.replace(_NEED_SEARCH_MARKER, "")
+        hold_back = _partial_marker_suffix_len(pending)
+        safe_len = len(pending) - hold_back
+        if safe_len > 0:
+            safe, pending = pending[:safe_len], pending[safe_len:]
+            yield safe
+    if _NEED_SEARCH_MARKER in pending:
+        late_marker_seen = True
+        pending = pending.replace(_NEED_SEARCH_MARKER, "")
+    if pending:
+        yield pending
+    if late_marker_seen:
+        logger.warning(
+            "Late [NEED_SEARCH] marker arrived after the streaming sniff "
+            "buffer had already flushed a partial answer; stripped from "
+            "output, partial answer kept (accepted edge case)."
+        )
 
 
 # --- Retrieval ladder (Slice 4) -------------------------------------------
@@ -369,7 +514,8 @@ def build_conversational_messages_with_context(
     if answer_style == "code":
         system_prompt += (
             "\n\nIf the previous context does not contain enough evidence, "
-            "respond with exactly [NEED_SEARCH] and nothing else."
+            "your response MUST begin with [NEED_SEARCH] as the very first "
+            "word -- respond with exactly [NEED_SEARCH] and nothing else."
         )
     messages.append({"role": "system", "content": system_prompt})
 
@@ -462,7 +608,8 @@ def build_conversational_messages(
         if context_first:
             system_prompt += (
                 "\n\nIf the retrieved context does not contain enough evidence, "
-                "respond with exactly [NEED_SEARCH] and nothing else."
+                "your response MUST begin with [NEED_SEARCH] as the very first "
+                "word -- respond with exactly [NEED_SEARCH] and nothing else."
             )
     else:
         system_prompt = CONTEXT_FIRST_SYSTEM_PROMPT if context_first else CONVERSATIONAL_SYSTEM_PROMPT
@@ -601,6 +748,20 @@ class RAGContext:
     """True when internal material answered what the final docs could not."""
     doc_gap_details: dict | None = None
     """DocGapEvent payload (reason, layers, entities, artifacts) when doc_gap is True."""
+    stream_sniffed: bool = False
+    """True when precomputed_answer is None specifically because the streaming
+    sniff-buffer already validated sufficiency and started delivering tokens
+    live; stream_prefix/stream_remainder carry the partially-consumed answer.
+    A RAGContext with stream_sniffed=True must be consumed exactly once by the
+    streaming caller -- stream_remainder is a live, partially-drained async
+    generator and cannot be replayed or cached across turns."""
+    stream_prefix: str | None = None
+    """Sniffed prefix already generated; flush as the first streamed chunk(s)
+    when stream_sniffed is True."""
+    stream_remainder: AsyncGenerator[str, None] | None = None
+    """The same still-open generate_answer_stream() call to keep draining for
+    the rest of the answer. None when the whole answer already fit inside the
+    sniff buffer (nothing left to drain) even though stream_sniffed is True."""
 
 
 async def _prepare_rag_context(
@@ -677,6 +838,16 @@ async def _prepare_rag_context(
     )
     analysis = await analyze_query_async(query, conversation_context=conv_ctx)
     document_sources: list[DocumentSource] = []
+
+    # Runtime-intent gate: single source of truth for whether this turn enters
+    # the runtime tool loop (classifier signal OR keyword backstop). Computed
+    # once per turn so the streaming and non-streaming entry points agree.
+    keyword_hit = detect_runtime_keywords(query)
+    runtime_gate = analysis.runtime_intent or keyword_hit
+    logger.info(
+        "Runtime gate: %s (classifier=%s, keyword=%s) query=%r",
+        "IN" if runtime_gate else "OUT", analysis.runtime_intent, keyword_hit, query[:80],
+    )
 
     # Fetch system knowledge for injection
     system_knowledge: str | None = None
@@ -841,6 +1012,49 @@ async def _prepare_rag_context(
                 agent_steps=trace.steps,
             )
 
+    # Runtime-gated turns skip the document-sufficiency ladder entirely: the
+    # tool loop (not doc sufficiency) decides whether more info is needed, and
+    # a pure runtime question must still reach the tool loop even when
+    # retrieval finds zero matching documents (D3/D1, .plans/02_prd.md).
+    if runtime_gate:
+        trace.complete(AgentTool.SEARCH_DOCUMENTS)
+        sources = await _search_qa_sources(
+            qdrant=qdrant,
+            query=analysis.cleaned_query,
+            user_groups=user_groups,
+            top_k=top_k,
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=["source"],
+        )
+        auxiliary_sources = await _search_qa_sources(
+            qdrant=qdrant,
+            query=analysis.cleaned_query,
+            user_groups=user_groups,
+            top_k=max(1, min(4, top_k)),
+            threshold=threshold,
+            project_ids=project_ids,
+            document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+        )
+        all_sources = [*sources, *auxiliary_sources]
+        document_sources = merge_sources_by_document(all_sources) if all_sources else []
+        ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+        llm_messages = build_conversational_messages(
+            query, sources, existing_messages, reference_numbers=ref_map,
+            memory_context=memory_context,
+            answer_style=answer_style,
+            auxiliary_sources=auxiliary_sources,
+        )
+        return RAGContext(
+            llm_messages=llm_messages,
+            document_sources=document_sources,
+            precomputed_answer=None,
+            allow_runtime_tools=True,
+            analysis=analysis,
+            agent_steps=trace.steps,
+            primary_source_layer=document_sources[0].source_layer if document_sources else None,
+        )
+
     # QA — try context-first, search only if needed
     previous_doc_sources = get_previous_sources(existing_messages, project_ids=project_ids)
 
@@ -865,7 +1079,6 @@ async def _prepare_rag_context(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
                 precomputed_answer=answer,
-                allow_runtime_tools=True,
                 analysis=analysis,
                 agent_steps=trace.steps,
             )
@@ -874,7 +1087,9 @@ async def _prepare_rag_context(
             logger.info("[NEED_SEARCH] detected — running semantic search")
             previous_doc_sources = []  # clear so we enter search below
     elif previous_doc_sources and not precompute:
-        # Streaming path: run context-first check (same as non-streaming)
+        # Streaming path: run context-first check (same as non-streaming), but
+        # via the sniff-buffer so a sufficient answer streams live instead of
+        # blocking on the full generation (Slice 2).
         # memory_context excluded for the same reason as the non-streaming path above.
         logger.info("Streaming mode — running context-first check")
         trace.complete(AgentTool.REUSE_PREVIOUS_SOURCES)
@@ -884,13 +1099,15 @@ async def _prepare_rag_context(
             memory_context=None,
             answer_style=answer_style,
         )
-        answer = await generate_answer(llm_messages)
-        if not needs_new_search(answer):
+        sniff = await _sniff_stream_sufficiency(llm_messages, images=None)
+        if not sniff.insufficient:
             return RAGContext(
                 llm_messages=llm_messages,
                 document_sources=previous_doc_sources,
-                precomputed_answer=answer,
-                allow_runtime_tools=True,
+                precomputed_answer=None,
+                stream_sniffed=True,
+                stream_prefix=sniff.prefix,
+                stream_remainder=sniff.remainder,
                 analysis=analysis,
                 agent_steps=trace.steps,
             )
@@ -956,6 +1173,7 @@ async def _prepare_rag_context(
         insufficiency: str | None = None
         rung1_answer: str | None = None
         rung1_messages: list[dict[str, str]] = []
+        rung1_stream_sniff: _SniffResult | None = None
 
         if sources:
             logger.info("--- Retrieved Chunks ---")
@@ -985,23 +1203,46 @@ async def _prepare_rag_context(
                 context_first=True,
                 auxiliary_sources=auxiliary_sources,
             )
-            # The ladder gate needs the rung-1 answer to judge sufficiency, so
-            # it is generated here even on the streaming path (emitted as a
-            # single token, like the context-first reuse behavior).
-            rung1_answer = await generate_answer(rung1_messages, images=images)
-            if needs_new_search(rung1_answer):
-                insufficiency = "need_search"
-            elif _identifiers_missing_from_sources(identifiers, sources):
-                insufficiency = "missing_identifiers"
+            # The ladder gate needs to judge sufficiency before returning. On
+            # the REST (precompute=True) path this still requires the full
+            # blocking answer. On the streaming path (Slice 2), the
+            # sniff-buffer judges sufficiency from only the first ~200 chars
+            # and hands back the still-open stream for real token-by-token
+            # delivery of the rest.
+            if precompute:
+                rung1_answer = await generate_answer(rung1_messages, images=images)
+                if needs_new_search(rung1_answer):
+                    insufficiency = "need_search"
+                elif _identifiers_missing_from_sources(identifiers, sources):
+                    insufficiency = "missing_identifiers"
+            else:
+                rung1_stream_sniff = await _sniff_stream_sufficiency(rung1_messages, images=images)
+                if rung1_stream_sniff.insufficient:
+                    insufficiency = "need_search"
+                elif _identifiers_missing_from_sources(identifiers, sources):
+                    insufficiency = "missing_identifiers"
+                    if rung1_stream_sniff.remainder is not None:
+                        await rung1_stream_sniff.remainder.aclose()
         else:
             insufficiency = "no_sources"
 
         if insufficiency is None:
+            if rung1_stream_sniff is not None:
+                return RAGContext(
+                    llm_messages=rung1_messages,
+                    document_sources=document_sources,
+                    precomputed_answer=None,
+                    stream_sniffed=True,
+                    stream_prefix=rung1_stream_sniff.prefix,
+                    stream_remainder=rung1_stream_sniff.remainder,
+                    analysis=analysis,
+                    agent_steps=trace.steps,
+                    primary_source_layer=document_sources[0].source_layer or "canonical_docs",
+                )
             return RAGContext(
                 llm_messages=rung1_messages,
                 document_sources=document_sources,
                 precomputed_answer=rung1_answer,
-                allow_runtime_tools=True,
                 analysis=analysis,
                 agent_steps=trace.steps,
                 primary_source_layer=document_sources[0].source_layer or "canonical_docs",
@@ -1043,7 +1284,6 @@ async def _prepare_rag_context(
                     llm_messages=llm_messages,
                     document_sources=internal_docs,
                     precomputed_answer=answer,
-                    allow_runtime_tools=True,
                     analysis=analysis,
                     agent_steps=trace.steps,
                     primary_source_layer=internal_docs[0].source_layer or rung2_layers[0],
@@ -1235,7 +1475,7 @@ async def run_conversational_rag(
             logger.warning("Failed to persist conversation usage: %s", db_err)
 
     # Safety: strip any [NEED_SEARCH] marker that leaked into the final answer
-    answer = answer.replace("[NEED_SEARCH]", "").strip()
+    answer = answer.replace(_NEED_SEARCH_MARKER, "").strip()
 
     # Save user message
     user_msg = ConversationMessage(
@@ -1334,7 +1574,8 @@ async def run_conversational_rag_stream(
     - ("sources", json_array)          — document sources
     - ("runtime_tool_call", json_object)   — backend runtime tool-use loop requested a tool (EP-004 slice 3)
     - ("runtime_tool_result", json_object) — sanitized result of that tool call (EP-004 slice 3)
-    - ("token", json_string)           — individual LLM tokens, or the runtime loop's final answer as one token
+    - ("token", json_string)           — individual LLM tokens, streamed live as the runtime tool
+      loop's tool calls resolve; delivered as a single token only when no tool ran that turn
     - ("usage", json_object)           — token counts + cost
     - ("done", json_object)            — {message_id, latency_ms}
 
@@ -1381,29 +1622,65 @@ async def run_conversational_rag_stream(
     accumulated = ""
     loop_usage = None
     runtime_progress: list = []
-    # Terminal precomputed answers stream as-is. QA document-backed answers
-    # (allow_runtime_tools) and no-precompute turns run the runtime tool loop so
-    # logs and docs can combine; on a provider without tool support they degrade
-    # to the documents-only answer with a visible note appended to the stream.
-    if ctx.precomputed_answer is not None and not ctx.allow_runtime_tools:
-        token = ctx.precomputed_answer.replace("[NEED_SEARCH]", "").strip()
-        accumulated = token
-        yield ("token", json.dumps(token))
+    # allow_runtime_tools is the single gate for entering the tool loop (set by
+    # the runtime-intent gate in _prepare_rag_context, not by whether an answer
+    # was precomputed). Turns that never gated in stream directly: the already-
+    # generated answer as-is, or a fresh generate_answer_stream call when
+    # nothing was precomputed (chitchat/metadata/summary on the streaming path).
+    if not ctx.allow_runtime_tools:
+        if ctx.stream_sniffed:
+            # Sniff-buffer already validated sufficiency (Slice 2): flush the
+            # sniffed prefix immediately, then keep draining the same still-
+            # open provider stream for real token-by-token delivery of the
+            # rest, stripping a late marker if one shows up past the buffer.
+            if ctx.stream_prefix:
+                accumulated = ctx.stream_prefix
+                yield ("token", json.dumps(ctx.stream_prefix))
+            if ctx.stream_remainder is not None:
+                async for chunk in _drain_stripping_late_marker(ctx.stream_remainder):
+                    accumulated += chunk
+                    yield ("token", json.dumps(chunk))
+        elif ctx.precomputed_answer is not None:
+            token = ctx.precomputed_answer.replace(_NEED_SEARCH_MARKER, "").strip()
+            accumulated = token
+            yield ("token", json.dumps(token))
+        else:
+            async for token in generate_answer_stream(ctx.llm_messages, images=images):
+                accumulated += token
+                yield ("token", json.dumps(token))
     else:
-        loop_outcome = await run_runtime_tool_loop(
+        # Genuinely runtime-gated turn: logs and docs can combine; on a
+        # provider without tool support this degrades to the documents-only
+        # answer with a visible note appended to the stream. Tool-call/result
+        # events and the synthesized final answer are consumed live as they
+        # happen, not batched after the whole loop finishes.
+        loop_outcome: RuntimeLoopOutcome | None = None
+        any_answer_chunk = False
+        async for event in run_runtime_tool_loop_stream(
             ctx.llm_messages, images=images, project_scope=scope.project_scope, db=db,
             prior_runtime_summary=get_latest_runtime_tool_summary(conversation.messages),
-        )
-        runtime_progress = loop_outcome.progress_events
-        if loop_outcome.final_answer is not None:
-            for event in loop_outcome.progress_events:
+        ):
+            if isinstance(event, RuntimeProgressEvent):
                 yield (event.event_type, json.dumps(event.payload))
-            token = loop_outcome.final_answer.replace("[NEED_SEARCH]", "").strip()
-            accumulated = token
+            elif isinstance(event, RuntimeAnswerChunk):
+                any_answer_chunk = True
+                accumulated += event.text
+                yield ("token", json.dumps(event.text))
+            elif isinstance(event, RuntimeLoopOutcome):
+                loop_outcome = event
+
+        runtime_progress = loop_outcome.progress_events if loop_outcome else []
+        if loop_outcome is not None and loop_outcome.final_answer is not None:
             loop_usage = loop_outcome.usage
-            yield ("token", json.dumps(token))
+            if not any_answer_chunk:
+                # No tool was ever called: single-block delivery, preserved
+                # exactly as before -- not a bug (see run_runtime_tool_loop_stream
+                # docstring, the "no tools ran" exception).
+                token = loop_outcome.final_answer.replace(_NEED_SEARCH_MARKER, "").strip()
+                accumulated = token
+                yield ("token", json.dumps(token))
         elif ctx.precomputed_answer is not None:
-            token = ctx.precomputed_answer.replace("[NEED_SEARCH]", "").strip()
+            token = ctx.precomputed_answer.replace(_NEED_SEARCH_MARKER, "").strip()
             note = f"\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
             accumulated = token + note
             yield ("token", json.dumps(token))
@@ -1417,7 +1694,7 @@ async def run_conversational_rag_stream(
             yield ("token", json.dumps(note))
 
     # Safety: strip any [NEED_SEARCH] marker
-    accumulated = accumulated.replace("[NEED_SEARCH]", "").strip()
+    accumulated = accumulated.replace(_NEED_SEARCH_MARKER, "").strip()
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 

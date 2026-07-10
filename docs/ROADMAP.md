@@ -26,7 +26,7 @@
 | Feb 3–9 | **Foundation** | Scaffolding, FastAPI backend, PostgreSQL + Qdrant, document ingestion (PDF/DOCX/PPTX/XLSX), Next.js frontend, 48 tests |
 | Feb 9–11 | **Retrieval Quality** | Semantic chunking (256-token, heading-aware), hybrid search (dense+sparse+RRF), cross-encoder reranking, query expansion, streaming SSE, conversational RAG, citations with [1] anchors, 186 tests |
 | Feb 23–24 | **Performance** | Eliminated LLM intent classifier (27s→3-5s latency), added Kimi K2.5 ($0.60/M, 256K context), Voyage AI embeddings (+14% vs OpenAI), Voyage reranker (replaced broken local cross-encoder), fixed TF-IDF sparse embedding bug (hash-based), singleton HTTP clients, 174 tests |
-| Feb 27–Mar 1 | **Memory + Deep Dive** | Hindsight memory integration (all 3 query paths), Deep Dive mode (Claude Code CLI subprocess + SSE streaming), streaming/timeout fixes, markdown typography |
+| Feb 27–Mar 1 | **Memory + Deep Dive** | Hindsight memory integration (all 3 query paths), early Deep Dive mode (then Claude Code CLI subprocess + SSE streaming; now superseded by the repo-owned engine path), streaming/timeout fixes, markdown typography |
 | Mar 4–6 | **Auth + Security** | JWT httpOnly cookies (access 60min + refresh 7d), bcrypt, RBAC (3 roles, 9 permissions, project assignments, audit logs), VPS security (UFW, fail2ban, port isolation, Caddy prep, daily backups) |
 | Mar 6–9 | **Deployment** | VPS production deployment, Docker stack (6 services), migration fixes, Hindsight model optimization (gemma3:12b→4b for memory) |
 
@@ -59,7 +59,7 @@
 | Hash-based sparse embeddings | Fixed TF-IDF vocabulary mismatch bug | Locked |
 | JWT httpOnly cookies | Stateless, XSS-safe, cross-service | Locked |
 | Plugin architecture for scanners | PlatformPlugin ABC + registry | Locked — ready for new platforms |
-| Claude Code CLI for doc generation | Leverages MCP tools, agent orchestration | Locked |
+| Custom harness for doc generation | Repo-owned 7-phase pipeline, provider/model adapters, staging, validation, and RAG push | Locked |
 
 ---
 
@@ -105,8 +105,8 @@ All interfaces now track and persist token usage to the `query_usage` table:
 | RAG queries (search/chat) | Kimi/Ollama response.usage extracted | SSE usage event + token badge | QueryUsage table (auto) |
 | RAG streaming (conversations) | Same as above | SSE usage event | QueryUsage table (auto) |
 | Embedding (Voyage/Ollama) | Token counts captured per call | Included in QueryUsage | embedding_tokens column |
-| Doc generation (KB dashboard) | Claude CLI cost/tokens extracted | RunHistory.tsx + GenerateRun | QueryUsage via POST /usage/record |
-| Deep dive (KB Q&A) | Claude CLI usage events intercepted | Shown in real-time SSE | QueryUsage via POST /usage/record |
+| Doc generation (KB dashboard) | Provider/runtime usage extracted by the generation coordinator/harness | RunHistory.tsx + GenerateRun | QueryUsage via POST /usage/record |
+| Deep dive (KB Q&A) | Repo-agent/provider usage captured during streaming | Shown in real-time SSE | QueryUsage via POST /usage/record |
 | **Aggregation** | Admin usage dashboard | Per-user, per-model, per-interface, daily charts | GET /admin/usage/* endpoints |
 
 ---
@@ -138,7 +138,7 @@ All interfaces now track and persist token usage to the `query_usage` table:
 ### What Needs to Be Built
 
 **A) Fix KB Doc Generation Token Tracking (shows `-` currently):**
-- `claude_service.py`: accumulate token counts from individual assistant events during streaming (each has usage object), not just from result event
+- `claude_service.py` / generation coordinator: accumulate token counts from provider events during streaming, not just from final result events
 - Fallback: if result event has `cost_usd`/`total_input_tokens`, use those; otherwise use accumulated counts
 - Verify `RunHistory.tsx` displays actual numbers after fix
 

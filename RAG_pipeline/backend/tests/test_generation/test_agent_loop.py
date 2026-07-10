@@ -1,11 +1,14 @@
 from unittest.mock import AsyncMock, patch
 
 from src.generation.agent_loop import (
+    RuntimeAnswerChunk,
+    RuntimeLoopOutcome,
     RuntimeProgressEvent,
     _flatten_incident_detail,
     _with_runtime_guide,
     build_runtime_tool_summary,
     run_runtime_tool_loop,
+    run_runtime_tool_loop_stream,
 )
 from src.generation.llm_client import RuntimeToolCallRequest, ToolAwareLLMResponse
 from src.generation.usage import UsageStats
@@ -19,6 +22,17 @@ MESSAGES = [
 TOOLS = [
     RuntimeToolDefinition(name="detect_failures", description="Detect failures", input_schema={"type": "object"}),
 ]
+
+
+def _stream_of(*chunks: str):
+    """Build a fake generate_answer_stream(messages, images=None) replacement that
+    yields the given chunks, for tests exercising the loop's synthesis tail."""
+
+    async def _stream(messages, images=None):
+        for chunk in chunks:
+            yield chunk
+
+    return _stream
 
 
 def _decision(tool_call=None, tool_calls=None, text=None, no_tool_support=False, usage=None):
@@ -48,6 +62,11 @@ class TestRuntimeToolLoopHappyPath:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)),
+            patch(
+                "src.generation.agent_loop.generate_answer_stream",
+                _stream_of("The nightly_sync job failed at 02:00 UTC."),
+            ),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             outcome = await run_runtime_tool_loop(MESSAGES)
 
@@ -74,6 +93,8 @@ class TestRuntimeToolLoopHappyPath:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
             patch("src.generation.agent_loop.execute_runtime_tool", exec_mock),
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("done")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             await run_runtime_tool_loop(MESSAGES, project_scope=["project-a"], db=sentinel_db)
 
@@ -93,6 +114,8 @@ class TestRuntimeToolLoopHappyPath:
             patch("src.runtime.client.settings") as mock_runtime_settings,
             patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("I could not check that.")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             mock_runtime_settings.runtime_provider_key = "mock"
             mock_runtime_settings.runtime_tool_timeout = 10.0
@@ -350,7 +373,10 @@ class TestRuntimeToolLoopBounds:
                 AsyncMock(return_value=always_tool_call),
             ) as mock_decide,
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)),
-            patch("src.generation.agent_loop.generate_answer", AsyncMock(return_value="Final synthesized answer")),
+            patch(
+                "src.generation.agent_loop.generate_answer_stream",
+                _stream_of("Final ", "synthesized ", "answer"),
+            ),
             patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             mock_settings.runtime_tool_loop_max_iterations = 2
@@ -384,6 +410,8 @@ class TestRuntimeToolLoopParallelCalls:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", side_effect=_fake_decide),
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)) as exec_mock,
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("done")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             outcome = await run_runtime_tool_loop(MESSAGES)
 
@@ -420,6 +448,8 @@ class TestRuntimeToolLoopParallelCalls:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", side_effect=_fake_decide),
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)) as exec_mock,
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("done")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             mock_settings.runtime_tool_loop_max_iterations = 4
             mock_settings.runtime_tool_max_parallel_calls = 2
@@ -477,6 +507,8 @@ class TestRuntimeToolLoopSanitization:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", side_effect=_fake_decide),
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)),
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("done")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             await run_runtime_tool_loop(MESSAGES)
 
@@ -486,3 +518,66 @@ class TestRuntimeToolLoopSanitization:
         tool_message = next(m for m in second_call_messages if m["role"] == "tool")
         assert isinstance(tool_message["content"], str)
         assert "timed out" in tool_message["content"]
+
+
+class TestRuntimeToolLoopStream:
+    """Direct coverage of run_runtime_tool_loop_stream's live-yield contract
+    (EP-004 slice 3): tool_call/tool_result events yielded as they happen,
+    then the final answer streamed as multiple RuntimeAnswerChunks, then
+    exactly one terminal RuntimeLoopOutcome."""
+
+    async def test_events_yielded_live_in_order_tool_call_result_then_chunks(self):
+        decisions = [
+            _decision(tool_call=RuntimeToolCallRequest(call_id="call_1", tool_name="detect_failures", arguments={})),
+            _decision(text="unused — synthesis tail regenerates the answer"),
+        ]
+        tool_result = RuntimeToolResult(
+            tool_name="detect_failures", success=True, data=[{"job_name": "nightly_sync"}], latency_ms=5
+        )
+
+        with (
+            patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
+            patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=tool_result)),
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("chunk1", "chunk2")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
+        ):
+            events = [event async for event in run_runtime_tool_loop_stream(MESSAGES)]
+
+        types = [type(e) for e in events]
+        assert types == [
+            RuntimeProgressEvent, RuntimeProgressEvent,
+            RuntimeAnswerChunk, RuntimeAnswerChunk,
+            RuntimeLoopOutcome,
+        ]
+        assert events[0].event_type == "runtime_tool_call"
+        assert events[1].event_type == "runtime_tool_result"
+        assert events[2].text == "chunk1"
+        assert events[3].text == "chunk2"
+        outcome = events[4]
+        assert outcome.final_answer == "chunk1chunk2"
+        assert outcome.used_runtime_data is True
+        assert len(outcome.progress_events) == 2
+
+    async def test_zero_tool_call_case_yields_single_outcome_no_chunks(self):
+        """First decision returns text with no tool calls: deliver as one
+        block, never invoking generate_answer_stream — documented as
+        expected, not a bug (AC3)."""
+        decision = _decision(text="Hi there.")
+
+        def _forbidden(messages, images=None):
+            raise AssertionError("generate_answer_stream must not be called when no tool ran")
+
+        with (
+            patch("src.generation.agent_loop.list_runtime_tools", return_value=TOOLS),
+            patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(return_value=decision)),
+            patch("src.generation.agent_loop.generate_answer_stream", _forbidden),
+        ):
+            events = [event async for event in run_runtime_tool_loop_stream(MESSAGES)]
+
+        assert len(events) == 1
+        outcome = events[0]
+        assert isinstance(outcome, RuntimeLoopOutcome)
+        assert outcome.final_answer == "Hi there."
+        assert outcome.used_runtime_data is False
+        assert outcome.progress_events == []

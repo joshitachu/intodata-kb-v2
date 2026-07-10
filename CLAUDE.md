@@ -93,7 +93,7 @@ intodata-kb/
 
 Two independent sub-systems sharing infrastructure:
 
-**1. intodoc (knowledge_base/)**: Source Code -> Scanner CLI (Talend/Workato/Generic) -> JSON Cache -> MCP Server -> Claude Code generates docs
+**1. intodoc (knowledge_base/)**: Source Code -> Scanner CLI (Talend/Workato/Generic) -> JSON Cache -> MCP Server -> custom harness generates docs
 **2. RAG Pipeline (RAG_pipeline/)**: Documents -> Ingest -> Chunk -> Embed (Ollama) -> Qdrant -> Query -> LLM -> Answer
 
 ## Services (docker-compose.yml)
@@ -129,7 +129,7 @@ cd RAG_pipeline/backend && uvicorn src.api.main:app --reload
 # RAG frontend (local dev)
 cd RAG_pipeline/frontend && npm run dev
 
-# intodoc MCP server (for Claude Code)
+# intodoc MCP server (stdio mode; optional/debug)
 cd knowledge_base/mcp-server && python -m mcp_server --mcp
 
 # intodoc REST API (for dashboard)
@@ -167,7 +167,7 @@ Never skip. Use specific file paths and verbatim error messages.
 3. **Never hardcode** group names -- use API results
 4. **Credential safety** -- never send raw credentials to LLMs
 5. **No intermediate files** -- only final docs in output/{project_id}/docs/
-6. **Doc generation uses staging** -- Claude Code writes to `docs_staging/`, server swaps to `docs/` on success (see `knowledge_base/CLAUDE.md` for details)
+6. **Doc generation uses staging** -- the custom harness writes to `docs_staging/`, server swaps to `docs/` on success (see `knowledge_base/CLAUDE.md` for details)
 7. **ALWAYS document changes** -- run `/session-end` after every change; update sub-project CLAUDE.md and `.agent/` docs if architecture or workflow changed; stale docs are worse than no docs
 8. **Python builds**: hatchling not setuptools; **Testing**: pytest (Python), Vitest (frontend)
 9. **No workarounds** -- fixes must address the root cause, not suppress symptoms. If a proper fix requires broader changes, make them. Never ship a narrow patch when the defect pattern exists elsewhere in the codebase.

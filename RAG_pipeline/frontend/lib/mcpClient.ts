@@ -207,6 +207,20 @@ export async function getGithubAppInstallUrl(projectId?: string): Promise<string
   return data.install_url as string;
 }
 
+export interface GithubAppInstallation {
+  installation_id: number;
+  account_login: string | null;
+}
+
+export async function listGithubAppInstallations(): Promise<GithubAppInstallation[]> {
+  const res = await fetch("/api/source/github/installations", { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(`/api/source/github/installations failed (${res.status}): ${await res.text()}`);
+  }
+  const data = await res.json();
+  return data.installations ?? [];
+}
+
 export interface GithubAppRepo {
   full_name: string | null;
   clone_url: string | null;
@@ -289,6 +303,12 @@ export interface LogEvent {
   raw: unknown;
 }
 
+export interface SourceLogHistory {
+  project_id: string;
+  filename: string | null;
+  lines: string[];
+}
+
 export function normalizeLogEvent(raw: unknown): LogEvent {
   if (raw && typeof raw === "object") {
     const value = raw as Record<string, unknown>;
@@ -335,4 +355,14 @@ export function subscribeToLogs(
     if (onError) onError(err);
   };
   return () => es.close();
+}
+
+export async function fetchSourceLogHistory(projectId: string): Promise<SourceLogHistory> {
+  const res = await fetch(`/api/source/log-history?project_id=${encodeURIComponent(projectId)}`, {
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw new Error(`/api/source/log-history failed (${res.status}): ${await res.text()}`);
+  }
+  return res.json();
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from pathlib import Path
@@ -121,23 +122,13 @@ _STRIP_SUFFIXES = (
 # c-prefixed Camel components (versus t-prefixed Talend DI components). This is
 # the single source of truth for that detection -- the mcp-server consumes the
 # computed is_esb_route / esb_component_types fields rather than re-deriving them.
-_ESB_COMPONENT_TYPES: frozenset[str] = frozenset({
-    # Route structure
-    "cRoute", "cRouteWhen", "cRouteOtherwise",
-    # REST / HTTP endpoints
-    "cREST", "cRESTClient",
-    # Messaging
-    "cJMS", "cJMSOutput", "cActiveMQ", "cKafkaOutput", "cKafkaInput",
-    "cMQConnectionFactory", "cMessagingEndpoint",
-    # Camel EIP patterns
-    "cMessageRouter", "cSplitter", "cAggregator", "cRecipientList",
-    "cWireTap", "cDirect",
-    # Transformation / enrichment
-    "cProcessor", "cSetBody", "cSetHeader", "cSetProperty", "cRemoveHeader",
-    "cConvertBodyTo", "cMarshal", "cUnmarshal",
-    # Infrastructure
-    "cBeanRegister", "cBeanValidate", "cConfig", "cLog", "cTalendJob",
-})
+#
+# Classification keys off the palette prefix convention itself (a lowercase "c"
+# followed by an uppercase letter), not a hardcoded list of known Camel component
+# names -- Talend's Camel palette is far larger than any list we could maintain,
+# and a fixed allowlist silently misclassifies routes built from components it
+# doesn't happen to mention.
+_ESB_COMPONENT_PATTERN = re.compile(r"^c[A-Z]")
 
 
 def classify_esb_components(component_types: Iterable[str]) -> list[str]:
@@ -146,7 +137,7 @@ def classify_esb_components(component_types: Iterable[str]) -> list[str]:
     An empty result means the job is a plain DI job; a non-empty result means the
     job is an ESB/Camel route.
     """
-    return sorted({t for t in component_types if t in _ESB_COMPONENT_TYPES})
+    return sorted({t for t in component_types if _ESB_COMPONENT_PATTERN.match(t)})
 
 
 def _extract_talend_external_system(component_type: str) -> str | None:
@@ -402,37 +393,46 @@ class TalendParser(BaseParser):
 
     # ── Job Parsing ──────────────────────────────────────────────────
 
-    def _parse_all_jobs(self, talend_root: Path) -> list[ParsedJob]:
-        """Parse all process/**/*.item job files with their .properties sidecars."""
-        process_dir = talend_root / "process"
-        if not process_dir.exists():
-            return []
+    # Talend Studio stores DI Job Designs under process/ and ESB/Camel Route
+    # Designs under a separate top-level routes/ directory -- both must be
+    # walked or Route jobs are silently invisible to the scanner (never parsed
+    # at all, not merely misclassified).
+    _JOB_SOURCE_DIRS = ("process", "routes")
 
+    def _parse_all_jobs(self, talend_root: Path) -> list[ParsedJob]:
+        """Parse all process/**/*.item and routes/**/*.item job files with their .properties sidecars."""
         jobs: list[ParsedJob] = []
-        for item_file in sorted(process_dir.rglob("*.item")):
-            try:
-                job = self._parse_job(item_file, talend_root)
-                if job:
-                    jobs.append(job)
-            except ET.ParseError as e:
-                console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
-                self._warn(kind="parse_error", file=item_file, message=str(e), phase="job")
-            except Exception as e:
-                console.print(f"  [yellow]Error parsing {item_file.name}: {e}[/yellow]")
-                self._warn(kind="unknown", file=item_file, message=str(e), phase="job")
+        for dir_name in self._JOB_SOURCE_DIRS:
+            base_dir = talend_root / dir_name
+            if not base_dir.exists():
+                continue
+            for item_file in sorted(base_dir.rglob("*.item")):
+                try:
+                    job = self._parse_job(item_file, base_dir)
+                    if job:
+                        jobs.append(job)
+                except ET.ParseError as e:
+                    console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
+                    self._warn(kind="parse_error", file=item_file, message=str(e), phase="job")
+                except Exception as e:
+                    console.print(f"  [yellow]Error parsing {item_file.name}: {e}[/yellow]")
+                    self._warn(kind="unknown", file=item_file, message=str(e), phase="job")
 
         return jobs
 
-    def _parse_job(self, item_file: Path, talend_root: Path) -> ParsedJob | None:
-        """Parse a single job .item file + its .properties sidecar."""
+    def _parse_job(self, item_file: Path, base_dir: Path) -> ParsedJob | None:
+        """Parse a single job .item file + its .properties sidecar.
+
+        `base_dir` is the process/ or routes/ directory the file was found under.
+        """
         text = self._read_filtered(item_file)
         root = ET.fromstring(text)
 
         # Read .properties sidecar for name/version/dates
         props = self._read_properties_sidecar(item_file)
 
-        # Derive group/subgroup from path (first two folder levels under process/)
-        rel = item_file.relative_to(talend_root / "process").as_posix()
+        # Derive group/subgroup from path (first two folder levels under base_dir)
+        rel = item_file.relative_to(base_dir).as_posix()
         parts = rel.split("/")
         group = parts[0] if len(parts) > 1 else ""
         subgroup = parts[1] if len(parts) > 2 else ""
@@ -784,22 +784,27 @@ class TalendParser(BaseParser):
         return text
 
 
+def _is_talend_root(candidate: Path) -> bool:
+    """A Talend project root has a process/ (Job Designs) and/or routes/ (Route Designs) dir."""
+    return (candidate / "process").is_dir() or (candidate / "routes").is_dir()
+
+
 def _find_talend_root(repo_root: Path) -> Path | None:
-    """Find the actual Talend project root (the dir containing process/, metadata/, context/)."""
+    """Find the actual Talend project root (the dir containing process/ and/or routes/)."""
     # Check if repo_root itself is a Talend project
-    if (repo_root / "process").is_dir():
+    if _is_talend_root(repo_root):
         return repo_root
 
     # Check one level deep
     for child in repo_root.iterdir():
-        if child.is_dir() and (child / "process").is_dir():
+        if child.is_dir() and _is_talend_root(child):
             return child
 
     # Check two levels deep
     for child in repo_root.iterdir():
         if child.is_dir():
             for grandchild in child.iterdir():
-                if grandchild.is_dir() and (grandchild / "process").is_dir():
+                if grandchild.is_dir() and _is_talend_root(grandchild):
                     return grandchild
 
     return None
@@ -827,7 +832,6 @@ def _unescape_java(text: str) -> str:
 
 def _strip_signature(text: str) -> str:
     """Remove XML Signature blocks that interfere with parsing."""
-    import re
     return re.sub(
         r'<Signature\s+xmlns="http://www\.w3\.org/2000/09/xmldsig#"[^>]*>.*?</Signature>',
         "",

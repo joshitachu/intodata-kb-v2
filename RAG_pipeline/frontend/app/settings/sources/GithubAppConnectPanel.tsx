@@ -1,15 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Github, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CheckCircle2, ExternalLink, Github, Loader2, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import {
   addGithubSource,
   getGithubAppInstallUrl,
+  listGithubAppInstallations,
   listGithubAppRepos,
+  type GithubAppInstallation,
   type GithubAppRepo,
+  type SourceProject,
 } from "@/lib/mcpClient";
 
 interface PlatformOption {
@@ -20,7 +24,8 @@ interface PlatformOption {
 interface Props {
   platforms: PlatformOption[];
   defaultPlatform: string;
-  onConnected: () => void;
+  existingProjects: SourceProject[];
+  onConnected: (project: SourceProject, platform: string) => void | Promise<void>;
 }
 
 function slugify(input: string): string {
@@ -32,6 +37,23 @@ function slugify(input: string): string {
     .slice(0, 100);
 }
 
+function canonicalRepoUrl(url: string | null | undefined): string {
+  return (url ?? "")
+    .trim()
+    .replace(/\/+$/g, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase();
+}
+
+function repoNameFromUrl(url: string): string {
+  const clean = url.replace(/\/+$/g, "").replace(/\.git$/i, "");
+  return clean.split("/").pop() || clean;
+}
+
+function installationSettingsUrl(installationId: number): string {
+  return `https://github.com/settings/installations/${installationId}`;
+}
+
 /**
  * GitHub App connect flow (preferred over PAT):
  *  1. "Connect with GitHub App" -> redirect the browser to the install URL.
@@ -39,7 +61,12 @@ function slugify(input: string): string {
  *  3. This panel detects it, lists the installation's repos, and lets the user
  *     pick one + a project name, then registers it (no token stored).
  */
-export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected }: Props) {
+export function GithubAppConnectPanel({
+  platforms,
+  defaultPlatform,
+  existingProjects,
+  onConnected,
+}: Props) {
   const [installationId, setInstallationId] = useState<number | null>(null);
   const [repos, setRepos] = useState<GithubAppRepo[]>([]);
   const [accountLogin, setAccountLogin] = useState<string | null>(null);
@@ -47,9 +74,17 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
   const [projectName, setProjectName] = useState("");
   const [platform, setPlatform] = useState(defaultPlatform);
   const [loadingRepos, setLoadingRepos] = useState(false);
+  const [installations, setInstallations] = useState<GithubAppInstallation[]>([]);
+  const [loadingInstallations, setLoadingInstallations] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const connectedRepoKeys = useMemo(
+    () => new Set(existingProjects.map((project) => canonicalRepoUrl(project.repo_url))),
+    [existingProjects],
+  );
+  const selectedRepoConnected = connectedRepoKeys.has(canonicalRepoUrl(selectedRepo));
+  const primaryInstallation = installations[0];
 
   // Detect the post-install redirect (?installation_id=...&connected=1).
   useEffect(() => {
@@ -58,10 +93,13 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
     if (raw && /^\d+$/.test(raw)) {
       setInstallationId(Number(raw));
     }
+    const connectError = params.get("connect_error");
+    if (connectError) {
+      setError(`GitHub App callback failed (${connectError}). Start the connection again.`);
+    }
   }, []);
 
-  // Load the installation's repos once we have an id.
-  useEffect(() => {
+  const loadRepos = useCallback(() => {
     if (installationId == null) return;
     let cancelled = false;
     setLoadingRepos(true);
@@ -83,12 +121,51 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
     };
   }, [installationId]);
 
+  // Load the installation's repos once we have an id.
+  useEffect(() => loadRepos(), [loadRepos]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingInstallations(true);
+    listGithubAppInstallations()
+      .then((items) => {
+        if (!cancelled) setInstallations(items);
+      })
+      .catch(() => {
+        if (!cancelled) setInstallations([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingInstallations(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const clearInstallParam = useCallback(() => {
     const url = new URL(window.location.href);
     url.searchParams.delete("installation_id");
     url.searchParams.delete("connected");
+    url.searchParams.delete("connect_error");
     window.history.replaceState({}, "", url.toString());
   }, []);
+
+  function selectRepo(repoUrl: string) {
+    setSelectedRepo(repoUrl);
+    if (!projectName.trim()) {
+      setProjectName(slugify(repoNameFromUrl(repoUrl)));
+    }
+    setError(null);
+  }
+
+  function useInstallation(installation: GithubAppInstallation) {
+    setInstallationId(installation.installation_id);
+    setAccountLogin(installation.account_login);
+    setRepos([]);
+    setSelectedRepo("");
+    setProjectName("");
+    setError(null);
+  }
 
   async function startInstall() {
     setStarting(true);
@@ -107,6 +184,10 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
       setError("Pick a repository to connect.");
       return;
     }
+    if (selectedRepoConnected) {
+      setError("This repository is already connected to Nexus.");
+      return;
+    }
     const name = projectName.trim() || selectedRepo.split("/").pop() || selectedRepo;
     const projectId = slugify(name);
     if (!projectId) {
@@ -116,7 +197,7 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
     setConnecting(true);
     setError(null);
     try {
-      await addGithubSource({
+      const project = await addGithubSource({
         repoUrl: selectedRepo,
         projectId,
         platform,
@@ -128,7 +209,7 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
       setRepos([]);
       setSelectedRepo("");
       setProjectName("");
-      onConnected();
+      await onConnected(project, platform);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -161,19 +242,55 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
             </p>
           ) : (
             <>
+              <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium">Repository access</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Showing repositories granted to this GitHub App installation.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => window.open(installationSettingsUrl(installationId), "_blank", "noopener,noreferrer")}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" /> Manage access
+                  </Button>
+                  <Button variant="ghost" size="sm" isLoading={loadingRepos} onClick={loadRepos}>
+                    <RotateCw className="h-3.5 w-3.5" /> Refresh
+                  </Button>
+                </div>
+              </div>
               <select
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={selectedRepo}
-                onChange={(e) => setSelectedRepo(e.target.value)}
+                onChange={(e) => selectRepo(e.target.value)}
               >
                 <option value="">Select a repository&hellip;</option>
-                {repos.map((r) => (
-                  <option key={r.full_name ?? r.clone_url ?? ""} value={r.clone_url ?? ""}>
-                    {r.full_name ?? r.clone_url}
-                    {r.private ? " (private)" : ""}
-                  </option>
-                ))}
+                {repos.map((r) => {
+                  const repoUrl = r.clone_url ?? "";
+                  const connected = connectedRepoKeys.has(canonicalRepoUrl(repoUrl));
+                  return (
+                    <option
+                      key={r.full_name ?? repoUrl}
+                      value={repoUrl}
+                      disabled={!repoUrl || connected}
+                    >
+                      {r.full_name ?? repoUrl}
+                      {r.private ? " (private)" : ""}
+                      {connected ? " - already connected" : ""}
+                    </option>
+                  );
+                })}
               </select>
+              {repos.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  This installation is connected, but GitHub did not return any repositories.
+                  Add repositories to the installation in GitHub, then refresh.
+                </p>
+              )}
               <div className="grid gap-2 sm:grid-cols-2">
                 <Input
                   type="text"
@@ -197,17 +314,24 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
           )}
           {error && <p className="text-xs text-destructive">{error}</p>}
           <div className="flex justify-between">
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  clearInstallParam();
+                  setInstallationId(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
             <Button
-              variant="ghost"
               size="sm"
-              onClick={() => {
-                clearInstallParam();
-                setInstallationId(null);
-              }}
+              isLoading={connecting}
+              disabled={!selectedRepo || selectedRepoConnected}
+              onClick={finishConnect}
             >
-              Cancel
-            </Button>
-            <Button size="sm" isLoading={connecting} disabled={!selectedRepo} onClick={finishConnect}>
               <Github className="h-3.5 w-3.5" /> Connect &amp; scan
             </Button>
           </div>
@@ -219,18 +343,106 @@ export function GithubAppConnectPanel({ platforms, defaultPlatform, onConnected 
   // Entry mode (pre-install).
   return (
     <Card>
-      <CardBody className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-base font-semibold">Connect with the GitHub App</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            Install IntoData&rsquo;s GitHub App on your org and pick repositories. Access is
-            managed in GitHub and no token is stored here.
-          </p>
-          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      <CardBody className="space-y-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Github className="h-5 w-5" aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-semibold">GitHub App</h2>
+                {installations.length > 0 ? (
+                  <Badge variant="success">
+                    <CheckCircle2 className="h-3 w-3" /> Connected
+                  </Badge>
+                ) : (
+                  <Badge variant="muted">Not connected</Badge>
+                )}
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {installations.length > 0
+                  ? "Nexus can use this installation to list granted repositories and clone them without storing a token."
+                  : "Install IntoData's GitHub App on your org, grant repositories, then return here to choose one."}
+              </p>
+            </div>
+          </div>
+
+          {installations.length > 0 ? (
+            <Button
+              size="md"
+              onClick={() => primaryInstallation && useInstallation(primaryInstallation)}
+              disabled={!primaryInstallation}
+            >
+              <Github className="h-4 w-4" /> Choose repository
+            </Button>
+          ) : (
+            <Button size="md" isLoading={starting || loadingInstallations} onClick={startInstall}>
+              <Github className="h-4 w-4" /> Connect with GitHub App
+            </Button>
+          )}
         </div>
-        <Button size="sm" isLoading={starting} onClick={startInstall}>
-          <Github className="h-3.5 w-3.5" /> Connect with GitHub App
-        </Button>
+
+        {installations.length > 0 && (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50/70 p-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-emerald-900">
+                  Connected account: {primaryInstallation?.account_login ?? "GitHub installation"}
+                </p>
+                <p className="mt-0.5 text-xs text-emerald-800">
+                  Use this connection to pick a repository, clone it, and start scanning.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {installations.slice(1).map((installation) => (
+                  <Button
+                    key={installation.installation_id}
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => useInstallation(installation)}
+                  >
+                    Use {installation.account_login ?? `installation ${installation.installation_id}`}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  isLoading={starting || loadingInstallations}
+                  onClick={startInstall}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> Configure in GitHub
+                </Button>
+                {primaryInstallation && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      window.open(
+                        installationSettingsUrl(primaryInstallation.installation_id),
+                        "_blank",
+                        "noopener,noreferrer",
+                      )
+                    }
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" /> Manage repository access
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {installations.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            After GitHub grants access, this card will show a connected account and a repository picker.
+          </p>
+        )}
+
+        {error && <p className="text-xs text-destructive">{error}</p>}
       </CardBody>
     </Card>
   );

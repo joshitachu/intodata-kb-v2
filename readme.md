@@ -88,6 +88,6 @@ curl -X POST http://localhost:8000/api/v1/ingest/md \
 | `pip install -e .` | Missing MCP package | Install project dependencies for the active environment |
 | `alembic upgrade head` | Database connection refused | Make sure PostgreSQL is running |
 | `/mcp/scan` | `intodoc` command not found | Install `knowledge_base/intodoc` into the active environment |
-| `/mcp/generate` | Claude CLI not in `PATH` | Install/configure the CLI used by the generation provider |
+| `/mcp/generate` | Provider/API key/model configuration issue | Check the selected generation provider, model catalogue, and required API key env vars |
 | Dashboard | API errors | Check MCP server logs |
 | `/ingest/md` | Embedding service unavailable | Check the configured embedding provider |

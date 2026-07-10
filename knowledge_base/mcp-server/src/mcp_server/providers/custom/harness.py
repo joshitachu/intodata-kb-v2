@@ -671,6 +671,9 @@ class CustomHarnessProvider(DocGenerationProvider):
             if provider_prefix == "deepseek":
                 api_key = config.doc_generation_deepseek_api_key or config.doc_generation_api_key
                 base_url = config.doc_generation_deepseek_base_url or config.doc_generation_base_url
+            elif provider_prefix == "route33":
+                api_key = config.doc_generation_route33_api_key or config.doc_generation_api_key
+                base_url = config.doc_generation_route33_base_url
             elif provider_prefix not in {"openai", "anthropic", "google"}:
                 api_key = config.doc_generation_api_key
                 base_url = config.doc_generation_base_url
@@ -4589,6 +4592,11 @@ def build_custom_provider(
             return {
                 "api_key": config.doc_generation_deepseek_api_key or config.doc_generation_api_key,
                 "base_url": config.doc_generation_deepseek_base_url or config.doc_generation_base_url,
+            }
+        if provider == "route33":
+            return {
+                "api_key": config.doc_generation_route33_api_key or config.doc_generation_api_key,
+                "base_url": config.doc_generation_route33_base_url,
             }
         if provider in {"openai", "anthropic", "google"}:
             return {"api_key": None, "base_url": None}

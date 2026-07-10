@@ -7,6 +7,7 @@ and that streaming emits the expected event sequence.
 """
 
 import datetime
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.db.models import Conversation
@@ -14,6 +15,18 @@ from src.generation.conversational_rag import RAGContext, run_conversational_rag
 from src.generation.llm_client import RuntimeToolCallRequest, ToolAwareLLMResponse
 from src.generation.usage import UsageStats
 from src.runtime.models import RuntimeToolDefinition, RuntimeToolResult
+
+
+def _stream_of(*chunks: str):
+    """Fake generate_answer_stream(messages, images=None) replacement — the
+    synthesis tail of run_runtime_tool_loop_stream now calls this whenever at
+    least one runtime tool ran (EP-004 slice 3)."""
+
+    async def _stream(messages, images=None):
+        for chunk in chunks:
+            yield chunk
+
+    return _stream
 
 
 def _no_precompute_context() -> RAGContext:
@@ -140,6 +153,16 @@ class TestHighLevelToolLoop:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=tools),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(side_effect=tool_results)),
+            patch(
+                "src.generation.agent_loop.generate_answer_stream",
+                _stream_of(
+                    "Finding: esb_order_sync_route failed with ORA-12170. "
+                    "Evidence: tOracleConnection_1 raised SQLRecoverableException. "
+                    "Likely Cause: Source database TCP connection timeout. "
+                    "Next Checks: Check Oracle listener."
+                ),
+            ),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             mock_ctx.return_value = _no_precompute_context()
             mock_client_settings.runtime_provider_key = "stored"
@@ -202,6 +225,8 @@ class TestHighLevelToolLoop:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=tools),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
             patch("src.generation.agent_loop.execute_runtime_tool", exec_mock),
+            patch("src.generation.agent_loop.generate_answer_stream", _stream_of("Root cause: Oracle timeout.")),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             mock_ctx.return_value = _no_precompute_context()
             mock_client_settings.runtime_provider_key = "stored"
@@ -263,9 +288,18 @@ class TestHighLevelToolLoop:
             patch("src.generation.agent_loop.list_runtime_tools", return_value=tools),
             patch("src.generation.agent_loop.generate_answer_with_runtime_tools", AsyncMock(side_effect=decisions)),
             patch("src.generation.agent_loop.execute_runtime_tool", AsyncMock(return_value=analyze_result)),
+            patch(
+                "src.generation.agent_loop.generate_answer_stream",
+                _stream_of("The job ", "failed due to ", "Oracle timeout."),
+            ),
+            patch("src.generation.agent_loop.get_last_usage", return_value=None),
         ):
             ctx = _no_precompute_context()
             ctx.agent_steps = []
+            # allow_runtime_tools must be explicit now: the streaming handler
+            # gates tool-loop entry on this field, not on precomputed_answer
+            # being None (chat response-time fix, .plans/04_active_plan.md).
+            ctx.allow_runtime_tools = True
             mock_ctx.return_value = ctx
             mock_client_settings.runtime_provider_key = "stored"
             mock_client_settings.runtime_tool_timeout = 10.0
@@ -287,8 +321,14 @@ class TestHighLevelToolLoop:
         event_types = [e[0] for e in events]
         assert "runtime_tool_call" in event_types
         assert "runtime_tool_result" in event_types
-        # Tool events must precede the token event
+        # Tool events must precede the token event, and the final answer must
+        # arrive as multiple streamed token events, not one batched block
+        # (EP-004 slice 3 acceptance criteria).
         call_idx = next(i for i, t in enumerate(event_types) if t == "runtime_tool_call")
+        result_idx = next(i for i, t in enumerate(event_types) if t == "runtime_tool_result")
         token_indices = [i for i, t in enumerate(event_types) if t == "token"]
-        if token_indices:
-            assert call_idx < min(token_indices)
+        assert token_indices, "expected streamed token events after a tool ran"
+        assert call_idx < result_idx < min(token_indices)
+        assert len(token_indices) > 1
+        token_text = "".join(json.loads(events[i][1]) for i in token_indices)
+        assert token_text == "The job failed due to Oracle timeout."
