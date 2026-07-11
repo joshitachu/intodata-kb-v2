@@ -5,6 +5,10 @@ Last updated: 2026-07-11
 This file tracks how far the current implementation is compared with
 `NEXUS_HARNESS_VISION.md` and `NEXUS_HARNESS_DESIGN_V0.md`.
 
+The end-state goals BEYOND the 16-slice plan (live connectors, entity facts
+memory, proactive behavior, multi-domain proof, production hardening) live in
+`NEXUS_HARNESS_NORTH_STAR.md` - check it at every slice completion.
+
 It is intentionally architecture-facing. It is not a raw git changelog.
 
 ## Target Architecture In One Sentence
