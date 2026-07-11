@@ -3,6 +3,23 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-07-10
+
+### [Feature]: MCP documentation provider wired into Nexus harness chat loop
+
+- **Files changed**:
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py`
+  - `knowledge_base/mcp-server/src/mcp_server/schemas.py`
+  - `knowledge_base/mcp-server/src/mcp_server/services/evidence_doc_update.py`
+  - `knowledge_base/mcp-server/tests/test_api/test_rbac.py`
+  - `knowledge_base/mcp-server/tests/test_api/test_evidence_doc_update.py`
+  - root `NEXUS_HARNESS_PROGRESS_LOG.md`
+- **Problem**: MCP/Intodoc existed as an isolated documentation subsystem, while Nexus chat needed to call documentation generation and documentation metadata through a harness capability path.
+- **Root cause**: The prior architecture treated scanner/docs/RAG/chat as adjacent subsystems. The new harness architecture needs MCP docs generation to behave as one provider/capability behind Nexus, not as the whole product model.
+- **Change**: MCP is now used by the RAG-side harness docs provider for generation, project docs metadata, and evidence-backed doc updates. Live smoke proved chat-triggered generation reaches MCP from Docker and that MCP generation/doc endpoints are inspectable after the workflow starts. Added root `NEXUS_HARNESS_PROGRESS_LOG.md` with a comparison against the full Nexus harness architecture.
+- **Why this approach**: Keeps Intodoc/MCP as a DocumentationProvider implementation. Future connectors should follow capability/provider contracts instead of being hardcoded into Intodoc.
+- **Verification**: Current session live smoke: MCP health `200 OK`; `generate documentation for IntodataStreams` created harness workflow run `3`; MCP `/mcp/generate-runs/IntodataStreams` showed new run `37`; MCP `/mcp/projects/IntodataStreams/docs` returned 11 docs. Prior harness validation also covered MCP doc-update/RBAC tests (`71 passed` in the previous builder pass).
+
 ## Session: 2026-07-08
 
 ### [Fix]: Talend ESB/Camel classification coverage gap -- allowlist replaced with prefix regex

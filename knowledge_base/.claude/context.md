@@ -1,5 +1,22 @@
 # KB Sub-project Context
 
+## Last Completed (2026-07-10) -- Nexus harness wedge: MCP docs provider now callable from chat (uncommitted)
+
+The first capability-aware Nexus harness wedge is live through chat. On the KB/MCP
+side, MCP remains the documentation-generation provider and published-doc source;
+RAG backend now reaches it from Docker via `MCP_DOCS_BASE_URL=http://mcp-server:8002/mcp`.
+The chat path can start MCP generation for a scoped project, inspect MCP generation
+runs, and link to published project docs. Live smoke after rebuild: chat request
+`generate documentation for IntodataStreams` created harness workflow run `3`,
+MCP `/mcp/generate-runs/IntodataStreams` showed new run `37`, and
+`/mcp/projects/IntodataStreams/docs` returned 11 published docs. The broader
+architecture comparison is recorded in root `NEXUS_HARNESS_PROGRESS_LOG.md`.
+
+Important boundary: this does not make MCP itself the Nexus core. MCP/Intodoc is
+one DocumentationProvider implementation. Future Slack/Confluence/Elastic/etc.
+connectors should follow provider/capability contracts rather than being hardcoded
+into Intodoc.
+
 ## Last Completed (2026-07-08) -- Talend ESB/Camel: two scanner bugs found and fixed (uncommitted)
 
 **Bug 1 (classification coverage)**: the 2026-07-06 scanner-computed classification

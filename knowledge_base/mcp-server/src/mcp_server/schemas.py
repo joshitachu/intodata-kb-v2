@@ -302,6 +302,12 @@ class PushToRagRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
 
 
+class EvidenceDocUpdateRequest(BaseModel):
+    evidence_text: StrippedStr = Field(..., min_length=1, max_length=12000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=25)
+    workflow_run_id: str | None = Field(None, max_length=100)
+
+
 class ResetStatusRequest(BaseModel):
     project_id: StrippedStr = Field(..., min_length=1, max_length=100, pattern=PROJECT_ID_PATTERN)
 
@@ -459,6 +465,20 @@ class DocListResponse(BaseModel):
     project_id: str
     docs: list[DocFileInfo]
     total: int
+
+
+class EvidenceDocUpdateResponse(BaseModel):
+    project_id: str
+    filename: str
+    status: str
+    message: str
+    workflow_run_id: str | None = None
+    evidence_refs: list[str]
+    before_sha: str
+    after_sha: str
+    receipt_path: str
+    docs_path: str
+    rag_result: dict
 
 
 class PdfGenerateResponse(BaseModel):

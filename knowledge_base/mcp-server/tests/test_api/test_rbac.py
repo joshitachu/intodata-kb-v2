@@ -1,4 +1,4 @@
-"""RBAC enforcement tests for all 33 protected routes.
+"""RBAC enforcement tests for all protected project routes.
 
 Two invariants are verified for every protected endpoint:
   1. Non-superadmin user with no project assignment → 403.
@@ -27,6 +27,12 @@ _ROUTES = [
     ("GET",    "/mcp/logs/p1/p1_test.log",                    None,  "log_content"),
     ("GET",    "/mcp/projects/p1/docs",                       None,  "docs_list"),
     ("GET",    "/mcp/projects/p1/docs/test.md",               None,  "doc_download"),
+    (
+        "POST",
+        "/mcp/projects/p1/docs/test.md/evidence-update",
+        {"evidence_text": "Evidence from chat", "evidence_refs": ["chat_prompt"]},
+        "doc_evidence_update",
+    ),
     ("GET",    "/mcp/projects/p1/graph",                      None,  "graph"),
     ("GET",    "/mcp/projects/p1/jobs/myjob/detail",          None,  "job_detail"),
     ("GET",    "/mcp/projects/p1/github-webhook/status",      None,  "webhook_status"),

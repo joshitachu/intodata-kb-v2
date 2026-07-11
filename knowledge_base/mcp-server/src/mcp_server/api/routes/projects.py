@@ -40,6 +40,8 @@ from mcp_server.schemas import (
     DeleteProjectResponse,
     DocFileInfo,
     DocListResponse,
+    EvidenceDocUpdateRequest,
+    EvidenceDocUpdateResponse,
     DocReview,
     FullRebuildRequest,
     GenerateRequest,
@@ -78,6 +80,7 @@ from mcp_server.schemas import (
 from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.doc_version_history import DocVersionHistoryRepository
 from mcp_server.services.drift_summary import DriftSummary, compute_drift_summary
+from mcp_server.services.evidence_doc_update import EvidenceDocUpdateError, EvidenceDocUpdateService
 from mcp_server.services.reingestion_gate import GateOutcome
 from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.deep_dive_service import DeepDiveService
@@ -2178,6 +2181,38 @@ async def get_doc_content(
 
     content = file_path.read_text(encoding="utf-8", errors="replace")
     return {"filename": filename, "content": content}
+
+
+@router.post(
+    "/projects/{project_id}/docs/{filename}/evidence-update",
+    response_model=EvidenceDocUpdateResponse,
+)
+async def update_doc_from_evidence(
+    project_id: str,
+    filename: str,
+    req: EvidenceDocUpdateRequest,
+    request: Request,
+):
+    """Append explicit harness evidence to one published markdown doc and re-sync RAG."""
+    await require_project_access(request, project_id)
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    svc = EvidenceDocUpdateService(log_manager=getattr(request.app.state, "log_manager", None))
+    try:
+        result = await svc.update_from_evidence(
+            project_id=project_id,
+            filename=filename,
+            evidence_text=req.evidence_text,
+            evidence_refs=req.evidence_refs,
+            workflow_run_id=req.workflow_run_id,
+        )
+    except EvidenceDocUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.safe_message) from exc
+    return EvidenceDocUpdateResponse(**result.to_dict())
 
 
 @router.post("/reset-status", response_model=StatusResponse)
