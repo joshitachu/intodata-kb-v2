@@ -3,6 +3,22 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-07-11
+
+### [Feature]: Evidence-based doc update endpoint inspected and committed
+
+- **Files changed** (commit `e4747c3`; built in the prior session, this session validated/inspected/committed):
+  - `knowledge_base/mcp-server/src/mcp_server/api/routes/projects.py` (POST `/mcp/projects/{project_id}/docs/{filename}/evidence-update`)
+  - `knowledge_base/mcp-server/src/mcp_server/schemas.py` (`EvidenceDocUpdateRequest`/`EvidenceDocUpdateResponse`)
+  - `knowledge_base/mcp-server/src/mcp_server/services/evidence_doc_update.py` (new `EvidenceDocUpdateService`)
+  - `knowledge_base/mcp-server/tests/test_api/test_evidence_doc_update.py` (new)
+  - `knowledge_base/mcp-server/tests/test_api/test_rbac.py` (new endpoint added to the RBAC route matrix)
+- **Problem**: The MCP half of the Nexus harness `mcp.docs.update_from_evidence` capability was uncommitted while the RAG-side harness batch went through inspection.
+- **Root cause**: Both halves rode the same spike branch; the LFE pipeline had stopped at builder-done with Inspector pending.
+- **Change**: Committed as its own commit, separate from the RAG harness batch (`498bad1`) and the talend_tmc fix (`027f18b`), so it is independently revertable. Endpoint is append-only, records before/after SHAs + a receipt, re-syncs the changed doc to RAG, and enforces project access (RBAC matrix test covers it).
+- **Why this approach**: MCP stays a thin DocumentationProvider behind the Nexus executor boundary; the harness (RAG side) owns workflow receipts and evidence refs.
+- **Verification**: Inspector pass recorded in root `.plans/inspection_report.md` (PASS_WITH_WARNINGS). Security sweep flagged one defense-in-depth follow-up (WARN-4): MCP-bound `project_id`/`filename` path segments are currently validated only by the RAG-side caller regex — endpoint/provider-boundary validation must land before model-supplied planner arguments exist. RBAC matrix test includes the new route; RAG-side full suite re-run green (1006 passed).
+
 ## Session: 2026-07-10
 
 ### [Feature]: MCP documentation provider wired into Nexus harness chat loop

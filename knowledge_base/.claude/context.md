@@ -1,6 +1,10 @@
 # KB Sub-project Context
 
-## Last Completed (2026-07-10) -- Nexus harness wedge: MCP docs provider now callable from chat (uncommitted)
+## Last Completed (2026-07-11) -- Evidence-update endpoint committed after Inspector PASS
+
+The MCP evidence-based doc update endpoint (`POST /mcp/projects/{project_id}/docs/{filename}/evidence-update`, `EvidenceDocUpdateService`, schemas, RBAC matrix coverage) is committed as `e4747c3` on `spike/nexus-agentic-harness`, split from the RAG-side harness batch (`498bad1`). Inspector verdict PASS_WITH_WARNINGS (root `.plans/inspection_report.md`). KB-relevant follow-up (WARN-4): the endpoint trusts `project_id`/`filename` path segments that today are constrained only by the RAG-side caller's filename regex -- add validation at this endpoint/provider boundary before the Nexus model-backed planner starts supplying arguments.
+
+## Previously Completed (2026-07-10) -- Nexus harness wedge: MCP docs provider now callable from chat (committed 2026-07-11)
 
 The first capability-aware Nexus harness wedge is live through chat. On the KB/MCP
 side, MCP remains the documentation-generation provider and published-doc source;

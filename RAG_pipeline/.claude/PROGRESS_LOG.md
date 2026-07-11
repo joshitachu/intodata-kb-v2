@@ -1,5 +1,24 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-07-11 (Nexus harness LangGraph batch: independent validation, inspection, commits)
+
+### [Feature]: LangGraph docs workflow inspected (PASS_WITH_WARNINGS) and committed
+
+- **Files changed** (commit `498bad1`, 47 files; content built in the prior builder session, this session validated/inspected/committed):
+  - `RAG_pipeline/backend/src/harness/{manifest,executor,runtime,models,repository,service,registry,evidence,chat,__init__}.py`, `src/harness/providers/mcp_docs.py`
+  - `RAG_pipeline/backend/src/api/routes/{harness,conversations}.py`, `src/api/main.py`, `src/config.py`, `src/db/models/{__init__,harness}.py`
+  - `RAG_pipeline/backend/alembic/versions/{049_harness_workflow_runs,050_harness_runtime_metadata}.py`
+  - `RAG_pipeline/backend/pyproject.toml` (+`langgraph>=1.2.9`), `uv.lock`
+  - `RAG_pipeline/backend/tests/test_harness/*` (7 files), `tests/test_api/{test_harness,test_conversations}.py`
+  - `RAG_pipeline/frontend/components/{HarnessActivityStatus,MessageBubble,MessageList}.tsx`, `hooks/useStreamMessage.ts`, `types/index.ts` + 3 test files
+  - `docker-compose.yml` (`MCP_DOCS_BASE_URL`), `deploy/SMOKE-TEST.md`, root `NEXUS_HARNESS_{DESIGN_V0,PROGRESS_LOG}.md`
+  - Also committed: `027f18b` talend_tmc per-source credential sync (`src/runtime/providers/talend_tmc.py` + test)
+- **Problem**: The LangGraph docs-workflow batch (Slices 4 + needed 3 + first 5) was built but sat uncommitted with Inspector PENDING on a critical area; a live chat transcript also showed the product is not yet conversationally agentic (regex misses, ignored scope answers).
+- **Root cause**: Pipeline stopped at the builder step; the transcript failures trace to known scope-outs (stateless regex planner, no resume path), not to defects in the batch.
+- **Change**: Independent re-verification of every builder claim; full Inspector pass with devil's-advocate critique and OWASP security sweep (`.plans/inspection_report.md`, `.plans/critique.md`, `.plans/checks/security_findings.md`); previous batch's report archived; three split commits (`498bad1` harness, `e4747c3` MCP evidence-update, `027f18b` talend_tmc).
+- **Why this approach**: Harness is a declared critical area — no commit without `/inspect`. Split commits keep the unrelated talend/MCP work revertable independently of the harness.
+- **Verification**: Re-ran (not trusted): full backend `1006 passed`; harness-focused `62 passed`; frontend `19 passed`; live DB receipts confirmed (runs 5 triggered / 6-7 interrupted with resume tokens, MCP generation run 38); 8 containers healthy. Inspector verdict PASS_WITH_WARNINGS — WARN-1 resume metadata unredeemable (per-request `InMemorySaver` at `chat.py:734` + no resume endpoint), WARN-2 sentinel `__pending_project_scope__` hides interrupted runs from their owners, WARN-3 timeout-after-MCP-dispatch falsifies receipts, WARN-4 provider path-segment validation missing (pre-model-planner requirement), WARN-5 two orchestration paths. All five are mandatory Slice 6 scope.
+
 ## Session: 2026-07-10 (Nexus harness capability-aware planner + architecture progress log)
 
 ### [Feature]: First capability-aware chat harness loop implemented and live-smoked
