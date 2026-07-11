@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
 from src.api.errors import api_error
@@ -19,7 +19,12 @@ from src.generation.conversational_rag import (
     run_conversational_rag,
     run_conversational_rag_stream,
 )
-from src.rbac.permissions import get_user_project_ids
+from src.harness.chat import (
+    detect_harness_chat_intent,
+    run_harness_chat_turn,
+    run_harness_chat_turn_stream,
+)
+from src.rbac.permissions import get_user_permissions, get_user_project_ids
 from src.schemas import (
     ConversationCreateRequest,
     ConversationDetailResponse,
@@ -236,6 +241,7 @@ async def delete_conversation(
 async def send_message(
     conversation_id: int,
     request: ConversationMessageRequest,
+    http_request: Request,
     db: DBSession,
     user: CurrentUser,
     qdrant: QdrantClient,
@@ -267,6 +273,19 @@ async def send_message(
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
 
+    if detect_harness_chat_intent(request.query):
+        return await run_harness_chat_turn(
+            conversation=conversation,
+            query=request.query,
+            db=db,
+            user_id=user.id,
+            project_ids=project_ids,
+            user_groups=user_groups,
+            user_permissions=get_user_permissions(user),
+            qdrant=qdrant,
+            access_token=http_request.cookies.get("access_token"),
+        )
+
     # Run conversational RAG pipeline
     response = await run_conversational_rag(
         conversation=conversation,
@@ -288,6 +307,7 @@ async def send_message(
 async def send_message_stream(
     conversation_id: int,
     request: ConversationMessageRequest,
+    http_request: Request,
     db: DBSession,
     user: CurrentUser,
     qdrant: QdrantClient,
@@ -331,21 +351,37 @@ async def send_message_stream(
         conversation.title = request.query[:80].strip()
         await db.flush()
 
+    harness_intent = detect_harness_chat_intent(request.query)
+
     async def event_generator():
         try:
-            async for event_type, data in run_conversational_rag_stream(
-                conversation=conversation,
-                query=request.query,
-                user_groups=user_groups,
-                qdrant=qdrant,
-                db=db,
-                top_k=request.top_k,
-                threshold=request.threshold,
-                user_id=str(user.id),
-                project_ids=project_ids,
-                images=request.images,
-            ):
-                yield f"event: {event_type}\ndata: {data}\n\n"
+            if harness_intent:
+                async for event_type, data in run_harness_chat_turn_stream(
+                    conversation=conversation,
+                    query=request.query,
+                    db=db,
+                    user_id=user.id,
+                    project_ids=project_ids,
+                    user_groups=user_groups,
+                    user_permissions=get_user_permissions(user),
+                    qdrant=qdrant,
+                    access_token=http_request.cookies.get("access_token"),
+                ):
+                    yield f"event: {event_type}\ndata: {data}\n\n"
+            else:
+                async for event_type, data in run_conversational_rag_stream(
+                    conversation=conversation,
+                    query=request.query,
+                    user_groups=user_groups,
+                    qdrant=qdrant,
+                    db=db,
+                    top_k=request.top_k,
+                    threshold=request.threshold,
+                    user_id=str(user.id),
+                    project_ids=project_ids,
+                    images=request.images,
+                ):
+                    yield f"event: {event_type}\ndata: {data}\n\n"
         except Exception as e:
             logger.error("Conversation stream failed: %s", e, exc_info=True)
             safe_message = "Chat response failed. Please try again."

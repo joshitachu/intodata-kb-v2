@@ -6,10 +6,12 @@ import {
   type ConversationMessageRequest,
   type DocumentSource,
   type AgentStep,
+  type HarnessActivityEvent,
   type UsageStats,
   type RuntimeToolProgress,
   AgentStepSchema,
   DocumentSourceSchema,
+  HarnessActivityEventSchema,
   UsageStatsSchema,
   SseDoneSchema,
   RuntimeToolCallEventSchema,
@@ -25,6 +27,7 @@ export interface StreamState {
   latencyMs: number | null;
   usage: UsageStats | null;
   steps: AgentStep[];
+  harnessActivities: HarnessActivityEvent[];
   runtimeTools: RuntimeToolProgress[];
 }
 
@@ -37,6 +40,7 @@ const INITIAL_STATE: StreamState = {
   latencyMs: null,
   usage: null,
   steps: [],
+  harnessActivities: [],
   runtimeTools: [],
 };
 
@@ -73,6 +77,7 @@ export function useStreamMessage(conversationId: number | null) {
         latencyMs: null,
         usage: null,
         steps: [],
+        harnessActivities: [],
         runtimeTools: [],
       });
 
@@ -198,6 +203,16 @@ export function useStreamMessage(conversationId: number | null) {
                 runtimeTools[matchIndex] = next;
                 return { ...prev, runtimeTools };
               });
+            } catch {
+              // ignore parse error
+            }
+          } else if (eventType === "harness_activity" || eventType === "activity") {
+            try {
+              const activity = HarnessActivityEventSchema.parse(JSON.parse(data));
+              setStreamState((prev) => ({
+                ...prev,
+                harnessActivities: [...prev.harnessActivities, activity],
+              }));
             } catch {
               // ignore parse error
             }

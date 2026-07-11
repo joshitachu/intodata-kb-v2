@@ -1,11 +1,16 @@
 import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.api.main import app
 from src.db.models import User, Role, Conversation, ConversationMessage
+from src.harness.repository import HarnessWorkflowRepository
+from src.harness.providers.mcp_docs import McpDocumentationProvider
+from src.harness.models import WorkflowRunStatus
 
 CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
 
@@ -506,6 +511,89 @@ class TestSendMessageStream:
         assert events_in_order == [
             "sources", "runtime_tool_call", "runtime_tool_result", "token", "usage", "done",
         ]
+
+
+async def test_stream_docs_generation_runs_through_langgraph_and_persists_runtime_metadata(
+    db_session,
+    monkeypatch,
+) -> None:
+    from src.api.dependencies import get_current_user, get_db, get_qdrant
+
+    user = User(
+        username="graph-stream-user",
+        email="graph-stream@example.com",
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    conversation = Conversation(user_id=user.id, title="Graph stream")
+    db_session.add(conversation)
+    await db_session.flush()
+
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["generate_path"] = request.url.path
+        seen["generate_payload"] = request.read()
+        return httpx.Response(
+            200,
+            json={"status": "generation_triggered", "message": "docs started"},
+        )
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr("src.harness.chat.McpDocumentationProvider", lambda: provider)
+
+    current_user = SimpleNamespace(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        is_superadmin=True,
+        roles=[],
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: current_user
+    app.dependency_overrides[get_qdrant] = lambda: AsyncMock()
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/api/v1/conversations/{conversation.id}/messages/stream",
+                json={"query": "Generate docs for this project", "project_id": "project-a"},
+                headers=CSRF_HEADERS,
+            )
+            assert response.status_code == 200
+            assert "event: harness_activity" in response.text
+            assert "Documentation generation started for `project-a`" in response.text
+            assert seen["generate_path"] == "/mcp/generate"
+            assert b'"project_id":"project-a"' in seen["generate_payload"]
+
+            runs = await HarnessWorkflowRepository(db_session).list_runs(
+                None,
+                project_id="project-a",
+            )
+            assert len(runs) == 1
+            run = runs[0]
+            assert run.status == WorkflowRunStatus.TRIGGERED
+            assert run.runtime_provider_id == "langgraph.nexus"
+            assert run.runtime_thread_id == f"harness-run-{run.id}"
+            assert run.runtime_run_id
+            assert run.current_node == "finalize"
+            assert run.runtime_metadata["graph"] == "docs_generation"
+            assert run.runtime_metadata["checkpoint_id"]
+
+            detail = await client.get(f"/api/v1/harness/workflows/{run.id}")
+            body = detail.json()
+            assert body["run"]["runtime_provider_id"] == "langgraph.nexus"
+            assert body["run"]["runtime_metadata"]["graph"] == "docs_generation"
+            assert any(
+                activity["runtime_node"] == "execute_capability"
+                for activity in body["activities"]
+            )
+    finally:
+        app.dependency_overrides.clear()
 
 
 # --- Soft delete tests (real SQLite DB via db_session) ---

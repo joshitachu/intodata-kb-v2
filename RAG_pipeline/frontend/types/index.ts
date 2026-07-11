@@ -415,6 +415,74 @@ export interface RuntimeToolProgress {
   error: RuntimeToolError | null;
 }
 
+// --- Generic harness activity stream events ---
+
+export const HarnessActivityStatusSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const normalized = value.toLowerCase();
+  if (
+    [
+      "pending",
+      "queued",
+      "started",
+      "triggered",
+      "in_progress",
+      "in-progress",
+      "running",
+    ].includes(normalized)
+  ) {
+    return "running";
+  }
+  if (
+    [
+      "complete",
+      "completed",
+      "done",
+      "resolved",
+      "selected",
+      "success",
+      "succeeded",
+    ].includes(normalized)
+  ) {
+    return "completed";
+  }
+  if (["blocked", "error", "errored", "failed", "failure"].includes(normalized)) {
+    return "failed";
+  }
+  if (["cancelled", "canceled", "skip", "skipped"].includes(normalized)) {
+    return "skipped";
+  }
+  return normalized;
+}, z.enum(["running", "completed", "skipped", "failed"]));
+
+export type HarnessActivityStatus = z.infer<
+  typeof HarnessActivityStatusSchema
+>;
+
+export const HarnessSafeDetailsValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])),
+]);
+
+export const HarnessActivityEventSchema = z.object({
+  workflow_run_id: z.string().nullable().optional(),
+  event_type: z.string(),
+  label: z.string(),
+  status: HarnessActivityStatusSchema,
+  provider_id: z.string().nullable().optional(),
+  capability_id: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  safe_details: z.record(HarnessSafeDetailsValueSchema).optional().default({}),
+  timestamp: z.string().nullable().optional(),
+});
+
+export type HarnessActivityEvent = z.infer<
+  typeof HarnessActivityEventSchema
+>;
+
 // --- Runtime logs API (EP-005 slice 2 contract; schemas in ./runtime) ---
 export {
   RuntimeExecutionStateSchema,

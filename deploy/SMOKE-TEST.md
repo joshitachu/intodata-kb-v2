@@ -135,7 +135,134 @@ Pass criteria:
 - All three public requests return `404`.
 - The customer-facing app still completes onboarding source upload through `/api/source/*`.
 
-## 7. IP Allowlist
+## 7. Nexus Capability-Aware Chat Planner Smoke Test
+
+Run this locally after the RAG backend, frontend, database, and MCP server are
+up. This procedure verifies the capability-aware chat path without depending on
+stale RAG documentation.
+
+Local variables:
+
+```bash
+export FRONTEND_URL="${FRONTEND_URL:-http://127.0.0.1:3000}"
+export BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:8000/api/v1}"
+export SMOKE_USER="${SMOKE_USER:-admin}"
+export SMOKE_PASSWORD="${SMOKE_PASSWORD:-admin}"
+export COOKIE_JAR="/tmp/nexus_chat_planner_smoke.cookies"
+```
+
+Log in:
+
+```bash
+curl -fsS -c "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d "{\"identifier\":\"${SMOKE_USER}\",\"password\":\"${SMOKE_PASSWORD}\"}" \
+  "${FRONTEND_URL}/api/auth/login" | jq .
+```
+
+If the response contains `mfa_required: true`, complete MFA through the browser
+or post the returned `mfa_token` and current MFA code to
+`${FRONTEND_URL}/api/auth/verify-mfa`, reusing the same cookie jar.
+
+List accessible projects and choose one:
+
+```bash
+curl -fsS -b "$COOKIE_JAR" "${FRONTEND_URL}/api/source/projects" | jq .
+export PROJECT_ID="<project id from the response>"
+```
+
+Create a conversation:
+
+```bash
+export CONVERSATION_ID="$(
+  curl -fsS -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+    -H "Content-Type: application/json" \
+    -d '{"title":"Capability planner smoke"}' \
+    "${FRONTEND_URL}/api/conversations" | jq -r '.id'
+)"
+```
+
+Ask a capability question:
+
+```bash
+curl -fsS -N -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Can you generate documentation?"}' \
+  "${FRONTEND_URL}/api/conversations/${CONVERSATION_ID}/messages/stream"
+```
+
+Pass criteria:
+
+- The assistant says documentation generation is available when the capability
+  is enabled.
+- The answer mentions that a project is required.
+- The answer does not say Nexus is read-only or cannot generate documentation.
+- No workflow run is created for this capability question.
+
+Ask an unscoped generation request:
+
+```bash
+curl -fsS -N -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Generate documentation for me."}' \
+  "${FRONTEND_URL}/api/conversations/${CONVERSATION_ID}/messages/stream"
+```
+
+Pass criteria:
+
+- The assistant asks which project to use and lists accessible projects.
+- The stream may show planning/scope activity, but no provider trigger occurs.
+- No workflow run is created for the unscoped request.
+
+Ask a scoped generation request:
+
+```bash
+curl -fsS -N -b "$COOKIE_JAR" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\":\"Generate documentation for ${PROJECT_ID}.\",\"project_id\":\"${PROJECT_ID}\"}" \
+  "${FRONTEND_URL}/api/conversations/${CONVERSATION_ID}/messages/stream"
+```
+
+Pass criteria:
+
+- The stream includes generic activity for planning, scope resolution,
+  capability selection, provider trigger, and provider result when those events
+  are emitted.
+- Activity labels are provider-agnostic and expanded details show only safe
+  values such as project id, provider id, status, and workflow id.
+- Existing runtime tool progress still renders for runtime questions.
+- The final answer includes a workflow run id and relevant generation/docs
+  links or a sanitized provider failure.
+
+Inspect the workflow receipt:
+
+```bash
+curl -fsS -b "$COOKIE_JAR" \
+  "${BACKEND_URL}/harness/workflows?conversation_id=${CONVERSATION_ID}&project_id=${PROJECT_ID}&limit=5" | jq .
+
+export WORKFLOW_RUN_ID="<workflow run id from the response>"
+
+curl -fsS -b "$COOKIE_JAR" \
+  "${BACKEND_URL}/harness/workflows/${WORKFLOW_RUN_ID}" | jq .
+```
+
+Pass criteria:
+
+- The scoped request creates exactly one relevant workflow run.
+- The run has the documentation-generation capability id.
+- Activities include scope/provider trigger/provider result, and any
+  planning/capability-selected activities emitted by the backend.
+- Activity `safe_details` do not contain prompts, raw provider payloads,
+  credentials, tokens, or logs.
+
+Browser check:
+
+1. Repeat the same three prompts in the chat UI.
+2. Expand the activity row during the scoped request.
+3. Confirm details are readable and safe, then ask a runtime question and
+   confirm runtime tool events still render separately.
+
+## 8. IP Allowlist
 
 From an approved IP:
 
@@ -156,7 +283,7 @@ Pass criteria:
 - Unapproved IPs cannot establish a connection.
 - `sudo ufw status verbose` shows only approved CIDRs for ports `22`, `80`, and `443`.
 
-## 8. Talend TMC Runtime (Optional, EP-004)
+## 9. Talend TMC Runtime (Optional, EP-004)
 
 Run only when `RUNTIME_PROVIDER_KEY=talend_tmc` (see RUNBOOK section 13). Skip
 otherwise.
@@ -203,6 +330,7 @@ Login/logout: PASS/FAIL
 Document ingest: PASS/FAIL
 Streaming answer: PASS/FAIL
 Developer surface locked down: PASS/FAIL
+Capability-aware chat planner: PASS/FAIL
 IP allowlist: PASS/FAIL
 Talend TMC runtime (if enabled): PASS/FAIL/N-A
 Notes:

@@ -13,6 +13,7 @@ function failedStream(error = "Provider timed out"): StreamState {
     latencyMs: null,
     usage: null,
     steps: [],
+    harnessActivities: [],
     runtimeTools: [],
   };
 }
@@ -27,6 +28,7 @@ function streamingStream(overrides: Partial<StreamState> = {}): StreamState {
     latencyMs: null,
     usage: null,
     steps: [],
+    harnessActivities: [],
     runtimeTools: [],
     ...overrides,
   };
@@ -97,6 +99,30 @@ describe("MessageList", () => {
     expect(
       screen.getByText("Checking runtime: Detect failures"),
     ).toBeInTheDocument();
+  });
+
+  it("shows generic harness activity before answer text arrives", () => {
+    render(
+      <MessageList
+        messages={[]}
+        streamingMessage={streamingStream({
+          harnessActivities: [
+            {
+              event_type: "capability.started",
+              label: "Starting documentation generation",
+              status: "running",
+              summary: null,
+              safe_details: {},
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Starting documentation generation"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/runtime/i)).not.toBeInTheDocument();
   });
 
   it("renders a successful runtime result summary", () => {

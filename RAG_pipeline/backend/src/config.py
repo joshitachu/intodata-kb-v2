@@ -159,6 +159,8 @@ class Settings(BaseSettings):
 
     # MCP ingestion auth
     mcp_ingest_api_key: str = ""
+    mcp_docs_base_url: str = "http://localhost:8002/mcp"
+    mcp_docs_request_timeout: float = 15.0
 
     # Network hardening — comma-separated IPv4/IPv6 addresses or CIDRs. Empty = disabled.
     # ALLOWED_IPS is enforced by ip_allowlist middleware; TRUSTED_PROXIES is passed to

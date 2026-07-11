@@ -1,5 +1,37 @@
 # IntoData KB — Progress Log
 
+## Session: 2026-07-10 (Nexus harness capability-aware planner + architecture progress log)
+
+### [Feature]: First capability-aware chat harness loop implemented and live-smoked
+
+- **Files changed**:
+  - `RAG_pipeline/backend/src/api/main.py`
+  - `RAG_pipeline/backend/src/api/routes/conversations.py`
+  - `RAG_pipeline/backend/src/config.py`
+  - `RAG_pipeline/backend/src/db/models/__init__.py`
+  - `RAG_pipeline/backend/src/harness/*`
+  - `RAG_pipeline/backend/src/api/routes/harness.py`
+  - `RAG_pipeline/backend/src/db/models/harness.py`
+  - `RAG_pipeline/backend/alembic/versions/049_harness_workflow_runs.py`
+  - `RAG_pipeline/backend/tests/test_api/test_harness.py`
+  - `RAG_pipeline/backend/tests/test_harness/*`
+  - `RAG_pipeline/frontend/types/index.ts`
+  - `RAG_pipeline/frontend/hooks/useStreamMessage.ts`
+  - `RAG_pipeline/frontend/components/HarnessActivityStatus.tsx`
+  - `RAG_pipeline/frontend/components/MessageBubble.tsx`
+  - `RAG_pipeline/frontend/components/MessageList.tsx`
+  - `RAG_pipeline/frontend/tests/hooks/useStreamMessage.test.ts`
+  - `RAG_pipeline/frontend/tests/components/HarnessActivityStatus.test.tsx`
+  - `RAG_pipeline/frontend/tests/components/MessageList.test.tsx`
+  - `docker-compose.yml`
+  - `deploy/SMOKE-TEST.md`
+  - root `NEXUS_HARNESS_PROGRESS_LOG.md`
+- **Problem**: Nexus had harness rails but chat still behaved like a RAG chatbot for capability-awareness: capability questions could fall through to stale docs and say Nexus was read-only; unscoped generation gave brittle hardcoded text; scoped generation failed in Docker because backend tried MCP via container-local `localhost`.
+- **Root cause**: Chat did not yet treat the live capability registry as part of its identity/planning path, and backend Compose did not override the local MCP docs URL with the Docker service name.
+- **Change**: Added a structured deterministic planner boundary (`answer_direct`, `ask_clarification`, `call_capability`, `use_rag`), live capability-summary answers from the registry, project-list scope clarification, named-project text resolution, MCP project listing in the docs provider, result-grounded docs-generation responses, planner/capability/scope/provider workflow activities, frontend harness activity polish, and a repeatable smoke procedure. Root `NEXUS_HARNESS_PROGRESS_LOG.md` now compares implementation status against `NEXUS_HARNESS_DESIGN_V0.md`.
+- **Why this approach**: The planner is intentionally deterministic for this wedge but shaped like the future model-backed planner contract. Tool execution stays backend-validated and provider calls remain behind capability/provider adapters.
+- **Verification**: Focused backend harness/provider/config tests `21 passed`; backend API/workflow/harness regression `51 passed, 18 warnings`; frontend stream/activity/message tests `19 passed`; `npm run build` passed; `docker compose config --quiet` passed. Live smoke after rebuild: `u can make documentation or not?` answered from registry; `generate documentation for me pls` listed visible projects; `generate documentation for IntodataStreams` created workflow run `3`; MCP showed generation run `37`; workflow activity stored planner/capability/scope/provider events.
+
 ## Session: 2026-07-07 (Chat response-time restoration — Slices 2-4, full pipeline, multi-agent workflow)
 
 ### [Feature]: Restored token streaming for doc-QA + runtime tool-loop turns; verified REST parity

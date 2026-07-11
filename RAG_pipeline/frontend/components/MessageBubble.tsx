@@ -15,11 +15,13 @@ import {
 import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
+import { HarnessActivityStatus } from "./HarnessActivityStatus";
 import { RuntimeToolStatus } from "./RuntimeToolStatus";
 import { submitFeedback } from "@/lib/feedback";
 import { useViewport } from "@/hooks/useViewport";
 import type {
   AgentStep,
+  HarnessActivityEvent,
   MessageResponse,
   RuntimeToolProgress,
   UsageStats,
@@ -32,6 +34,7 @@ interface MessageBubbleProps {
   hasSources?: boolean;
   usage?: UsageStats | null;
   steps?: AgentStep[];
+  harnessActivities?: HarnessActivityEvent[];
   runtimeTools?: RuntimeToolProgress[];
   onRetry?: () => void;
 }
@@ -43,6 +46,7 @@ export function MessageBubble({
   hasSources,
   usage,
   steps,
+  harnessActivities,
   runtimeTools,
   onRetry,
 }: MessageBubbleProps) {
@@ -122,6 +126,9 @@ export function MessageBubble({
           ) : (
             /* Assistant: raw text on page background */
             <div>
+              {harnessActivities && harnessActivities.length > 0 && (
+                <HarnessActivityStatus activities={harnessActivities} />
+              )}
               {runtimeTools && runtimeTools.length > 0 && (
                 <RuntimeToolStatus tools={runtimeTools} />
               )}

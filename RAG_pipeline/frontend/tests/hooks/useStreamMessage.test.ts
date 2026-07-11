@@ -140,6 +140,76 @@ describe("useStreamMessage", () => {
     expect(result.current.streamState.error).toBeNull();
   });
 
+  it("parses generic harness activity without treating it as runtime progress", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: harness_activity\ndata: {"workflow_run_id":"run-1","event_type":"capability.started","label":"Starting documentation generation","status":"running","provider_id":"mcp-docs","capability_id":"generate_project_documentation","summary":"Generation request accepted","safe_details":{"project":"fastapi-e2e"},"payload":{"secret":"ignored"}}\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":20}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "Generate docs" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.streamState.isStreaming).toBe(false);
+    });
+
+    expect(result.current.streamState.harnessActivities).toEqual([
+      {
+        workflow_run_id: "run-1",
+        event_type: "capability.started",
+        label: "Starting documentation generation",
+        status: "running",
+        provider_id: "mcp-docs",
+        capability_id: "generate_project_documentation",
+        summary: "Generation request accepted",
+        safe_details: { project: "fastapi-e2e" },
+      },
+    ]);
+    expect(result.current.streamState.runtimeTools).toEqual([]);
+  });
+
+  it("normalizes planner activity status aliases across a capability stream", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: activity\ndata: {"event_type":"planning","label":"Planning next step","status":"started","safe_details":{"decision":"call_capability"}}\n\n' +
+          'event: activity\ndata: {"event_type":"scope_resolution","label":"Resolved project scope","status":"resolved","safe_details":{"project_id":"fastapi-e2e"}}\n\n' +
+          'event: activity\ndata: {"event_type":"capability_selected","label":"Selected documentation generation","status":"selected","capability_id":"mcp.docs.generate_project_documentation","safe_details":{"risk_tier":"triggers_workflow"}}\n\n' +
+          'event: activity\ndata: {"event_type":"provider_trigger","label":"Starting documentation generation","status":"triggered","safe_details":{"provider":"mcp.docs"}}\n\n' +
+          'event: activity\ndata: {"event_type":"provider_result","label":"Documentation generation started","status":"success","safe_details":{"workflow_run_id":42,"status":"generation_triggered"}}\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":20}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "Generate docs" });
+    });
+
+    await waitFor(() => {
+      expect(result.current.streamState.isStreaming).toBe(false);
+    });
+
+    expect(result.current.streamState.harnessActivities.map((activity) => activity.event_type)).toEqual([
+      "planning",
+      "scope_resolution",
+      "capability_selected",
+      "provider_trigger",
+      "provider_result",
+    ]);
+    expect(result.current.streamState.harnessActivities.map((activity) => activity.status)).toEqual([
+      "running",
+      "completed",
+      "completed",
+      "running",
+      "completed",
+    ]);
+    expect(result.current.streamState.runtimeTools).toEqual([]);
+  });
+
   it("ignores malformed runtime payloads without ending the stream early", async () => {
     vi.spyOn(global, "fetch").mockResolvedValueOnce(
       sseResponse(
