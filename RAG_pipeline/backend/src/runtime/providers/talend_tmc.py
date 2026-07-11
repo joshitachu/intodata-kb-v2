@@ -97,6 +97,7 @@ class TalendTmcRuntimeProvider:
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._transport = transport
         self._token: str | None = None
+        self._base_url_override: str | None = None
 
     def provider_key(self) -> str:
         return "tmc"
@@ -138,9 +139,14 @@ class TalendTmcRuntimeProvider:
             return False, _sanitize_tmc_error(str(e), token)
 
     async def sync(self, *, credentials: Mapping[str, Any], project_id: str) -> RuntimeSyncBatch:
-        # Existing sync reads operator-managed TMC settings. Per-source
-        # credential injection is wired when source CRUD lands in Slice 2.
-        return await self.fetch_runtime_batch(project_id=project_id)
+        token = str(credentials.get("api_token") or "").strip()
+        base_url = str(credentials.get("base_url") or "").strip().rstrip("/")
+        if not token or not base_url:
+            raise RuntimeProviderError("Missing required TMC credentials")
+        provider = TalendTmcRuntimeProvider(transport=self._transport)
+        provider._token = token
+        provider._base_url_override = base_url
+        return await provider.fetch_runtime_batch(project_id=project_id)
 
     def _read_token(self) -> str:
         if self._token is not None:
@@ -159,6 +165,8 @@ class TalendTmcRuntimeProvider:
         return token
 
     def _base_url(self) -> str:
+        if self._base_url_override:
+            return self._base_url_override
         base_url = settings.talend_tmc_base_url
         if not base_url:
             raise RuntimeProviderError("Talend TMC base URL is not configured")

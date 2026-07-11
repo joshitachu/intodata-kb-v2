@@ -417,6 +417,27 @@ class TestRuntimeBatchMapping:
         assert batch.plan_runs[0].step_results[0].execution_id == "exec-1"
         assert batch.log_events[0].message == "[tDBInput_1] connection timeout"
 
+    async def test_sync_uses_supplied_source_credentials(self, tmc):
+        seen_headers: list[str | None] = []
+        seen_hosts: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_headers.append(request.headers.get("authorization"))
+            seen_hosts.append(str(request.url).split(request.url.path)[0])
+            return httpx.Response(200, json={"items": [], "total": 0})
+
+        batch = await tmc.provider(handler).sync(
+            credentials={
+                "api_token": "source-specific-token",
+                "base_url": "https://source-specific.example",
+            },
+            project_id="project-a",
+        )
+
+        assert [source.source_key for source in batch.sources] == ["talend_tmc"]
+        assert set(seen_headers) == {"Bearer source-specific-token"}
+        assert set(seen_hosts) == {"https://source-specific.example"}
+
 
 class TestConfigAndSecretHygiene:
     async def test_missing_token_file_is_provider_error(self, tmc):
