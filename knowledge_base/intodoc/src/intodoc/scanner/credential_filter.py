@@ -24,9 +24,17 @@ class CredentialFilter:
     _SAFE_DOMAINS: frozenset[str] = frozenset({
         "w3.org", "omg.org", "eclipse.org", "xml.org", "xmlsoap.org",
         "apache.org", "sun.com", "java.com", "oracle.com", "microsoft.com",
-        "xmlns.com", "talend.com", "schema.org", "purl.org",
+        "xmlns.com", "talend.com", "talend.org", "schema.org", "purl.org",
         "lobster-world.com",
     })
+
+    # xmlns declarations are structural XML identifiers, not data: redacting
+    # their URIs breaks namespaced attribute lookups in every downstream
+    # parser (e.g. xsi:type resolution). Their values are masked before any
+    # pattern runs and restored verbatim afterwards.
+    _XMLNS_DECL_RE = re.compile(
+        r"\bxmlns(?::[A-Za-z_][\w.\-]*)?\s*=\s*(\"[^\"]*\"|'[^']*')"
+    )
 
     # ── Known TLDs for FQDN matching ────────────────────────────────────
     _TLDS: str = (
@@ -77,11 +85,8 @@ class CredentialFilter:
         # Email addresses
         (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
          "[EMAIL_REDACTED]", RedactionLevel.STANDARD),
-        # URLs with protocol (http, https, amqp, amqps, ftp, ftps, sftp, tcp)
-        (re.compile(
-            r"(?:https?|amqps?|s?ftp|tcp)://[^\s\"'<>]+",
-            re.IGNORECASE,
-        ), "[URL_REDACTED]", RedactionLevel.STANDARD),
+        # URLs with protocol -- handled by _filter_urls() so safe domains
+        # (XML namespace hosts) are excluded at runtime, like FQDNs below.
         # FQDNs -- matched against known TLDs, safe domains excluded at runtime
         # This is a placeholder; actual FQDN filtering uses _filter_fqdns()
 
@@ -180,6 +185,16 @@ class CredentialFilter:
         (re.compile(r"/(?:home|opt|var|etc|srv|tmp|usr/local)/[^\s\"'<>]*"),
          "[FILE_PATH_REDACTED]", RedactionLevel.STRICT),
     ]
+
+    # URL pattern (applied separately for safe-domain exclusion)
+    _URL_RE = re.compile(
+        r"(?:https?|amqps?|s?ftp|tcp)://[^\s\"'<>]+",
+        re.IGNORECASE,
+    )
+    _URL_HOST_RE = re.compile(
+        r"^[a-z][a-z0-9+.\-]*://(?:[^/@\s]*@)?([^/:?#\s]+)",
+        re.IGNORECASE,
+    )
 
     # FQDN pattern (applied separately for safe-domain exclusion)
     _FQDN_RE = re.compile(
@@ -307,12 +322,44 @@ class CredentialFilter:
             return "[HOSTNAME]"
         return self._FQDN_RE.sub(_replace_fqdn, text)
 
+    def _filter_urls(self, text: str) -> str:
+        """Replace URLs with [URL_REDACTED], preserving safe-domain hosts."""
+        def _replace_url(m: re.Match[str]) -> str:
+            url = m.group(0)
+            host_match = self._URL_HOST_RE.match(url)
+            if host_match and self._is_safe_domain(host_match.group(1)):
+                return url
+            self._record_redaction("url_redacted", url)
+            return "[URL_REDACTED]"
+        return self._URL_RE.sub(_replace_url, text)
+
+    def _mask_xmlns_decls(self, text: str) -> tuple[str, list[str]]:
+        """Replace xmlns declaration values with placeholders before redaction."""
+        masked: list[str] = []
+
+        def _mask(m: re.Match[str]) -> str:
+            masked.append(m.group(1))
+            decl = m.group(0)
+            return decl[: -len(m.group(1))] + f'"__INTODOC_XMLNS_{len(masked) - 1}__"'
+
+        return self._XMLNS_DECL_RE.sub(_mask, text), masked
+
+    @staticmethod
+    def _restore_xmlns_decls(text: str, masked: list[str]) -> str:
+        """Restore xmlns declaration values masked by _mask_xmlns_decls."""
+        for i, value in enumerate(masked):
+            text = text.replace(f'"__INTODOC_XMLNS_{i}__"', value)
+        return text
+
     def filter_text(self, text: str, filename: str = "") -> str:
         """Apply all redaction patterns to raw text. Returns cleaned text."""
         stripped = text.lstrip()
         is_xml = filename.lower().endswith(".xml") or (
             stripped.startswith("<?xml") or stripped.startswith("<")
         )
+        xmlns_values: list[str] = []
+        if is_xml:
+            text, xmlns_values = self._mask_xmlns_decls(text)
         for pattern, replacement in self._active_patterns:
             if pattern is self._LOBSTER_BASE64_RE and not is_xml:
                 continue
@@ -338,9 +385,13 @@ class CredentialFilter:
 
         text = self._SENSITIVE_KV.sub(_kv_repl, text)
 
-        # FQDN filtering (standard+)
+        # URL and FQDN filtering (standard+), safe domains preserved
         if self._level_includes(RedactionLevel.STANDARD):
+            text = self._filter_urls(text)
             text = self._filter_fqdns(text)
+
+        if xmlns_values:
+            text = self._restore_xmlns_decls(text, xmlns_values)
 
         return text
 
@@ -383,8 +434,14 @@ class CredentialFilter:
                 return True
         if self._SENSITIVE_KV.search(text):
             return True
-        if self._level_includes(RedactionLevel.STANDARD) and self._FQDN_RE.search(text):
-            return True
+        if self._level_includes(RedactionLevel.STANDARD):
+            for m in self._URL_RE.finditer(text):
+                host_match = self._URL_HOST_RE.match(m.group(0))
+                if not (host_match and self._is_safe_domain(host_match.group(1))):
+                    return True
+            for m in self._FQDN_RE.finditer(text):
+                if not self._is_safe_domain(m.group(0)):
+                    return True
         return False
 
     def get_audit_report(self) -> dict[str, Any]:

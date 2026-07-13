@@ -192,6 +192,8 @@ class TalendParser(BaseParser):
         self._xmi_id_index: dict[str, MetadataConnection] = {}
         # Property.id → Property.label lookup for resolving tRunJob XMI refs
         self._job_id_index: dict[str, str] = {}
+        # Superseded job versions skipped by _latest_job_versions (per scan)
+        self._superseded_versions = 0
 
     def parse(self, repo_root: Path) -> ScanResult:
         """Parse the entire Talend project."""
@@ -201,6 +203,7 @@ class TalendParser(BaseParser):
         # Reset warning collection for this scan.
         self._warnings = []
         self._warn_root = repo_root
+        self._superseded_versions = 0
 
         # Find the actual Talend project root (may be nested)
         talend_root = _find_talend_root(repo_root)
@@ -240,7 +243,14 @@ class TalendParser(BaseParser):
 
         # Step 3: Parse job files (.item + .properties sidecars)
         jobs = self._parse_all_jobs(talend_root)
-        console.print(f"  Jobs parsed: {len(jobs)}")
+        console.print(
+            f"  Jobs parsed: {len(jobs)}"
+            + (
+                f" (superseded versions skipped: {self._superseded_versions})"
+                if self._superseded_versions
+                else ""
+            )
+        )
 
         # Step 4: Collect routines
         routines = self._parse_routines(talend_root)
@@ -263,6 +273,7 @@ class TalendParser(BaseParser):
                 "total_files_walked": len(all_files),
                 "total_files_indexed": len(files),
                 "total_jobs": len(jobs),
+                "superseded_job_versions": self._superseded_versions,
                 "total_connections": len(self._xmi_id_index),
                 "total_contexts": len(context_groups),
                 "total_routines": len(routines),
@@ -406,11 +417,12 @@ class TalendParser(BaseParser):
             base_dir = talend_root / dir_name
             if not base_dir.exists():
                 continue
+            dir_jobs: list[ParsedJob] = []
             for item_file in sorted(base_dir.rglob("*.item")):
                 try:
                     job = self._parse_job(item_file, base_dir)
                     if job:
-                        jobs.append(job)
+                        dir_jobs.append(job)
                 except ET.ParseError as e:
                     console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
                     self._warn(kind="parse_error", file=item_file, message=str(e), phase="job")
@@ -418,7 +430,35 @@ class TalendParser(BaseParser):
                     console.print(f"  [yellow]Error parsing {item_file.name}: {e}[/yellow]")
                     self._warn(kind="unknown", file=item_file, message=str(e), phase="job")
 
+            jobs.extend(self._latest_job_versions(dir_jobs))
+
         return jobs
+
+    @staticmethod
+    def _version_sort_key(version: str) -> tuple[int, ...]:
+        """Numeric sort key for Talend item versions ('3.3' > '0.10' > '0.9')."""
+        return tuple(int(part) for part in re.findall(r"\d+", version))
+
+    def _latest_job_versions(self, jobs: list[ParsedJob]) -> list[ParsedJob]:
+        """Keep only the latest version of each job/route.
+
+        Talend Studio exports retain every saved version of an item
+        (Job_0.1.item ... Job_3.3.item); only the highest version is the
+        current implementation. Superseded versions are dropped here so
+        stale logic never reaches the manifest or documentation evidence.
+        The dropped count is reported in scan stats.
+        """
+        latest: dict[tuple[str, str], ParsedJob] = {}
+        for job in jobs:
+            key = (job.path.rsplit("/", 1)[0] if "/" in job.path else "", job.name)
+            current = latest.get(key)
+            if current is None:
+                latest[key] = job
+                continue
+            self._superseded_versions += 1
+            if self._version_sort_key(job.version) > self._version_sort_key(current.version):
+                latest[key] = job
+        return list(latest.values())
 
     def _parse_job(self, item_file: Path, base_dir: Path) -> ParsedJob | None:
         """Parse a single job .item file + its .properties sidecar.

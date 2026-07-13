@@ -3,7 +3,6 @@
 from pathlib import Path
 from textwrap import dedent
 
-import pytest
 
 from intodoc.config import RedactionLevel
 from intodoc.scanner.credential_filter import CredentialFilter
@@ -133,9 +132,7 @@ def test_fqdn_with_subdomain():
 def test_fqdn_safe_domain_preserved():
     """XML namespace domains like w3.org should NOT be redacted."""
     f = CredentialFilter()
-    text = 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
-    # The URL will be redacted, but we check that w3.org alone isn't touched
-    # when it appears without protocol
+    # w3.org must survive even without a protocol prefix
     text2 = 'schema at www.w3.org standard'
     result = f.filter_text(text2)
     assert "w3.org" in result
@@ -143,8 +140,7 @@ def test_fqdn_safe_domain_preserved():
 
 def test_fqdn_eclipse_preserved():
     f = CredentialFilter()
-    text = 'xmlns:emf="http://www.eclipse.org/emf"'
-    # Without protocol prefix
+    # eclipse.org must survive even without a protocol prefix
     text2 = 'from eclipse.org model'
     result = f.filter_text(text2)
     assert "eclipse.org" in result
@@ -196,13 +192,69 @@ def test_talend_component_names_preserved():
         assert result == comp, f"{comp} was incorrectly redacted to {result}"
 
 
-def test_xml_namespace_in_url_not_doubled():
-    """URL pattern handles XML namespaces -- the URL is redacted but we don't crash."""
+def test_safe_domain_url_preserved():
+    """URLs on safe (XML namespace / standard) domains must never be redacted.
+
+    Redacting namespace URIs breaks namespaced attribute lookups (xsi:type,
+    xmi:id) in every downstream XML parser.
+    """
     f = CredentialFilter()
     text = 'xmlns="http://www.w3.org/2001/XMLSchema"'
     result = f.filter_text(text)
-    # URL gets redacted, that's fine
+    assert result == text
+
+
+def test_xmlns_declarations_preserved_in_xml():
+    """xmlns declaration values survive filtering verbatim, even for
+    non-safe domains -- they are structural identifiers, not data."""
+    f = CredentialFilter()
+    text = (
+        '<?xml version="1.0"?><talendfile:ProcessType '
+        'xmlns:talendfile="platform:/resource/org.talend.model/model/TalendFile.xsd" '
+        'xmlns:TalendMapper="http://www.talend.org/mapper" '
+        'xmlns:xmi="http://www.omg.org/XMI" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xmlns:vw="https://integration.client-internal.nl/ns/v1">'
+        '<node componentName="tMap"/></talendfile:ProcessType>'
+    )
+    result = f.filter_text(text, filename="job.item")
+    assert 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' in result
+    assert 'xmlns:TalendMapper="http://www.talend.org/mapper"' in result
+    assert 'xmlns:xmi="http://www.omg.org/XMI"' in result
+    assert 'xmlns:vw="https://integration.client-internal.nl/ns/v1"' in result
+    assert "__INTODOC_XMLNS_" not in result
+
+
+def test_non_xmlns_url_still_redacted_in_xml():
+    """Endpoint URLs outside xmlns declarations keep getting redacted."""
+    f = CredentialFilter()
+    text = (
+        '<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        '<elementParameter name="ENDPOINT" value="https://api.client-internal.nl/v2/orders"/>'
+        "</root>"
+    )
+    result = f.filter_text(text, filename="job.item")
+    assert 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' in result
+    assert "api.client-internal.nl" not in result
     assert "[URL_REDACTED]" in result
+
+
+def test_filtered_xml_keeps_namespaced_attributes_parseable():
+    """After filtering, xsi:type attributes must still resolve under the
+    original namespace URI when parsed with ElementTree."""
+    import xml.etree.ElementTree as ET
+
+    f = CredentialFilter()
+    text = (
+        '<?xml version="1.0"?><root '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        '<nodeData xsi:type="TalendMapper:MapperData"/></root>'
+    )
+    result = f.filter_text(text, filename="job.item")
+    root = ET.fromstring(result)
+    node = root.find("nodeData")
+    xsi_type = node.get("{http://www.w3.org/2001/XMLSchema-instance}type")
+    assert xsi_type == "TalendMapper:MapperData"
 
 
 def test_simple_numbers_not_redacted():
