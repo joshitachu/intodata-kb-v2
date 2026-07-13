@@ -552,6 +552,8 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._doc_section_bundle_map: dict[str, set[str]] = dict(_catalog.doc_section_bundle_map)
         self._doc_section_requirements_extra: dict[str, list[str]] = {}
         self._plugin_manifest = None
+        self._plugin_doc_definitions: dict[str, object] = {}
+        self._per_job_doc_units: dict[str, str] = {}
         self._pack_evidence_paths: dict[str, dict[str, str]] = {}
         self._evidence_registry_paths: dict[str, str] = {}
         self._phase_model_overrides: dict[str, str] = {}
@@ -572,6 +574,7 @@ class CustomHarnessProvider(DocGenerationProvider):
                             self._phase_concurrency_overrides[_phase_name] = _c
                 if _manifest.docs:
                     self._required_docs = [d.name for d in _manifest.docs]
+                    self._plugin_doc_definitions = {d.name: d for d in _manifest.docs}
                     self._doc_assignments = {"custom": list(self._required_docs)}
                     self._doc_bundle_map = {d: "custom" for d in self._required_docs}
                     self._doc_section_bundle_map = {}  # pack runs: no Phase 2 section routing
@@ -1109,6 +1112,7 @@ Fallback plan example:
         state = HarnessRunState(project_id=ctx.project_id, facts_manifest=facts)
         facts_path = ctx.staging_dir / "facts_manifest.json"
         facts.write(facts_path)
+        self._expand_per_job_docs(facts)
 
         # Talend-specific intelligence: ESB detection + activity flags.
         if facts.platform.lower() == "talend":
@@ -1156,7 +1160,9 @@ Fallback plan example:
         execution_plan: ExecutionPlan | None = None
         if config.agent_dag_enabled:
             execution_plan = await self._prepare_execution_plan(ctx, state, facts_path, log_cb)
-            self._required_docs = list(execution_plan.required_docs)
+            # Per-job pack documents are expanded after the facts manifest is known;
+            # keep the execution plan aligned with that expanded document set.
+            execution_plan.required_docs = list(self._required_docs)
 
         # Doc-targeted Phase 3 (Slice 3): narrow the required-doc set to the
         # scoped subset and preserve all unaffected baseline docs byte-stable.
@@ -2573,7 +2579,14 @@ Fallback plan example:
         runtime = AgentTaskRuntime(ctx.staging_dir, state.facts_manifest)
 
         async def _write_one(doc_name: str) -> None:
-            doc_prompt_text = doc_prompt(state.facts_manifest, doc_name, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, extra_section_requirements=self._doc_section_requirements_extra)
+            doc_prompt_text = doc_prompt(
+                state.facts_manifest,
+                doc_name,
+                pack=self.pack,
+                plugin_pack_dir=self.plugin_pack_dir,
+                extra_section_requirements=self._doc_section_requirements_extra,
+                scoped_unit=self._per_job_doc_units.get(doc_name),
+            )
             context_files = self._phase3_context_files(ctx, doc_name)
             if scorecard.exists() and not self._pack_contract_mode:
                 context_files.append(scorecard)
@@ -4286,12 +4299,57 @@ Allowed docs:
         )
 
     def _pack_doc_definition(self, doc_name: str):
+        return self._plugin_doc_definitions.get(doc_name)
+
+    def _expand_per_job_docs(self, facts) -> None:
+        """Expand pack documents marked ``per_job`` into one file per scanned job."""
         if self._plugin_manifest is None:
-            return None
-        for doc in getattr(self._plugin_manifest, "docs", None) or []:
-            if doc.name == doc_name:
-                return doc
-        return None
+            return
+        base_docs = list(getattr(self._plugin_manifest, "docs", None) or [])
+        if not any(getattr(doc, "per_job", False) for doc in base_docs):
+            return
+
+        expanded: list[object] = []
+        self._per_job_doc_units = {}
+        for base in base_docs:
+            if not getattr(base, "per_job", False):
+                expanded.append(base)
+                continue
+            for unit in facts.units:
+                suffix = f"{self._safe_name(unit.group)}__{self._safe_name(unit.name)}"
+                doc_name = f"{base.name}__{suffix}"
+                expanded_doc = base.model_copy(update={"name": doc_name, "per_job": False})
+                expanded.append(expanded_doc)
+                self._per_job_doc_units[doc_name] = unit.name
+
+        self._required_docs = [doc.name for doc in expanded]
+        self._plugin_doc_definitions = {doc.name: doc for doc in expanded}
+        self._doc_assignments = {"custom": list(self._required_docs)}
+        self._doc_bundle_map = {doc: "custom" for doc in self._required_docs}
+        self._doc_section_requirements_extra = {
+            doc.name: list(getattr(doc, "required_sections", []) or []) for doc in expanded
+        }
+        quality_gates = getattr(self._plugin_manifest, "quality_gates", None)
+        if quality_gates is not None:
+            base_sections = dict(getattr(quality_gates, "required_sections", {}) or {})
+            base_min_bytes = dict(getattr(quality_gates, "min_doc_bytes", {}) or {})
+            sections: dict[str, list[str]] = {}
+            min_bytes: dict[str, int] = {}
+            for base in base_docs:
+                names = [doc.name for doc in expanded if doc.name == base.name or doc.name.startswith(f"{base.name}__")]
+                for name in names:
+                    if base.name in base_sections:
+                        sections[name] = base_sections[base.name]
+                    if base.name in base_min_bytes:
+                        min_bytes[name] = base_min_bytes[base.name]
+            updated_gates = quality_gates.model_copy(update={
+                "required_sections": sections,
+                "min_doc_bytes": min_bytes,
+            })
+            self._plugin_manifest = self._plugin_manifest.model_copy(update={
+                "docs": expanded,
+                "quality_gates": updated_gates,
+            })
 
     def _phase2_shared_context(self, ctx: DocGenContext, facts_path: Path) -> list[Path]:
         preprocess_dir = ctx.staging_dir / "_preprocess"

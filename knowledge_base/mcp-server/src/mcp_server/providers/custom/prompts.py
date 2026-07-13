@@ -199,6 +199,7 @@ def doc_prompt(
     pack: InstructionPack | None = None,
     plugin_pack_dir: "Path | None" = None,
     extra_section_requirements: "dict[str, list[str]] | None" = None,
+    scoped_unit: str | None = None,
 ) -> str:
     required_headings = (
         (extra_section_requirements or {}).get(doc_name)
@@ -206,6 +207,14 @@ def doc_prompt(
     )
     headings_block = "\n".join(f"  ## {s}" for s in required_headings)
     doc_specific = _doc_specific_from_pack(plugin_pack_dir, doc_name) or _doc_specific_instructions(doc_name, facts)
+    if scoped_unit:
+        doc_specific = (
+            "PER-JOB DOCUMENT SCOPE (MANDATORY): This file documents exactly one scanned job: "
+            f"`{scoped_unit}`. Use evidence for this job only. Do not document, summarize, or "
+            "claim coverage for any other job. Child jobs may be mentioned only when they are "
+            "directly evidenced as dependencies of this job.\n\n"
+            + doc_specific
+        )
     raw_preamble = _resolve_preamble(
         plugin_pack_dir, "phase3.md",
         pack, "phase3_preamble",
@@ -245,6 +254,8 @@ def _doc_specific_from_pack(plugin_pack_dir: "Path | None", doc_name: str) -> st
     if not plugin_pack_dir:
         return ""
     p = plugin_pack_dir / "prompts" / "docs" / f"{doc_name}.md"
+    if not p.exists() and "__" in doc_name:
+        p = plugin_pack_dir / "prompts" / "docs" / f"{doc_name.split('__', 1)[0]}.md"
     return p.read_text(encoding="utf-8").strip() if p.exists() else ""
 
 

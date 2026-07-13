@@ -153,6 +153,13 @@ class TestPhase2Template:
 # ---------------------------------------------------------------------------
 
 class TestPhase3Template:
+    def test_per_job_prompt_scope_is_explicit(self) -> None:
+        facts = _make_facts(["JobA", "JobB"], platform="talend")
+        prompt = doc_prompt(facts, "01_INTERFACE_TEMPLATE__G__JobA", scoped_unit="JobA")
+        assert "exactly one scanned job" in prompt
+        assert "`JobA`" in prompt
+        assert "any other job" in prompt
+
     def test_filler_suppression_instruction(self) -> None:
         """Rendered Phase 3 prompt must contain the filler suppression instruction."""
         facts = _make_facts(["UnitA"])

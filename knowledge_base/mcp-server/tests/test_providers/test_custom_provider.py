@@ -31,12 +31,14 @@ from mcp_server.providers.custom.investigator import (
 )
 from mcp_server.providers.custom.models import (
     CoverageReport,
+    FactsManifest,
     HarnessRunState,
     InvestigationEvidence,
     InvestigationReport,
     ModelOptions,
     ModelResult,
     ExecutionNode,
+    UnitFact,
 )
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES, materialize_prompt_packs
 from mcp_server.providers.custom.doc_catalog import load_doc_catalog as _load_test_catalog
@@ -743,6 +745,49 @@ def _pack_manifest(mode: str = "blocking") -> PluginPackManifest:
         },
         "steps": [{"id": "full_pipeline", "type": "harness"}],
     })
+
+
+def test_per_job_pack_expands_document_definitions_and_quality_gates():
+    provider = CustomHarnessProvider(MagicMock())
+    provider._plugin_manifest = PluginPackManifest.model_validate({
+        "name": "per-job-pack",
+        "version": "1.0.0",
+        "docs": [{
+            "name": "01_INTERFACE_TEMPLATE",
+            "per_job": True,
+            "required_sections": ["Integration Name"],
+        }],
+        "quality_gates": {
+            "required_sections": {"01_INTERFACE_TEMPLATE": ["Integration Name"]},
+            "min_doc_bytes": {"01_INTERFACE_TEMPLATE": 6000},
+        },
+        "steps": [{"id": "generate", "type": "harness"}],
+    })
+    provider._plugin_doc_definitions = {
+        doc.name: doc for doc in provider._plugin_manifest.docs or []
+    }
+    facts = FactsManifest(
+        project_id="p",
+        platform="talend",
+        canonical_unit_label="jobs",
+        unit_count=2,
+        groups={"Orders": 2},
+        units=[UnitFact(name="LoadOrders", group="Orders"), UnitFact(name="NotifyOrders", group="Orders")],
+    )
+
+    provider._expand_per_job_docs(facts)
+
+    assert provider._required_docs == [
+        "01_INTERFACE_TEMPLATE__Orders__LoadOrders",
+        "01_INTERFACE_TEMPLATE__Orders__NotifyOrders",
+    ]
+    assert provider._per_job_doc_units[provider._required_docs[0]] == "LoadOrders"
+    assert provider._plugin_manifest.quality_gates.required_sections == {
+        doc: ["Integration Name"] for doc in provider._required_docs
+    }
+    assert provider._plugin_manifest.quality_gates.min_doc_bytes == {
+        doc: 6000 for doc in provider._required_docs
+    }
 
 
 def test_pack_quality_required_sections_terms_and_bytes_pass(tmp_path):

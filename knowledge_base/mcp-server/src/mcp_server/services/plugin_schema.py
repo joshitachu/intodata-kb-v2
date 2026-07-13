@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class DocDefinition(BaseModel):
     name: str
+    per_job: bool = False
     sections: list[str] = Field(default_factory=list)
     evidence_profile: str | None = None
     required_sections: list[str] = Field(default_factory=list)
