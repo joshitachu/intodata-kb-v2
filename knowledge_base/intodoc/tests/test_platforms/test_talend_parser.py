@@ -170,3 +170,57 @@ class TestTMapExtraction:
         assert len(tmap.entries) == 1
         assert tmap.entries[0].column_name == "wonum"
         assert tmap.entries[0].expression == "row1.wonum"
+
+
+def _write_context(project, rel_dir, name, version, var_xml):
+    """Write a context group .item at context/<rel_dir>/ (empty rel_dir = flat)."""
+    ctx_dir = project / "context" / rel_dir if rel_dir else project / "context"
+    ctx_dir.mkdir(parents=True, exist_ok=True)
+    (ctx_dir / f"{name}_{version}.item").write_text(
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>'
+        '<xmi:XMI xmlns:xmi="http://www.omg.org/XMI" '
+        'xmlns:talendfile="platform:/resource/org.talend.model/model/TalendFile.xsd" '
+        'xmi:version="2.0">'
+        f'<talendfile:ContextType name="DEV">{var_xml}</talendfile:ContextType>'
+        "</xmi:XMI>",
+        encoding="utf-8",
+    )
+
+
+class TestContextDiscovery:
+    """Context items occur flat AND nested in per-group subfolders, and are
+    version-duplicated like jobs -- both layouts must yield latest-only groups."""
+
+    def test_nested_context_groups_found(self, parser, tmp_path):
+        project = _synthetic_project(tmp_path)
+        _write_context(project, "MAS", "MAS", "0.1",
+                       '<contextParameter name="MAS_URL" type="id_String" value="x"/>')
+        result = parser.parse(tmp_path)
+        names = [g.name for g in result.context_groups]
+        assert "MAS" in names
+
+    def test_flat_context_groups_still_found(self, parser, tmp_path):
+        project = _synthetic_project(tmp_path)
+        _write_context(project, "", "FlatGroup", "0.2",
+                       '<contextParameter name="Host" type="id_String" value="h"/>')
+        result = parser.parse(tmp_path)
+        assert "FlatGroup" in [g.name for g in result.context_groups]
+
+    def test_context_versions_deduped_to_latest(self, parser, tmp_path):
+        project = _synthetic_project(tmp_path)
+        _write_context(project, "Grp", "Grp", "0.1",
+                       '<contextParameter name="V" type="id_String" value="old"/>')
+        _write_context(project, "Grp", "Grp", "0.7",
+                       '<contextParameter name="V" type="id_String" value="new"/>')
+        result = parser.parse(tmp_path)
+        grps = [g for g in result.context_groups if g.name == "Grp"]
+        assert len(grps) == 1
+        assert grps[0].variables[0].values.get("DEV") == "new"
+
+    def test_version_suffix_stripped_beyond_zero_versions(self, parser, tmp_path):
+        """Group names strip any numeric version suffix, not only '_0.x'."""
+        project = _synthetic_project(tmp_path)
+        _write_context(project, "Big", "BigGroup", "3.4",
+                       '<contextParameter name="V" type="id_String" value="v"/>')
+        result = parser.parse(tmp_path)
+        assert "BigGroup" in [g.name for g in result.context_groups]

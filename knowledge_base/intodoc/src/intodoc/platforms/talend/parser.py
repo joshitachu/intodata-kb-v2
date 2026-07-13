@@ -290,7 +290,7 @@ class TalendParser(BaseParser):
         if not conn_dir.exists():
             return
 
-        for item_file in sorted(conn_dir.glob("*.item")):
+        for item_file in self._latest_item_files(conn_dir):
             try:
                 text = self._read_filtered(item_file)
                 root = ET.fromstring(text)
@@ -353,14 +353,39 @@ class TalendParser(BaseParser):
 
     # ── Context Parsing ──────────────────────────────────────────────
 
+    def _latest_item_files(self, base_dir: Path) -> list[Path]:
+        """Highest-version .item file per (directory, artifact name), recursive.
+
+        Talend Studio exports keep every saved version of an item
+        (Name_0.1.item ... Name_3.3.item) and may nest items in per-group
+        subfolders (flat and nested layouts both occur in real exports).
+        Superseded versions are counted in self._superseded_versions.
+        """
+        latest: dict[tuple[str, str], tuple[tuple[int, ...], Path]] = {}
+        for f in sorted(base_dir.rglob("*.item")):
+            m = re.match(r"(.+?)_(\d+(?:\.\d+)*)$", f.stem)
+            if m:
+                name, key = m.group(1), self._version_sort_key(m.group(2))
+            else:
+                name, key = f.stem, ()
+            k = (str(f.parent), name)
+            current = latest.get(k)
+            if current is None:
+                latest[k] = (key, f)
+                continue
+            self._superseded_versions += 1
+            if key > current[0]:
+                latest[k] = (key, f)
+        return [f for _, f in sorted(latest.values(), key=lambda t: str(t[1]))]
+
     def _parse_all_contexts(self, talend_root: Path) -> list[ContextGroup]:
-        """Parse all context/*.item files."""
+        """Parse context/**/*.item files (latest version per group)."""
         ctx_dir = talend_root / "context"
         if not ctx_dir.exists():
             return []
 
         groups: list[ContextGroup] = []
-        for item_file in sorted(ctx_dir.glob("*.item")):
+        for item_file in self._latest_item_files(ctx_dir):
             try:
                 text = self._read_filtered(item_file)
                 root = ET.fromstring(text)
@@ -375,8 +400,10 @@ class TalendParser(BaseParser):
 
     def _parse_context_file(self, root: ET.Element, file_stem: str) -> ContextGroup | None:
         """Parse a context .item file into a ContextGroup."""
-        # Extract the group name from file stem (e.g., "BRA_VBR_environment_0.1" → "BRA_VBR_environment")
-        name = file_stem.rsplit("_", 1)[0] if "_0." in file_stem else file_stem
+        # Strip the version suffix from the file stem
+        # (e.g., "BRA_VBR_environment_0.1" → "BRA_VBR_environment")
+        m = re.match(r"(.+?)_\d+(?:\.\d+)*$", file_stem)
+        name = m.group(1) if m else file_stem
 
         variables: dict[str, ContextVariable] = {}
 
@@ -417,12 +444,11 @@ class TalendParser(BaseParser):
             base_dir = talend_root / dir_name
             if not base_dir.exists():
                 continue
-            dir_jobs: list[ParsedJob] = []
-            for item_file in sorted(base_dir.rglob("*.item")):
+            for item_file in self._latest_item_files(base_dir):
                 try:
                     job = self._parse_job(item_file, base_dir)
                     if job:
-                        dir_jobs.append(job)
+                        jobs.append(job)
                 except ET.ParseError as e:
                     console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
                     self._warn(kind="parse_error", file=item_file, message=str(e), phase="job")
@@ -430,35 +456,12 @@ class TalendParser(BaseParser):
                     console.print(f"  [yellow]Error parsing {item_file.name}: {e}[/yellow]")
                     self._warn(kind="unknown", file=item_file, message=str(e), phase="job")
 
-            jobs.extend(self._latest_job_versions(dir_jobs))
-
         return jobs
 
     @staticmethod
     def _version_sort_key(version: str) -> tuple[int, ...]:
         """Numeric sort key for Talend item versions ('3.3' > '0.10' > '0.9')."""
         return tuple(int(part) for part in re.findall(r"\d+", version))
-
-    def _latest_job_versions(self, jobs: list[ParsedJob]) -> list[ParsedJob]:
-        """Keep only the latest version of each job/route.
-
-        Talend Studio exports retain every saved version of an item
-        (Job_0.1.item ... Job_3.3.item); only the highest version is the
-        current implementation. Superseded versions are dropped here so
-        stale logic never reaches the manifest or documentation evidence.
-        The dropped count is reported in scan stats.
-        """
-        latest: dict[tuple[str, str], ParsedJob] = {}
-        for job in jobs:
-            key = (job.path.rsplit("/", 1)[0] if "/" in job.path else "", job.name)
-            current = latest.get(key)
-            if current is None:
-                latest[key] = job
-                continue
-            self._superseded_versions += 1
-            if self._version_sort_key(job.version) > self._version_sort_key(current.version):
-                latest[key] = job
-        return list(latest.values())
 
     def _parse_job(self, item_file: Path, base_dir: Path) -> ParsedJob | None:
         """Parse a single job .item file + its .properties sidecar.
