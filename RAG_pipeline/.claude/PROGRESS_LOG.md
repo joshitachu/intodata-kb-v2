@@ -3249,3 +3249,59 @@ Then open http://localhost:3000
   - RAG: `alembic upgrade head` applies migration `042_instance_settings`.
   - MCP: no migration — the table is owned by the RAG backend's alembic; MCP just queries it.
   - `.env.production.template`: no changes required — the env vars remain as the canonical defaults that the DB override sits on top of.
+
+## Session: 2026-07-11
+
+### [Feature]: Nexus harness Slices 6-9 and model-first orchestration
+
+- **Files changed**: harness/API/model persistence under `backend/src/harness/`,
+  `backend/src/api/routes/conversations.py`, `backend/src/api/routes/harness.py`,
+  `backend/src/api/routes/harness_connectors.py`, DB models, Alembic revisions 051-053,
+  focused/integrated backend tests, frontend pending-action component, chat stream/message
+  integration, workflow resume/cancel proxies, frontend types and tests.
+- **Problem**: Nexus had LangGraph/docs foundations but could not reliably clarify,
+  approve, resume, onboard projects, project connector capabilities dynamically, or
+  combine durable multi-source evidence through the main chat. Routing still appeared
+  hardcoded when the model could not use the capability contract end to end.
+- **Root cause**: No durable interrupt spine, no model-compatible tool-name/plan adapter,
+  no project workflow, no generic connector persistence/projection, and no normalized
+  evidence store. Live testing also found that MCP scanning is asynchronous while the
+  initial graph triggered documentation immediately.
+- **Change**: Completed Slices 6-9. Added owner-bound interrupts with optimistic/single-use
+  resume and approval hashing; model-first planning over the scoped manifest; provider-safe
+  opaque tool names and strict native/JSON plan normalization; LangGraph onboarding with
+  bounded scan-ready polling; connector CRUD/health/bindings/dynamic tools; durable ranked
+  evidence with conflict disclosure; frontend action controls and artifact links.
+- **Why this approach**: The model proposes actions, while Nexus remains the authoritative
+  harness for scope, policy, execution, persistence, and observability. Connectors and
+  capabilities define the application without changing the chat/runtime experience.
+- **Verification**: backend 1081 passed; frontend 133 passed and production build passed;
+  changed-scope Ruff passed; live Postgres migrated 050->053; live model planner produced
+  confidence-0.95 onboarding selection; live project `final_agentic_e2e` reached scan-ready
+  before documentation generation run 40 started. Inspector PASS_WITH_WARNINGS.
+- **Residuals**: production Postgres LangGraph checkpointer, deferred-index reconciler, and
+  DNS/redirect SSRF enforcement at MCP's Git clone boundary.
+
+## Session: 2026-07-12
+
+### [Feature]: Nexus harness Slices 10-13 -- grounded status, investigations, governed document updates, and Packs
+
+- **Files changed**: resolution types and matching under `backend/src/harness/resolution/`; operational and documentation-update graphs under `backend/src/harness/workflows/`; evidence composition, capability registry/executor/provider, chat, repository, API, config, and Pack compiler changes under `backend/src/harness/` and `backend/src/api/`; Pack fixtures under `backend/src/harness/packs/fixtures/`; focused and integration tests across the backend and frontend activity UI.
+- **Problem**: Conversation 48 showed that Nexus confused project health with documentation-run status, reused stale runtime facts, emitted raw evidence/byte lists, and lost conversational focus. Document updates lacked version-bound approval and rollback, while the proposed Packs were descriptive metadata rather than executable application policy.
+- **Root cause**: The harness had no typed entity/time/workflow resolution layer, no authoritative generation-status capability, a generic evidence writer instead of a source-aware investigation graph, a generic interrupt around writes, and no compiler connecting active Packs to both planning and execution.
+- **Change**: Completed Slices 10-13. Added deterministic entity/focus/time resolution and persisted snapshots; authoritative MCP generation status plus prior-run reconciliation; a LangGraph operational-investigation workflow requiring docs, runtime, and connector/log evidence; structured answer composition with conflicts, confidence, qualifications, actions, sources, and artifacts; a dedicated documentation-update workflow with expected-SHA approval, rollback, and revert; and strict data-only Packs whose include closure compiles the active capability registry, planner context, API metadata, and per-run snapshot.
+- **Why this approach**: The model interprets and proposes work, but Nexus retains deterministic authority over identity, time bounds, evidence sufficiency, write preconditions, permissions, and executable capability policy. This preserves an application-agnostic harness while preventing conversational guesses from becoming operational truth.
+- **Verification**: RAG backend full suite **1158 passed**; changed-scope Ruff and `git diff --check` passed. Frontend **133 passed** and production build passed. Live Docker checks verified generation status for `ml-sleep`, alias resolution for `reingestdrill`, enforced 24-hour runtime windows, missing-source disclosure, Pack API/manifest parity, a paused-and-declined chat update proposal, and workflow receipts containing resolution/time/Pack snapshots. Inspector verdict: PASS with one unrelated MCP catalogue baseline warning.
+- **Residuals**: Slice 14 was intentionally not started. Persistent LangGraph checkpointing, asynchronous workflow reconciliation, and production connector adapters remain subsequent work. The MCP full suite has one unrelated baseline failure because `route33/z-ai/glm-4.7-flash` is marked `rag_capable: false` in `data/model_catalogue.json` while the legacy registry test expects every real provider to be RAG-capable.
+
+## Session: 2026-07-14
+
+### [Fix]: Agentic runtime orchestration, durable continuation, and useful result replay
+
+- **Files changed**: `RAG_pipeline/backend/alembic/versions/057_conversation_continuations.py`; `RAG_pipeline/backend/src/db/models/harness.py`; `RAG_pipeline/backend/src/harness/chat.py`; `RAG_pipeline/backend/src/harness/evidence.py`; `RAG_pipeline/backend/src/harness/evidence_store/synthesis.py`; `RAG_pipeline/backend/src/harness/executor.py`; `RAG_pipeline/backend/src/harness/models.py`; `RAG_pipeline/backend/src/harness/planner.py`; `RAG_pipeline/backend/tests/test_harness/test_chat_orchestration.py`; `RAG_pipeline/backend/tests/test_harness/test_evidence_store.py`; `RAG_pipeline/backend/tests/test_harness/test_executor.py`.
+- **Problem**: Runtime conversations could promise a query without executing it, confuse runtime entities such as `ESB_PROD` with Nexus project IDs, lose the original objective while collecting project/time slots, contaminate runtime-only requests with documentation, report failed providers as successful empty observations, and answer "show me the results" by replanning, rerunning, failing on duplicate continuation/evidence rows, or returning a generic placeholder.
+- **Root cause**: The harness planner and legacy runtime gate were overlapping authorities; a runtime TurnPlan was not an execution obligation; clarification state was reconstructed from prose instead of durable typed state; the runtime evidence adapter called a fixed three-tool subset and discarded the tool loop's complete answer; handler status was ignored; and evidence recomposition did not reuse the persisted assistant result.
+- **Change**: Added owner-bound, optimistic-versioned conversation continuation persistence and migration 057; preserved objective, runtime entity, project, time window, and evidence policy across slot replies; separated runtime entities from project scope in planner guidance; routed runtime answers through the guarded capability executor and existing bounded LLM runtime tool loop; normalized and deduplicated arbitrary tool receipts; propagated handler failures; retained the complete runtime answer separately from bounded evidence; blocked documentation evidence for runtime-only turns; sanitized internal capability identifiers; and made recomposition select the most complete persisted answer for the prior workflow without creating a new run or invoking tools again.
+- **Why this approach**: The model may interpret the request and select tools, but Nexus must deterministically own scope, continuation, policy, execution, receipts, and replay. Reusing the existing runtime tool loop provides agentic selection without creating a second runtime engine, while persisted typed state prevents short follow-ups from changing the task.
+- **Verification**: Focused harness suite: **52 passed**; changed-scope Ruff passed; `git diff --check` passed. The rebuilt Docker backend is healthy with zero restarts/OOMs and Alembic head `057_conversation_continuations`. Live conversation 112 executed a fully scoped ESB_PROD query through the runtime tool loop and persisted workflow 72; the follow-up "show me the results then?" returned the full report in 12 ms, reused workflow 72, created no workflow 73, and produced no runtime-tool log entries. The full backend suite was not completed because an unrelated tokenizer test attempted network access in the restricted test environment after 308 tests had run.
+- **Residuals**: Truly global/cross-project runtime queries still require a defined nullable or multi-project scope contract. The complete harness batch remains uncommitted on `spike/nexus-agentic-harness` alongside pre-existing unrelated working-tree changes.

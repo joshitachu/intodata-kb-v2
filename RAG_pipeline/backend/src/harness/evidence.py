@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.generation.agent_loop import run_runtime_tool_loop
 from src.harness.models import (
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
@@ -19,8 +22,6 @@ from src.harness.models import (
 )
 from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocumentationProviderError
 from src.retrieval.search import search_and_rerank, search_similar
-from src.runtime.client import execute_runtime_tool
-from src.runtime.models import RuntimeToolCall
 from src.runtime.source_registry import all_source_providers
 from src.runtime.store import RuntimeStoreRepository
 
@@ -129,40 +130,219 @@ async def list_generated_doc_evidence(
 async def query_runtime_evidence(
     *,
     question: str,
-    project_id: str,
+    project_id: str | None,
     project_scope: list[str] | None,
     db: AsyncSession,
+    project_ids: list[str] | None = None,
+    source_key: str | None = None,
+    since: datetime.datetime | None = None,
+    until: datetime.datetime | None = None,
 ) -> EvidenceQueryResult:
-    """Query existing runtime tools and normalize the safe outputs."""
-    _ = question
-    calls = [
-        RuntimeToolCall(
-            tool_name="list_runtime_sync_status",
-            arguments={"project_id": project_id, "limit": 5},
-        ),
-        RuntimeToolCall(tool_name="detect_failures", arguments={"limit": 5}),
-        RuntimeToolCall(
-            tool_name="list_runtime_health",
-            arguments={"project_id": project_id, "limit": 5},
-        ),
-    ]
+    """Run the existing bounded runtime agent loop and normalize its receipts."""
+    scope_lines = []
+    effective_scope = _intersect_project_scopes(project_scope, project_ids)
+    if project_id:
+        scope_lines.append(
+            f"The selected project is {project_id}. Include this project_id in tools that accept it."
+        )
+    elif project_ids:
+        scope_lines.append(
+            "The selected projects are "
+            f"{', '.join(project_ids)}. Restrict every runtime tool call to those projects."
+        )
+    if source_key:
+        scope_lines.append(f"The selected runtime source is {source_key}.")
+    if since or until:
+        scope_lines.append(
+            "Apply this UTC time window to tools that support it: "
+            f"since={since.isoformat() if since else 'unbounded'}, "
+            f"until={until.isoformat() if until else 'unbounded'}."
+        )
+    messages = []
+    if scope_lines:
+        messages.append({"role": "system", "content": " ".join(scope_lines)})
+    messages.append({"role": "user", "content": question})
+
+    outcome = await run_runtime_tool_loop(
+        messages,
+        project_scope=effective_scope,
+        db=db,
+    )
     items: list[EvidenceItem] = []
     errors: list[str] = []
-    for call in calls:
-        result = await execute_runtime_tool(call, project_scope=project_scope, db=db)
-        if not result.success:
-            if result.error:
-                errors.append(f"{call.tool_name}: {result.error.message}")
+    tool_names: list[str] = []
+    for event in outcome.progress_events:
+        if event.event_type != "runtime_tool_result":
             continue
-        items.extend(_runtime_items(call.tool_name, result.data, project_id))
+        payload = event.payload
+        tool_name = str(payload.get("tool_name") or "runtime tool")
+        tool_names.append(tool_name)
+        if not payload.get("success"):
+            error = payload.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                errors.append(f"{tool_name}: {error['message']}")
+            continue
+        data = payload.get("data")
+        normalized = _runtime_items(tool_name, data, project_id or "all")
+        if not normalized:
+            normalized = _generic_runtime_items(tool_name, data, project_id)
+        items.extend(_within_time_window(normalized, since=since, until=until))
 
-    status = "succeeded" if items else ("failed" if errors else "succeeded")
+    final_answer = (outcome.final_answer or "").strip()
+    if outcome.used_runtime_data and final_answer:
+        items.insert(
+            0,
+            EvidenceItem(
+                id=f"runtime-answer:{datetime.datetime.now(datetime.UTC).isoformat()}",
+                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
+                source_type="runtime_answer",
+                title="Runtime evidence answer",
+                summary=_preview(final_answer, limit=4000),
+                observed_at=datetime.datetime.now(datetime.UTC),
+                metadata={
+                    "project_id": project_id,
+                    "runtime_answer": _preview(final_answer, limit=4000),
+                    "tools_used": list(dict.fromkeys(tool_names)),
+                },
+            ),
+        )
+
+    if not outcome.used_runtime_data and not errors:
+        errors.append("The runtime agent did not execute a runtime tool.")
+    status = "succeeded" if items else "failed"
     return EvidenceQueryResult(
         capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
         status=status,
         items=items,
         error_message="; ".join(errors)[:500] if errors and not items else None,
+        answer_draft=final_answer[:12_000] if outcome.used_runtime_data and final_answer else None,
     )
+
+
+def _generic_runtime_items(
+    tool_name: str, data: Any, project_id: str | None
+) -> list[EvidenceItem]:
+    """Normalize arbitrary safe runtime-tool output without knowing its intent."""
+    if isinstance(data, list):
+        values = [item for item in data[:10] if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        nested = next(
+            (
+                value
+                for value in data.values()
+                if isinstance(value, list) and value and isinstance(value[0], dict)
+            ),
+            None,
+        )
+        values = nested[:10] if isinstance(nested, list) else [data]
+    else:
+        values = []
+    result = []
+    for index, value in enumerate(values, 1):
+        fingerprint = hashlib.sha256(
+            json.dumps(value, default=str, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        title = next(
+            (
+                str(value[key])
+                for key in (
+                    "engine_name",
+                    "name",
+                    "job_name",
+                    "plan_name",
+                    "source_key",
+                    "execution_id",
+                )
+                if value.get(key)
+            ),
+            tool_name.replace("_", " ").title(),
+        )
+        observed_at = next(
+            (
+                value.get(key)
+                for key in (
+                    "last_seen_at",
+                    "last_synced_at",
+                    "failed_at",
+                    "started_at",
+                    "ended_at",
+                    "updated_at",
+                )
+                if value.get(key)
+            ),
+            None,
+        )
+        result.append(
+            EvidenceItem(
+                id=(
+                    f"runtime:{tool_name}:"
+                    f"{value.get('id') or value.get('engine_id') or value.get('execution_id') or fingerprint}"
+                ),
+                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
+                source_type=f"runtime_{tool_name}",
+                title=title[:500],
+                summary=_runtime_record_summary(value),
+                observed_at=observed_at,
+                metadata={
+                    "project_id": value.get("project_id") or project_id,
+                    "tool_name": tool_name,
+                },
+            )
+        )
+    return result
+
+
+def _runtime_record_summary(value: dict[str, Any]) -> str:
+    safe_keys = (
+        "name",
+        "engine_name",
+        "job_name",
+        "plan_name",
+        "source_key",
+        "status",
+        "state",
+        "environment_name",
+        "workspace_name",
+        "version",
+        "availability",
+        "last_seen_at",
+        "last_synced_at",
+        "started_at",
+        "ended_at",
+        "failed_at",
+        "failure_rate",
+        "current_failure_streak",
+        "error_summary",
+    )
+    safe = {key: value[key] for key in safe_keys if value.get(key) is not None}
+    return _preview(json.dumps(safe, default=str, sort_keys=True), limit=1000)
+
+
+def _within_time_window(
+    items: list[EvidenceItem],
+    *,
+    since: datetime.datetime | None,
+    until: datetime.datetime | None,
+) -> list[EvidenceItem]:
+    if since is None and until is None:
+        return items
+    result: list[EvidenceItem] = []
+    for item in items:
+        observed = _parse_datetime(item.observed_at)
+        if observed is None:
+            continue
+        if since is not None and observed < _as_utc(since):
+            continue
+        if until is not None and observed >= _as_utc(until):
+            continue
+        result.append(item)
+    return result
+
+
+def _as_utc(value: datetime.datetime) -> datetime.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.UTC)
+    return value.astimezone(datetime.UTC)
 
 
 async def read_connector_evidence(
@@ -303,6 +483,19 @@ def _intersect_scope(scope: list[str] | None, project_id: str | None) -> list[st
     if project_id in scope:
         return [project_id]
     return []
+
+
+def _intersect_project_scopes(
+    authorized_scope: list[str] | None, selected_project_ids: list[str] | None
+) -> list[str] | None:
+    """Apply an explicit runtime selection without widening the caller's RBAC scope."""
+
+    if selected_project_ids is None:
+        return authorized_scope
+    selected = list(dict.fromkeys(selected_project_ids))
+    if authorized_scope is None:
+        return selected
+    return [project_id for project_id in selected if project_id in authorized_scope]
 
 
 def _preview(text: str, limit: int = 360) -> str:

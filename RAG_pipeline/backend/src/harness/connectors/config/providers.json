@@ -1,0 +1,72 @@
+[
+  {
+    "provider_key": "fixture_knowledge",
+    "display_name": "Fixture knowledge",
+    "description": "Deterministic read-only knowledge records.",
+    "adapter_ref": "src.harness.connectors.fixture.FixtureKnowledgeConnector",
+    "auth_modes": ["none", "credential_reference"],
+    "capabilities": [
+      {
+        "id": "connector.fixture.search",
+        "label": "Search fixture knowledge",
+        "action": "read_connector_evidence",
+        "input_schema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {"type": "string"},
+            "project_id": {"type": ["string", "null"]},
+            "limit": {"type": "integer"}
+          },
+          "additionalProperties": false
+        },
+        "output_type": "evidence_items",
+        "risk_tier": "read_only",
+        "packs": ["connectors"],
+        "activity_label": "Searching fixture knowledge"
+      }
+    ],
+    "config_schema": {
+      "dataset": "string",
+      "max_results": "integer"
+    }
+  },
+  {
+    "provider_key": "http_elastic",
+    "display_name": "HTTP search index",
+    "description": "Read-only, allowlisted HTTP search index connector.",
+    "adapter_ref": "src.harness.connectors.http_elastic.ElasticHttpConnector",
+    "auth_modes": ["none", "credential_reference"],
+    "capabilities": [
+      {
+        "id": "connector.http_elastic.search",
+        "label": "Search external index",
+        "action": "read_connector_evidence",
+        "input_schema": {
+          "type": "object",
+          "required": ["query"],
+          "properties": {
+            "query": {"type": "string"},
+            "project_id": {"type": ["string", "null"]},
+            "limit": {"type": "integer"}
+          },
+          "additionalProperties": false
+        },
+        "output_type": "evidence_items",
+        "risk_tier": "read_only",
+        "packs": ["connectors"],
+        "activity_label": "Searching external index"
+      }
+    ],
+    "config_schema": {
+      "base_url": "https URL",
+      "allowed_hosts": "hostname array",
+      "index": "string",
+      "search_path": "path template",
+      "health_path": "path",
+      "timeout_seconds": "number",
+      "max_response_bytes": "integer",
+      "max_results": "integer"
+    }
+  }
+]

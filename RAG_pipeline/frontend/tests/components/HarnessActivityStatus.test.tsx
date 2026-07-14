@@ -23,9 +23,9 @@ describe("HarnessActivityStatus", () => {
       />,
     );
 
-    expect(
-      screen.getByText("Starting documentation generation"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Starting documentation generation")).toBeInTheDocument();
+    expect(screen.getByText("In progress")).toBeInTheDocument();
+    expect(screen.getByText("1 action")).toBeInTheDocument();
     expect(screen.queryByText(/runtime/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Generation request accepted")).not.toBeInTheDocument();
     expect(screen.queryByText("fastapi-e2e")).not.toBeInTheDocument();
@@ -83,11 +83,38 @@ describe("HarnessActivityStatus", () => {
       />,
     );
 
-    expect(screen.getByText("(2 updates)")).toBeInTheDocument();
+    expect(screen.getByText("2 actions")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByText("mcp.docs")).toBeInTheDocument();
+    expect(screen.queryByText("mcp.docs")).not.toBeInTheDocument();
     expect(screen.queryByText(/access_token/)).not.toBeInTheDocument();
+  });
+
+  it("renders result counts while never exposing internal IDs", () => {
+    render(
+      <HarnessActivityStatus
+        activities={[
+          {
+            workflow_run_id: "42",
+            event_type: "evidence.collected",
+            label: "Searching documentation",
+            status: "completed",
+            summary: "Found matching documentation.",
+            safe_details: {
+              result_count: 3,
+              capability_id: "mcp.docs.search",
+              provider_id: "mcp.docs",
+              tool_name: "search_documents",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("3 results")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Searching documentation/i }));
+    expect(screen.queryByText(/mcp\.docs\.search/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/search_documents/)).not.toBeInTheDocument();
   });
 });

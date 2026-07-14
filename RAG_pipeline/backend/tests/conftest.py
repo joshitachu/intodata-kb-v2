@@ -1,16 +1,13 @@
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-collect_ignore = ["stress_test.py"]
 
 from src.db.base import Base
 
 # Import all models so Base.metadata knows about them
-from src.db.models import (
-    User, Role, Document, QueryLog, IngestionJob, Conversation, ConversationMessage,
-    Permission, ProjectAssignment, AuditLog, QueryUsage, BenchmarkRun,
-)  # noqa: F401
+import src.db.models  # noqa: F401
+
+collect_ignore = ["stress_test.py"]
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -42,3 +39,26 @@ async def db_session(engine) -> AsyncSession:
     async with session_factory() as session:
         yield session
         await session.rollback()
+
+
+@pytest.fixture(autouse=True)
+def isolated_harness_runtime(monkeypatch):
+    """Keep chat tests on a checkpointer isolated from the configured DB."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from src.harness import chat
+    from src.harness import runtime
+    from src.harness.workflows.onboarding import ProjectOnboardingWorkflow
+
+    onboarding_checkpointer = InMemorySaver()
+
+    monkeypatch.setattr(
+        runtime,
+        "_DEFAULT_RUNTIME_PROVIDER",
+        runtime.LangGraphRuntimeProvider(),
+    )
+    monkeypatch.setattr(
+        chat,
+        "default_project_onboarding_workflow",
+        lambda: ProjectOnboardingWorkflow(checkpointer=onboarding_checkpointer),
+    )

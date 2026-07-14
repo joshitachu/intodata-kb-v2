@@ -16,12 +16,15 @@ import { cn } from "@/lib/utils";
 import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
 import { HarnessActivityStatus } from "./HarnessActivityStatus";
+import { HarnessPendingAction } from "./HarnessPendingAction";
 import { RuntimeToolStatus } from "./RuntimeToolStatus";
+import { StructuredAnswer } from "./StructuredAnswer";
 import { submitFeedback } from "@/lib/feedback";
 import { useViewport } from "@/hooks/useViewport";
 import type {
   AgentStep,
   HarnessActivityEvent,
+  HarnessPendingAction as HarnessPendingActionValue,
   MessageResponse,
   RuntimeToolProgress,
   UsageStats,
@@ -35,6 +38,7 @@ interface MessageBubbleProps {
   usage?: UsageStats | null;
   steps?: AgentStep[];
   harnessActivities?: HarnessActivityEvent[];
+  pendingAction?: HarnessPendingActionValue | null;
   runtimeTools?: RuntimeToolProgress[];
   onRetry?: () => void;
 }
@@ -47,17 +51,20 @@ export function MessageBubble({
   usage,
   steps,
   harnessActivities,
+  pendingAction,
   runtimeTools,
   onRetry,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
-  const isFailed = !isUser && message.status === "failed";
+  const hasStructuredAnswer = Boolean(message.structured_answer);
+  const transportFailed = !isUser && message.status === "failed";
+  const showGenericFailure = transportFailed && !hasStructuredAnswer;
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
 
   // message.id < 1 marks optimistic / streaming messages that haven't been
   // persisted yet — feedback is disabled until the server assigns a real id.
-  const canSubmitFeedback = !isUser && !isFailed && message.id > 0;
+  const canSubmitFeedback = !isUser && !transportFailed && message.id > 0;
 
   function handleFeedback(next: "up" | "down") {
     if (!canSubmitFeedback) return;
@@ -85,7 +92,15 @@ export function MessageBubble({
   const { isMobile } = useViewport();
 
   function handleCopy() {
-    navigator.clipboard.writeText(message.content);
+    const copyText = message.content || [
+      message.structured_answer?.headline,
+      message.structured_answer?.summary,
+      ...((message.structured_answer?.sections ?? []).flatMap((section) => [
+        section.heading,
+        section.body,
+      ])),
+    ].filter(Boolean).join("\n\n");
+    navigator.clipboard.writeText(copyText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -126,14 +141,14 @@ export function MessageBubble({
           ) : (
             /* Assistant: raw text on page background */
             <div>
-              {harnessActivities && harnessActivities.length > 0 && (
-                <HarnessActivityStatus activities={harnessActivities} />
-              )}
               {runtimeTools && runtimeTools.length > 0 && (
                 <RuntimeToolStatus tools={runtimeTools} />
               )}
+              {pendingAction && (
+                <HarnessPendingAction action={pendingAction} />
+              )}
               <div className="chat-prose">
-                {isFailed ? (
+                {showGenericFailure ? (
                   <div className="flex flex-col items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
                     <div className="flex items-start gap-2">
                       <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
@@ -153,6 +168,8 @@ export function MessageBubble({
                       </button>
                     )}
                   </div>
+                ) : message.structured_answer ? (
+                  <StructuredAnswer answer={message.structured_answer} />
                 ) : message.content ? (
                   <MarkdownContent content={message.content} />
                 ) : isStreaming ? (
@@ -166,12 +183,21 @@ export function MessageBubble({
                 )}
               </div>
 
+              {harnessActivities && harnessActivities.length > 0 && (
+                <div className="pt-2">
+                  <HarnessActivityStatus activities={harnessActivities} />
+                </div>
+              )}
+
               {/* Collapsible sources */}
               {sourceCount > 0 && !isStreaming && (
                 <div className="pt-2">
                   <button
+                    type="button"
                     onClick={() => setSourcesExpanded(!sourcesExpanded)}
                     className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    aria-expanded={sourcesExpanded}
+                    aria-label={`${sourcesExpanded ? "Hide" : "Show"} ${sourceCount} ${sourceCount === 1 ? "source" : "sources"}`}
                   >
                     {sourcesExpanded ? (
                       <ChevronDown className="h-3 w-3" />
@@ -195,7 +221,7 @@ export function MessageBubble({
               )}
 
               {/* Action buttons (assistant only) */}
-              {!isStreaming && message.content && (
+              {!isStreaming && (message.content || hasStructuredAnswer) && (
                 <div
                   className={cn(
                     "flex items-center gap-1 pt-1.5 transition-opacity",

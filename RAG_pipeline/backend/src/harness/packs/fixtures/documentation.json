@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "id": "nexus.documentation",
+  "name": "Documentation",
+  "version": "1.0.0",
+  "pack_type": "documentation",
+  "includes": [],
+  "documentation_provider_ref": "mcp.docs.default",
+  "vocabulary": [
+    {
+      "term": "documentation set",
+      "aliases": ["docs", "project documentation"],
+      "description": "Versioned project documentation generated and maintained through the documentation provider."
+    }
+  ],
+  "entities": [
+    {
+      "id": "documentation.document",
+      "label": "Document",
+      "plural_label": "Documents",
+      "aliases": ["page", "runbook"]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "documentation.generate",
+      "label": "Generate documentation",
+      "description": "Generate a scoped documentation set for a project.",
+      "capability_ids": [
+        "mcp.docs.generate_project_documentation",
+        "mcp.docs.get_generation_status",
+        "mcp.docs.list_project_docs",
+        "rag.docs.search_evidence"
+      ],
+      "entity_type_ids": ["documentation.document"],
+      "connector_requirement_ids": [],
+      "artifact_template_ids": ["documentation.markdown"]
+    },
+    {
+      "id": "documentation.update",
+      "label": "Update documentation",
+      "description": "Propose and publish an evidence-backed document update.",
+      "capability_ids": [
+        "mcp.docs.update_from_evidence",
+        "mcp.docs.revert_evidence_update"
+      ],
+      "entity_type_ids": ["documentation.document"],
+      "connector_requirement_ids": [],
+      "artifact_template_ids": ["documentation.markdown"]
+    }
+  ],
+  "evidence_ranking": [
+    {"evidence_type": "document", "weight": 30, "source_kind": "documentation"}
+  ],
+  "artifact_templates": [
+    {
+      "id": "documentation.markdown",
+      "label": "Project document",
+      "relative_path": "docs/{document_slug}.md",
+      "media_type": "text/markdown"
+    }
+  ],
+  "connector_requirements": [],
+  "default_scopes": {
+    "project_required": true,
+    "permissions": ["documents.read"],
+    "domains": ["documentation"]
+  },
+  "policy_hints": {
+    "approval_required_for": [
+      "mcp.docs.update_from_evidence",
+      "mcp.docs.revert_evidence_update"
+    ],
+    "evidence_required": true,
+    "read_only": false
+  },
+  "output_rules": {
+    "required_sections": ["summary", "artifacts"],
+    "include_confidence": true,
+    "include_artifact_links": true
+  }
+}

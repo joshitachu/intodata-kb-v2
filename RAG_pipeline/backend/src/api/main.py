@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -33,6 +32,8 @@ from src.api.routes import runtime_source_types as runtime_source_type_routes
 from src.api.routes import runtime_workspace_map as runtime_workspace_map_routes
 from src.api.routes import runtime_audit as runtime_audit_routes
 from src.api.routes import harness as harness_routes
+from src.api.routes import harness_connectors as harness_connector_routes
+from src.api.routes import harness_packs as harness_pack_routes
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     logger.info("Starting IntoData KB API")
     runtime_scheduler = None
+    documentation_reconciliation_scheduler = None
 
     # Ensure Qdrant collection and payload indexes exist
     from src.api.dependencies import get_qdrant
@@ -141,10 +143,28 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("Runtime sync scheduler enabled but no supported source/projects configured")
 
+    service_token = settings.mcp_docs_reconciliation_service_token
+    if service_token is not None and service_token.get_secret_value().strip():
+        from src.db.session import async_session_factory
+        from src.harness.reconciliation import DocumentationWorkflowReconciliationScheduler
+
+        documentation_reconciliation_scheduler = DocumentationWorkflowReconciliationScheduler(
+            session_factory=async_session_factory,
+            service_access_token=service_token.get_secret_value(),
+            interval_seconds=settings.mcp_docs_reconciliation_interval_seconds,
+            batch_size=settings.mcp_docs_reconciliation_batch_size,
+        )
+        documentation_reconciliation_scheduler.start_background()
+        logger.info("Documentation workflow reconciliation scheduler started")
+    else:
+        logger.info("Documentation workflow reconciliation scheduler disabled; no service credential configured")
+
     yield
     logger.info("Shutting down IntoData KB API")
     if runtime_scheduler is not None:
         await runtime_scheduler.stop()
+    if documentation_reconciliation_scheduler is not None:
+        await documentation_reconciliation_scheduler.stop()
     # Cleanup: close Qdrant client if open
     from src.api.dependencies import _qdrant_client
     if _qdrant_client is not None:
@@ -257,3 +277,5 @@ app.include_router(runtime_source_type_routes.router, prefix="/api/v1")
 app.include_router(runtime_workspace_map_routes.router, prefix="/api/v1")
 app.include_router(runtime_audit_routes.router, prefix="/api/v1")
 app.include_router(harness_routes.router, prefix="/api/v1")
+app.include_router(harness_connector_routes.router, prefix="/api/v1")
+app.include_router(harness_pack_routes.router, prefix="/api/v1")

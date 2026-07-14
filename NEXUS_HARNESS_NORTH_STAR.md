@@ -104,11 +104,11 @@ What: What a pilot needs to become a product:
   degradation strategy)
 - external publishing targets (Confluence/SharePoint as PublishingProviders)
 - persistent checkpoint storage at scale, run retention/GC policies
-- eval suite (Slice 16) running continuously, not once
+- eval suite (Slice 19) running continuously, not once
 - operational runbook for the harness itself (it must be debuggable with its
   own receipts)
 
-Why it is not in the slices: Slice 16 adds evals and regression gates for the
+Why it is not in the slices: Slice 19 adds evals and regression gates for the
 demo path; the rest is explicitly out of the V0 design.
 
 Done when: two tenants run concurrently with isolated data, enforced budgets,

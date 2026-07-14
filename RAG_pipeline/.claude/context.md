@@ -242,3 +242,37 @@ cd frontend && npm run dev    # http://localhost:3000
 - [ ] Frontend: document selector for chat-with-doc
 
 See `PROJECT_MEMORY.md` for architecture decisions and `PROGRESS_LOG.md` for session history.
+
+## Latest Harness State (2026-07-11)
+
+- Slices 6, 7, 8, and 9 are complete on `spike/nexus-agentic-harness` and remain
+  uncommitted in the working tree.
+- Model planning is the primary chat router. Deterministic intent parsing is compatibility
+  fallback only when model output is unavailable or invalid.
+- Durable clarification/approval, onboarding, dynamic connectors, and multi-source evidence
+  are integrated through chat. Live workflow 12 started MCP generation run 40 only after
+  scan-ready confirmation.
+- Full backend: 1081 passed. Full frontend: 133 passed; build passed. Alembic head: 053.
+- Immediate next steps: review/commit the batch; then implement a Postgres LangGraph
+  checkpointer, deferred-index reconciler, and MCP-side Git DNS/redirect policy.
+- Resolved blockers from the prior harness batch: resume is real, owner visibility works,
+  timeout reconciliation and provider path validation exist, and new workflows use the
+  guarded executor.
+
+## Latest Harness State (2026-07-12)
+
+- Slices 10, 11, 12, and 13 are complete on `spike/nexus-agentic-harness`; the OpenCode adapter was not started and is now Slice 17 after inserting the routing/synthesis/presentation corrections as Slices 14-16.
+- Conversation resolution now carries typed project, workflow kind, focus, confidence, ambiguity, and exact UTC time windows. Prior workflow receipts restore conversational focus.
+- Documentation status is read from MCP's generation-run ledger and reconciles Nexus workflow receipts; published files alone never prove completion or client readiness.
+- Operational investigations collect and rank docs, runtime, and connector/log evidence, preserve conflicts, disclose missing sources, and synthesize structured answers instead of raw observation dumps.
+- Documentation updates use a dedicated approval graph. Approval binds the target document's expected SHA; publish rolls back on RAG-index failure; matching receipts can revert the version.
+- Active data-only Packs compile the capability registry used by both planner and executor, are visible through the authenticated Packs API, and are snapshotted on every workflow run.
+- Verification: backend 1158 passed; frontend 133 passed and build passed; MCP focused 78 passed; MCP full 1098 passed with one unrelated model-catalogue baseline failure; live update/revert restored the original SHA exactly.
+- Next work after review/commit starts with Slice 14 unified turn planning, followed by question-aware synthesis and structured answer presentation. Do not begin the OpenCode adapter (Slice 17) without explicit scope approval.
+
+## Latest Harness State (2026-07-14)
+
+- **Last completed**: Hardened agentic runtime orchestration after live multi-turn failures. Runtime TurnPlans now execute through the guarded capability executor and bounded LLM runtime tool loop; durable continuation retains objective/entity/project/time/evidence policy; runtime-only turns cannot silently use documentation; failed handlers remain failures; and result recomposition reuses the complete persisted answer without rerunning tools.
+- **Live proof**: Conversation 112 produced a complete ESB_PROD runtime report under workflow 72. Its "show me the results then?" follow-up returned the same report in 12 ms with workflow 72, no new workflow, and no runtime tool calls. Migration 057 is applied and the backend is healthy with zero restarts.
+- **Resolved blockers**: Runtime entities are no longer treated as project IDs; slot replies no longer replace the original objective; runtime plans are execution obligations; duplicate evidence/continuation rows no longer produce 500s; and the model can no longer claim a runtime capability was unavailable after Nexus already executed it.
+- **Immediate next steps**: Define and implement the contract for global/cross-project runtime queries; add production connector adapters and persistent LangGraph checkpointing/asynchronous workflow reconciliation; run the complete backend suite in an environment where tokenizer assets are cached or network access is available; review and commit the uncommitted harness batch without including unrelated working-tree changes.

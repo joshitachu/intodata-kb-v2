@@ -20,7 +20,7 @@ import asyncio
 import logging
 import math
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -180,7 +180,7 @@ class TalendTmcRuntimeProvider:
             headers={"Authorization": f"Bearer {self._read_token()}"},
         )
 
-    async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def _get(self, path: str, *, params: dict[str, Any] | None = None) -> dict[str, Any] | list[dict[str, Any]]:
         try:
             async with self._client() as client:
                 response = await client.get(path, params={k: v for k, v in (params or {}).items() if v is not None})
@@ -190,9 +190,13 @@ class TalendTmcRuntimeProvider:
             raise RuntimeProviderError(f"Talend TMC GET {path} returned HTTP {e.response.status_code}") from e
         except httpx.HTTPError as e:
             raise RuntimeProviderError(f"Talend TMC GET {path} transport failure: {type(e).__name__}") from e
-        if not isinstance(data, dict):
-            raise RuntimeProviderError(f"Talend TMC GET {path} returned a non-object payload")
-        return data
+        # Talend TMC list endpoints return a bare JSON array; single-resource
+        # endpoints return an object. Accept either; reject scalars/null.
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        raise RuntimeProviderError(f"Talend TMC GET {path} returned a non-object/non-array payload")
 
     async def _post(self, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
@@ -218,13 +222,28 @@ class TalendTmcRuntimeProvider:
         items: list[dict[str, Any]] = []
         offset = 0
         page_size = min(max_items, 200)
+        # TMC list endpoints do not share a uniform pagination contract: some
+        # reject limit/offset with HTTP 400. Send the params, and if the
+        # endpoint rejects them, retry without pagination and treat the bare
+        # array as one complete page.
+        supports_pagination = True
         while len(items) < max_items:
-            page = await self._get(path, params={**(params or {}), "limit": page_size, "offset": offset})
+            page_params = dict(params or {})
+            if supports_pagination:
+                page_params["limit"] = page_size
+                page_params["offset"] = offset
+            try:
+                page = await self._get(path, params=page_params)
+            except RuntimeProviderError as err:
+                if supports_pagination and _is_pagination_rejected(err):
+                    supports_pagination = False
+                    continue
+                raise
             batch = _extract_items(page)
             items.extend(batch)
-            total = _as_int(page.get("total") or page.get("totalSize")) or len(items)
+            total = _page_total(page, "total", "totalSize") or len(items)
             offset += len(batch)
-            if not batch or offset >= total:
+            if not supports_pagination or not batch or offset >= total:
                 break
         return items[:max_items]
 
@@ -431,7 +450,7 @@ class TalendTmcRuntimeProvider:
                 data = response.json()
         except (httpx.HTTPError, ValueError) as e:
             raise RuntimeProviderError(f"Talend TMC log download failed: {type(e).__name__}") from e
-        return _extract_items(data) if isinstance(data, dict) else data if isinstance(data, list) else []
+        return _extract_items(data)
 
     async def _get_execution_logs_paginated(self, execution_id: str, max_entries: int) -> list[dict[str, Any]]:
         all_logs: list[dict[str, Any]] = []
@@ -443,7 +462,7 @@ class TalendTmcRuntimeProvider:
             )
             batch = _extract_items(page)
             all_logs.extend(batch)
-            total = _as_int(page.get("totalSize") or page.get("total")) or len(all_logs)
+            total = _page_total(page, "totalSize", "total") or len(all_logs)
             start_index += len(batch)
             if not batch or start_index >= total:
                 break
@@ -468,9 +487,38 @@ class TalendTmcRuntimeProvider:
         return items
 
 
-def _extract_items(data: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = data.get("items", data.get("data", data.get("logs", [])))
-    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+def _extract_items(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        raw = data.get("items", data.get("data", data.get("logs", [])))
+        return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    return []
+
+
+def _page_total(page: dict[str, Any] | list[dict[str, Any]], *keys: str) -> int | None:
+    """Best-effort total-count extraction from a page.
+
+    Bare-array TMC responses have no envelope, so callers fall back to
+    ``len(items)`` when this returns ``None``.
+    """
+    if isinstance(page, dict):
+        for key in keys:
+            value = _as_int(page.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _is_pagination_rejected(err: RuntimeProviderError) -> bool:
+    """True when TMC rejected the request specifically with HTTP 400.
+
+    Other HTTP errors (auth, server faults) and transport failures are not
+    treated as pagination rejection so they propagate unchanged. The original
+    ``httpx.HTTPStatusError`` is preserved on ``__cause__`` by ``_get``.
+    """
+    cause = err.__cause__
+    return isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code == 400
 
 
 def _sanitize_tmc_error(message: str, token: str | None = None) -> str:

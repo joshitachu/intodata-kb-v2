@@ -23,7 +23,11 @@ from src.harness.models import (
     WorkflowRunCreate,
     WorkflowRunStatus,
     WorkflowRunUpdate,
+    WorkflowInterruptCreate,
+    WorkflowInterruptStatus,
+    WorkflowInterruptType,
 )
+from src.harness.repository import HarnessInterruptUnavailableError, HarnessWorkflowConflictError
 
 _T0 = datetime.datetime(2026, 7, 10, 9, 0, tzinfo=UTC)
 _CAPABILITY_ID = "mcp.docs.generate_project_documentation"
@@ -161,6 +165,61 @@ class TestHarnessWorkflowRepository:
         with pytest.raises(HarnessRunNotFoundError):
             await repo.list_activity_events(["project-b"], run.id)
 
+    async def test_owner_can_read_interrupted_sentinel_run_but_other_user_cannot(self, db_session):
+        repo = HarnessWorkflowRepository(db_session)
+        run = await _create_run(repo, db_session, project_id="__pending_project_scope__")
+        run = await repo.update_run(
+            [run.project_id], run.id, WorkflowRunUpdate(status=WorkflowRunStatus.INTERRUPTED)
+        )
+
+        assert (await repo.get_run([], run.id, owner_user_id=run.user_id)).id == run.id
+        with pytest.raises(HarnessRunNotFoundError):
+            await repo.get_run([], run.id, owner_user_id=run.user_id + 1)
+
+    async def test_interrupt_is_owner_bound_expiring_and_single_use(self, db_session):
+        repo = HarnessWorkflowRepository(db_session)
+        run = await _create_run(repo, db_session)
+        interrupt = await repo.create_interrupt(
+            WorkflowInterruptCreate(
+                workflow_run_id=run.id,
+                owner_user_id=run.user_id,
+                interrupt_type=WorkflowInterruptType.CLARIFICATION,
+                prompt="Choose a project",
+                options=[{"id": "project-a", "label": "Project A"}],
+                argument_hash="a" * 64,
+                expires_at=datetime.datetime.now(UTC) + datetime.timedelta(days=1),
+            )
+        )
+
+        consumed = await repo.consume_interrupt(
+            interrupt.id, run.id, run.user_id, response_summary="Project A"
+        )
+        assert consumed.status == WorkflowInterruptStatus.CONSUMED
+        with pytest.raises(HarnessInterruptUnavailableError):
+            await repo.consume_interrupt(
+                interrupt.id, run.id, run.user_id, response_summary="Replay"
+            )
+        with pytest.raises(HarnessRunNotFoundError):
+            await repo.get_interrupt_for_owner(interrupt.id, run.id, run.user_id + 1)
+
+    async def test_expected_version_rejects_stale_lifecycle_update(self, db_session):
+        repo = HarnessWorkflowRepository(db_session)
+        run = await _create_run(repo, db_session)
+        updated = await repo.update_run(
+            [run.project_id],
+            run.id,
+            WorkflowRunUpdate(status=WorkflowRunStatus.INTERRUPTED),
+            expected_version=run.version,
+        )
+        assert updated.version == run.version + 1
+        with pytest.raises(HarnessWorkflowConflictError):
+            await repo.update_run(
+                [run.project_id],
+                run.id,
+                WorkflowRunUpdate(status=WorkflowRunStatus.CANCELLED),
+                expected_version=run.version,
+            )
+
 
 class TestCapabilityRegistry:
     def test_default_registry_contains_documentation_generation_capability(self):
@@ -229,3 +288,27 @@ class TestHarnessWorkflowService:
         assert updated.artifact_links == [
             {"label": "Project Documentation", "url": "/docs/project-a"}
         ]
+
+    async def test_activity_text_is_bounded_before_database_write(self, db_session):
+        user, conversation = await _seed_conversation(db_session)
+        repo = HarnessWorkflowRepository(db_session)
+        service = HarnessWorkflowService(repo, default_capability_registry())
+        run = await service.start_run(
+            conversation_id=conversation.id,
+            user_id=user.id,
+            project_id="project-a",
+            intent_mode="update_docs_from_evidence",
+            capability_id=_CAPABILITY_ID,
+        )
+
+        event = await service.record_activity(
+            run,
+            event_type="provider.conflict." + "x" * 200,
+            label="Documentation provider returned HTTP 409: " + "x" * 500,
+            status=ActivityEventStatus.FAILED,
+            summary="conflict " * 1000,
+        )
+
+        assert len(event.event_type) == 80
+        assert len(event.label) == 255
+        assert len(event.summary or "") == 2000

@@ -50,6 +50,7 @@ interface ChatContextValue {
   deleteConversation: (id: number) => Promise<void>;
   handleSendMessage: (request: ConversationMessageRequest) => Promise<void>;
   retryFailedMessage: () => Promise<void>;
+  refreshActiveConversation: () => void;
   isCreating: boolean;
 
   // Stream state
@@ -245,6 +246,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     await handleSendMessage(request);
   }, [handleSendMessage, streamState.isStreaming]);
 
+  const refreshActiveConversation = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["conversation", activeConversationId] });
+    queryClient.invalidateQueries({ queryKey: ["conversations"] });
+  }, [activeConversationId, queryClient]);
+
   const setMode = useCallback((newMode: ChatMode) => {
     setModeState(newMode);
     if (newMode !== "deep-dive") {
@@ -270,6 +276,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     deleteConversation,
     handleSendMessage,
     retryFailedMessage,
+    refreshActiveConversation,
     isCreating: createMutation.isPending,
     pendingUserMessage,
     streamState,
@@ -288,6 +295,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     deleteConversation,
     handleSendMessage,
     retryFailedMessage,
+    refreshActiveConversation,
     createMutation.isPending,
     pendingUserMessage,
     streamState,

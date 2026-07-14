@@ -110,6 +110,63 @@ export type ConversationMessageRequest = z.input<
   typeof ConversationMessageRequestSchema
 >;
 
+export const SlashCommandSchema = z.object({
+  name: z.string().regex(/^[a-z][a-z0-9_-]*$/),
+  description: z.string(),
+  argument_hint: z.string().nullable().optional(),
+});
+
+export type SlashCommand = z.infer<typeof SlashCommandSchema>;
+
+export const SlashCommandListResponseSchema = z.object({
+  commands: z.array(SlashCommandSchema),
+});
+
+const StructuredAnswerValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+]);
+
+export const StructuredAnswerCitationSchema = z.object({
+  evidence_id: z.string(),
+  label: z.string(),
+  uri: z.string().nullable().optional(),
+  source_class: z.string(),
+});
+
+export const StructuredAnswerSectionSchema = z.object({
+  heading: z.string(),
+  body: z.string().nullable().optional(),
+  rows: z.array(z.record(StructuredAnswerValueSchema)).optional().default([]),
+});
+
+export const StructuredAnswerSchema = z.object({
+  output_contract: z.string(),
+  headline: z.string(),
+  summary: z.string(),
+  sections: z.array(StructuredAnswerSectionSchema).optional().default([]),
+  limitations: z.array(z.string()).optional().default([]),
+  citations: z.array(StructuredAnswerCitationSchema).optional().default([]),
+  evidence_refs: z.array(z.string()).optional().default([]),
+  answer_status: z.enum(["complete", "partial", "insufficient"]),
+  execution_status: z.enum(["completed", "failed", "cancelled", "running"]),
+  domain_status: z.enum(["healthy", "degraded", "failed", "unknown"]),
+  artifacts: z
+    .array(
+      z.object({
+        label: z.string(),
+        url: z.string(),
+        kind: z.string().optional(),
+      }),
+    )
+    .optional()
+    .default([]),
+});
+
+export type StructuredAnswer = z.infer<typeof StructuredAnswerSchema>;
+
 export const MessageResponseSchema = z.object({
   id: z.number(),
   role: z.string(),
@@ -119,6 +176,15 @@ export const MessageResponseSchema = z.object({
   latency_ms: z.number().nullable(),
   status: z.string().optional().default("completed"),
   error_message: z.string().nullable().optional(),
+  workflow_run_id: z.number().int().positive().nullable().optional(),
+  turn_plan: z.record(z.unknown()).nullable().optional(),
+  structured_answer: StructuredAnswerSchema.nullable().optional(),
+  harness_activities: z
+    .array(z.lazy(() => HarnessActivityEventSchema))
+    .optional(),
+  pending_action: z
+    .lazy(() => HarnessPendingActionSchema.nullable())
+    .optional(),
   created_at: z.string(),
 });
 
@@ -472,8 +538,6 @@ export const HarnessActivityEventSchema = z.object({
   event_type: z.string(),
   label: z.string(),
   status: HarnessActivityStatusSchema,
-  provider_id: z.string().nullable().optional(),
-  capability_id: z.string().nullable().optional(),
   summary: z.string().nullable().optional(),
   safe_details: z.record(HarnessSafeDetailsValueSchema).optional().default({}),
   timestamp: z.string().nullable().optional(),
@@ -482,6 +546,117 @@ export const HarnessActivityEventSchema = z.object({
 export type HarnessActivityEvent = z.infer<
   typeof HarnessActivityEventSchema
 >;
+
+// --- Harness pending actions ---
+
+export const HarnessPendingActionChoiceSchema = z.object({
+  label: z.string().trim().min(1).max(160),
+  value: z.string().trim().min(1).max(500),
+});
+
+export const HarnessPendingActionSchema = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const input = value as Record<string, unknown>;
+  return {
+    workflow_run_id: input.workflow_run_id,
+    interrupt_id: input.interrupt_id ?? input.id,
+    expected_version: input.expected_version,
+    kind: input.kind ?? input.interrupt_type,
+    prompt: input.prompt,
+    choices: input.choices ?? input.options,
+    required_fields: input.required_fields,
+    project_id: input.project_id,
+    platform: input.platform,
+    expires_at: input.expires_at,
+  };
+}, z.object({
+  workflow_run_id: z.union([z.string(), z.number().int().positive()]).transform(String),
+  interrupt_id: z.number().int().positive(),
+  expected_version: z.number().int().positive(),
+  kind: z.enum(["clarification", "approval"]),
+  prompt: z.string().trim().min(1).max(1000),
+  choices: z.array(HarnessPendingActionChoiceSchema).max(20).optional().default([]),
+  required_fields: z.array(z.string().trim().min(1).max(80)).max(20).optional().default([]),
+  project_id: z.string().trim().min(1).max(255).nullable().optional(),
+  platform: z.string().trim().min(1).max(80).nullable().optional(),
+  expires_at: z.string().nullable().optional(),
+}));
+
+export type HarnessPendingAction = z.infer<typeof HarnessPendingActionSchema>;
+
+export const HarnessResumeRequestSchema = z.object({
+  interrupt_id: z.number().int().positive(),
+  expected_version: z.number().int().positive(),
+  response: z.string().trim().min(1).max(4096),
+});
+
+export const HarnessCancelRequestSchema = z.object({
+  expected_version: z.number().int().positive(),
+});
+
+export type HarnessResumeRequest = z.infer<typeof HarnessResumeRequestSchema>;
+
+// --- Harness Packs ---
+
+export const HarnessPackViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  pack_type: z.enum(["documentation", "domain"]),
+  includes: z.array(z.string()),
+  workflow_labels: z.array(z.string()),
+  workflow_descriptions: z.array(z.string()),
+  entity_labels: z.array(z.string()),
+  documentation_provider_ref: z.string().nullable(),
+  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type HarnessPackView = z.infer<typeof HarnessPackViewSchema>;
+
+export const HarnessPackSnapshotSchema = z.object({
+  active_pack_ids: z.array(z.string()),
+  resolved_packs: z.array(z.object({
+    id: z.string(), version: z.string(), content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  })),
+  snapshot_hash: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type HarnessPackSnapshot = z.infer<typeof HarnessPackSnapshotSchema>;
+
+export const HarnessPackCatalogSchema = z.object({
+  packs: z.array(HarnessPackViewSchema),
+  active: HarnessPackSnapshotSchema,
+  total: z.number(),
+});
+export type HarnessPackCatalog = z.infer<typeof HarnessPackCatalogSchema>;
+
+export const HarnessPackRecommendationSchema = z.object({
+  pack_id: z.string(),
+  confidence: z.number().min(0).max(1),
+  reasons: z.array(z.string()).min(1),
+});
+export type HarnessPackRecommendation = z.infer<typeof HarnessPackRecommendationSchema>;
+
+export const HarnessPackActivationSchema = z.object({
+  project_id: z.string(),
+  workflow_key: z.string(),
+  active_pack_ids: z.array(z.string()),
+  snapshot: HarnessPackSnapshotSchema,
+});
+export type HarnessPackActivation = z.infer<typeof HarnessPackActivationSchema>;
+
+export const DocumentationPackSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string().trim().min(1),
+  version: z.string().trim().min(1),
+  description: z.string().trim().min(1).nullable(),
+});
+export type DocumentationPack = z.infer<typeof DocumentationPackSchema>;
+
+export const DocumentationPackSelectionSchema = z.object({
+  project_id: z.string().trim().min(1),
+  selected_plugin_pack_id: z.number().int().positive().nullable(),
+  packs: z.array(DocumentationPackSchema),
+});
+export type DocumentationPackSelection = z.infer<typeof DocumentationPackSelectionSchema>;
 
 // --- Runtime logs API (EP-005 slice 2 contract; schemas in ./runtime) ---
 export {

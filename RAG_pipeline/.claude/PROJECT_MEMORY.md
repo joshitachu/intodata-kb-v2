@@ -334,3 +334,46 @@ intodata-kb/
 - **The MCP docs provider (`providers/mcp_docs.py`) does not validate `project_id`/`filename` path segments; safety currently depends on the caller's `_DOC_FILENAME_RE` regex in `chat.py`.** This is acceptable ONLY while all arguments are regex-extracted. Before the model-backed planner (or any model) supplies capability arguments, path-segment validation must move into the provider/executor boundary.
 - **Two orchestration paths coexist: only docs generation goes through LangGraph; investigation/connector-inventory/doc-update still use the direct path in `chat.py`, and `executor._dispatch` supports exactly one capability id.** Rule until consolidation: no new capability lands on the legacy direct path, and every new executor-dispatchable capability extends `_dispatch` (or its future registry), not `chat.py` branching.
 - **Backend test invocation: plain `uv run pytest` fails with "Failed to spawn: pytest" — pytest lives in the `dev` extra.** Use `uv run --extra dev pytest`.
+
+### Nexus harness Slices 6-9 invariants (2026-07-11)
+
+- **Supersedes the stale Slice 6 warnings above:** workflow interrupts are durable,
+  owner-bound, expiring, optimistic-versioned, single-use, cancellable, and resumable.
+  Nexus records allow reconstruction when the process-lifetime LangGraph saver is empty.
+- **Model tool names are transport details, never capability IDs.** Internal capability IDs
+  may contain dots; providers receive stable `nexus_tool_<sha256-prefix>` names. Native tool
+  calls and validated JSON plans map back before manifest/schema/policy validation.
+- **Never pass empty chat history to a model provider.** Failed assistant messages can have
+  empty content; the planner boundary must omit them.
+- **Onboarding order is strict:** attach source -> trigger scan -> bounded poll until
+  `ready|completed` -> generate docs -> publish only if docs already exist, otherwise persist
+  index pending. Triggering docs directly after `/scan` reproduces a real missing-scan-output
+  failure.
+- **Dynamic connector tools are request-scoped projections.** Manifest filtering is not
+  enough: execution must re-read enabled/health/binding/project/domain state so a stale tool
+  selection cannot run after revocation.
+- **Evidence cited in answers must be persisted and marked used.** Conflicting claims are
+  retained under a conflict group and the answer must disclose disagreement.
+- **Do not serialize workflow `input_summary`, interrupt policy/scope snapshots, argument
+  hashes, response summaries, or credential references.** User evidence and approval payloads
+  belong in excluded internal state, not public receipts.
+
+### Nexus harness Slices 10-13 invariants (2026-07-12)
+
+- **Published documents are not a workflow-status authority.** Documentation completion, failure, quality, and client readiness must come from the generation-run ledger; file lists only describe artifacts.
+- **Time constraints are enforced after model planning.** A model-selected runtime capability must receive the deterministically resolved `since`/`until` bounds even when its proposed arguments omit them. Runtime observations outside the half-open UTC window are discarded.
+- **A complete operational investigation requires docs, runtime, and connector/log evidence plus a supported synthesis.** Missing required source classes produce a qualified, semantically unsuccessful result; never hide the gap behind a confident prose answer.
+- **Document approval binds content identity.** Every proposed update carries the current base SHA, publish uses that SHA as a precondition, indexing failure restores the previous file, and revert accepts only the matching receipt/version. MCP document reads may be raw Markdown or JSON and adapters must support both.
+- **Packs are executable policy, not prompt decoration.** The active Pack include closure compiles both the model-visible manifest and executor registry. A disabled capability must be impossible to execute even if a model names it. Snapshot active Pack IDs and hashes on every workflow run.
+- **Workflow metadata updates merge rather than replace.** Resolution, exact time window, evidence state, and Pack snapshot must survive subsequent status/receipt updates.
+- **User-facing synthesis never exposes internal capability IDs, raw provider payloads, document byte dumps, or hidden chain of thought.** The activity timeline may show safe action summaries, evidence sources, status, artifacts, and recoverable errors.
+
+### Agentic runtime orchestration invariants (2026-07-14)
+
+- **A runtime TurnPlan is an execution obligation, not optional context for the legacy RAG path.** Once the harness selects `runtime_answer`, execute the runtime capability through `HarnessCapabilityExecutor`; do not hand the same turn to a second router that may answer from documentation or prose alone.
+- **Runtime entities and Nexus project scope are different dimensions.** Engine/job/source names such as `ESB_PROD` stay in the capability question. Only an actual accessible Nexus project ID may populate `project_id`.
+- **Clarification must preserve typed task state durably.** Store objective, task type, entity, project, time window, evidence policy, missing slots, and version in the owner-bound conversation continuation row. A short slot answer such as `cdc` or `last 2 days` supplements that envelope; it never becomes the new objective.
+- **Evidence-only policy is enforced during execution.** A runtime-only request must not retrieve indexed/generated documentation as a fallback. Missing runtime evidence yields an insufficient answer, not a fabricated capability denial or a documentation answer.
+- **Executor success follows the handler receipt.** A failed `EvidenceQueryResult` is a failed observation even if the transport call returned normally. Deduplicate evidence identities before persistence and never mark duplicate IDs as used.
+- **The runtime evidence capability delegates to the bounded LLM runtime tool loop.** Do not regress it to a fixed list of three tools. Persist sanitized receipts and a bounded evidence summary, while retaining the complete user-facing answer separately for synthesis/replay.
+- **Recomposition is read-only replay.** Requests such as "show me the results" reuse the prior workflow ID and the most complete persisted assistant answer. They must not create a new workflow, invoke runtime tools, or overwrite a detailed answer with a generic evidence placeholder.

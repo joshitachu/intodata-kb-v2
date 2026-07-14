@@ -119,8 +119,12 @@ class QueryAnalysis:
     extracted_project: str | None = None
     runtime_intent: bool = False
     """LLM-classifier signal that this query is about live job/pipeline/log
-    data. Combined with a keyword backstop in conversational_rag.py to gate
-    entry into the runtime tool loop."""
+    data. Authoritative for the runtime tool-loop gate; the keyword backstop
+    in conversational_rag.py is consulted only when the classifier failed."""
+    classifier_failed: bool = False
+    """True only when every LLM provider raised and analyze_query_async fell
+    back to SEARCH. The keyword backstop may override the (default-False)
+    runtime_intent in that case alone -- never a confident classifier 'no'."""
 
 
 def _detect_query_type(query: str) -> QueryType:
@@ -299,4 +303,7 @@ async def analyze_query_async(query: str, conversation_context: str | None = Non
 
     except Exception as e:
         logger.warning("Intent classification failed, defaulting to SEARCH: %s", e)
-        return QueryAnalysis(action=Action.SEARCH, cleaned_query=stripped, query_type=query_type)
+        return QueryAnalysis(
+            action=Action.SEARCH, cleaned_query=stripped, query_type=query_type,
+            classifier_failed=True,
+        )

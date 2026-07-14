@@ -6,15 +6,24 @@ from collections.abc import Iterable
 
 from src.harness import CapabilityDisabledError, UnknownCapabilityError
 from src.harness.models import (
+    ATTACH_GIT_SOURCE_CAPABILITY,
+    ATTACH_ZIP_SOURCE_CAPABILITY,
     CapabilityDefinition,
     CapabilityHealth,
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
+    DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
+    DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
     OPERATIONAL_INVESTIGATION_CAPABILITY,
+    PROJECT_ONBOARDING_CAPABILITY,
+    PROJECT_STATUS_CAPABILITY,
+    PUBLISH_INDEX_CAPABILITY,
     RUNTIME_EVIDENCE_CAPABILITY,
+    SOURCE_OPTIONS_CAPABILITY,
+    TRIGGER_SCAN_CAPABILITY,
 )
 
 
@@ -54,13 +63,28 @@ class CapabilityRegistry:
         return capability
 
 
-def default_capability_registry() -> CapabilityRegistry:
+def base_capability_registry() -> CapabilityRegistry:
     return CapabilityRegistry([
         DOCUMENT_SEARCH_CAPABILITY,
         DOCUMENT_LIST_CAPABILITY,
         RUNTIME_EVIDENCE_CAPABILITY,
         DOCUMENTATION_GENERATION_CAPABILITY,
+        DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
         OPERATIONAL_INVESTIGATION_CAPABILITY,
         DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
+        DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY,
         EXTERNAL_CONNECTOR_READ_CAPABILITY,
+        PROJECT_ONBOARDING_CAPABILITY,
+        SOURCE_OPTIONS_CAPABILITY,
+        ATTACH_GIT_SOURCE_CAPABILITY,
+        ATTACH_ZIP_SOURCE_CAPABILITY,
+        TRIGGER_SCAN_CAPABILITY,
+        PROJECT_STATUS_CAPABILITY,
+        PUBLISH_INDEX_CAPABILITY,
     ])
+
+
+def default_capability_registry() -> CapabilityRegistry:
+    from src.harness.packs.runtime import compile_active_pack_registry
+
+    return compile_active_pack_registry(base_capability_registry())

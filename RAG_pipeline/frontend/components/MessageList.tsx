@@ -46,7 +46,9 @@ export function MessageList({
     messages,
     streamingMessage?.content,
     streamingMessage?.harnessActivities,
+    streamingMessage?.pendingAction,
     streamingMessage?.runtimeTools,
+    streamingMessage?.structuredAnswer,
     deepDiveState?.content,
     deepDiveState?.thinking,
     scrollToBottom,
@@ -123,6 +125,8 @@ export function MessageList({
             key={message.id}
             message={message}
             conversationId={conversationId ?? null}
+            harnessActivities={message.harness_activities}
+            pendingAction={message.pending_action}
             onRetry={
               liveErrorHasPersistedMessage && message.id === latestMessage?.id
                 ? onRetryMessage
@@ -160,7 +164,9 @@ export function MessageList({
           !liveErrorHasPersistedMessage &&
           (streamingMessage.isStreaming ||
             streamingMessage.content ||
-            streamingMessage.error) && (
+            streamingMessage.structuredAnswer ||
+            streamingMessage.error ||
+            streamingMessage.pendingAction) && (
             <MessageBubble
               message={{
                 id: -2,
@@ -173,6 +179,7 @@ export function MessageList({
                 latency_ms: streamingMessage.latencyMs,
                 status: streamingMessage.error ? "failed" : "completed",
                 error_message: streamingMessage.error,
+                structured_answer: streamingMessage.structuredAnswer,
                 created_at: new Date().toISOString(),
               }}
               isStreaming={streamingMessage.isStreaming}
@@ -180,6 +187,7 @@ export function MessageList({
               usage={streamingMessage.usage}
               steps={streamingMessage.steps}
               harnessActivities={streamingMessage.harnessActivities}
+              pendingAction={streamingMessage.pendingAction}
               runtimeTools={streamingMessage.runtimeTools}
               onRetry={streamingMessage.error ? onRetryMessage : undefined}
             />

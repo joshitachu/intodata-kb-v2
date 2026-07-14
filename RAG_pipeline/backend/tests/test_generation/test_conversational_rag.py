@@ -12,11 +12,11 @@ from src.generation.intent_classifier import Action, QueryAnalysis, QueryType
 from src.generation.conversational_rag import (
     _NEED_SEARCH_MARKER,
     _SNIFF_BUFFER_CHARS,
-    _SniffResult,
     _drain_stripping_late_marker,
     _ends_with_partial_marker,
     _prepare_rag_context,
     _sniff_stream_sufficiency,
+    _structured_answer_payload,
     build_context,
     build_context_from_document_sources,
     build_conversational_messages,
@@ -404,7 +404,7 @@ class TestConversationalRagIntentRouting:
             mock_layered.return_value = []
             mock_gen.return_value = "Could you provide more details about what you're looking for?"
 
-            response = await run_conversational_rag(
+            await run_conversational_rag(
                 conversation=mock_conversation,
                 query="What about the thing?",
                 user_groups=["engineering"],
@@ -1066,6 +1066,25 @@ class TestRuntimeIntentGate:
         conv.title = None
         return conv
 
+    @pytest.fixture
+    def mock_db(self):
+        db = AsyncMock()
+        added: list = []
+        db.add = MagicMock(side_effect=added.append)
+        db.added_objects = added
+
+        async def fake_flush():
+            for obj in added:
+                if getattr(obj, "id", None) is None:
+                    obj.id = 1
+                if getattr(obj, "created_at", None) is None:
+                    obj.created_at = datetime.datetime(
+                        2025, 1, 1, tzinfo=datetime.timezone.utc
+                    )
+
+        db.flush = AsyncMock(side_effect=fake_flush)
+        return db
+
     @staticmethod
     def _runtime_analysis(query: str) -> QueryAnalysis:
         return QueryAnalysis(action=Action.SEARCH, query_type=QueryType.QA, cleaned_query=query, runtime_intent=True)
@@ -1073,6 +1092,193 @@ class TestRuntimeIntentGate:
     @staticmethod
     def _search_analysis(query: str) -> QueryAnalysis:
         return QueryAnalysis(action=Action.SEARCH, query_type=QueryType.QA, cleaned_query=query, runtime_intent=False)
+
+    @staticmethod
+    def _docs_only_turn_plan() -> dict:
+        return {
+            "version": 1,
+            "objective": "List jobs and connections",
+            "task_type": "document_answer",
+            "resolved_scope": {"project_id": "alitalend"},
+            "output_contract": "component_inventory",
+            "execution_mode": "evidence",
+            "confidence": 0.9,
+            "evidence_policy": {
+                "allowed": ["indexed_documentation", "generated_documentation"],
+                "denied": ["runtime_evidence", "connector_evidence"],
+                "preferred": ["indexed_documentation"],
+                "required": [],
+            }
+        }
+
+    async def test_docs_only_plan_blocks_runtime_non_streaming(
+        self, mock_conversation, mock_db
+    ):
+        source = Source(
+            document_id=1, filename="inventory.md", chunk_index=0, score=0.9,
+            text="Job A connects CRM to the warehouse.", source_layer="canonical_docs",
+            project_id="alitalend", display_name="inventory.md (Project: alitalend)",
+        )
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=QueryAnalysis(
+                    action=Action.RESPOND,
+                    cleaned_query="list jobs from docs, not runtime logs",
+                    runtime_intent=True,
+                ),
+            ),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as search,
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as generate,
+            patch("src.generation.conversational_rag.run_runtime_tool_loop", new_callable=AsyncMock) as runtime_loop,
+        ):
+            search.return_value = [source]
+            generate.return_value = "Job A connects CRM to the warehouse [1]."
+            response = await run_conversational_rag(
+                conversation=mock_conversation,
+                query="List all jobs from documentation; do not use runtime logs.",
+                user_groups=["engineering"], qdrant=AsyncMock(), db=mock_db,
+                project_ids=["alitalend"], turn_plan=self._docs_only_turn_plan(),
+            )
+
+        runtime_loop.assert_not_awaited()
+        assert "Job A" in response.content
+        assert response.turn_plan == self._docs_only_turn_plan()
+        assert response.structured_answer is not None
+        assert response.structured_answer["output_contract"] == "component_inventory"
+        assert response.structured_answer["execution_status"] == "completed"
+        assert response.structured_answer["domain_status"] == "unknown"
+        prompt = "\n".join(
+            message["content"] for message in generate.await_args.args[0]
+        )
+        assert "Component, Purpose, Inputs" in prompt
+
+    async def test_docs_only_plan_blocks_runtime_streaming(
+        self, mock_conversation, mock_db
+    ):
+        source = Source(
+            document_id=1, filename="inventory.md", chunk_index=0, score=0.9,
+            text="Job A connects CRM to the warehouse.", source_layer="canonical_docs",
+            project_id="alitalend", display_name="inventory.md (Project: alitalend)",
+        )
+
+        async def answer_stream(_messages, images=None):
+            yield "Job A connects CRM to the warehouse [1]."
+
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._runtime_analysis("list jobs from docs, not runtime logs"),
+            ),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as search,
+            patch("src.generation.conversational_rag.generate_answer_stream", side_effect=answer_stream),
+            patch("src.generation.conversational_rag.run_runtime_tool_loop_stream") as runtime_loop,
+        ):
+            search.return_value = [source]
+            events = [
+                event
+                async for event in run_conversational_rag_stream(
+                    conversation=mock_conversation,
+                    query="List all jobs from documentation; do not use runtime logs.",
+                    user_groups=["engineering"], qdrant=AsyncMock(), db=mock_db,
+                    project_ids=["alitalend"], turn_plan=self._docs_only_turn_plan(),
+                )
+            ]
+
+        runtime_loop.assert_not_called()
+        assert any(kind == "token" and "Job A" in json.loads(data) for kind, data in events)
+        final_answer = next(
+            json.loads(data) for kind, data in events if kind == "final_answer"
+        )
+        assert final_answer["output_contract"] == "component_inventory"
+        assert final_answer["answer_status"] == "complete"
+
+    async def test_better_output_recomposes_prior_evidence_without_new_reads(
+        self, mock_conversation
+    ):
+        prior = _mock_message(
+            "assistant",
+            "Job A connects CRM to the warehouse [1].",
+            sources=[
+                {
+                    "document_id": 1,
+                    "filename": "alitalend/inventory.md",
+                    "score": 0.9,
+                    "text": "Job A connects CRM to the warehouse.",
+                    "reference_number": 1,
+                    "project_id": "alitalend",
+                }
+            ],
+        )
+        prior.primary_source_layer = "canonical_docs"
+        prior.structured_answer = {
+            "output_contract": "component_inventory",
+            "headline": "Component inventory",
+            "summary": "Job A connects CRM to the warehouse.",
+            "sections": [{"heading": "Findings", "body": prior.content, "rows": []}],
+            "limitations": [],
+            "citations": [
+                {
+                    "evidence_id": "1",
+                    "label": "inventory.md",
+                    "uri": "alitalend/inventory.md",
+                    "source_class": "indexed_doc",
+                }
+            ],
+            "evidence_refs": ["1"],
+            "answer_status": "complete",
+            "execution_status": "completed",
+            "domain_status": "unknown",
+            "artifacts": [],
+        }
+        mock_conversation.messages = [prior]
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._runtime_analysis("give me better output"),
+            ) as analyze,
+            patch(
+                "src.generation.conversational_rag._search_qa_sources",
+                new_callable=AsyncMock,
+            ) as search,
+            patch(
+                "src.generation.conversational_rag.generate_answer",
+                new_callable=AsyncMock,
+                return_value="| Component | Purpose |\n|---|---|\n| Job A | CRM load |",
+            ) as generate,
+        ):
+            ctx = await _prepare_rag_context(
+                conversation=mock_conversation,
+                query="give me better output",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+                project_ids=["alitalend"],
+                planned_task_type="document_answer",
+                planned_output_contract="component_inventory",
+            )
+
+        search.assert_not_awaited()
+        analyze.assert_not_awaited()
+        generate.assert_awaited_once()
+        assert ctx.allow_runtime_tools is False
+        assert ctx.precomputed_answer.startswith("| Component")
+        assert len(ctx.document_sources) == 1
+        payload = _structured_answer_payload(
+            query="give me better output",
+            answer=ctx.precomputed_answer,
+            turn_plan=self._docs_only_turn_plan(),
+            document_sources=[],
+            runtime_progress=[],
+            reused_structured_answer=ctx.reused_structured_answer,
+        )
+        assert payload is not None
+        assert payload["output_contract"] == "component_inventory"
+        assert payload["evidence_refs"] == ["1"]
+        assert payload["citations"][0]["label"] == "inventory.md"
+        assert payload["sections"][0]["body"].startswith("| Component")
 
     async def test_runtime_gated_turn_with_zero_documents_still_gates_in(self, mock_conversation):
         """A pure runtime question that retrieves no matching documents must
@@ -1236,6 +1442,71 @@ class TestRuntimeIntentGate:
         gate_logs = [r.message for r in caplog.records if "Runtime gate" in r.message]
         assert len(gate_logs) == 1
         assert "IN" in gate_logs[0]
+
+    async def test_keyword_hit_cannot_override_confident_classifier_no(self, mock_conversation):
+        """Regression: a doc question that happens to contain a runtime
+        keyword (e.g. 'job', 'talend') must NOT enter the tool loop when the
+        LLM classifier confidently classified it as a non-runtime search.
+        The keyword backstop exists for recall on classifier FAILURE only --
+        it must never override a confident classifier 'no'."""
+        source = Source(
+            document_id=1, filename="talend-guide.pdf", chunk_index=0, score=0.8,
+            text="The tRunJob component runs a Talend job.",
+            source_layer="canonical_docs", project_id="phase2",
+            display_name="talend-guide.pdf (Project: phase2)",
+        )
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=self._search_analysis("what does the talend job do?"),
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=True),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as mock_search,
+            patch("src.generation.conversational_rag.generate_answer", new_callable=AsyncMock) as mock_gen,
+        ):
+            mock_search.return_value = [source]
+            mock_gen.return_value = "The tRunJob component runs a Talend job [1]."
+
+            ctx = await _prepare_rag_context(
+                conversation=mock_conversation,
+                query="what does the talend job do?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+            )
+
+        assert ctx.allow_runtime_tools is False, (
+            "keyword hit must not override a confident classifier 'no'"
+        )
+
+    async def test_keyword_backstop_rescues_classifier_failure(self, mock_conversation):
+        """When every LLM provider raised (classifier_failed=True), the
+        keyword backstop must still route a genuine runtime question into the
+        tool loop -- recall insurance is preserved for the failure case."""
+        failed = QueryAnalysis(
+            action=Action.SEARCH, query_type=QueryType.QA,
+            cleaned_query="why did the nightly sync fail?",
+            runtime_intent=False, classifier_failed=True,
+        )
+        with (
+            patch(
+                "src.generation.conversational_rag.analyze_query_async",
+                new_callable=AsyncMock,
+                return_value=failed,
+            ),
+            patch("src.generation.conversational_rag.detect_runtime_keywords", return_value=True),
+            patch("src.generation.conversational_rag._search_qa_sources", new_callable=AsyncMock) as mock_search,
+        ):
+            mock_search.return_value = []
+
+            ctx = await _prepare_rag_context(
+                conversation=mock_conversation,
+                query="why did the nightly sync fail?",
+                user_groups=["engineering"],
+                qdrant=AsyncMock(),
+            )
+
+        assert ctx.allow_runtime_tools is True
 
 
 def _chunked_stream(chunks: list[str]):

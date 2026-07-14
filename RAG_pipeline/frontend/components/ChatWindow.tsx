@@ -1,6 +1,7 @@
 "use client";
 
-import { FolderOpen, FileText, Network } from "lucide-react";
+import { useMemo, useState } from "react";
+import { FolderOpen, FileText, Network, Package } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { ModeToggle } from "./ModeToggle";
@@ -8,6 +9,9 @@ import { ProjectSelector } from "./ProjectSelector";
 import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
 import { useUserProjects } from "@/hooks/useUserProjects";
+import { useSlashCommands } from "@/hooks/useSlashCommands";
+import { PackManager } from "./harness-packs/PackManager";
+import type { UploadedZipReceipt } from "@/lib/mcpClient";
 import type { ChatMode } from "./ModeToggle";
 import type {
   ConversationDetailResponse,
@@ -39,6 +43,7 @@ interface ChatWindowProps {
   selectedProject: string;
   deepDiveState?: DeepDiveState | null;
   onCancelDeepDive?: () => void;
+  onWorkflowChanged?: () => void;
 }
 
 export function ChatWindow({
@@ -54,9 +59,28 @@ export function ChatWindow({
   selectedProject,
   deepDiveState,
   onCancelDeepDive,
+  onWorkflowChanged,
 }: ChatWindowProps) {
   const isDeepDive = mode === "deep-dive";
   const inputDisabled = isDeepDive && !selectedProject;
+  const [showPacks, setShowPacks] = useState(false);
+  const { commands: slashCommands } = useSlashCommands();
+
+  const latestPendingAction = useMemo(
+    () => [...(conversation?.messages ?? [])]
+      .reverse()
+      .find((message) => message.pending_action)?.pending_action ?? null,
+    [conversation?.messages],
+  );
+  const zipUploadTarget =
+    latestPendingAction?.required_fields.includes("upload_receipt") &&
+    latestPendingAction.project_id
+      ? {
+          projectId: latestPendingAction.project_id,
+          platform: latestPendingAction.platform ?? "generic",
+        }
+      : undefined;
+  const packProjectId = selectedProject || latestPendingAction?.project_id || "";
 
   const { data: userProjectsData } = useUserProjects();
   const selectedProjectName = !isDeepDive
@@ -84,6 +108,28 @@ export function ChatWindow({
     onModeChange(targetMode);
   }
 
+  async function handleZipUploaded(receipt: UploadedZipReceipt) {
+    if (!latestPendingAction || !zipUploadTarget) {
+      throw new Error("The onboarding workflow is no longer waiting for a ZIP source.");
+    }
+    const response = await fetch(
+      `/api/harness/workflows/${encodeURIComponent(latestPendingAction.workflow_run_id)}/resume`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interrupt_id: latestPendingAction.interrupt_id,
+          expected_version: latestPendingAction.expected_version,
+          response: receipt.receipt,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error("The ZIP was uploaded, but onboarding could not continue.");
+    }
+    onWorkflowChanged?.();
+  }
+
   // Capability categories shown on the empty-state chat. Two cards only,
   // matching the two chat modes. Edit copy here.
   const INTRO_CTAS: IntroCta[] = [
@@ -106,6 +152,18 @@ export function ChatWindow({
       <ModeToggle mode={mode} onModeChange={onModeChange} />
       {isDeepDive ? <ProjectSelector /> : <RagProjectSelector />}
       <RuntimeStatusIndicator />
+      {!isDeepDive && packProjectId && (
+        <button
+          type="button"
+          onClick={() => setShowPacks((value) => !value)}
+          aria-label="Configure Packs"
+          aria-expanded={showPacks}
+          title="Configure Packs"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Package className="h-4 w-4" />
+        </button>
+      )}
     </>
   );
 
@@ -153,6 +211,9 @@ export function ChatWindow({
                 disabled={inputDisabled}
                 hideImagePicker={isDeepDive}
                 toolbarContent={toolbarContent}
+                slashCommands={slashCommands}
+                zipUploadTarget={zipUploadTarget}
+                onZipUploaded={zipUploadTarget ? handleZipUploaded : undefined}
                 placeholder={
                   isDeepDive
                     ? selectedProject
@@ -232,12 +293,20 @@ export function ChatWindow({
       </div>
 
       <div className="max-w-3xl mx-auto w-full">
+        {showPacks && packProjectId && (
+          <div className="max-h-[45vh] overflow-y-auto border-t px-4 py-4">
+            <PackManager projectId={packProjectId} />
+          </div>
+        )}
         <ChatInput
           onSend={handleSend}
           isLoading={isSending || (deepDiveState?.isStreaming ?? false)}
           disabled={inputDisabled}
           hideImagePicker={isDeepDive}
           toolbarContent={toolbarContent}
+          slashCommands={slashCommands}
+          zipUploadTarget={zipUploadTarget}
+          onZipUploaded={zipUploadTarget ? handleZipUploaded : undefined}
           placeholder={
             isDeepDive
               ? selectedProject

@@ -43,6 +43,23 @@ class ProjectResponse(BaseModel):
     updated_at: datetime.datetime | None = None
 
 
+class ZipUploadReceipt(BaseModel):
+    """Metadata-only proof that MCP accepted a ZIP source upload."""
+
+    receipt: str
+    filename: str
+    size_bytes: int
+    sha256: str
+
+
+class ZipUploadResponse(ProjectResponse):
+    upload_receipt: ZipUploadReceipt
+
+
+class VerifyZipUploadRequest(BaseModel):
+    receipt: str = Field(..., min_length=32, max_length=4096)
+
+
 class ProjectListResponse(BaseModel):
     projects: list[ProjectResponse]
     total: int
@@ -287,6 +304,7 @@ class GenerateRequest(BaseModel):
     model: str | None = Field(None, description="Analysis model override (Phase 2) — 'provider/model' format")
     write_model: str | None = Field(None, description="Doc-writing model override (Phase 3) — 'provider/model' format")
     plugin_pack_id: int | None = Field(None, ge=1, description="Plugin pack override for this run. If set, takes precedence over the project's saved plugin_pack_id. Pass an int ID, or omit/null to use the project default.")
+    nexus_pack_ids: list[str] = Field(default_factory=list, max_length=32, description="Nexus orchestration pack snapshot for this generation request")
     resume: bool = Field(True, description="Resume from staging checkpoint if available")
     mode: str = Field("enterprise", description="'enterprise' blocks publish on all quality gates; 'draft' allows looser output")
 
@@ -305,6 +323,14 @@ class PushToRagRequest(BaseModel):
 class EvidenceDocUpdateRequest(BaseModel):
     evidence_text: StrippedStr = Field(..., min_length=1, max_length=12000)
     evidence_refs: list[str] = Field(default_factory=list, max_length=25)
+    workflow_run_id: str | None = Field(None, max_length=100)
+    section: str | None = Field(None, min_length=1, max_length=200)
+    expected_base_sha: str | None = Field(None, min_length=64, max_length=71)
+
+
+class EvidenceDocRevertRequest(BaseModel):
+    receipt_path: StrippedStr = Field(..., min_length=1, max_length=500)
+    expected_base_sha: str | None = Field(None, min_length=64, max_length=71)
     workflow_run_id: str | None = Field(None, max_length=100)
 
 
@@ -479,6 +505,26 @@ class EvidenceDocUpdateResponse(BaseModel):
     receipt_path: str
     docs_path: str
     rag_result: dict
+    version_id: str = ""
+    section: str | None = None
+    revert_path: str = ""
+    reconciliation_status: str = "indexed"
+
+
+class EvidenceDocRevertResponse(BaseModel):
+    project_id: str
+    filename: str
+    status: str
+    message: str
+    workflow_run_id: str | None = None
+    before_sha: str
+    after_sha: str
+    version_id: str
+    reverted_receipt_path: str
+    receipt_path: str
+    docs_path: str
+    rag_result: dict
+    reconciliation_status: str
 
 
 class PdfGenerateResponse(BaseModel):

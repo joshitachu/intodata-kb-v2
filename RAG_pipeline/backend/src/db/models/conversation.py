@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
+
+if TYPE_CHECKING:
+    from src.db.models.user import User
 
 
 class Conversation(Base):
@@ -35,6 +39,9 @@ class ConversationMessage(Base):
     """A single message within a conversation (user or assistant)."""
 
     __tablename__ = "conversation_messages"
+    __table_args__ = (
+        Index("ix_conversation_messages_workflow_run_id", "workflow_run_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     role: Mapped[str] = mapped_column(String(20))  # "user" | "assistant"
@@ -62,6 +69,15 @@ class ConversationMessage(Base):
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE")
     )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("harness_workflow_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    # Validated, provider-neutral routing snapshot. It contains policy and scope,
+    # never prompts, credentials, raw logs, or hidden reasoning.
+    turn_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Typed, user-visible answer envelope. This is separate from workflow
+    # activity and stores only sanitized sections, citations, and statuses.
+    structured_answer: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     deleted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

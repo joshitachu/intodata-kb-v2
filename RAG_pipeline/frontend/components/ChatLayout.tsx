@@ -121,6 +121,7 @@ export function ChatLayout() {
               : null
           }
           onRetryMessage={chat.retryFailedMessage}
+          onWorkflowChanged={chat.refreshActiveConversation}
           pendingUserMessage={chat.pendingUserMessage}
           mode={chat.mode}
           onModeChange={chat.setMode}

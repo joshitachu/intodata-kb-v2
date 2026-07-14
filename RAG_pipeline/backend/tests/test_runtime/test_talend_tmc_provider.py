@@ -472,3 +472,146 @@ class TestConfigAndSecretHygiene:
             GetExecutionLogsInput(execution_id="exec-1")
         )
         assert result == []
+
+
+class TestBareArrayResponses:
+    """Real Talend TMC list endpoints return bare JSON arrays, not envelopes.
+
+    Regression for the ``returned a non-object payload`` failure seen against
+    the live API (recorded in RAG_pipeline/.claude/context.md follow-up:
+    "reconcile talend_tmc assumed wire format against the live API").
+    """
+
+    async def test_list_executions_accepts_bare_array_payload(self, tmc):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "executionId": "exec-1",
+                        "taskName": "orders_sync",
+                        "status": "EXECUTION_FAILED",
+                        "startTime": "2026-01-01T00:00:00Z",
+                        "finishTime": "2026-01-01T00:01:00Z",
+                    }
+                ],
+            )
+
+        listed = await tmc.provider(handler).list_executions(ListExecutionsInput())
+
+        assert [item.execution_id for item in listed] == ["exec-1"]
+        assert listed[0].state == RuntimeExecutionState.FAILED
+
+    async def test_fetch_runtime_batch_accepts_bare_array_payloads(self, tmc):
+        bare_lists: dict[str, list[dict]] = {
+            "/orchestration/environments": [
+                {"id": "env-prod", "name": "PROD", "description": "Production", "default": True}
+            ],
+            "/orchestration/workspaces": [
+                {
+                    "id": "ws-1",
+                    "name": "Analytics",
+                    "owner": "alice",
+                    "type": "custom",
+                    "environment": {"id": "env-prod", "name": "PROD"},
+                }
+            ],
+            "/processing/runtimes/remote-engines": [
+                {
+                    "id": "eng-1",
+                    "name": "prod-engine-01",
+                    "status": "RUNNING",
+                    "availability": "AVAILABLE",
+                    "esbCompatibilityVersion": "8.0.1",
+                    "workspace": {"environment": {"id": "env-prod", "name": "PROD"}},
+                }
+            ],
+            "/orchestration/artifacts": [
+                {
+                    "id": "artifact-1",
+                    "name": "orders_route",
+                    "type": "route",
+                    "version": "1.2.3",
+                    "workspace": {"id": "ws-1", "name": "Analytics"},
+                    "owner": "alice",
+                }
+            ],
+            "/orchestration/connections": [
+                {
+                    "id": "conn-1",
+                    "name": "Oracle Orders",
+                    "type": "oracle",
+                    "workspace": {"id": "ws-1", "name": "Analytics"},
+                    "owner": "dba",
+                }
+            ],
+            "/orchestration/executables/tasks": [
+                {
+                    "executable": "task-1",
+                    "name": "nightly-load",
+                    "artifactId": "artifact-1",
+                    "connections": [{"id": "conn-1"}],
+                    "workspace": {
+                        "id": "ws-1",
+                        "name": "Analytics",
+                        "owner": "alice",
+                        "environment": {"id": "env-prod", "name": "PROD"},
+                    },
+                    "runtime": {"type": "REMOTE_ENGINE", "id": "eng-1"},
+                }
+            ],
+            "/orchestration/executables/plans": [],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if request.method == "POST" and path.endswith("/logs"):
+                return httpx.Response(500, json={"detail": "async logs unavailable"})
+            payload = bare_lists.get(path)
+            if payload is not None:
+                return httpx.Response(200, json=payload)
+            # Per-task / per-plan / per-execution sub-fetches: empty bare arrays.
+            return httpx.Response(200, json=[])
+
+        batch = await tmc.provider(handler).fetch_runtime_batch(project_id="project-a")
+
+        assert [environment.environment_id for environment in batch.environments] == ["env-prod"]
+        assert [workspace.workspace_id for workspace in batch.workspaces] == ["ws-1"]
+        assert [engine.name for engine in batch.engines] == ["prod-engine-01"]
+        assert [job.name for job in batch.jobs] == ["nightly-load"]
+        assert [artifact.name for artifact in batch.artifacts] == ["orders_route"]
+        assert [connection.name for connection in batch.connections] == ["Oracle Orders"]
+
+
+class TestPaginationFallback:
+    """Some TMC list endpoints reject ``limit``/``offset`` with HTTP 400.
+
+    Regression for ``GET /orchestration/artifacts returned HTTP 400`` against
+    the live API: pagination must self-correct by retrying without the params.
+    """
+
+    async def test_retries_without_pagination_params_on_400(self, tmc):
+        seen_param_sets: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen_param_sets.append(str(request.url.params))
+            if "limit" in request.url.params or "offset" in request.url.params:
+                return httpx.Response(400, json={"detail": "unsupported query parameter"})
+            return httpx.Response(
+                200,
+                json=[{"id": "art-1", "name": "x"}, {"id": "art-2", "name": "y"}],
+            )
+
+        items = await tmc.provider(handler)._get_all_pages("/orchestration/artifacts", max_items=100)
+
+        assert [item["id"] for item in items] == ["art-1", "art-2"]
+        # First call sent pagination params (rejected), second dropped them.
+        assert "limit" in seen_param_sets[0]
+        assert seen_param_sets[1] == ""
+
+    async def test_non_400_error_is_not_swallowed(self, tmc):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"detail": "unauthorized"})
+
+        with pytest.raises(RuntimeProviderError):
+            await tmc.provider(handler)._get_all_pages("/orchestration/environments")

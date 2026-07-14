@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.document_roles import DEFAULT_DOCUMENT_ROLE, DocumentRole
 
@@ -190,6 +191,48 @@ class ConversationMessageRequest(BaseModel):
     )
 
 
+class SlashCommandResponse(BaseModel):
+    """Discoverable command metadata; planner templates remain server-only."""
+
+    name: str
+    description: str
+    argument_hint: str | None = None
+
+
+class SlashCommandListResponse(BaseModel):
+    commands: list[SlashCommandResponse]
+
+
+class MessageHarnessActivity(BaseModel):
+    """Sanitized workflow activity safe to rehydrate in conversation history."""
+
+    workflow_run_id: str | None = None
+    event_type: str
+    label: str
+    status: str
+    summary: str | None = None
+    safe_details: dict = Field(default_factory=dict)
+    timestamp: datetime.datetime | None = None
+
+
+class MessageHarnessActionChoice(BaseModel):
+    label: str
+    value: str
+
+
+class MessageHarnessPendingAction(BaseModel):
+    workflow_run_id: int
+    interrupt_id: int
+    expected_version: int
+    kind: str
+    prompt: str
+    choices: list[MessageHarnessActionChoice] = Field(default_factory=list)
+    required_fields: list[str] = Field(default_factory=list)
+    project_id: str | None = None
+    platform: str | None = None
+    expires_at: datetime.datetime | None = None
+
+
 class MessageResponse(BaseModel):
     """A single message in a conversation."""
 
@@ -204,7 +247,22 @@ class MessageResponse(BaseModel):
     primary_source_layer: str | None = None
     fallback_used: bool = False
     doc_gap: bool = False
+    workflow_run_id: int | None = None
+    turn_plan: dict[str, Any] | None = None
+    structured_answer: dict[str, Any] | None = None
+    harness_activities: list[MessageHarnessActivity] = Field(default_factory=list)
+    pending_action: MessageHarnessPendingAction | None = None
     created_at: datetime.datetime
+
+    @field_validator("turn_plan", mode="before")
+    @classmethod
+    def normalize_turn_plan(cls, value: Any) -> dict[str, Any] | None:
+        return value if isinstance(value, dict) else None
+
+    @field_validator("structured_answer", mode="before")
+    @classmethod
+    def normalize_structured_answer(cls, value: Any) -> dict[str, Any] | None:
+        return value if isinstance(value, dict) else None
 
 
 class ConversationResponse(BaseModel):

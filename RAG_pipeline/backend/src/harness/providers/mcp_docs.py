@@ -8,6 +8,7 @@ generation orchestration, staging, publishing, and run records.
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,8 @@ _SECRET_PATTERNS = [
     re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._+/=\-]{10,}"),
 ]
 _MAX_SAFE_ERROR_CHARS = 240
+_PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
+_MARKDOWN_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.md$", re.I)
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,24 @@ class McpDocumentationGenerationResult:
     project_id: str
     status: str
     message: str
+    status_path: str
+    docs_path: str
+
+
+@dataclass(frozen=True)
+class McpDocumentationGenerationStatus:
+    project_id: str
+    found: bool
+    run_id: int | None
+    status: str
+    started_at: str | None
+    completed_at: str | None
+    doc_count: int
+    quality_score: float | None
+    run_verdict: str | None
+    client_ready: bool | None
+    failed_gates: list[str]
+    error_message: str | None
     status_path: str
     docs_path: str
 
@@ -51,6 +72,17 @@ class McpProjectInfo:
     status: str
     doc_count: int
     job_count: int
+    plugin_pack_id: int | None
+
+
+@dataclass(frozen=True)
+class McpDocumentationPack:
+    """Safe metadata for an installed MCP document-generation pack."""
+
+    id: int
+    name: str
+    version: str
+    description: str | None
 
 
 @dataclass(frozen=True)
@@ -66,6 +98,34 @@ class McpEvidenceDocUpdateResult:
     receipt_path: str
     docs_path: str
     rag_result: dict[str, Any]
+    version_id: str
+    section: str | None
+    revert_path: str
+    reconciliation_status: str
+
+
+@dataclass(frozen=True)
+class McpDocumentVersion:
+    project_id: str
+    filename: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class McpEvidenceDocRevertResult:
+    project_id: str
+    filename: str
+    status: str
+    message: str
+    workflow_run_id: str | None
+    before_sha: str
+    after_sha: str
+    version_id: str
+    reverted_receipt_path: str
+    receipt_path: str
+    docs_path: str
+    rag_result: dict[str, Any]
+    reconciliation_status: str
 
 
 class McpDocumentationProviderError(Exception):
@@ -100,6 +160,7 @@ class McpDocumentationProvider:
         model: str | None = None,
         write_model: str | None = None,
         plugin_pack_id: int | None = None,
+        nexus_pack_ids: list[str] | None = None,
         resume: bool | None = None,
         mode: str | None = None,
     ) -> McpDocumentationGenerationResult:
@@ -113,16 +174,18 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 "Documentation generation provider is not configured."
             )
-        if not project_id.strip():
-            raise McpDocumentationProviderError(
-                "Project scope is required before generating documentation."
-            )
+        project_id = _validated_project_id(project_id)
 
         payload: dict[str, Any] = {"project_id": project_id}
         _set_if_present(payload, "investigation_model", investigation_model)
         _set_if_present(payload, "model", model)
         _set_if_present(payload, "write_model", write_model)
-        _set_if_present(payload, "plugin_pack_id", plugin_pack_id)
+        if plugin_pack_id is not None:
+            payload["plugin_pack_id"] = _validated_plugin_pack_id(plugin_pack_id)
+        if nexus_pack_ids is not None:
+            if not all(isinstance(pack_id, str) and pack_id for pack_id in nexus_pack_ids):
+                raise McpDocumentationProviderError("Invalid selected documentation packs.")
+            payload["nexus_pack_ids"] = sorted(set(nexus_pack_ids))
         _set_if_present(payload, "resume", resume)
         _set_if_present(payload, "mode", mode)
 
@@ -138,6 +201,12 @@ class McpDocumentationProvider:
                     json=payload,
                 )
         except httpx.TimeoutException as exc:
+            reconciled = await self._reconcile_generation_after_timeout(
+                project_id=project_id,
+                access_token=access_token,
+            )
+            if reconciled is not None:
+                return reconciled
             raise McpDocumentationProviderError(
                 f"Documentation generation provider timed out after {self._timeout:g}s."
             ) from exc
@@ -179,6 +248,7 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 "Documentation provider is not configured."
             )
+        project_id = _validated_project_id(project_id)
         if source not in {"published", "staging"}:
             raise McpDocumentationProviderError("Invalid documentation source.")
 
@@ -230,6 +300,93 @@ class McpDocumentationProvider:
                 )
             )
         return [doc for doc in result if doc.name]
+
+    async def get_generation_status(
+        self,
+        *,
+        project_id: str,
+        access_token: str | None = None,
+    ) -> McpDocumentationGenerationStatus:
+        """Return the newest authoritative MCP generation-run receipt."""
+        if not self._base_url:
+            raise McpDocumentationProviderError(
+                "Documentation provider is not configured."
+            )
+        project_id = _validated_project_id(project_id)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.get(f"/generate-runs/{project_id}")
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        data = _json_object(response)
+        runs = data.get("runs")
+        if not isinstance(runs, list):
+            raise McpDocumentationProviderError(
+                "Documentation provider returned an invalid response."
+            )
+        latest = next((item for item in runs if isinstance(item, dict)), None)
+        status_path = f"/mcp/generate-runs/{project_id}"
+        docs_path = f"/projects/{project_id}/docs"
+        if latest is None:
+            return McpDocumentationGenerationStatus(
+                project_id=project_id,
+                found=False,
+                run_id=None,
+                status="not_started",
+                started_at=None,
+                completed_at=None,
+                doc_count=0,
+                quality_score=None,
+                run_verdict=None,
+                client_ready=None,
+                failed_gates=[],
+                error_message=None,
+                status_path=status_path,
+                docs_path=docs_path,
+            )
+
+        gate_results = latest.get("gate_results")
+        failed_gates = _failed_generation_gates(gate_results)
+        client_ready = _client_ready(gate_results, latest.get("run_verdict"))
+        return McpDocumentationGenerationStatus(
+            project_id=str(latest.get("project_id") or project_id),
+            found=True,
+            run_id=_optional_int(latest.get("id")),
+            status=str(latest.get("status") or "unknown").lower(),
+            started_at=_optional_text(latest.get("started_at")),
+            completed_at=_optional_text(latest.get("completed_at")),
+            doc_count=int(latest.get("doc_count") or 0),
+            quality_score=_optional_float(latest.get("quality_score")),
+            run_verdict=_optional_text(latest.get("run_verdict")),
+            client_ready=client_ready,
+            failed_gates=failed_gates,
+            error_message=(
+                _safe_text(str(latest.get("error_message")))
+                if latest.get("error_message")
+                else None
+            ),
+            status_path=status_path,
+            docs_path=docs_path,
+        )
 
     async def list_projects(
         self,
@@ -289,9 +446,122 @@ class McpDocumentationProvider:
                     status=str(item.get("status") or ""),
                     doc_count=int(item.get("doc_count") or 0),
                     job_count=int(item.get("job_count") or 0),
+                    plugin_pack_id=_optional_positive_int(item.get("plugin_pack_id")),
                 )
             )
         return result
+
+    async def list_documentation_packs(
+        self, *, access_token: str | None = None
+    ) -> list[McpDocumentationPack]:
+        """List installed MCP plugin packs without exposing their filesystem paths."""
+        if not self._base_url:
+            raise McpDocumentationProviderError("Documentation provider is not configured.")
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.get("/plugins")
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        data = _json_array(response)
+        packs: list[McpDocumentationPack] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            pack_id = _optional_positive_int(item.get("id"))
+            raw_name = item.get("manifest_name") or item.get("name")
+            version = item.get("version")
+            if pack_id is None or not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(version, str) or not version.strip():
+                continue
+            description = item.get("description")
+            packs.append(
+                McpDocumentationPack(
+                    id=pack_id,
+                    name=_safe_text(raw_name),
+                    version=_safe_text(version),
+                    description=_safe_text(description) if isinstance(description, str) and description.strip() else None,
+                )
+            )
+        return packs
+
+    async def get_project_documentation_pack_id(
+        self, *, project_id: str, access_token: str | None = None
+    ) -> int | None:
+        project_id = _validated_project_id(project_id)
+        project = next(
+            (item for item in await self.list_projects(access_token=access_token) if item.id == project_id),
+            None,
+        )
+        if project is None:
+            raise McpDocumentationProviderError("Documentation project was not found.")
+        return project.plugin_pack_id
+
+    async def set_project_documentation_pack(
+        self,
+        *,
+        project_id: str,
+        plugin_pack_id: int | None,
+        access_token: str | None = None,
+    ) -> int | None:
+        """Persist the project's MCP plugin-pack default for future generation runs."""
+        if not self._base_url:
+            raise McpDocumentationProviderError("Documentation provider is not configured.")
+        project_id = _validated_project_id(project_id)
+        if plugin_pack_id is not None:
+            plugin_pack_id = _validated_plugin_pack_id(plugin_pack_id)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.patch(
+                    f"/projects/{project_id}/plugin",
+                    json={"plugin_pack_id": plugin_pack_id},
+                )
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        data = _json_object(response)
+        if data.get("project_id") != project_id:
+            raise McpDocumentationProviderError("Documentation provider returned an invalid response.")
+        returned_pack_id = data.get("plugin_pack_id")
+        if returned_pack_id is None:
+            return None
+        returned_pack_id = _optional_positive_int(returned_pack_id)
+        if returned_pack_id is None:
+            raise McpDocumentationProviderError("Documentation provider returned an invalid response.")
+        return returned_pack_id
 
     async def update_doc_from_evidence(
         self,
@@ -301,6 +571,8 @@ class McpDocumentationProvider:
         evidence_text: str,
         evidence_refs: list[str] | None = None,
         workflow_run_id: str | None = None,
+        section: str | None = None,
+        expected_base_sha: str | None = None,
         access_token: str | None = None,
     ) -> McpEvidenceDocUpdateResult:
         """Ask MCP to update one generated markdown doc from explicit evidence."""
@@ -308,19 +580,15 @@ class McpDocumentationProvider:
             raise McpDocumentationProviderError(
                 "Documentation provider is not configured."
             )
-        if not project_id.strip():
-            raise McpDocumentationProviderError(
-                "Project scope is required before updating documentation."
-            )
-        if not filename.strip():
-            raise McpDocumentationProviderError(
-                "A target documentation file is required before updating documentation."
-            )
+        project_id = _validated_project_id(project_id)
+        filename = _validated_markdown_filename(filename)
         payload = {
             "evidence_text": evidence_text,
             "evidence_refs": evidence_refs or [],
             "workflow_run_id": workflow_run_id,
         }
+        _set_if_present(payload, "section", section)
+        _set_if_present(payload, "expected_base_sha", expected_base_sha)
 
         try:
             async with httpx.AsyncClient(
@@ -371,12 +639,270 @@ class McpDocumentationProvider:
             receipt_path=str(data.get("receipt_path") or ""),
             docs_path=str(data.get("docs_path") or f"/projects/{project_id}/docs/{filename}"),
             rag_result=data.get("rag_result") if isinstance(data.get("rag_result"), dict) else {},
+            version_id=str(data.get("version_id") or data.get("after_sha") or ""),
+            section=_optional_text(data.get("section")),
+            revert_path=str(data.get("revert_path") or ""),
+            reconciliation_status=str(data.get("reconciliation_status") or "indexed"),
+        )
+
+    async def get_document_version(
+        self,
+        *,
+        project_id: str,
+        filename: str,
+        access_token: str | None = None,
+    ) -> McpDocumentVersion:
+        """Read one authorized document and derive the proposal base version."""
+        if not self._base_url:
+            raise McpDocumentationProviderError("Documentation provider is not configured.")
+        project_id = _validated_project_id(project_id)
+        filename = _validated_markdown_filename(filename)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.get(f"/projects/{project_id}/docs/{filename}")
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        content_type = response.headers.get("content-type", "").lower()
+        if "application/json" in content_type:
+            data = _json_object(response)
+            content = data.get("content")
+        else:
+            content = response.text
+        if not isinstance(content, str) or not content:
+            raise McpDocumentationProviderError(
+                "Documentation provider returned an invalid response."
+            )
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return McpDocumentVersion(
+            project_id=project_id,
+            filename=filename,
+            sha256=f"sha256:{digest}",
+        )
+
+    async def revert_doc_evidence_update(
+        self,
+        *,
+        project_id: str,
+        filename: str,
+        receipt_path: str,
+        expected_base_sha: str | None = None,
+        workflow_run_id: str | None = None,
+        access_token: str | None = None,
+    ) -> McpEvidenceDocRevertResult:
+        if not self._base_url:
+            raise McpDocumentationProviderError("Documentation provider is not configured.")
+        project_id = _validated_project_id(project_id)
+        filename = _validated_markdown_filename(filename)
+        if not receipt_path or ".." in receipt_path or receipt_path.startswith(("/", "http:" , "https:")):
+            raise McpDocumentationProviderError("Invalid documentation update receipt.")
+        payload = {
+            "receipt_path": receipt_path,
+            "expected_base_sha": expected_base_sha,
+            "workflow_run_id": workflow_run_id,
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.post(
+                    f"/projects/{project_id}/docs/{filename}/evidence-revert",
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        data = _json_object(response)
+        return McpEvidenceDocRevertResult(
+            project_id=str(data.get("project_id") or project_id),
+            filename=str(data.get("filename") or filename),
+            status=str(data.get("status") or "reverted"),
+            message=_safe_text(str(data.get("message") or "Documentation update reverted.")),
+            workflow_run_id=_optional_text(data.get("workflow_run_id")),
+            before_sha=str(data.get("before_sha") or ""),
+            after_sha=str(data.get("after_sha") or ""),
+            version_id=str(data.get("version_id") or data.get("after_sha") or ""),
+            reverted_receipt_path=str(data.get("reverted_receipt_path") or receipt_path),
+            receipt_path=str(data.get("receipt_path") or ""),
+            docs_path=str(data.get("docs_path") or f"/projects/{project_id}/docs/{filename}"),
+            rag_result=data.get("rag_result") if isinstance(data.get("rag_result"), dict) else {},
+            reconciliation_status=str(data.get("reconciliation_status") or "indexed"),
+        )
+
+    async def _reconcile_generation_after_timeout(
+        self,
+        *,
+        project_id: str,
+        access_token: str | None,
+    ) -> McpDocumentationGenerationResult | None:
+        """Resolve an ambiguous POST timeout against MCP's durable run ledger."""
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=min(self._timeout, 5.0),
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.get(f"/generate-runs/{project_id}")
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 400:
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        runs = data.get("runs") if isinstance(data, dict) else None
+        if not isinstance(runs, list):
+            return None
+        active = next(
+            (
+                item
+                for item in runs
+                if isinstance(item, dict)
+                and str(item.get("status") or "").lower()
+                in {"queued", "pending", "running", "completed", "ready"}
+            ),
+            None,
+        )
+        if active is None:
+            return None
+        return McpDocumentationGenerationResult(
+            project_id=project_id,
+            status="generation_reconciled",
+            message="Documentation generation was accepted; Nexus reconciled its status after a delayed response.",
+            status_path=f"/mcp/generate-runs/{project_id}",
+            docs_path=f"/projects/{project_id}/docs",
         )
 
 
 def _set_if_present(payload: dict[str, Any], key: str, value: Any | None) -> None:
     if value is not None:
         payload[key] = value
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    parsed = _optional_int(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _validated_plugin_pack_id(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise McpDocumentationProviderError("Invalid documentation pack selection.")
+    return value
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _failed_generation_gates(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    failed: list[str] = []
+    candidates = value.get("gates") if isinstance(value.get("gates"), dict) else value
+    for name, result in candidates.items():
+        if name in {"client_ready", "ready", "summary"}:
+            continue
+        passed: bool | None = None
+        if isinstance(result, bool):
+            passed = result
+        elif isinstance(result, dict):
+            raw = result.get("passed", result.get("ok"))
+            if isinstance(raw, bool):
+                passed = raw
+            elif str(result.get("status") or "").lower() in {"failed", "error", "blocked"}:
+                passed = False
+        if passed is False:
+            failed.append(str(name))
+    return sorted(failed)
+
+
+def _client_ready(gate_results: Any, run_verdict: Any) -> bool | None:
+    if isinstance(gate_results, dict):
+        for key in ("client_ready", "ready"):
+            if isinstance(gate_results.get(key), bool):
+                return gate_results[key]
+    verdict = str(run_verdict or "").lower()
+    if verdict in {"passed", "pass", "ready", "approved"}:
+        return True
+    if verdict in {"failed", "fail", "blocked", "rejected"}:
+        return False
+    return None
+
+
+def _validated_project_id(value: str) -> str:
+    project_id = value.strip()
+    if not _PROJECT_ID_PATTERN.fullmatch(project_id):
+        raise McpDocumentationProviderError(
+            "Invalid project scope. Use letters, numbers, hyphens, or underscores."
+        )
+    return project_id
+
+
+def _validated_markdown_filename(value: str) -> str:
+    filename = value.strip()
+    if (
+        not _MARKDOWN_FILENAME_PATTERN.fullmatch(filename)
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+    ):
+        raise McpDocumentationProviderError(
+            "Invalid documentation filename. Choose one markdown file by name."
+        )
+    return filename
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:
@@ -389,6 +915,20 @@ def _json_object(response: httpx.Response) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise McpDocumentationProviderError(
             "Documentation generation provider returned an invalid response."
+        )
+    return data
+
+
+def _json_array(response: httpx.Response) -> list[Any]:
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise McpDocumentationProviderError(
+            "Documentation provider returned an invalid response."
+        ) from exc
+    if not isinstance(data, list):
+        raise McpDocumentationProviderError(
+            "Documentation provider returned an invalid response."
         )
     return data
 

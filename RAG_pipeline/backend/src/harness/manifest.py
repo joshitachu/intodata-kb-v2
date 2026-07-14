@@ -47,6 +47,11 @@ class RuntimeCapabilityTool(BaseModel):
     risk_tier: str
     required_permissions: list[str] = Field(default_factory=list)
     packs: list[str] = Field(default_factory=list)
+    use_when: list[str] = Field(default_factory=list)
+    do_not_use_when: list[str] = Field(default_factory=list)
+    task_types: list[str] = Field(default_factory=list)
+    evidence_sources: list[str] = Field(default_factory=list)
+    output_contracts: list[str] = Field(default_factory=list)
     activity_label: str
     requires_approval: bool = False
     redaction_policy: dict[str, Any] = Field(default_factory=dict)
@@ -60,6 +65,8 @@ class RuntimeCapabilityManifest(BaseModel):
     tools: list[RuntimeCapabilityTool]
     total: int
     filtered: int
+    pack_snapshot: dict[str, Any] = Field(default_factory=dict)
+    application_context: dict[str, Any] = Field(default_factory=dict)
 
 
 def build_runtime_capability_manifest(
@@ -77,10 +84,21 @@ def build_runtime_capability_manifest(
         if _is_visible_to_runtime(capability, scope)
     ]
     tools.sort(key=lambda tool: tool.id)
+    pack_snapshot: dict[str, Any] = {}
+    application_context: dict[str, Any] = {}
+    for capability in all_capabilities:
+        if isinstance(capability.metadata.get("nexus_pack_snapshot"), dict):
+            pack_snapshot = dict(capability.metadata["nexus_pack_snapshot"])
+        if isinstance(capability.metadata.get("nexus_pack_context"), dict):
+            application_context = dict(capability.metadata["nexus_pack_context"])
+        if pack_snapshot and application_context:
+            break
     return RuntimeCapabilityManifest(
         tools=tools,
         total=len(tools),
         filtered=len(all_capabilities) - len(tools),
+        pack_snapshot=pack_snapshot,
+        application_context=application_context,
     )
 
 
@@ -92,6 +110,8 @@ def user_facing_capability_lines(tools: Iterable[RuntimeCapabilityTool]) -> list
 
 
 def _is_visible_to_runtime(capability: CapabilityDefinition, scope: ManifestScope) -> bool:
+    if capability.metadata.get("runtime_hidden") is True:
+        return False
     if not scope.include_unavailable:
         if not capability.enabled or capability.health == CapabilityHealth.UNAVAILABLE:
             return False
@@ -121,6 +141,11 @@ def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
         risk_tier=capability.risk_tier.value,
         required_permissions=list(capability.required_permissions),
         packs=list(capability.packs),
+        use_when=list(capability.use_when),
+        do_not_use_when=list(capability.do_not_use_when),
+        task_types=list(capability.task_types),
+        evidence_sources=list(capability.evidence_sources),
+        output_contracts=list(capability.output_contracts),
         activity_label=str(safe_metadata.get("activity_label") or capability.label),
         requires_approval=bool(safe_metadata.get("requires_approval")),
         redaction_policy=dict(safe_metadata.get("redaction_policy") or {}),

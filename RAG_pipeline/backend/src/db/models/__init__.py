@@ -21,7 +21,24 @@ from src.db.models.feedback import Feedback
 from src.db.models.access import AccessRequest, EmailOTPCode, UserInvite
 from src.db.models.entity_alias import EntityAlias
 from src.db.models.doc_gap_event import DocGapEvent
-from src.db.models.harness import HarnessActivityEventRow, HarnessWorkflowRunRow
+from src.db.models.harness import (
+    HarnessActivityEventRow,
+    HarnessConversationContinuationRow,
+    HarnessWorkflowCheckpointBlobRow,
+    HarnessWorkflowCheckpointRow,
+    HarnessWorkflowCheckpointWriteRow,
+    HarnessWorkflowRunRow,
+)
+from src.db.models.harness_connector import (
+    HarnessConnectorCapabilityBindingRow,
+    HarnessConnectorInstanceRow,
+)
+from src.db.models.harness_evidence import HarnessEvidenceRow
+from src.db.models.harness_pack import (
+    HarnessCustomPackVersionRow,
+    HarnessPackActivationSnapshotRow,
+    HarnessProjectPackActivationRow,
+)
 from src.db.models.runtime_data import (
     RuntimeComponentMetricRow,
     RuntimeEngineRow,
@@ -74,6 +91,16 @@ __all__ = [
     "DocGapEvent",
     "HarnessWorkflowRunRow",
     "HarnessActivityEventRow",
+    "HarnessConversationContinuationRow",
+    "HarnessWorkflowCheckpointRow",
+    "HarnessWorkflowCheckpointBlobRow",
+    "HarnessWorkflowCheckpointWriteRow",
+    "HarnessConnectorInstanceRow",
+    "HarnessConnectorCapabilityBindingRow",
+    "HarnessEvidenceRow",
+    "HarnessCustomPackVersionRow",
+    "HarnessPackActivationSnapshotRow",
+    "HarnessProjectPackActivationRow",
     "RuntimeExecutionRow",
     "RuntimeFailureRow",
     "RuntimeLogEventRow",

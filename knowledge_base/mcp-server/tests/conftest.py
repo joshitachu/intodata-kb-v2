@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
 CREATE TABLE IF NOT EXISTS project_assignments (
     user_id INTEGER,
     project_id TEXT,
+    is_owner BOOLEAN DEFAULT 0,
     assigned_at DATETIME,
     created_at DATETIME,
     updated_at DATETIME,

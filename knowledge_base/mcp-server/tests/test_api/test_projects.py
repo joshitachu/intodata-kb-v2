@@ -111,6 +111,9 @@ async def test_upload_zip_success(client, tmp_path):
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == "ziptest"
+    assert data["upload_receipt"]["filename"] == "test.zip"
+    assert data["upload_receipt"]["size_bytes"] > 0
+    assert len(data["upload_receipt"]["sha256"]) == 64
 
 
 async def test_upload_zip_invalid_project_id(client):
@@ -137,6 +140,40 @@ async def test_upload_zip_not_zip_file(client):
         data={"project_id": "proj", "platform": "talend"},
     )
     assert resp.status_code == 400
+
+
+async def test_upload_zip_rejects_oversized_archive(client, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "max_upload_zip_bytes", 8)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("readme.txt", "larger than eight bytes")
+    buf.seek(0)
+
+    resp = await client.post(
+        "/mcp/upload-zip",
+        files={"file": ("large.zip", buf, "application/zip")},
+        data={"project_id": "largezip", "platform": "talend"},
+    )
+
+    assert resp.status_code == 413
+
+
+async def test_upload_zip_rejects_unsafe_member_path(client):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../outside.txt", "unsafe")
+    buf.seek(0)
+
+    resp = await client.post(
+        "/mcp/upload-zip",
+        files={"file": ("unsafe.zip", buf, "application/zip")},
+        data={"project_id": "unsafezip", "platform": "talend"},
+    )
+
+    assert resp.status_code == 400
+    assert "unsafe" in resp.json()["detail"].lower()
 
 
 # --- Project List ---

@@ -9,6 +9,7 @@ from typing import Any, Protocol, TypedDict
 from pydantic import BaseModel, Field
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, Interrupt, interrupt
 
 from src.harness.executor import (
     CapabilityExecutionContext,
@@ -17,6 +18,7 @@ from src.harness.executor import (
     HarnessCapabilityExecutor,
 )
 from src.harness.manifest import RuntimeCapabilityManifest
+from src.harness.checkpoints import DurableWorkflowCheckpointSaver
 
 
 class RuntimeTurnRequest(BaseModel):
@@ -45,6 +47,18 @@ class RuntimeTurnResult(BaseModel):
     runtime_run_id: str | None = None
     current_node: str | None = None
     runtime_metadata: dict[str, Any] = Field(default_factory=dict)
+    interrupt: "RuntimeInterrupt | None" = None
+
+
+class RuntimeInterrupt(BaseModel):
+    """Sanitized pending action surfaced by a LangGraph interrupt."""
+
+    interrupt_id: str
+    kind: str
+    prompt: str
+    required_fields: list[str] = Field(default_factory=list)
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    capability_label: str | None = None
 
 
 class AgentRuntimeProvider(Protocol):
@@ -61,13 +75,25 @@ class AgentRuntimeProvider(Protocol):
     ) -> RuntimeTurnResult:
         """Run one orchestrator turn using only Nexus executor calls."""
 
+    async def resume_turn(
+        self,
+        request: RuntimeTurnRequest,
+        *,
+        response: dict[str, Any],
+        executor: HarnessCapabilityExecutor,
+        context: CapabilityExecutionContext,
+    ) -> RuntimeTurnResult:
+        """Resume one interrupted turn with freshly validated Nexus context."""
+
 
 class LangGraphRuntimeProvider:
     """LangGraph-backed runtime boundary for Nexus harness workflows."""
 
     provider_id = "langgraph.nexus"
 
-    def __init__(self, *, checkpointer: InMemorySaver | None = None) -> None:
+    def __init__(self, *, checkpointer: Any | None = None) -> None:
+        # Direct construction stays lightweight for isolated tests. The singleton
+        # used by application routes below injects the durable database saver.
         self._checkpointer = checkpointer or InMemorySaver()
 
     async def run_turn(
@@ -94,10 +120,7 @@ class LangGraphRuntimeProvider:
         }
         try:
             final_state = await asyncio.wait_for(
-                graph.ainvoke(
-                    state,
-                    config,
-                ),
+                graph.ainvoke(state, config),
                 timeout=request.timeout_seconds,
             )
         except TimeoutError:
@@ -120,15 +143,86 @@ class LangGraphRuntimeProvider:
                 message="LangGraph runtime failed before completing the workflow.",
                 request=request,
             )
-        snapshot = graph.get_state(config)
+        return await self._result_from_state(
+            graph=graph,
+            config=config,
+            final_state=final_state,
+            request=request,
+            thread_id=thread_id,
+            fallback_runtime_run_id=runtime_run_id,
+        )
+
+    async def resume_turn(
+        self,
+        request: RuntimeTurnRequest,
+        *,
+        response: dict[str, Any],
+        executor: HarnessCapabilityExecutor,
+        context: CapabilityExecutionContext,
+    ) -> RuntimeTurnResult:
+        """Resume a checkpointed workflow using freshly built execution guards."""
+        thread_id = request.thread_id or _thread_id(request)
+        graph = self._build_graph(executor=executor, context=context)
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": request.step_limit,
+        }
+        runtime_run_id = f"lg-resume-{uuid.uuid4().hex[:16]}"
+        try:
+            final_state = await asyncio.wait_for(
+                graph.ainvoke(Command(resume=dict(response)), config),
+                timeout=request.timeout_seconds,
+            )
+        except TimeoutError:
+            return _runtime_failure_result(
+                provider_id=self.provider_id,
+                thread_id=thread_id,
+                runtime_run_id=runtime_run_id,
+                current_node="timeout",
+                error_type="timeout",
+                message=f"LangGraph runtime timed out after {request.timeout_seconds:g} seconds.",
+                request=request,
+            )
+        except Exception as exc:
+            return _runtime_failure_result(
+                provider_id=self.provider_id,
+                thread_id=thread_id,
+                runtime_run_id=runtime_run_id,
+                current_node="runtime_error",
+                error_type=exc.__class__.__name__,
+                message="LangGraph runtime could not resume the workflow.",
+                request=request,
+            )
+        return await self._result_from_state(
+            graph=graph,
+            config=config,
+            final_state=final_state,
+            request=request,
+            thread_id=thread_id,
+            fallback_runtime_run_id=runtime_run_id,
+        )
+
+    async def _result_from_state(
+        self,
+        *,
+        graph: Any,
+        config: dict[str, Any],
+        final_state: dict[str, Any],
+        request: RuntimeTurnRequest,
+        thread_id: str,
+        fallback_runtime_run_id: str,
+    ) -> RuntimeTurnResult:
+        snapshot = await graph.aget_state(config)
         metadata = _runtime_metadata(snapshot, request=request)
+        runtime_run_id = str(final_state.get("runtime_run_id") or fallback_runtime_run_id)
+        pending = _pending_interrupt(final_state)
         observation = None
         observation_data = final_state.get("observation")
         if isinstance(observation_data, dict):
             observation = CapabilityObservation(**observation_data)
         return RuntimeTurnResult(
             runtime_provider=self.provider_id,
-            status=str(final_state.get("status") or "failed"),
+            status="interrupted" if pending is not None else str(final_state.get("status") or "failed"),
             selected_capability_id=final_state.get("selected_capability_id"),
             observation=observation,
             activity=list(final_state.get("activity") or []),
@@ -137,6 +231,7 @@ class LangGraphRuntimeProvider:
             runtime_run_id=runtime_run_id,
             current_node=str(final_state.get("current_node") or "finalize"),
             runtime_metadata=metadata,
+            interrupt=pending,
         )
 
     def _build_graph(
@@ -165,17 +260,17 @@ class LangGraphRuntimeProvider:
             if selected is None:
                 activity = _append_activity(
                     state,
-                    event_type="runtime.interrupted",
-                    label="Runtime needs clarification",
+                    event_type="runtime.failed",
+                    label="Planned capability unavailable",
                     runtime_node="select_capability",
-                    status="skipped",
-                    summary="No supported capability could be selected from the runtime manifest.",
+                    status="failed",
+                    summary="The planned capability is not available in the authorized runtime manifest.",
                 )
                 return {
                     "activity": activity,
                     "current_node": "select_capability",
-                    "status": "interrupted",
-                    "final_summary": "I need a supported capability before I can continue.",
+                    "status": "failed",
+                    "final_summary": "The planned capability is unavailable for this request.",
                 }
             tool = next(tool for tool in state["manifest"].tools if tool.id == selected)
             activity = _append_activity(
@@ -195,9 +290,71 @@ class LangGraphRuntimeProvider:
             selected = state.get("selected_capability_id")
             if selected is None:
                 return {"current_node": "execute_capability"}
+            arguments = dict(state.get("arguments") or {})
+            tool = next(tool for tool in state["manifest"].tools if tool.id == selected)
+            required_fields = list(tool.input_schema.get("required") or [])
+            missing_fields = [
+                field_name
+                for field_name in required_fields
+                if _is_missing(arguments.get(field_name))
+            ]
+            if missing_fields:
+                resumed = interrupt({
+                    "kind": "clarification",
+                    "prompt": _missing_input_prompt(tool.label, missing_fields),
+                    "required_fields": missing_fields,
+                    "capability_label": tool.label,
+                })
+                if isinstance(resumed, dict):
+                    arguments.update(
+                        {
+                            key: value
+                            for key, value in resumed.items()
+                            if key in missing_fields and not _is_missing(value)
+                        }
+                    )
+                still_missing = [
+                    field_name
+                    for field_name in missing_fields
+                    if _is_missing(arguments.get(field_name))
+                ]
+                if still_missing:
+                    return {
+                        "current_node": "execute_capability",
+                        "status": "interrupted",
+                        "final_summary": _missing_input_prompt(tool.label, still_missing),
+                    }
+            if _requires_approval(tool.risk_tier, selected, context):
+                approval = interrupt({
+                    "kind": "approval",
+                    "prompt": f"Allow Nexus to {tool.label.lower()}?",
+                    "required_fields": ["approved"],
+                    "capability_label": tool.label,
+                })
+                approved = (
+                    bool(approval.get("approved"))
+                    if isinstance(approval, dict)
+                    else bool(approval)
+                )
+                if not approved:
+                    activity = _append_activity(
+                        state,
+                        event_type="runtime.approval_declined",
+                        label="Action was not approved",
+                        runtime_node="execute_capability",
+                        status="skipped",
+                        summary="The workflow stopped before making the requested change.",
+                    )
+                    return {
+                        "activity": activity,
+                        "current_node": "execute_capability",
+                        "status": "cancelled",
+                        "final_summary": "The action was not approved.",
+                    }
+                context.approvals.add(selected)
             request = CapabilityExecutionRequest(
                 capability_id=selected,
-                arguments=dict(state.get("arguments") or {}),
+                arguments=arguments,
                 idempotency_key=str(state.get("runtime_run_id") or ""),
             )
             activity = _append_activity(
@@ -225,6 +382,7 @@ class LangGraphRuntimeProvider:
                 "current_node": "execute_capability",
                 "observation": observation.model_dump(),
                 "status": observation.status,
+                "arguments": arguments,
             }
 
         async def finalize(state: _LangGraphHarnessState) -> dict[str, Any]:
@@ -233,12 +391,22 @@ class LangGraphRuntimeProvider:
             if isinstance(observation, dict):
                 summary = observation.get("summary")
             status = str(state.get("status") or "interrupted")
+            completed = status in {"succeeded", "triggered"}
+            failed = status == "failed"
             activity = _append_activity(
                 state,
-                event_type="runtime.completed" if status in {"succeeded", "triggered"} else "runtime.paused",
-                label="Graph workflow completed" if status in {"succeeded", "triggered"} else "Graph workflow paused",
+                event_type=(
+                    "runtime.completed" if completed else "runtime.failed" if failed else "runtime.paused"
+                ),
+                label=(
+                    "Graph workflow completed"
+                    if completed
+                    else "Graph workflow stopped"
+                    if failed
+                    else "Graph workflow paused"
+                ),
                 runtime_node="finalize",
-                status="succeeded" if status in {"succeeded", "triggered"} else status,
+                status="succeeded" if completed else status,
                 summary=summary,
             )
             return {
@@ -273,13 +441,26 @@ class _LangGraphHarnessState(TypedDict, total=False):
     runtime_run_id: str
 
 
+_DEFAULT_RUNTIME_PROVIDER: LangGraphRuntimeProvider | None = None
+
+
+def default_langgraph_runtime_provider() -> LangGraphRuntimeProvider:
+    """Return the process-lifetime runtime/checkpointer used by chat and resume APIs."""
+    global _DEFAULT_RUNTIME_PROVIDER
+    if _DEFAULT_RUNTIME_PROVIDER is None:
+        _DEFAULT_RUNTIME_PROVIDER = LangGraphRuntimeProvider(
+            checkpointer=DurableWorkflowCheckpointSaver()
+        )
+    return _DEFAULT_RUNTIME_PROVIDER
+
+
 def _select_capability_from_manifest(
     manifest: RuntimeCapabilityManifest,
     planned_capability_id: str | None,
 ) -> str | None:
     available_ids = {tool.id for tool in manifest.tools if tool.available}
-    if planned_capability_id in available_ids:
-        return planned_capability_id
+    if planned_capability_id is not None:
+        return planned_capability_id if planned_capability_id in available_ids else None
     if len(available_ids) == 1:
         return next(iter(available_ids))
     return None
@@ -340,6 +521,49 @@ def _tool_label(manifest: RuntimeCapabilityManifest, capability_id: str) -> str:
     return "selected capability"
 
 
+def _missing_input_prompt(capability_label: str, fields: list[str]) -> str:
+    friendly = [field.replace("_", " ") for field in fields]
+    if len(friendly) == 1:
+        return f"Which {friendly[0]} should I use to {capability_label.lower()}?"
+    return f"I need {', '.join(friendly)} before I can {capability_label.lower()}."
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or value == ""
+
+
+def _requires_approval(
+    risk_tier: str,
+    capability_id: str,
+    context: CapabilityExecutionContext,
+) -> bool:
+    if capability_id in context.approvals:
+        return False
+    if risk_tier == "writes_content":
+        return not context.allow_writes_content
+    if risk_tier == "external_side_effect":
+        return not context.allow_external_side_effects
+    return False
+
+
+def _pending_interrupt(final_state: dict[str, Any]) -> RuntimeInterrupt | None:
+    raw_interrupts = final_state.get("__interrupt__")
+    if not isinstance(raw_interrupts, (list, tuple)) or not raw_interrupts:
+        return None
+    raw = raw_interrupts[0]
+    if not isinstance(raw, Interrupt):
+        return None
+    value = raw.value if isinstance(raw.value, dict) else {"prompt": str(raw.value)}
+    return RuntimeInterrupt(
+        interrupt_id=raw.id,
+        kind=str(value.get("kind") or "clarification"),
+        prompt=str(value.get("prompt") or "I need more information before I can continue."),
+        required_fields=[str(item) for item in value.get("required_fields", [])],
+        options=[item for item in value.get("options", []) if isinstance(item, dict)],
+        capability_label=(str(value["capability_label"]) if value.get("capability_label") else None),
+    )
+
+
 def _runtime_metadata(snapshot: Any, *, request: RuntimeTurnRequest) -> dict[str, Any]:
     config = getattr(snapshot, "config", {}) or {}
     configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
@@ -368,15 +592,18 @@ def _runtime_failure_result(
 ) -> RuntimeTurnResult:
     return RuntimeTurnResult(
         runtime_provider=provider_id,
-        status="failed",
+        status="indeterminate" if current_node == "timeout" else "failed",
         activity=[
             _activity(
-                event_type="runtime.failed",
-                label="Graph runtime failed",
+                event_type=("runtime.reconciliation_required" if current_node == "timeout" else "runtime.failed"),
+                label=("Graph runtime outcome requires reconciliation" if current_node == "timeout" else "Graph runtime failed"),
                 runtime_node=current_node,
-                status="failed",
+                status="running" if current_node == "timeout" else "failed",
                 summary=message,
-                safe_details={"error_type": error_type},
+                safe_details={
+                    "error_type": error_type,
+                    "reconciliation_required": current_node == "timeout",
+                },
             )
         ],
         final_summary=message,
@@ -386,6 +613,11 @@ def _runtime_failure_result(
         runtime_metadata={
             "graph": "docs_generation",
             "error": {"type": error_type},
+            "reconciliation": (
+                {"state": "required", "reason": "runtime_timeout"}
+                if current_node == "timeout"
+                else {"state": "not_required"}
+            ),
             "budget": {
                 "step_limit": request.step_limit,
                 "timeout_seconds": request.timeout_seconds,

@@ -55,3 +55,33 @@ async def require_project_access(request: Request, project_id: str) -> None:
             return
 
     raise HTTPException(status_code=403, detail="No access to this project")
+
+
+async def require_project_management(request: Request, project_id: str) -> None:
+    """Require project ownership (or superadmin) for project configuration changes."""
+    payload = getattr(request.state, "auth_payload", None)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_id = int(payload.get("sub", 0))
+    async with async_session_factory() as db:
+        user_result = await db.execute(
+            text("SELECT is_superadmin FROM users WHERE id = :uid"),
+            {"uid": user_id},
+        )
+        user_row = user_result.fetchone()
+        if user_row and user_row[0]:
+            return
+
+        owner_result = await db.execute(
+            text("""
+                SELECT 1 FROM project_assignments
+                WHERE user_id = :uid AND project_id = :pid AND is_owner = 1
+                LIMIT 1
+            """),
+            {"uid": user_id, "pid": project_id},
+        )
+        if owner_result.fetchone():
+            return
+
+    raise HTTPException(status_code=403, detail="Project management permission required")

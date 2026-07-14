@@ -95,3 +95,10 @@ knowledge_base/dashboard/tsconfig.tsbuildinfo
 knowledge_base/mcp-server/data/*.pem
 *.private-key.pem
 .env.bak*
+
+# Confidential client materials — VW reverse-engineering POC. NEVER commit.
+# The Talend export contains plaintext credentials; the deliverables and any
+# scoped zips contain client-internal detail.
+/Assetcheck/
+/POC_Werkorder/
+/*.zip

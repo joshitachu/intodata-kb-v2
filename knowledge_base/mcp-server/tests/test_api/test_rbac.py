@@ -33,6 +33,12 @@ _ROUTES = [
         {"evidence_text": "Evidence from chat", "evidence_refs": ["chat_prompt"]},
         "doc_evidence_update",
     ),
+    (
+        "POST",
+        "/mcp/projects/p1/docs/test.md/evidence-revert",
+        {"receipt_path": "_harness_doc_updates/update.receipt.json"},
+        "doc_evidence_revert",
+    ),
     ("GET",    "/mcp/projects/p1/graph",                      None,  "graph"),
     ("GET",    "/mcp/projects/p1/jobs/myjob/detail",          None,  "job_detail"),
     ("GET",    "/mcp/projects/p1/github-webhook/status",      None,  "webhook_status"),
@@ -67,6 +73,7 @@ _ROUTES = [
     # --- Body-based project_id ---
     ("POST", "/mcp/scan",         {"project_id": "p1", "force": False},                   "scan"),
     ("POST", "/mcp/generate",     {"project_id": "p1"},                                    "generate"),
+    ("PATCH", "/mcp/projects/p1/plugin", {"plugin_pack_id": None},                           "project_plugin"),
     ("POST", "/mcp/push-to-rag",  {"project_id": "p1"},                                    "push_to_rag"),
     ("POST", "/mcp/reset-status", {"project_id": "p1"},                                    "reset_status"),
     ("POST", "/mcp/deep-dive",    {"project_id": "p1", "question": "What does this do?"},  "deep_dive"),
@@ -92,6 +99,7 @@ async def non_owner_client(session_factory, monkeypatch, tmp_path):
 
     import mcp_server.api.routes.projects as projects_mod
     import mcp_server.api.routes.generate_runs as generate_runs_mod
+    import mcp_server.api.routes.plugins as plugins_mod
     import mcp_server.api.routes.webhook as webhook_mod
     import mcp_server.api.permissions as permissions_mod
     import mcp_server.db.session as session_mod
@@ -102,6 +110,7 @@ async def non_owner_client(session_factory, monkeypatch, tmp_path):
     monkeypatch.setattr(session_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(projects_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(generate_runs_mod, "async_session_factory", session_factory)
+    monkeypatch.setattr(plugins_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(webhook_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(permissions_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(git_poller_mod, "async_session_factory", session_factory)

@@ -25,4 +25,19 @@ describe("ChatInput", () => {
       [expect.any(String)],
     );
   });
+
+  it("validates ZIP sources before an upload can start", () => {
+    const onZipUploaded = vi.fn();
+    const { container } = render(
+      <ChatInput onSend={vi.fn()} isLoading={false} onZipUploaded={onZipUploaded} />,
+    );
+    const inputs = container.querySelectorAll('input[type="file"]');
+    const zipInput = inputs[1];
+
+    fireEvent.change(zipInput, {
+      target: { files: [new File(["not a zip"], "notes.txt", { type: "text/plain" })] },
+    });
+
+    expect(screen.getByText("Choose a ZIP archive")).toBeInTheDocument();
+  });
 });

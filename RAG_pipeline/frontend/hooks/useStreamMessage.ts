@@ -7,15 +7,19 @@ import {
   type DocumentSource,
   type AgentStep,
   type HarnessActivityEvent,
+  type HarnessPendingAction,
   type UsageStats,
   type RuntimeToolProgress,
+  type StructuredAnswer,
   AgentStepSchema,
   DocumentSourceSchema,
   HarnessActivityEventSchema,
+  HarnessPendingActionSchema,
   UsageStatsSchema,
   SseDoneSchema,
   RuntimeToolCallEventSchema,
   RuntimeToolResultEventSchema,
+  StructuredAnswerSchema,
 } from "@/types";
 
 export interface StreamState {
@@ -28,7 +32,9 @@ export interface StreamState {
   usage: UsageStats | null;
   steps: AgentStep[];
   harnessActivities: HarnessActivityEvent[];
+  pendingAction: HarnessPendingAction | null;
   runtimeTools: RuntimeToolProgress[];
+  structuredAnswer: StructuredAnswer | null;
 }
 
 const INITIAL_STATE: StreamState = {
@@ -41,7 +47,9 @@ const INITIAL_STATE: StreamState = {
   usage: null,
   steps: [],
   harnessActivities: [],
+  pendingAction: null,
   runtimeTools: [],
+  structuredAnswer: null,
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -78,7 +86,9 @@ export function useStreamMessage(conversationId: number | null) {
         usage: null,
         steps: [],
         harnessActivities: [],
+        pendingAction: null,
         runtimeTools: [],
+        structuredAnswer: null,
       });
 
       try {
@@ -209,12 +219,54 @@ export function useStreamMessage(conversationId: number | null) {
           } else if (eventType === "harness_activity" || eventType === "activity") {
             try {
               const activity = HarnessActivityEventSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({
-                ...prev,
-                harnessActivities: [...prev.harnessActivities, activity],
-              }));
+              setStreamState((prev) => {
+                // Event records are progressive snapshots. Keep their position
+                // stable while an action moves from planned to complete.
+                const activityKey = [
+                  activity.workflow_run_id ?? "stream",
+                  activity.event_type,
+                  activity.label,
+                ].join(":");
+                const existingIndex = prev.harnessActivities.findIndex((item) =>
+                  [item.workflow_run_id ?? "stream", item.event_type, item.label].join(":") === activityKey,
+                );
+                if (existingIndex === -1) {
+                  return {
+                    ...prev,
+                    harnessActivities: [...prev.harnessActivities, activity],
+                  };
+                }
+                const harnessActivities = [...prev.harnessActivities];
+                harnessActivities[existingIndex] = {
+                  ...harnessActivities[existingIndex],
+                  ...activity,
+                  safe_details: {
+                    ...harnessActivities[existingIndex].safe_details,
+                    ...activity.safe_details,
+                  },
+                };
+                return { ...prev, harnessActivities };
+              });
             } catch {
               // ignore parse error
+            }
+          } else if (eventType === "final_answer") {
+            try {
+              const structuredAnswer = StructuredAnswerSchema.parse(JSON.parse(data));
+              setStreamState((prev) => ({ ...prev, structuredAnswer }));
+            } catch {
+              // Preserve token rendering when an older backend emits no typed answer.
+            }
+          } else if (eventType === "pending_action") {
+            try {
+              const pendingAction = HarnessPendingActionSchema.parse(JSON.parse(data));
+              setStreamState((prev) => ({
+                ...prev,
+                isStreaming: false,
+                pendingAction,
+              }));
+            } catch {
+              // Ignore malformed or overbroad action payloads.
             }
           } else if (eventType === "error") {
             let message = data;

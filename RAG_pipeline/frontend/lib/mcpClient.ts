@@ -14,9 +14,17 @@ export interface UploadZipArgs {
 }
 
 export interface UploadZipResult {
-  project_id: string;
-  display_name: string | null;
-  local_path: string | null;
+  id: string;
+  platform: string;
+  source_type: "zip";
+  upload_receipt: UploadedZipReceipt;
+}
+
+export interface UploadedZipReceipt {
+  receipt: string;
+  filename: string;
+  size_bytes: number;
+  sha256: string;
 }
 
 export interface GithubSourceArgs {

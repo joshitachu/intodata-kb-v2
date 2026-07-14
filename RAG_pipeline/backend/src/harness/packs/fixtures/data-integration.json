@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "id": "nexus.data-integration",
+  "name": "Data Integration Operations",
+  "version": "1.0.0",
+  "pack_type": "domain",
+  "includes": ["nexus.documentation"],
+  "documentation_provider_ref": null,
+  "vocabulary": [
+    {
+      "term": "integration flow",
+      "aliases": ["job", "pipeline", "task"],
+      "description": "A deployable data movement or transformation flow."
+    },
+    {
+      "term": "execution",
+      "aliases": ["run"],
+      "description": "One observed attempt to run an integration flow."
+    }
+  ],
+  "entities": [
+    {
+      "id": "integration.project",
+      "label": "Project",
+      "plural_label": "Projects",
+      "aliases": ["codebase", "repository project"]
+    },
+    {
+      "id": "integration.flow",
+      "label": "Integration flow",
+      "plural_label": "Integration flows",
+      "aliases": ["job", "pipeline"]
+    },
+    {
+      "id": "integration.execution",
+      "label": "Execution",
+      "plural_label": "Executions",
+      "aliases": ["run"]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "integration.onboard-project",
+      "label": "Onboard project source",
+      "description": "Create a project, attach its source, scan it, and start documentation generation.",
+      "capability_ids": [
+        "nexus.workflow.onboard_project",
+        "mcp.projects.list_source_options",
+        "mcp.projects.attach_git_source",
+        "mcp.projects.attach_uploaded_zip_source",
+        "mcp.projects.trigger_scan",
+        "mcp.projects.read_status",
+        "mcp.projects.publish_index"
+      ],
+      "entity_type_ids": ["integration.project"],
+      "connector_requirement_ids": [],
+      "artifact_template_ids": []
+    },
+    {
+      "id": "integration.investigate-failure",
+      "label": "Investigate integration failure",
+      "description": "Collect scoped runtime and connector evidence for a failed integration execution.",
+      "capability_ids": [
+        "nexus.workflow.operational_investigation",
+        "runtime.tools.query_evidence",
+        "external.connector.read_evidence"
+      ],
+      "entity_type_ids": ["integration.flow", "integration.execution"],
+      "connector_requirement_ids": ["integration.knowledge-source"],
+      "artifact_template_ids": ["integration.investigation-report"]
+    }
+  ],
+  "evidence_ranking": [
+    {"evidence_type": "runtime_incident", "weight": 50, "source_kind": "runtime"},
+    {"evidence_type": "connector_item", "weight": 20, "source_kind": "connector"}
+  ],
+  "artifact_templates": [
+    {
+      "id": "integration.investigation-report",
+      "label": "Investigation report",
+      "relative_path": "investigations/{execution_id}.md",
+      "media_type": "text/markdown"
+    }
+  ],
+  "connector_requirements": [
+    {
+      "id": "integration.knowledge-source",
+      "provider_key": "fixture_knowledge",
+      "capability_ids": ["external.connector.read_evidence"],
+      "required": true
+    }
+  ],
+  "default_scopes": {
+    "project_required": true,
+    "permissions": ["runtime.read", "documents.read"],
+    "domains": ["operations", "data-integration", "onboarding"]
+  },
+  "policy_hints": {
+    "approval_required_for": [],
+    "evidence_required": true,
+    "read_only": true
+  },
+  "output_rules": {
+    "required_sections": ["current status", "likely cause", "next action", "artifacts"],
+    "include_confidence": true,
+    "include_artifact_links": true
+  }
+}

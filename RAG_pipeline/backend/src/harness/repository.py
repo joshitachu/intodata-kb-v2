@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models.harness import HarnessActivityEventRow, HarnessWorkflowRunRow
+from src.db.models.harness import (
+    HarnessActivityEventRow,
+    HarnessWorkflowInterruptRow,
+    HarnessWorkflowRunRow,
+)
 from src.harness import HarnessRunNotFoundError, ProjectScope
 from src.harness.models import (
     ActivityEvent,
@@ -16,7 +20,18 @@ from src.harness.models import (
     WorkflowRunCreate,
     WorkflowRunStatus,
     WorkflowRunUpdate,
+    WorkflowInterrupt,
+    WorkflowInterruptCreate,
+    WorkflowInterruptStatus,
 )
+
+
+class HarnessWorkflowConflictError(Exception):
+    """Raised when an optimistic workflow transition loses a race."""
+
+
+class HarnessInterruptUnavailableError(Exception):
+    """Raised for stale, consumed, expired, or non-owner interrupts."""
 
 
 def _now() -> datetime.datetime:
@@ -77,11 +92,26 @@ class HarnessWorkflowRepository:
         await self._session.flush()
         return _to_workflow_run(row)
 
-    async def get_run(self, scope: ProjectScope, run_id: int) -> WorkflowRun:
-        if self._denies_all(scope):
+    @staticmethod
+    def _apply_owner_visibility(stmt, scope: ProjectScope, owner_user_id: int | None):
+        if owner_user_id is None:
+            return HarnessWorkflowRepository._apply_scope(stmt, scope)
+        owner_interrupt = HarnessWorkflowRunRow.user_id == owner_user_id
+        if scope is None:
+            return stmt
+        return stmt.where(or_(HarnessWorkflowRunRow.project_id.in_(scope), owner_interrupt))
+
+    async def get_run(
+        self,
+        scope: ProjectScope,
+        run_id: int,
+        *,
+        owner_user_id: int | None = None,
+    ) -> WorkflowRun:
+        if self._denies_all(scope) and owner_user_id is None:
             raise HarnessRunNotFoundError(f"Unknown workflow_run_id: {run_id}")
         stmt = select(HarnessWorkflowRunRow).where(HarnessWorkflowRunRow.id == run_id)
-        stmt = self._apply_scope(stmt, scope)
+        stmt = self._apply_owner_visibility(stmt, scope, owner_user_id)
         row = (await self._session.execute(stmt)).scalars().first()
         if row is None:
             raise HarnessRunNotFoundError(f"Unknown workflow_run_id: {run_id}")
@@ -95,12 +125,13 @@ class HarnessWorkflowRepository:
         project_id: str | None = None,
         capability_id: str | None = None,
         status: WorkflowRunStatus | None = None,
+        owner_user_id: int | None = None,
         limit: int = 50,
     ) -> list[WorkflowRun]:
-        if self._denies_all(scope):
+        if self._denies_all(scope) and owner_user_id is None:
             return []
         stmt = select(HarnessWorkflowRunRow)
-        stmt = self._apply_scope(stmt, scope)
+        stmt = self._apply_owner_visibility(stmt, scope, owner_user_id)
         if conversation_id is not None:
             stmt = stmt.where(HarnessWorkflowRunRow.conversation_id == conversation_id)
         if project_id is not None:
@@ -113,46 +144,148 @@ class HarnessWorkflowRepository:
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_workflow_run(row) for row in rows]
 
-    async def update_run(self, scope: ProjectScope, run_id: int, update: WorkflowRunUpdate) -> WorkflowRun:
-        if self._denies_all(scope):
+    async def update_run(
+        self,
+        scope: ProjectScope,
+        run_id: int,
+        update_payload: WorkflowRunUpdate,
+        *,
+        expected_version: int | None = None,
+        owner_user_id: int | None = None,
+    ) -> WorkflowRun:
+        if self._denies_all(scope) and owner_user_id is None:
             raise HarnessRunNotFoundError(f"Unknown workflow_run_id: {run_id}")
         stmt = select(HarnessWorkflowRunRow).where(HarnessWorkflowRunRow.id == run_id)
-        stmt = self._apply_scope(stmt, scope)
+        stmt = self._apply_owner_visibility(stmt, scope, owner_user_id)
         row = (await self._session.execute(stmt)).scalars().first()
         if row is None:
             raise HarnessRunNotFoundError(f"Unknown workflow_run_id: {run_id}")
 
-        if update.status is not None:
-            row.status = update.status.value
-        if update.output_summary is not None:
-            row.output_summary = update.output_summary
-        if update.artifact_links is not None:
-            row.artifact_links = update.artifact_links or None
-        if update.error_message is not None:
-            row.error_message = update.error_message
-        if update.runtime_provider_id is not None:
-            row.runtime_provider_id = update.runtime_provider_id
-        if update.runtime_thread_id is not None:
-            row.runtime_thread_id = update.runtime_thread_id
-        if update.runtime_run_id is not None:
-            row.runtime_run_id = update.runtime_run_id
-        if update.current_node is not None:
-            row.current_node = update.current_node
-        if update.resume_token is not None:
-            row.resume_token = update.resume_token
-        if update.budget is not None:
-            row.budget = update.budget or None
-        if update.evidence_refs is not None:
-            row.evidence_refs = update.evidence_refs or None
-        if update.artifact_receipts is not None:
-            row.artifact_receipts = update.artifact_receipts or None
-        if update.runtime_metadata is not None:
-            row.runtime_metadata = update.runtime_metadata or None
-        if update.finished_at is not None:
-            row.finished_at = update.finished_at
-
+        values = _run_update_values(update_payload)
+        if update_payload.runtime_metadata is not None:
+            merged_metadata = dict(row.runtime_metadata or {})
+            merged_metadata.update(update_payload.runtime_metadata)
+            values["runtime_metadata"] = merged_metadata
+        if expected_version is None:
+            values["version"] = HarnessWorkflowRunRow.version + 1
+            await self._session.execute(
+                update(HarnessWorkflowRunRow)
+                .where(HarnessWorkflowRunRow.id == row.id)
+                .values(**values)
+            )
+        else:
+            values["version"] = expected_version + 1
+            result = await self._session.execute(
+                update(HarnessWorkflowRunRow)
+                .where(
+                    HarnessWorkflowRunRow.id == row.id,
+                    HarnessWorkflowRunRow.version == expected_version,
+                )
+                .values(**values)
+            )
+            if result.rowcount != 1:
+                raise HarnessWorkflowConflictError("Workflow state changed; reload and retry")
         await self._session.flush()
-        return _to_workflow_run(row)
+        refreshed = (
+            await self._session.execute(
+                select(HarnessWorkflowRunRow).where(HarnessWorkflowRunRow.id == row.id)
+            )
+        ).scalar_one()
+        return _to_workflow_run(refreshed)
+
+    async def create_interrupt(self, payload: WorkflowInterruptCreate) -> WorkflowInterrupt:
+        row = HarnessWorkflowInterruptRow(
+            workflow_run_id=payload.workflow_run_id,
+            owner_user_id=payload.owner_user_id,
+            interrupt_type=payload.interrupt_type.value,
+            status=WorkflowInterruptStatus.PENDING.value,
+            prompt=payload.prompt,
+            options=payload.options or None,
+            policy_snapshot=payload.policy_snapshot or None,
+            scope_snapshot=payload.scope_snapshot or None,
+            argument_hash=payload.argument_hash,
+            expires_at=payload.expires_at,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _to_workflow_interrupt(row)
+
+    async def get_interrupt_for_owner(
+        self, interrupt_id: int, workflow_run_id: int, owner_user_id: int
+    ) -> WorkflowInterrupt:
+        stmt = select(HarnessWorkflowInterruptRow).where(
+            HarnessWorkflowInterruptRow.id == interrupt_id,
+            HarnessWorkflowInterruptRow.workflow_run_id == workflow_run_id,
+            HarnessWorkflowInterruptRow.owner_user_id == owner_user_id,
+        )
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            raise HarnessRunNotFoundError("Workflow interrupt not found")
+        return _to_workflow_interrupt(row)
+
+    async def list_pending_interrupts_for_owner(
+        self, workflow_run_id: int, owner_user_id: int
+    ) -> list[WorkflowInterrupt]:
+        stmt = (
+            select(HarnessWorkflowInterruptRow)
+            .where(
+                HarnessWorkflowInterruptRow.workflow_run_id == workflow_run_id,
+                HarnessWorkflowInterruptRow.owner_user_id == owner_user_id,
+                HarnessWorkflowInterruptRow.status == WorkflowInterruptStatus.PENDING.value,
+                HarnessWorkflowInterruptRow.expires_at > _now(),
+            )
+            .order_by(HarnessWorkflowInterruptRow.id.asc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return [_to_workflow_interrupt(row) for row in rows]
+
+    async def consume_interrupt(
+        self,
+        interrupt_id: int,
+        workflow_run_id: int,
+        owner_user_id: int,
+        *,
+        response_summary: str,
+    ) -> WorkflowInterrupt:
+        now = _now()
+        result = await self._session.execute(
+            update(HarnessWorkflowInterruptRow)
+            .where(
+                HarnessWorkflowInterruptRow.id == interrupt_id,
+                HarnessWorkflowInterruptRow.workflow_run_id == workflow_run_id,
+                HarnessWorkflowInterruptRow.owner_user_id == owner_user_id,
+                HarnessWorkflowInterruptRow.status == WorkflowInterruptStatus.PENDING.value,
+                HarnessWorkflowInterruptRow.expires_at > now,
+            )
+            .values(
+                status=WorkflowInterruptStatus.CONSUMED.value,
+                response_summary=response_summary,
+                consumed_at=now,
+            )
+        )
+        if result.rowcount != 1:
+            raise HarnessInterruptUnavailableError("Workflow interrupt is unavailable")
+        await self._session.flush()
+        row = (
+            await self._session.execute(
+                select(HarnessWorkflowInterruptRow).where(
+                    HarnessWorkflowInterruptRow.id == interrupt_id
+                )
+            )
+        ).scalar_one()
+        return _to_workflow_interrupt(row)
+
+    async def cancel_pending_interrupts(self, workflow_run_id: int, owner_user_id: int) -> None:
+        await self._session.execute(
+            update(HarnessWorkflowInterruptRow)
+            .where(
+                HarnessWorkflowInterruptRow.workflow_run_id == workflow_run_id,
+                HarnessWorkflowInterruptRow.owner_user_id == owner_user_id,
+                HarnessWorkflowInterruptRow.status == WorkflowInterruptStatus.PENDING.value,
+            )
+            .values(status=WorkflowInterruptStatus.CANCELLED.value)
+        )
+        await self._session.flush()
 
     async def add_activity_event(self, event: ActivityEventCreate) -> ActivityEvent:
         sequence_stmt = select(func.max(HarnessActivityEventRow.sequence)).where(
@@ -207,6 +340,7 @@ def _to_workflow_run(row: HarnessWorkflowRunRow) -> WorkflowRun:
         capability_id=row.capability_id,
         provider_id=row.provider_id,
         status=WorkflowRunStatus(row.status),
+        version=row.version,
         input_summary=row.input_summary,
         output_summary=row.output_summary,
         artifact_links=row.artifact_links or [],
@@ -222,6 +356,37 @@ def _to_workflow_run(row: HarnessWorkflowRunRow) -> WorkflowRun:
         runtime_metadata=row.runtime_metadata or {},
         started_at=_as_utc(row.started_at),
         finished_at=_as_utc(row.finished_at),
+        cancelled_at=_as_utc(row.cancelled_at),
+        cancelled_by_user_id=row.cancelled_by_user_id,
+        cancellation_reason=row.cancellation_reason,
+    )
+
+
+def _run_update_values(payload: WorkflowRunUpdate) -> dict:
+    values = payload.model_dump(exclude_unset=True)
+    if "status" in values:
+        values["status"] = payload.status.value
+    for key in ("artifact_links", "budget", "evidence_refs", "artifact_receipts", "runtime_metadata"):
+        if key in values and not values[key]:
+            values[key] = None
+    return values
+
+
+def _to_workflow_interrupt(row: HarnessWorkflowInterruptRow) -> WorkflowInterrupt:
+    return WorkflowInterrupt(
+        id=row.id,
+        workflow_run_id=row.workflow_run_id,
+        owner_user_id=row.owner_user_id,
+        interrupt_type=row.interrupt_type,
+        status=row.status,
+        prompt=row.prompt,
+        options=row.options or [],
+        policy_snapshot=row.policy_snapshot or {},
+        scope_snapshot=row.scope_snapshot or {},
+        argument_hash=row.argument_hash,
+        response_summary=row.response_summary,
+        expires_at=_as_utc(row.expires_at),
+        consumed_at=_as_utc(row.consumed_at),
     )
 
 

@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import datetime
+from datetime import UTC
+from types import SimpleNamespace
+
 from httpx import ASGITransport, AsyncClient
 
 from src.api.dependencies import get_current_user, get_db
 from src.api.main import app
-from src.db.models import Conversation, User
+from src.db.models import Conversation, ProjectAssignment, User
 from src.harness import HarnessWorkflowRepository
-from src.harness.models import DOCUMENTATION_GENERATION_CAPABILITY, WorkflowRunCreate, WorkflowRunStatus
+from src.harness.models import (
+    DOCUMENTATION_GENERATION_CAPABILITY,
+    WorkflowInterruptCreate,
+    WorkflowInterruptType,
+    WorkflowRunCreate,
+    WorkflowRunStatus,
+)
+
+CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
 
 
 async def test_list_harness_capabilities(db_session) -> None:
@@ -62,6 +74,194 @@ async def test_runtime_manifest_exposes_filtered_safe_tools(db_session) -> None:
     assert tool["label"] == "Generate project documentation"
     assert "provider_id" not in tool
     assert "metadata" not in tool
+    assert body["pack_snapshot"]["active_pack_ids"] == ["nexus.data-integration"]
+    assert any(
+        item["label"] == "Investigate integration failure"
+        for item in body["application_context"]["workflows"]
+    )
+
+
+async def test_pack_catalog_exposes_safe_views_and_active_snapshot(db_session) -> None:
+    user = User(
+        username="harness-pack-user",
+        email="harness-pack@example.com",
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v1/harness/packs")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active"]["active_pack_ids"] == ["nexus.data-integration"]
+    assert {item["id"] for item in body["packs"]} == {
+        "nexus.documentation",
+        "nexus.data-integration",
+    }
+    assert all("policy_hints" not in item for item in body["packs"])
+
+
+async def test_project_pack_api_creates_and_activates_data_only_custom_pack(db_session) -> None:
+    user = User(username="project-pack-admin", email="project-pack-admin@example.com", is_superadmin=True)
+    db_session.add(user)
+    await db_session.flush()
+    manifest = {
+        "schema_version": 1,
+        "id": "custom.api-pack",
+        "name": "API Pack",
+        "version": "1.0.0",
+        "pack_type": "domain",
+        "includes": ["nexus.documentation"],
+        "documentation_provider_ref": None,
+        "vocabulary": [], "entities": [], "workflows": [], "evidence_ranking": [],
+        "artifact_templates": [], "connector_requirements": [],
+        "default_scopes": {"project_required": True, "permissions": [], "domains": ["documentation"]},
+        "policy_hints": {"approval_required_for": [], "evidence_required": True, "read_only": True},
+        "output_rules": {"required_sections": [], "include_confidence": True, "include_artifact_links": True},
+    }
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            created = await client.post("/api/v1/harness/packs/projects/project-packs/custom", json={"manifest": manifest}, headers=CSRF_HEADERS)
+            selected = await client.put(
+                "/api/v1/harness/packs/projects/project-packs/activations/documentation.generate",
+                json={"active_pack_ids": ["custom.api-pack"]},
+                headers=CSRF_HEADERS,
+            )
+            recommendations = await client.get("/api/v1/harness/packs/projects/project-packs/recommendations")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert created.status_code == 201
+    assert selected.status_code == 200
+    assert selected.json()["snapshot"]["active_pack_ids"] == ["custom.api-pack"]
+    assert recommendations.status_code == 200
+    assert recommendations.json()["recommendations"][0]["reasons"]
+
+
+async def test_project_members_can_browse_pack_recommendations_but_cannot_change_packs(db_session) -> None:
+    user = User(username="project-pack-member", email="project-pack-member@example.com", roles=[])
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(ProjectAssignment(user_id=user.id, project_id="project-packs", is_owner=False))
+    await db_session.flush()
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            browse = await client.get("/api/v1/harness/packs/projects/project-packs/recommendations")
+            mutate = await client.post(
+                "/api/v1/harness/packs/projects/project-packs/custom",
+                json={"manifest": {}},
+                headers=CSRF_HEADERS,
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert browse.status_code == 200
+    assert mutate.status_code == 403
+
+
+async def test_documentation_pack_api_returns_safe_mcp_metadata_and_requires_project_management(db_session, monkeypatch) -> None:
+    from src.api.routes import harness_packs as harness_packs_mod
+
+    user = User(username="documentation-pack-member", email="documentation-pack-member@example.com", roles=[])
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(ProjectAssignment(user_id=user.id, project_id="project-docs", is_owner=False))
+    await db_session.flush()
+    calls: dict[str, object] = {}
+
+    class FakeDocumentationProvider:
+        async def list_documentation_packs(self, *, access_token=None):
+            calls["list_token"] = access_token
+            return [
+                harness_packs_mod.McpDocumentationPack(
+                    id=7,
+                    name="Talend migration",
+                    version="2.1.0",
+                    description="Migration-specific documentation instructions.",
+                )
+            ]
+
+        async def get_project_documentation_pack_id(self, *, project_id, access_token=None):
+            calls["get_project"] = project_id
+            return 7
+
+        async def set_project_documentation_pack(self, **kwargs):
+            calls["set"] = kwargs
+            return kwargs["plugin_pack_id"]
+
+    monkeypatch.setattr(harness_packs_mod, "McpDocumentationProvider", FakeDocumentationProvider)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            browse = await client.get("/api/v1/harness/packs/projects/project-docs/documentation-pack")
+            mutate = await client.put(
+                "/api/v1/harness/packs/projects/project-docs/documentation-pack",
+                json={"plugin_pack_id": 7},
+                headers=CSRF_HEADERS,
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert browse.status_code == 200
+    assert browse.json() == {
+        "project_id": "project-docs",
+        "selected_plugin_pack_id": 7,
+        "packs": [{"id": 7, "name": "Talend migration", "version": "2.1.0", "description": "Migration-specific documentation instructions."}],
+    }
+    assert "path" not in browse.text
+    assert mutate.status_code == 403
+    assert "set" not in calls
+
+
+async def test_documentation_pack_api_sets_the_mcp_project_default(db_session, monkeypatch) -> None:
+    from src.api.routes import harness_packs as harness_packs_mod
+
+    user = User(username="documentation-pack-admin", email="documentation-pack-admin@example.com", is_superadmin=True)
+    db_session.add(user)
+    await db_session.flush()
+    calls: dict[str, object] = {}
+
+    class FakeDocumentationProvider:
+        async def list_documentation_packs(self, *, access_token=None):
+            return [harness_packs_mod.McpDocumentationPack(id=7, name="Talend migration", version="2.1.0", description=None)]
+
+        async def set_project_documentation_pack(self, **kwargs):
+            calls.update(kwargs)
+            return kwargs["plugin_pack_id"]
+
+    monkeypatch.setattr(harness_packs_mod, "McpDocumentationProvider", FakeDocumentationProvider)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.put(
+                "/api/v1/harness/packs/projects/project-docs/documentation-pack",
+                json={"plugin_pack_id": 7},
+                headers=CSRF_HEADERS,
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["selected_plugin_pack_id"] == 7
+    assert calls["project_id"] == "project-docs"
+    assert calls["plugin_pack_id"] == 7
 
 
 async def test_list_harness_connectors_reuses_runtime_source_registry(db_session) -> None:
@@ -78,7 +278,7 @@ async def test_list_harness_connectors_reuses_runtime_source_registry(db_session
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/v1/harness/connectors")
+            response = await client.get("/api/v1/harness/connector-types")
     finally:
         app.dependency_overrides.clear()
 
@@ -131,3 +331,80 @@ async def test_list_and_get_harness_workflow_receipt(db_session) -> None:
     detail = detail_response.json()
     assert detail["run"]["id"] == run.id
     assert "runtime_provider_id" in detail["run"]
+
+
+async def test_owner_can_view_resume_once_and_cancel_interrupted_workflow(db_session) -> None:
+    owner = User(username="interrupt-owner", email="interrupt-owner@example.com", roles=[])
+    other = User(username="interrupt-other", email="interrupt-other@example.com", roles=[])
+    db_session.add_all([owner, other])
+    await db_session.flush()
+    conversation = Conversation(user_id=owner.id, title="Pending harness")
+    db_session.add(conversation)
+    await db_session.flush()
+    repo = HarnessWorkflowRepository(db_session)
+    run = await repo.create_run(
+        WorkflowRunCreate(
+            conversation_id=conversation.id,
+            user_id=owner.id,
+            project_id="__pending_project_scope__",
+            intent_mode="generate_docs",
+            capability_id=DOCUMENTATION_GENERATION_CAPABILITY.id,
+            provider_id=DOCUMENTATION_GENERATION_CAPABILITY.provider_id,
+            status=WorkflowRunStatus.INTERRUPTED,
+            current_node="await_project_scope",
+        )
+    )
+    interrupt = await repo.create_interrupt(
+        WorkflowInterruptCreate(
+            workflow_run_id=run.id,
+            owner_user_id=owner.id,
+            interrupt_type=WorkflowInterruptType.CLARIFICATION,
+            prompt="Choose a project",
+            options=[{"id": "project-a", "label": "Project A"}],
+            argument_hash="b" * 64,
+            expires_at=datetime.datetime.now(UTC) + datetime.timedelta(minutes=30),
+        )
+    )
+    owner_auth = SimpleNamespace(id=owner.id, username=owner.username, is_superadmin=False, roles=[])
+    other_auth = SimpleNamespace(id=other.id, username=other.username, is_superadmin=False, roles=[])
+    await db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: other_auth
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            hidden = await client.get(f"/api/v1/harness/workflows/{run.id}")
+        app.dependency_overrides[get_current_user] = lambda: owner_auth
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            detail = await client.get(f"/api/v1/harness/workflows/{run.id}")
+            resumed = await client.post(
+                f"/api/v1/harness/workflows/{run.id}/resume",
+                json={
+                    "interrupt_id": interrupt.id,
+                    "expected_version": run.version,
+                    "response": "Project A",
+                },
+                headers=CSRF_HEADERS,
+            )
+        await db_session.commit()
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            cancelled = await client.post(
+                f"/api/v1/harness/workflows/{run.id}/cancel",
+                json={"expected_version": run.version + 1, "reason": "No longer needed"},
+                headers=CSRF_HEADERS,
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert hidden.status_code == 404
+    assert detail.status_code == 200
+    pending = detail.json()["pending_interrupts"][0]
+    assert pending["prompt"] == "Choose a project"
+    assert "argument_hash" not in pending
+    assert "owner_user_id" not in pending
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["run"]["status"] == "pending"
+    assert cancelled.status_code == 200
+    assert cancelled.json()["run"]["status"] == "cancelled"
+    assert cancelled.json()["run"]["cancellation_reason"] == "No longer needed"

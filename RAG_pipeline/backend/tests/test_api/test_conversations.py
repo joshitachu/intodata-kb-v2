@@ -11,6 +11,7 @@ from src.db.models import User, Role, Conversation, ConversationMessage
 from src.harness.repository import HarnessWorkflowRepository
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.models import WorkflowRunStatus
+from src.harness.chat import HarnessPlannerDecision
 
 CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
 
@@ -48,6 +49,9 @@ def _mock_message(id: int = 1, role: str = "user", content: str = "Hello"):
     msg.primary_source_layer = None
     msg.fallback_used = False
     msg.doc_gap = False
+    msg.workflow_run_id = None
+    msg.turn_plan = None
+    msg.structured_answer = None
     msg.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return msg
 
@@ -117,6 +121,20 @@ class TestListConversations:
         assert data["conversations"][1]["message_count"] == 2
 
 
+class TestSlashCommands:
+    async def test_lists_public_command_metadata(self, mock_deps):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v1/conversations/commands")
+
+        assert response.status_code == 200
+        commands = response.json()["commands"]
+        assert [command["name"] for command in commands] == [
+            "onboard", "docs", "investigate", "packs", "status",
+        ]
+        assert all("planner_template" not in command for command in commands)
+
+
 class TestCreateConversation:
     async def test_create_with_title(self, mock_deps):
         mock_db = mock_deps["db"]
@@ -181,6 +199,19 @@ class TestGetConversation:
                 "document_role": "policy",
             }
         ]
+        msg2.structured_answer = {
+            "output_contract": "component_inventory",
+            "headline": "Component inventory",
+            "summary": "One documented job.",
+            "sections": [],
+            "limitations": [],
+            "citations": [],
+            "evidence_refs": [],
+            "answer_status": "complete",
+            "execution_status": "completed",
+            "domain_status": "unknown",
+            "artifacts": [],
+        }
         conv.messages = [msg1, msg2]
 
         result = MagicMock()
@@ -196,6 +227,7 @@ class TestGetConversation:
         assert data["id"] == 1
         assert len(data["messages"]) == 2
         assert data["messages"][1]["sources"][0]["document_role"] == "policy"
+        assert data["messages"][1]["structured_answer"]["headline"] == "Component inventory"
 
     async def test_get_not_found(self, mock_deps):
         mock_db = mock_deps["db"]
@@ -309,6 +341,51 @@ class TestDeleteConversation:
 
 
 class TestSendMessage:
+    async def test_slash_command_is_resolved_before_the_normal_planner(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=1, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        response = MagicMock()
+        response.id = 1
+        response.role = "assistant"
+        response.content = "Documentation started."
+        response.sources = None
+        response.latency_ms = 10
+        response.status = "completed"
+        response.error_message = None
+        response.primary_source_layer = None
+        response.fallback_used = False
+        response.doc_gap = False
+        response.workflow_run_id = None
+        response.harness_activities = []
+        response.pending_action = None
+        response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+
+        decision = HarnessPlannerDecision(action="use_rag", mode="rag")
+        with patch(
+            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=decision,
+        ) as planner, patch(
+            "src.api.routes.conversations.run_conversational_rag",
+            new_callable=AsyncMock,
+            return_value=response,
+        ) as rag:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                result = await client.post(
+                    "/api/v1/conversations/1/messages",
+                    json={"query": "/docs customer-api"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert result.status_code == 200
+        assert planner.await_args.kwargs["query"] == "Generate documentation customer-api"
+        assert rag.await_args.kwargs["query"] == "Generate documentation customer-api"
+
     async def test_send_message_success(self, mock_deps):
         mock_db = mock_deps["db"]
 
@@ -329,6 +406,9 @@ class TestSendMessage:
         mock_response.primary_source_layer = None
         mock_response.fallback_used = False
         mock_response.doc_gap = False
+        mock_response.workflow_run_id = None
+        mock_response.harness_activities = []
+        mock_response.pending_action = None
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(
@@ -403,6 +483,9 @@ class TestSendMessage:
         mock_response.primary_source_layer = None
         mock_response.fallback_used = False
         mock_response.doc_gap = False
+        mock_response.workflow_run_id = None
+        mock_response.harness_activities = []
+        mock_response.pending_action = None
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(

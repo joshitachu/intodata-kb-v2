@@ -1,3 +1,4 @@
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +20,10 @@ class Settings(BaseSettings):
     # RAG chat answer path routes via rag_default_model / the provider registry
     # and does NOT use this list.
     llm_providers: list[str] = ["kimi", "ollama"]
+
+    # Transition guard for Slice 14. Plans are always persisted for telemetry;
+    # disabling enforcement restores the legacy RAG runtime gate during rollout.
+    harness_turn_plan_enforced: bool = True
 
     # Kimi (Moonshot AI)
     kimi_api_key: str = ""
@@ -161,6 +166,19 @@ class Settings(BaseSettings):
     mcp_ingest_api_key: str = ""
     mcp_docs_base_url: str = "http://localhost:8002/mcp"
     mcp_docs_request_timeout: float = 15.0
+
+    # Accepted documentation generations can outlive a browser session. When a
+    # deployment supplies a least-privilege MCP service access token, startup
+    # runs a bounded background reconciler using it. Empty keeps polling off.
+    # This is never persisted in workflow receipts or logged.
+    mcp_docs_reconciliation_service_token: SecretStr | None = None
+    mcp_docs_reconciliation_interval_seconds: int = Field(default=60, ge=1, le=3600)
+    mcp_docs_reconciliation_batch_size: int = Field(default=50, ge=1, le=500)
+
+    # Nexus orchestration packs. Definitions are data-only JSON; activation is
+    # deployment configuration and can change the application without code edits.
+    nexus_pack_directory: str = ""
+    nexus_active_packs: str = "nexus.data-integration"
 
     # Network hardening — comma-separated IPv4/IPv6 addresses or CIDRs. Empty = disabled.
     # ALLOWED_IPS is enforced by ip_allowlist middleware; TRUSTED_PROXIES is passed to

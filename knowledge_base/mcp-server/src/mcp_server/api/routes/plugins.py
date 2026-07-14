@@ -28,7 +28,7 @@ from pathlib import Path
 from stat import S_IFLNK, S_IFMT
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select, update
 
@@ -42,6 +42,7 @@ from mcp_server.services.git_remote_service import (
     strip_url_credentials,
 )
 from mcp_server.services.plugin_schema import PluginPackManifest, load_plugin_manifest
+from mcp_server.api.permissions import require_project_management
 
 logger = logging.getLogger(__name__)
 
@@ -743,7 +744,8 @@ async def save_plugin_file(pack_id: int, file_path: str, body: SaveFileRequest):
 
 
 @router.patch("/projects/{project_id}/plugin")
-async def assign_plugin_to_project(project_id: str, body: AssignPluginRequest):
+async def assign_plugin_to_project(project_id: str, body: AssignPluginRequest, request: Request):
+    await require_project_management(request, project_id)
     async with async_session_factory() as db:
         project = (
             await db.execute(select(Project).where(Project.id == project_id))

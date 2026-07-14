@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import datetime
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import re
 import shutil
+import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -40,6 +44,8 @@ from mcp_server.schemas import (
     DeleteProjectResponse,
     DocFileInfo,
     DocListResponse,
+    EvidenceDocRevertRequest,
+    EvidenceDocRevertResponse,
     EvidenceDocUpdateRequest,
     EvidenceDocUpdateResponse,
     DocReview,
@@ -63,6 +69,9 @@ from mcp_server.schemas import (
     ProjectGraphResponse,
     ProjectListResponse,
     ProjectResponse,
+    VerifyZipUploadRequest,
+    ZipUploadReceipt,
+    ZipUploadResponse,
     ProjectUsageResponse,
     PushToRagRequest,
     ReingestionReadinessResponse,
@@ -81,6 +90,7 @@ from mcp_server.services.atomic_swap import swap_docs
 from mcp_server.services.doc_version_history import DocVersionHistoryRepository
 from mcp_server.services.drift_summary import DriftSummary, compute_drift_summary
 from mcp_server.services.evidence_doc_update import EvidenceDocUpdateError, EvidenceDocUpdateService
+from mcp_server.services.evidence_doc_revert import EvidenceDocRevertService
 from mcp_server.services.reingestion_gate import GateOutcome
 from mcp_server.services.claude_service import DocGenerationCoordinator
 from mcp_server.services.deep_dive_service import DeepDiveService
@@ -476,18 +486,18 @@ async def add_repo(req: AddRepoRequest, request: Request):
         return _project_to_response(project)
 
 
-@router.post("/upload-zip", response_model=ProjectResponse)
+@router.post("/upload-zip", response_model=ZipUploadResponse)
 async def upload_zip(
     request: Request,
     file: UploadFile = File(...),
     project_id: str = Form(...),
     platform: str = Form("talend"),
 ):
-    """Upload a ZIP file, unpack, register, and trigger scan."""
+    """Upload a ZIP source, safely unpack it, and return an opaque receipt."""
     project_id = project_id.strip()
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$", project_id) or len(project_id) > 100:
         raise HTTPException(400, "Invalid project_id: alphanumeric, hyphens, underscores only")
-    if not file.filename or not file.filename.endswith(".zip"):
+    if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="File must be a .zip")
     from mcp_server.config import SUPPORTED_PLATFORMS
     if platform not in SUPPORTED_PLATFORMS:
@@ -495,64 +505,173 @@ async def upload_zip(
 
     # Enforce upload size limit before reading the full body
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > config.max_upload_zip_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
-        )
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid upload content length") from exc
+        if declared_size > config.max_upload_zip_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
+            )
 
-    # Save ZIP
-    zip_path = config.uploads_dir / f"{project_id}.zip"
+    # Read and validate in MCP only. Callers never pass ZIP bytes into a graph
+    # or workflow checkpoint.
     content = await file.read()
     if len(content) > config.max_upload_zip_bytes:
         raise HTTPException(
             status_code=413,
             detail=f"Upload too large (max {config.max_upload_zip_bytes // 1024 // 1024} MB)",
         )
-    zip_path.write_bytes(content)
-
-    # Unpack — validate member paths before extraction to prevent zip-slip
     repo_dir = config.repos_dir / project_id
     if repo_dir.exists():
-        shutil.rmtree(repo_dir)
-    repo_dir.mkdir(parents=True, exist_ok=True)
+        raise HTTPException(status_code=409, detail="A source already exists for this project")
 
+    checksum = hashlib.sha256(content).hexdigest()
+    upload_dir = config.uploads_dir
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    config.repos_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=upload_dir, suffix=".zip", delete=False) as handle:
+        handle.write(content)
+        zip_path = Path(handle.name)
+    extract_dir = Path(tempfile.mkdtemp(prefix=f".{project_id}-", dir=config.repos_dir))
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
-            for member in zf.infolist():
-                member_parts = Path(member.filename).parts
-                if member.filename.startswith("/") or ".." in member_parts:
-                    raise HTTPException(status_code=400, detail="ZIP contains unsafe path")
-            zf.extractall(repo_dir)
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+            _validate_zip_members(zf.infolist())
+            zf.extractall(extract_dir)
+    except zipfile.BadZipFile as exc:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
+    except Exception:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
+    finally:
+        zip_path.unlink(missing_ok=True)
 
+    try:
+        extract_dir.replace(repo_dir)
+    except Exception:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise
+
+    try:
+        async with async_session_factory() as db:
+            registry = ProjectRegistry(db)
+            project = await registry.add_project(
+                project_id=project_id,
+                local_path=str(repo_dir),
+                platform=platform,
+                source_type="zip",
+            )
+
+            # Auto-assign creator so they can see the project immediately
+            auth_payload = getattr(request.state, "auth_payload", None)
+            if auth_payload:
+                user_id = int(auth_payload.get("sub", 0))
+                if user_id:
+                    await db.execute(
+                        text(
+                            "INSERT INTO project_assignments (user_id, project_id, assigned_at, created_at, updated_at) "
+                            "VALUES (:uid, :pid, NOW(), NOW(), NOW()) "
+                            "ON CONFLICT (user_id, project_id) DO NOTHING"
+                        ),
+                        {"uid": user_id, "pid": project_id},
+                    )
+
+            await db.commit()
+            await db.refresh(project)
+            response = _project_to_response(project)
+    except Exception:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+        raise
+
+    return ZipUploadResponse(
+        **response.model_dump(),
+        upload_receipt=ZipUploadReceipt(
+            receipt=_issue_zip_upload_receipt(
+                project_id=project_id,
+                platform=platform,
+                filename=Path(file.filename).name,
+                size_bytes=len(content),
+                sha256=checksum,
+            ),
+            filename=Path(file.filename).name,
+            size_bytes=len(content),
+            sha256=checksum,
+        ),
+    )
+
+
+@router.post("/uploaded-sources/verify", response_model=ZipUploadReceipt)
+async def verify_uploaded_zip_source(req: VerifyZipUploadRequest, request: Request):
+    """Validate an upload receipt before a Nexus workflow consumes it."""
+    payload = _verify_zip_upload_receipt(req.receipt)
+    project_id = str(payload["project_id"])
+    await require_project_access(request, project_id)
     async with async_session_factory() as db:
         registry = ProjectRegistry(db)
-        project = await registry.add_project(
-            project_id=project_id,
-            local_path=str(repo_dir),
-            platform=platform,
-            source_type="zip",
-        )
+        project = await registry.get_project(project_id)
+        if project is None or project.source_type != "zip":
+            raise HTTPException(status_code=400, detail="Upload receipt does not match a ZIP project source")
+    return ZipUploadReceipt(
+        receipt=req.receipt,
+        filename=str(payload["filename"]),
+        size_bytes=int(payload["size_bytes"]),
+        sha256=str(payload["sha256"]),
+    )
 
-        # Auto-assign creator so they can see the project immediately
-        auth_payload = getattr(request.state, "auth_payload", None)
-        if auth_payload:
-            user_id = int(auth_payload.get("sub", 0))
-            if user_id:
-                await db.execute(
-                    text(
-                        "INSERT INTO project_assignments (user_id, project_id, assigned_at, created_at, updated_at) "
-                        "VALUES (:uid, :pid, NOW(), NOW(), NOW()) "
-                        "ON CONFLICT (user_id, project_id) DO NOTHING"
-                    ),
-                    {"uid": user_id, "pid": project_id},
-                )
 
-        await db.commit()
-        await db.refresh(project)
-        return _project_to_response(project)
+def _validate_zip_members(members: list[zipfile.ZipInfo]) -> None:
+    if len(members) > config.max_upload_zip_entries:
+        raise HTTPException(status_code=400, detail="ZIP contains too many files")
+    total_size = 0
+    for member in members:
+        member_path = Path(member.filename)
+        if (
+            not member.filename
+            or member.filename.startswith(("/", "\\"))
+            or ".." in member_path.parts
+            or member_path.drive
+            or (member.external_attr >> 16) & 0o170000 == 0o120000
+        ):
+            raise HTTPException(status_code=400, detail="ZIP contains an unsafe path")
+        total_size += member.file_size
+        if total_size > config.max_upload_zip_uncompressed_bytes:
+            raise HTTPException(status_code=400, detail="ZIP expands beyond the allowed size")
+
+
+def _issue_zip_upload_receipt(
+    *, project_id: str, platform: str, filename: str, size_bytes: int, sha256: str
+) -> str:
+    payload = {
+        "project_id": project_id,
+        "platform": platform,
+        "filename": filename,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+        "expires_at": int(datetime.datetime.now(datetime.UTC).timestamp()) + config.upload_receipt_ttl_seconds,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).decode().rstrip("=")
+    signature = hmac.new(config.jwt_secret_key.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _verify_zip_upload_receipt(receipt: str) -> dict[str, object]:
+    try:
+        encoded, signature = receipt.rsplit(".", 1)
+        expected = hmac.new(config.jwt_secret_key.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        if not isinstance(payload, dict) or int(payload.get("expires_at", 0)) < int(datetime.datetime.now(datetime.UTC).timestamp()):
+            raise ValueError("expired")
+        required = ("project_id", "platform", "filename", "size_bytes", "sha256")
+        if any(not payload.get(key) for key in required):
+            raise ValueError("fields")
+        return payload
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid or expired upload receipt") from exc
 
 
 @router.post("/scan", response_model=StatusResponse)
@@ -638,6 +757,8 @@ async def _run_scan_background(
 async def generate_docs(req: GenerateRequest, request: Request, background_tasks: BackgroundTasks):
     """Spawn Claude Code CLI to generate docs (runs in background)."""
     await require_project_access(request, req.project_id)
+    if any(not value.strip() or len(value) > 200 for value in req.nexus_pack_ids):
+        raise HTTPException(status_code=400, detail="Invalid Nexus pack selection")
     log_mgr = request.app.state.log_manager
 
     if req.project_id in _currently_generating:
@@ -2209,10 +2330,44 @@ async def update_doc_from_evidence(
             evidence_text=req.evidence_text,
             evidence_refs=req.evidence_refs,
             workflow_run_id=req.workflow_run_id,
+            section=req.section,
+            expected_base_sha=req.expected_base_sha,
         )
     except EvidenceDocUpdateError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.safe_message) from exc
     return EvidenceDocUpdateResponse(**result.to_dict())
+
+
+@router.post(
+    "/projects/{project_id}/docs/{filename}/evidence-revert",
+    response_model=EvidenceDocRevertResponse,
+)
+async def revert_doc_evidence_update(
+    project_id: str,
+    filename: str,
+    req: EvidenceDocRevertRequest,
+    request: Request,
+):
+    """Restore a prior evidence-update version and re-sync it to RAG."""
+    await require_project_access(request, project_id)
+    async with async_session_factory() as db:
+        registry = ProjectRegistry(db)
+        project = await registry.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
+
+    svc = EvidenceDocRevertService(log_manager=getattr(request.app.state, "log_manager", None))
+    try:
+        result = await svc.revert_update(
+            project_id=project_id,
+            filename=filename,
+            receipt_path=req.receipt_path,
+            expected_base_sha=req.expected_base_sha,
+            workflow_run_id=req.workflow_run_id,
+        )
+    except EvidenceDocUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.safe_message) from exc
+    return EvidenceDocRevertResponse(**result.to_dict())
 
 
 @router.post("/reset-status", response_model=StatusResponse)

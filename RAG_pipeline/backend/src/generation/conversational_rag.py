@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import tiktoken
 from qdrant_client import AsyncQdrantClient
@@ -70,6 +70,14 @@ from src.retrieval.search import (
 )
 from src.runtime.scope import RequestScope
 from src.schemas import DocumentSource, MessageResponse, Source
+from src.harness.evidence_store import (
+    EvidenceAnswerSynthesizer,
+    EvidenceSnapshot,
+    EvidenceSourceClass,
+    StructuredEvidenceAnswer,
+)
+from src.harness.evidence_store.synthesis import EvidenceAnswerSection
+from src.harness.planner import TurnPlan
 
 logger = logging.getLogger(__name__)
 
@@ -748,6 +756,8 @@ class RAGContext:
     """True when internal material answered what the final docs could not."""
     doc_gap_details: dict | None = None
     """DocGapEvent payload (reason, layers, entities, artifacts) when doc_gap is True."""
+    reused_structured_answer: dict | None = None
+    """Previously validated final answer reused by a no-read recomposition turn."""
     stream_sniffed: bool = False
     """True when precomputed_answer is None specifically because the streaming
     sniff-buffer already validated sufficiency and started delivering tokens
@@ -764,6 +774,222 @@ class RAGContext:
     sniff buffer (nothing left to drain) even though stream_sniffed is True."""
 
 
+def _runtime_allowed_by_turn_plan(turn_plan: dict | None) -> bool | None:
+    """Return the authoritative runtime gate, or None for legacy callers."""
+    if not isinstance(turn_plan, dict):
+        return None
+    policy = turn_plan.get("evidence_policy")
+    if not isinstance(policy, dict):
+        return False
+    allowed = set(policy.get("allowed") or [])
+    denied = set(policy.get("denied") or [])
+    return "runtime_evidence" in allowed and "runtime_evidence" not in denied
+
+
+def _documents_allowed_by_turn_plan(turn_plan: dict | None) -> bool | None:
+    if not isinstance(turn_plan, dict):
+        return None
+    policy = turn_plan.get("evidence_policy")
+    if not isinstance(policy, dict):
+        return False
+    allowed = set(policy.get("allowed") or [])
+    denied = set(policy.get("denied") or [])
+    document_sources = {"indexed_documentation", "generated_documentation"}
+    return bool((allowed - denied) & document_sources)
+
+
+def _task_type_by_turn_plan(turn_plan: dict | None) -> str | None:
+    if not isinstance(turn_plan, dict):
+        return None
+    task_type = turn_plan.get("task_type")
+    return task_type if isinstance(task_type, str) else None
+
+
+def _output_contract_by_turn_plan(turn_plan: dict | None) -> str | None:
+    if not isinstance(turn_plan, dict):
+        return None
+    value = turn_plan.get("output_contract")
+    return value if isinstance(value, str) else None
+
+
+_OUTPUT_CONTRACT_GUIDES = {
+    "component_inventory": (
+        "Answer as a component inventory. Lead with the useful result, then provide a Markdown "
+        "table with Component, Purpose, Inputs, and Outputs/Connections. Preserve exact names. "
+        "Write 'Not documented' for absent fields; never infer them."
+    ),
+    "runtime_ranking": (
+        "Answer as a runtime ranking for the requested time window. Group observations by job, "
+        "show supported counts only, state the window, and say when the provider does not expose "
+        "a complete aggregate. Do not turn this into a root-cause investigation."
+    ),
+    "comparison": (
+        "Answer as a compact comparison table followed by material tradeoffs and unknowns. "
+        "Compare only attributes supported by the retrieved evidence."
+    ),
+    "migration_proposal": (
+        "Answer as an actionable Azure Data Factory migration proposal. Select or compare a "
+        "documented component, then cover Current flow, Proposed ADF mapping, Risks, Unknowns, "
+        "and Next steps. Do not claim the migration was executed."
+    ),
+    "incident_report": (
+        "Answer as an incident finding: what failed, evidence, likely cause only when supported, "
+        "confidence, and next checks. Missing root-cause evidence must not hide known failures."
+    ),
+}
+
+
+def _with_output_contract(
+    messages: list[dict[str, str]], output_contract: str | None
+) -> list[dict[str, str]]:
+    guide = _OUTPUT_CONTRACT_GUIDES.get(output_contract or "")
+    if not guide:
+        return messages
+    instruction = (
+        "Answer contract for this turn:\n"
+        f"{guide}\n"
+        "Keep citations in [n] form and cite only supplied evidence. Do not mention internal "
+        "capability IDs, provider payloads, routing, or tool names."
+    )
+    if messages and messages[0].get("role") == "system":
+        head = {**messages[0], "content": f"{messages[0].get('content', '')}\n\n{instruction}"}
+        return [head, *messages[1:]]
+    return [{"role": "system", "content": instruction}, *messages]
+
+
+def _is_recomposition_request(query: str) -> bool:
+    normalized = re.sub(r"\s+", " ", query.strip().casefold())
+    asks_for_freshness = re.search(
+        r"\b(latest|current|now|again|refresh|recheck|new evidence|new logs?)\b", normalized
+    )
+    return not asks_for_freshness and bool(
+        re.search(
+            r"\b(give me better output|format (?:it|that)|reformat|make (?:it|that) "
+            r"clearer|summarize that|show (?:it|that) as (?:a )?(?:table|list))\b",
+            normalized,
+        )
+    )
+
+
+def _structured_answer_payload(
+    *,
+    query: str,
+    answer: str,
+    turn_plan: dict | None,
+    document_sources: list[DocumentSource],
+    runtime_progress: list[RuntimeProgressEvent],
+    reused_structured_answer: dict | None = None,
+) -> dict | None:
+    """Normalize used chat evidence into the persisted final-answer envelope."""
+    if not isinstance(turn_plan, dict):
+        return None
+    try:
+        plan = TurnPlan.model_validate(turn_plan)
+    except (TypeError, ValueError):
+        return None
+    if plan.execution_mode.value not in {"evidence", "workflow"}:
+        return None
+
+    if reused_structured_answer is not None:
+        try:
+            previous = StructuredEvidenceAnswer.model_validate(reused_structured_answer)
+        except (TypeError, ValueError):
+            previous = None
+        if previous is not None:
+            recomposed = previous.model_copy(
+                update={
+                    "output_contract": plan.output_contract,
+                    "sections": [EvidenceAnswerSection(heading="Findings", body=answer)],
+                    "execution_status": "completed",
+                }
+            )
+            return recomposed.model_dump(mode="json")
+
+    cited_numbers = {
+        int(value) for value in re.findall(r"\[(\d+)\]", answer) if value.isdigit()
+    }
+    selected_docs = [
+        source
+        for source in document_sources
+        if not cited_numbers or source.reference_number in cited_numbers
+    ][:10]
+    evidence: list[EvidenceSnapshot] = [
+        EvidenceSnapshot(
+            id=source.document_id,
+            source_class=EvidenceSourceClass.INDEXED_DOC,
+            source_id=f"document:{source.document_id}",
+            project_ref=source.project_id,
+            title=source.display_name or source.filename,
+            summary=source.text[:4000] or "Indexed documentation",
+            uri=source.artifact_path,
+            confidence=max(0.0, min(1.0, source.score)),
+            authority=0.7,
+            freshness=0.6,
+            score=max(0.0, min(1.0, source.score)),
+            metadata={"reference_number": source.reference_number},
+        )
+        for source in selected_docs
+    ]
+    evidence.extend(_runtime_answer_evidence(runtime_progress, plan))
+    try:
+        structured = EvidenceAnswerSynthesizer().compose(
+            question=query,
+            plan=plan,
+            evidence=evidence,
+            draft=answer,
+        )
+    except ValueError as exc:
+        logger.warning("Structured answer validation failed: %s", exc)
+        return None
+    return structured.model_dump(mode="json")
+
+
+def _runtime_answer_evidence(
+    progress: list[RuntimeProgressEvent], plan: TurnPlan
+) -> list[EvidenceSnapshot]:
+    if not plan.allows("runtime_evidence"):
+        return []
+    result: list[EvidenceSnapshot] = []
+    for event_index, event in enumerate(progress, 1):
+        if event.event_type != "runtime_tool_result":
+            continue
+        payload = event.payload
+        data = payload.get("data")
+        records = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        for record_index, record in enumerate(records[:20], 1):
+            if not isinstance(record, dict):
+                continue
+            job_name = str(record.get("job_name") or record.get("name") or "").strip()
+            state = str(record.get("state") or record.get("status") or "").strip()
+            headline = str(
+                record.get("error_summary")
+                or record.get("root_cause_candidate")
+                or record.get("headline")
+                or state
+                or "Runtime observation"
+            )[:500]
+            safe_metadata = {
+                key: record[key]
+                for key in ("job_name", "state", "status", "failure_count", "environment")
+                if key in record and isinstance(record[key], (str, int, float, bool, type(None)))
+            }
+            result.append(
+                EvidenceSnapshot(
+                    source_class=EvidenceSourceClass.CURRENT_RUNTIME,
+                    source_id=f"runtime:{event_index}:{record_index}",
+                    project_ref=plan.resolved_scope.get("project_id"),
+                    entity_ref=job_name or None,
+                    title=job_name or "Runtime observation",
+                    summary=(f"{job_name}: {headline}" if job_name else headline),
+                    freshness=1.0,
+                    confidence=0.8,
+                    authority=0.9,
+                    metadata=safe_metadata,
+                )
+            )
+    return result
+
+
 async def _prepare_rag_context(
     conversation: Conversation,
     query: str,
@@ -776,6 +1002,10 @@ async def _prepare_rag_context(
     project_ids: list[str] | None = None,
     db: AsyncSession | None = None,
     images: list[str] | None = None,
+    allow_runtime_tools: bool | None = None,
+    allow_document_evidence: bool | None = None,
+    planned_task_type: str | None = None,
+    planned_output_contract: str | None = None,
 ) -> RAGContext:
     """Run intent routing, search, and context building.
 
@@ -786,6 +1016,43 @@ async def _prepare_rag_context(
     existing_messages = list(conversation.messages)
     has_history = len(existing_messages) > 0
     trace = AgentTrace()
+
+    if _is_recomposition_request(query):
+        previous = next(
+            (message for message in reversed(existing_messages) if message.role == "assistant"),
+            None,
+        )
+        if previous is not None:
+            previous_sources = get_previous_sources(existing_messages, project_ids=project_ids)
+            messages = _with_output_contract(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Recompose the prior answer using only its existing claims. Improve "
+                            "structure and clarity, but do not retrieve, refresh, or add facts."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Request: {query}\n\nPrior answer:\n{previous.content}",
+                    },
+                ],
+                planned_output_contract,
+            )
+            return RAGContext(
+                llm_messages=messages,
+                document_sources=previous_sources,
+                precomputed_answer=(await generate_answer(messages) if precompute else None),
+                allow_runtime_tools=False,
+                agent_steps=trace.steps,
+                primary_source_layer=previous.primary_source_layer,
+                reused_structured_answer=(
+                    previous.structured_answer
+                    if isinstance(previous.structured_answer, dict)
+                    else None
+                ),
+            )
 
     # 0. Recall memories from Hindsight (non-blocking, empty when disabled)
     user_memories: list[str] = []
@@ -837,16 +1104,37 @@ async def _prepare_rag_context(
         if has_history else None
     )
     analysis = await analyze_query_async(query, conversation_context=conv_ctx)
+    # The legacy classifier may refine retrieval behavior, but it may not
+    # replace the TurnPlan's selected evidence task with metadata/chitchat or
+    # widen it into runtime. This keeps one routing authority during rollout.
+    if planned_task_type in {"document_answer", "runtime_answer"}:
+        analysis = replace(
+            analysis,
+            action=Action.SEARCH,
+            query_type=QueryType.QA,
+            runtime_intent=planned_task_type == "runtime_answer",
+        )
     document_sources: list[DocumentSource] = []
 
     # Runtime-intent gate: single source of truth for whether this turn enters
-    # the runtime tool loop (classifier signal OR keyword backstop). Computed
-    # once per turn so the streaming and non-streaming entry points agree.
+    # the runtime tool loop. The LLM classifier is authoritative; the keyword
+    # backstop may only rescue a turn when the classifier itself failed --
+    # never override a confident classifier 'no' (which misrouted doc
+    # questions mentioning 'job'/'talend'/'sync' into the tool loop).
+    # Computed once per turn so the streaming and non-streaming entry points agree.
     keyword_hit = detect_runtime_keywords(query)
-    runtime_gate = analysis.runtime_intent or keyword_hit
+    classifier_runtime_gate = analysis.runtime_intent or (
+        analysis.classifier_failed and keyword_hit
+    )
+    runtime_gate = (
+        classifier_runtime_gate
+        if allow_runtime_tools is None
+        else allow_runtime_tools
+    )
     logger.info(
-        "Runtime gate: %s (classifier=%s, keyword=%s) query=%r",
-        "IN" if runtime_gate else "OUT", analysis.runtime_intent, keyword_hit, query[:80],
+        "Runtime gate: %s (classifier=%s, classifier_failed=%s, keyword=%s) query=%r",
+        "IN" if runtime_gate else "OUT",
+        analysis.runtime_intent, analysis.classifier_failed, keyword_hit, query[:80],
     )
 
     # Fetch system knowledge for injection
@@ -1018,24 +1306,28 @@ async def _prepare_rag_context(
     # retrieval finds zero matching documents (D3/D1, .plans/02_prd.md).
     if runtime_gate:
         trace.complete(AgentTool.SEARCH_DOCUMENTS)
-        sources = await _search_qa_sources(
-            qdrant=qdrant,
-            query=analysis.cleaned_query,
-            user_groups=user_groups,
-            top_k=top_k,
-            threshold=threshold,
-            project_ids=project_ids,
-            document_roles=["source"],
-        )
-        auxiliary_sources = await _search_qa_sources(
-            qdrant=qdrant,
-            query=analysis.cleaned_query,
-            user_groups=user_groups,
-            top_k=max(1, min(4, top_k)),
-            threshold=threshold,
-            project_ids=project_ids,
-            document_roles=list(AUXILIARY_DOCUMENT_ROLES),
-        )
+        if allow_document_evidence is False:
+            sources = []
+            auxiliary_sources = []
+        else:
+            sources = await _search_qa_sources(
+                qdrant=qdrant,
+                query=analysis.cleaned_query,
+                user_groups=user_groups,
+                top_k=top_k,
+                threshold=threshold,
+                project_ids=project_ids,
+                document_roles=["source"],
+            )
+            auxiliary_sources = await _search_qa_sources(
+                qdrant=qdrant,
+                query=analysis.cleaned_query,
+                user_groups=user_groups,
+                top_k=max(1, min(4, top_k)),
+                threshold=threshold,
+                project_ids=project_ids,
+                document_roles=list(AUXILIARY_DOCUMENT_ROLES),
+            )
         all_sources = [*sources, *auxiliary_sources]
         document_sources = merge_sources_by_document(all_sources) if all_sources else []
         ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
@@ -1045,6 +1337,7 @@ async def _prepare_rag_context(
             answer_style=answer_style,
             auxiliary_sources=auxiliary_sources,
         )
+        llm_messages = _with_output_contract(llm_messages, planned_output_contract)
         return RAGContext(
             llm_messages=llm_messages,
             document_sources=document_sources,
@@ -1071,6 +1364,7 @@ async def _prepare_rag_context(
             memory_context=None,
             answer_style=answer_style,
         )
+        llm_messages = _with_output_contract(llm_messages, planned_output_contract)
         answer = await generate_answer(llm_messages)
 
         if not needs_new_search(answer):
@@ -1099,6 +1393,7 @@ async def _prepare_rag_context(
             memory_context=None,
             answer_style=answer_style,
         )
+        llm_messages = _with_output_contract(llm_messages, planned_output_contract)
         sniff = await _sniff_stream_sufficiency(llm_messages, images=None)
         if not sniff.insufficient:
             return RAGContext(
@@ -1202,6 +1497,9 @@ async def _prepare_rag_context(
                 answer_style=answer_style,
                 context_first=True,
                 auxiliary_sources=auxiliary_sources,
+            )
+            rung1_messages = _with_output_contract(
+                rung1_messages, planned_output_contract
             )
             # The ladder gate needs to judge sufficiency before returning. On
             # the REST (precompute=True) path this still requires the full
@@ -1400,6 +1698,8 @@ async def run_conversational_rag(
     user_id: str | None = None,
     project_ids: list[str] | None = None,
     images: list[str] | None = None,
+    turn_plan: dict | None = None,
+    enforce_turn_plan: bool = True,
 ) -> MessageResponse:
     """Run the conversational RAG pipeline with context-first search.
 
@@ -1417,6 +1717,18 @@ async def run_conversational_rag(
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
         user_id=user_id, project_ids=scope.project_ids, db=db, images=images,
+        allow_runtime_tools=(
+            _runtime_allowed_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
+        allow_document_evidence=(
+            _documents_allowed_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
+        planned_task_type=(
+            _task_type_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
+        planned_output_contract=(
+            _output_contract_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
     )
 
     runtime_progress: list = []
@@ -1476,6 +1788,14 @@ async def run_conversational_rag(
 
     # Safety: strip any [NEED_SEARCH] marker that leaked into the final answer
     answer = answer.replace(_NEED_SEARCH_MARKER, "").strip()
+    structured_answer = _structured_answer_payload(
+        query=query,
+        answer=answer,
+        turn_plan=turn_plan,
+        document_sources=ctx.document_sources,
+        runtime_progress=runtime_progress,
+        reused_structured_answer=ctx.reused_structured_answer,
+    )
 
     # Save user message
     user_msg = ConversationMessage(
@@ -1483,6 +1803,7 @@ async def run_conversational_rag(
         role="user",
         content=query,
         image_data=images,
+        turn_plan=turn_plan,
     )
     db.add(user_msg)
 
@@ -1499,6 +1820,8 @@ async def run_conversational_rag(
         fallback_used=ctx.fallback_used,
         doc_gap=ctx.doc_gap,
         runtime_tool_summary=build_runtime_tool_summary(runtime_progress),
+        turn_plan=turn_plan,
+        structured_answer=structured_answer,
     )
     db.add(assistant_msg)
 
@@ -1551,6 +1874,8 @@ async def run_conversational_rag(
         primary_source_layer=ctx.primary_source_layer,
         fallback_used=ctx.fallback_used,
         doc_gap=ctx.doc_gap,
+        turn_plan=turn_plan,
+        structured_answer=structured_answer,
         created_at=assistant_msg.created_at,
     )
 
@@ -1566,6 +1891,8 @@ async def run_conversational_rag_stream(
     user_id: str | None = None,
     project_ids: list[str] | None = None,
     images: list[str] | None = None,
+    turn_plan: dict | None = None,
+    enforce_turn_plan: bool = True,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """Streaming version of conversational RAG.
 
@@ -1590,6 +1917,7 @@ async def run_conversational_rag_stream(
         role="user",
         content=query,
         image_data=images,
+        turn_plan=turn_plan,
     )
     db.add(user_msg)
     await db.flush()
@@ -1605,6 +1933,18 @@ async def run_conversational_rag_stream(
         conversation, query, user_groups, qdrant, top_k, threshold,
         user_id=user_id, precompute=False, project_ids=scope.project_ids, db=db,
         images=images,
+        allow_runtime_tools=(
+            _runtime_allowed_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
+        allow_document_evidence=(
+            _documents_allowed_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
+        planned_task_type=(
+            _task_type_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
+        planned_output_contract=(
+            _output_contract_by_turn_plan(turn_plan) if enforce_turn_plan else None
+        ),
     )
 
     import json
@@ -1695,6 +2035,16 @@ async def run_conversational_rag_stream(
 
     # Safety: strip any [NEED_SEARCH] marker
     accumulated = accumulated.replace(_NEED_SEARCH_MARKER, "").strip()
+    structured_answer = _structured_answer_payload(
+        query=query,
+        answer=accumulated,
+        turn_plan=turn_plan,
+        document_sources=ctx.document_sources,
+        runtime_progress=runtime_progress,
+        reused_structured_answer=ctx.reused_structured_answer,
+    )
+    if structured_answer is not None:
+        yield ("final_answer", json.dumps(structured_answer))
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
@@ -1722,6 +2072,8 @@ async def run_conversational_rag_stream(
         fallback_used=ctx.fallback_used,
         doc_gap=ctx.doc_gap,
         runtime_tool_summary=build_runtime_tool_summary(runtime_progress),
+        turn_plan=turn_plan,
+        structured_answer=structured_answer,
     )
     db.add(assistant_msg)
     await db.flush()

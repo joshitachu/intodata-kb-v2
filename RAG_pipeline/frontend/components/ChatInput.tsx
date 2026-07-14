@@ -4,18 +4,31 @@ import {
   useState,
   useRef,
   useEffect,
+  useCallback,
   type FormEvent,
   type KeyboardEvent,
   type ChangeEvent,
   type ReactNode,
 } from "react";
-import { ArrowUp, Loader2, ImagePlus, X } from "lucide-react";
+import { ArrowUp, FileArchive, ImagePlus, Loader2, Square, X } from "lucide-react";
+import { uploadZip, type UploadedZipReceipt } from "@/lib/mcpClient";
 import { cn } from "@/lib/utils";
+import {
+  SlashCommandPalette,
+  useSlashCommandPalette,
+} from "@/components/SlashCommandPalette";
+import type { SlashCommand } from "@/types";
 
 const MAX_IMAGES = 4;
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 const IMAGE_ONLY_PROMPT = "Analyze the attached image.";
+const MAX_ZIP_SIZE = 500 * 1024 * 1024;
+
+export interface ZipUploadTarget {
+  projectId: string;
+  platform: string;
+}
 
 interface ChatInputProps {
   onSend: (message: string, images?: string[]) => void;
@@ -24,6 +37,9 @@ interface ChatInputProps {
   placeholder?: string;
   toolbarContent?: ReactNode;
   hideImagePicker?: boolean;
+  zipUploadTarget?: ZipUploadTarget;
+  onZipUploaded?: (receipt: UploadedZipReceipt) => void | Promise<void>;
+  slashCommands?: SlashCommand[];
 }
 
 export function ChatInput({
@@ -33,13 +49,34 @@ export function ChatInput({
   placeholder,
   toolbarContent,
   hideImagePicker,
+  zipUploadTarget,
+  onZipUploaded,
+  slashCommands = [],
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipProgress, setZipProgress] = useState<number | null>(null);
+  const [zipError, setZipError] = useState<string | null>(null);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const zipAbortRef = useRef<AbortController | null>(null);
   const pendingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+
+  const selectSlashCommand = useCallback((command: SlashCommand) => {
+    setMessage(`/${command.name} `);
+    setSlashDismissed(true);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
+  const slashPalette = useSlashCommandPalette({
+    commands: slashCommands,
+    query: slashDismissed ? "" : message,
+    onSelect: selectSlashCommand,
+    onDismiss: () => setSlashDismissed(true),
+  });
 
   useEffect(() => {
     if (!isLoading && pendingRef.current) {
@@ -67,6 +104,8 @@ export function ChatInput({
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    slashPalette.onKeyDown(e);
+    if (e.defaultPrevented) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e as unknown as FormEvent);
@@ -120,6 +159,52 @@ export function ChatInput({
     setImageError(null);
   }
 
+  function handleZipSelect(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".zip") || !["application/zip", "application/x-zip-compressed", ""].includes(file.type)) {
+      setZipError("Choose a ZIP archive");
+      return;
+    }
+    if (file.size <= 0 || file.size > MAX_ZIP_SIZE) {
+      setZipError("ZIP files must be between 1 byte and 500MB");
+      return;
+    }
+    setZipFile(file);
+    setZipProgress(null);
+    setZipError(null);
+  }
+
+  async function startZipUpload() {
+    if (!zipFile || !zipUploadTarget || zipAbortRef.current) return;
+    const controller = new AbortController();
+    zipAbortRef.current = controller;
+    setZipProgress(0);
+    setZipError(null);
+    try {
+      const result = await uploadZip({
+        file: zipFile,
+        projectId: zipUploadTarget.projectId,
+        platform: zipUploadTarget.platform,
+        signal: controller.signal,
+        onProgress: setZipProgress,
+      });
+      await onZipUploaded?.(result.upload_receipt);
+      setZipFile(null);
+      setZipProgress(null);
+    } catch (error) {
+      setZipProgress(null);
+      setZipError(error instanceof DOMException && error.name === "AbortError" ? "Upload cancelled" : "ZIP upload failed. Retry when ready.");
+    } finally {
+      zipAbortRef.current = null;
+    }
+  }
+
+  function cancelZipUpload() {
+    zipAbortRef.current?.abort();
+  }
+
   const canSend =
     (message.trim().length > 0 || images.length > 0) && !isLoading && !disabled;
 
@@ -135,6 +220,14 @@ export function ChatInput({
             "focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1",
           )}
         >
+          <SlashCommandPalette
+            commands={slashCommands}
+            query={slashDismissed ? "" : message}
+            onSelect={selectSlashCommand}
+            onDismiss={() => setSlashDismissed(true)}
+            state={slashPalette}
+            className="absolute inset-x-0 bottom-full z-30 mb-2 max-h-80 overflow-y-auto"
+          />
           {/* Image preview strip */}
           {images.length > 0 && (
             <div className="flex items-center gap-2 px-3 pt-2">
@@ -164,11 +257,36 @@ export function ChatInput({
               {imageError}
             </div>
           )}
+          {zipFile && (
+            <div className="mx-3 mt-2 flex items-center gap-2 border border-border px-2 py-1.5 text-xs">
+              <FileArchive className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{zipFile.name}</span>
+              {zipProgress !== null && <span>{zipProgress}%</span>}
+              {zipProgress !== null ? (
+                <button type="button" onClick={cancelZipUpload} aria-label="Cancel ZIP upload" title="Cancel upload" className="p-1 text-muted-foreground hover:text-foreground">
+                  <Square className="h-3.5 w-3.5" />
+                </button>
+              ) : (
+                <>
+                  <button type="button" onClick={startZipUpload} disabled={!zipUploadTarget} className="px-1.5 py-1 text-primary hover:bg-muted disabled:text-muted-foreground">
+                    Upload
+                  </button>
+                  <button type="button" onClick={() => { setZipFile(null); setZipError(null); }} aria-label="Remove ZIP" title="Remove ZIP" className="p-1 text-muted-foreground hover:text-foreground">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {zipError && <div className="px-4 pt-2 text-xs text-destructive">{zipError}</div>}
 
           <textarea
             ref={textareaRef}
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value);
+              setSlashDismissed(false);
+            }}
             onKeyDown={handleKeyDown}
             placeholder={placeholder ?? "Ask about your documents..."}
             rows={1}
@@ -199,6 +317,13 @@ export function ChatInput({
             className="hidden"
             onChange={handleFileSelect}
           />
+          <input
+            ref={zipInputRef}
+            type="file"
+            accept=".zip,application/zip,application/x-zip-compressed"
+            className="hidden"
+            onChange={handleZipSelect}
+          />
 
           {/* Bottom row: toolbar + image button + send button */}
           <div className="flex items-center justify-between px-3 pb-2">
@@ -219,6 +344,18 @@ export function ChatInput({
                   title={images.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : "Attach image"}
                 >
                   <ImagePlus className="h-4 w-4" />
+                </button>
+              )}
+              {onZipUploaded && (
+                <button
+                  type="button"
+                  onClick={() => zipInputRef.current?.click()}
+                  disabled={isLoading || disabled || zipProgress !== null}
+                  aria-label="Attach ZIP source"
+                  title="Attach ZIP source"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <FileArchive className="h-4 w-4" />
                 </button>
               )}
             </div>

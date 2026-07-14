@@ -15,15 +15,18 @@ from sqlalchemy.orm import selectinload
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.db.models import Conversation, ConversationMessage
+from src.config import settings
 from src.generation.conversational_rag import (
     run_conversational_rag,
     run_conversational_rag_stream,
 )
 from src.harness.chat import (
-    detect_harness_chat_intent,
+    plan_model_harness_chat_turn,
     run_harness_chat_turn,
     run_harness_chat_turn_stream,
 )
+from src.harness.commands import list_slash_commands, resolve_slash_command
+from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository
 from src.rbac.permissions import get_user_permissions, get_user_project_ids
 from src.schemas import (
     ConversationCreateRequest,
@@ -34,6 +37,11 @@ from src.schemas import (
     ConversationUpdateRequest,
     DocumentSource,
     MessageResponse,
+    MessageHarnessActivity,
+    MessageHarnessActionChoice,
+    MessageHarnessPendingAction,
+    SlashCommandListResponse,
+    SlashCommandResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +72,24 @@ def _deserialize_sources(raw: list[dict]) -> list[DocumentSource]:
             project_id=s.get("project_id"),
         ))
     return result
+
+
+@router.get("/commands", response_model=SlashCommandListResponse, summary="List chat slash commands")
+async def list_commands(user: CurrentUser) -> SlashCommandListResponse:
+    """Expose only user-facing command discovery metadata.
+
+    A command is a planner seed, not a capability grant, so command discovery
+    is available to any authenticated chat user.
+    """
+    del user
+    return SlashCommandListResponse(
+        commands=[SlashCommandResponse(**command.public()) for command in list_slash_commands()]
+    )
+
+
+def _planner_query(query: str) -> str:
+    resolved = resolve_slash_command(query)
+    return resolved.planner_query if resolved is not None else query
 
 
 @router.get("", response_model=ConversationListResponse, summary="List conversations")
@@ -148,29 +174,126 @@ async def get_conversation(
     if conversation.user_id != user.id:
         raise api_error(403, "forbidden", "Not authorized")
 
+    workflow_repo = HarnessWorkflowRepository(db)
+    messages: list[MessageResponse] = []
+    for message in conversation.messages:
+        activities: list[MessageHarnessActivity] = []
+        pending_action: MessageHarnessPendingAction | None = None
+        if message.workflow_run_id is not None:
+            try:
+                run = await workflow_repo.get_run(
+                    [], message.workflow_run_id, owner_user_id=user.id
+                )
+                run_activities = await workflow_repo.list_activity_events(
+                    None if run.project_id is None else [run.project_id], run.id
+                )
+                activities = [
+                    MessageHarnessActivity(
+                        workflow_run_id=str(run.id),
+                        event_type=item.event_type,
+                        label=item.label,
+                        status=item.status.value,
+                        summary=item.summary,
+                        safe_details=_safe_activity_details(item.safe_details),
+                        timestamp=item.occurred_at,
+                    )
+                    for item in run_activities
+                ]
+                interrupts = await workflow_repo.list_pending_interrupts_for_owner(
+                    run.id, user.id
+                )
+                if interrupts:
+                    interrupt = interrupts[0]
+                    interrupt_metadata = run.runtime_metadata.get("interrupt")
+                    missing_slots = (
+                        interrupt_metadata.get("missing_slots", [])
+                        if isinstance(interrupt_metadata, dict)
+                        else []
+                    )
+                    run_arguments = run.runtime_metadata.get("arguments")
+                    safe_arguments = run_arguments if isinstance(run_arguments, dict) else {}
+                    pending_action = MessageHarnessPendingAction(
+                        workflow_run_id=run.id,
+                        interrupt_id=interrupt.id,
+                        expected_version=run.version,
+                        kind=interrupt.interrupt_type.value,
+                        prompt=interrupt.prompt,
+                        choices=[
+                            MessageHarnessActionChoice(
+                                label=str(option.get("label") or option.get("value") or "Choice"),
+                                value=str(option.get("value") or ""),
+                            )
+                            for option in interrupt.options
+                            if isinstance(option, dict) and option.get("value")
+                        ],
+                        required_fields=[
+                            str(field)
+                            for field in missing_slots
+                            if isinstance(field, str)
+                        ],
+                        project_id=(
+                            str(safe_arguments["project_id"])
+                            if safe_arguments.get("project_id")
+                            else run.project_id
+                        ),
+                        platform=(
+                            str(safe_arguments["platform"])
+                            if safe_arguments.get("platform")
+                            else None
+                        ),
+                        expires_at=interrupt.expires_at,
+                    )
+            except HarnessRunNotFoundError:
+                logger.warning(
+                    "Ignoring inaccessible workflow %s linked to message %s",
+                    message.workflow_run_id,
+                    message.id,
+                )
+        messages.append(
+            MessageResponse(
+                id=message.id,
+                role=message.role,
+                content=message.content,
+                sources=_deserialize_sources(message.sources) if message.sources else None,
+                image_data=message.image_data,
+                latency_ms=message.latency_ms,
+                status=message.status,
+                error_message=message.error_message,
+                primary_source_layer=message.primary_source_layer,
+                fallback_used=message.fallback_used,
+                doc_gap=message.doc_gap,
+                workflow_run_id=message.workflow_run_id,
+                turn_plan=(message.turn_plan if isinstance(message.turn_plan, dict) else None),
+                structured_answer=(
+                    message.structured_answer
+                    if isinstance(message.structured_answer, dict)
+                    else None
+                ),
+                harness_activities=activities,
+                pending_action=pending_action,
+                created_at=message.created_at,
+            )
+        )
+
     return ConversationDetailResponse(
         id=conversation.id,
         title=conversation.title,
-        messages=[
-            MessageResponse(
-                id=m.id,
-                role=m.role,
-                content=m.content,
-                sources=_deserialize_sources(m.sources) if m.sources else None,
-                image_data=m.image_data,
-                latency_ms=m.latency_ms,
-                status=m.status,
-                error_message=m.error_message,
-                primary_source_layer=m.primary_source_layer,
-                fallback_used=m.fallback_used,
-                doc_gap=m.doc_gap,
-                created_at=m.created_at,
-            )
-            for m in conversation.messages
-        ],
+        messages=messages,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
     )
+
+
+def _safe_activity_details(raw: dict) -> dict:
+    safe: dict = {}
+    for key, value in raw.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[str(key)[:100]] = value
+        elif isinstance(value, list) and all(
+            isinstance(item, (str, int, float, bool)) or item is None for item in value
+        ):
+            safe[str(key)[:100]] = value[:20]
+    return safe
 
 
 @router.patch("/{conversation_id}", response_model=ConversationResponse, summary="Rename a conversation")
@@ -269,27 +392,39 @@ async def send_message(
             raise api_error(403, "forbidden", "No access to this project")
         project_ids = [request.project_id]
 
+    planner_query = _planner_query(request.query)
+
     # Auto-title from first user message if conversation has no title yet
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
 
-    if detect_harness_chat_intent(request.query):
+    user_permissions = get_user_permissions(user)
+    planner_decision = await plan_model_harness_chat_turn(
+        query=planner_query,
+        conversation=conversation,
+        db=db,
+        project_ids=project_ids,
+        user_permissions=user_permissions,
+        access_token=http_request.cookies.get("access_token"),
+    )
+    if planner_decision.action != "use_rag":
         return await run_harness_chat_turn(
             conversation=conversation,
-            query=request.query,
+            query=planner_query,
             db=db,
             user_id=user.id,
             project_ids=project_ids,
             user_groups=user_groups,
-            user_permissions=get_user_permissions(user),
+            user_permissions=user_permissions,
             qdrant=qdrant,
             access_token=http_request.cookies.get("access_token"),
+            planner_decision=planner_decision,
         )
 
     # Run conversational RAG pipeline
     response = await run_conversational_rag(
         conversation=conversation,
-        query=request.query,
+        query=planner_query,
         user_groups=user_groups,
         qdrant=qdrant,
         db=db,
@@ -298,6 +433,12 @@ async def send_message(
         user_id=str(user.id),
         project_ids=project_ids,
         images=request.images,
+        turn_plan=(
+            planner_decision.turn_plan.model_dump(mode="json")
+            if planner_decision.turn_plan is not None
+            else None
+        ),
+        enforce_turn_plan=settings.harness_turn_plan_enforced,
     )
 
     return response
@@ -346,32 +487,44 @@ async def send_message_stream(
             raise api_error(403, "forbidden", "No access to this project")
         project_ids = [request.project_id]
 
+    planner_query = _planner_query(request.query)
+
     # Auto-title from first user message if conversation has no title yet
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
         await db.flush()
 
-    harness_intent = detect_harness_chat_intent(request.query)
+    user_permissions = get_user_permissions(user)
+    planner_decision = await plan_model_harness_chat_turn(
+        query=planner_query,
+        conversation=conversation,
+        db=db,
+        project_ids=project_ids,
+        user_permissions=user_permissions,
+        access_token=http_request.cookies.get("access_token"),
+    )
+    use_harness = planner_decision.action != "use_rag"
 
     async def event_generator():
         try:
-            if harness_intent:
+            if use_harness:
                 async for event_type, data in run_harness_chat_turn_stream(
                     conversation=conversation,
-                    query=request.query,
+                    query=planner_query,
                     db=db,
                     user_id=user.id,
                     project_ids=project_ids,
                     user_groups=user_groups,
-                    user_permissions=get_user_permissions(user),
+                    user_permissions=user_permissions,
                     qdrant=qdrant,
                     access_token=http_request.cookies.get("access_token"),
+                    planner_decision=planner_decision,
                 ):
                     yield f"event: {event_type}\ndata: {data}\n\n"
             else:
                 async for event_type, data in run_conversational_rag_stream(
                     conversation=conversation,
-                    query=request.query,
+                    query=planner_query,
                     user_groups=user_groups,
                     qdrant=qdrant,
                     db=db,
@@ -380,6 +533,12 @@ async def send_message_stream(
                     user_id=str(user.id),
                     project_ids=project_ids,
                     images=request.images,
+                    turn_plan=(
+                        planner_decision.turn_plan.model_dump(mode="json")
+                        if planner_decision.turn_plan is not None
+                        else None
+                    ),
+                    enforce_turn_plan=settings.harness_turn_plan_enforced,
                 ):
                     yield f"event: {event_type}\ndata: {data}\n\n"
         except Exception as e:
