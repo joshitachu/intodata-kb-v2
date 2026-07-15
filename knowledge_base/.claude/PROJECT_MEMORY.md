@@ -102,6 +102,8 @@
 
 | Decision | Choice | Rationale | Date |
 |----------|--------|-----------|------|
+| xmlns declarations exempt from redaction | `CredentialFilter.filter_text` masks `xmlns[:prefix]="..."` values before any pattern runs and restores them verbatim; URL redaction honors `_SAFE_DOMAINS` like FQDN filtering | Namespace URIs are structural XML identifiers -- redacting them silently breaks every namespaced attribute lookup downstream (`xsi:type` -> tMap data lost for ALL jobs, `xmi:id` -> connection index degraded). A test had codified the broken behavior as acceptable; never assert that xmlns redaction "is fine" | 2026-07 |
+| Talend scan emits latest item versions only | `TalendParser._latest_job_versions` keeps the highest numeric version per (path dir, name) per source dir; dropped count in `stats.superseded_job_versions` | Talend Studio exports retain every saved version (`Job_0.1.item`...`Job_3.3.item`); emitting all floods every downstream consumer with stale-logic evidence (VW export: 579 items vs 66 current). `active=False` stays reserved for genuinely disabled integrations (Lobster semantics -- `source_context.py` labels those INACTIVE, it does not drop them) | 2026-07 |
 | MCP over CLI | Claude Code + MCP replaces CLI-based LLM analyzer | No API keys needed, better quality, parallel sub-agents | 2026-02 |
 | Doc generation | 4-phase MCP workflow (Setup, Group Analysis, Write Docs, Publish) | Parallel sub-agents per group for throughput | 2026-02 |
 | Staging directory | Claude writes to `docs_staging/`, server swaps to `docs/` on success | Protects existing docs from failed runs | 2026-02 |
@@ -229,6 +231,15 @@
 
 ## Lessons Learned / Gotchas
 
+### Evidence integrity invariants (2026-07-14 rearchitecture)
+- Phase 2's unit of work IS the unit of evidence: a job's `## Job:` section is never split across tasks, and a task's evidence header lists exactly the units it physically contains. Never reintroduce substring-based "visible units" computation -- group-wide inventories mention every job name in every text window, which is how chunk agents were tricked into fabricating analyses.
+- Python assembles Phase 2 group analyses by verbatim section selection with per-task provenance; it must never paraphrase or synthesize analysis prose (repo rule). The only LLM call after per-task analysis is the GROUP_SUMMARY/CROSS_JOB_FINDINGS synthesis.
+- Resume identity: single-task groups keep `target_id = group`, so most caches survive the rearchitecture; old `{group}_chunk_N` caches miss once and re-run.
+- Phase 3 technical facts flow through deterministic per-unit evidence bundles (`target_evidence.py`), NOT through Phase 2 narration; Phase 2 output is the interpretation layer only. Bundles trim derived niceties first and never silently cut verbatim code/SQL.
+- Fabrication validators (component-echo, no-unavailability) act at TASK-ACCEPTANCE level feeding the repair ladder; the final publish gates stay advisory per the June 2026 decision. Keep that separation.
+- Redaction defense-in-depth: the post-scan `redaction_verifier` gate at the CLI `scan` command is the single choke point (mcp-server shells out to it). If a new output path writes scan artifacts, it MUST pass the gate too. Sensitivity matching is token-based (camelCase-aware) -- never regress to underscore-suffix matching.
+- The per-job `ssl=require` differences in `config_runtime_map` are GENUINE per-.item context snapshots in the customer source (verified against GetLocation/GetWorkOrder/GetLocations 3.1 items), not an aggregator bug. Docs should state context provenance (job-embedded vs shared group vs Default) instead of "fixing" the data.
+
 ### Formatting
 - Windows cp1252 encoding breaks Unicode -- always use ASCII in all output (chars 32-126)
 - No em-dashes, smart quotes, or Unicode arrows -- use `--`, `'`, `->` instead
@@ -315,6 +326,19 @@
 
 - **The MCP server and the RAG backend each have their own RBAC code path against the same PostgreSQL tables (`users`, `user_roles`, `role_permissions`, `permissions`, `project_assignments`).** RAG backend uses SQLAlchemy via `get_user_project_ids()` in `RAG_pipeline/backend/src/rbac/permissions.py`; MCP server uses raw-SQL helpers in `mcp-server/src/mcp_server/api/routes/projects.py` (`_get_user_is_superadmin`, `_get_user_permission_codenames`, `_get_assigned_project_ids`) plus `require_project_access()` in `mcp-server/src/mcp_server/api/permissions.py`. **Any change to the permission model (new codename, new role, change to assignment semantics) must be made in BOTH services or the two surfaces will disagree.**
 - **Routes that need RBAC on the MCP side are easy to miss.** Router-level `dependencies=[Depends(require_auth)]` only guarantees the user is authenticated, not that they can see the `project_id`. Every new route under `/projects/{project_id}/...` must either call `await require_project_access(request, project_id)` explicitly, or filter its output by user assignment. On 2026-04-20 three routes were found missing this: `/deep-dive/projects` returned every project, and `/projects/{id}/graph` + `/projects/{id}/jobs/{job_name}/detail` accepted any project_id from any authenticated user. Fixed by mirroring the `list_projects()` pattern for the list route and adding `require_project_access` to the two detail routes.
+
+### Evidence document update/revert integrity (2026-07-12)
+
+- **Approval targets an exact document version, not just a project and filename.** Read the current SHA before proposing an edit and require that SHA as `expected_base_sha` during publish; a mismatch is a conflict requiring a fresh proposal.
+- **Filesystem publication and RAG indexing form one recoverable operation.** If indexing the updated document fails, restore the original bytes. If indexing a reverted document fails, restore the updated bytes. Never report success while the file and index disagree.
+- **Revert is receipt-bound.** Validate project, filename, and before/after hashes from the update receipt before restoring content; do not expose a generic arbitrary-version write endpoint.
+
+### Nexus-to-MCP onboarding and swap-pack boundary (2026-07-14)
+
+- **ZIP source bytes terminate at MCP.** Validate compressed size, entry count, expanded size, paths, drives, and symlinks before atomic extraction. Agent workflows receive only a short-lived signed receipt plus safe filename/size/hash metadata; never checkpoint the archive or receipt signing secret.
+- **IntoDoc swap-pack ownership remains in MCP.** Nexus may list safe pack metadata and request a project selection, but MCP persists `Project.plugin_pack_id` and generation resolves explicit per-run override before the project default.
+- **Changing a project's documentation pack is a management operation.** Authentication plus read access is insufficient; require project ownership or superadmin at the MCP route even when the request arrived through Nexus.
+- **`nexus_pack_ids` are an orchestration-policy snapshot, not an IntoDoc plugin-pack substitute.** Keep the two fields and responsibilities separate so application capabilities and generated document templates can evolve independently.
 
 ## Environment
 

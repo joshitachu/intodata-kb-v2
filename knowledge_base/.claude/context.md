@@ -1,6 +1,67 @@
 # KB Sub-project Context
 
-## Last Completed (2026-07-11) -- Evidence-update endpoint committed after Inspector PASS
+## Last Completed (2026-07-14) -- Nexus MCP bridge consolidated in `f260527`
+
+The MCP side of the Nexus harness foundation is committed. Secure ZIP onboarding now
+returns signed metadata-only receipts after bounded archive validation; owner or
+superadmin permission is required to change a project's IntoDoc plugin/swap pack;
+generation accepts the Nexus policy-Pack snapshot while `plugin_pack_id` remains the
+actual documentation swap-pack selection; and evidence document update/revert is
+version-bound, receipt-bound, and rolls back when RAG indexing fails. Verification:
+111 focused MCP tests passed, changed owned-file Ruff passed, rebuilt MCP is healthy,
+and the shared DB is at harness migration head `059_harness_project_packs`.
+**Resolved blockers**: ZIP bytes no longer need to enter agent state, project swap-pack
+selection is available to Nexus, and approved document writes have a recoverable
+filesystem/index contract. **Immediate next**: preserve the separate uncommitted
+evidence-integrity work below; configure the Nexus reconciliation service identity;
+run an authenticated MFA smoke; add production connectors without moving connector
+logic into MCP/IntoDoc.
+
+## Concurrent Uncommitted Work (2026-07-14) -- Pipeline evidence-integrity rearchitecture + credential-filter hardening
+
+Forensic audit of reverseEngineer run 50 traced every doc claim back to the source
+`.item` files and found three root defects; all fixed the same day (multi-agent
+build, tests green: intodoc 413 passed, mcp-server 1135 passed / 3 pre-existing-env
+failures). (1) Cleartext `MaximoPassword`/`AES_Key` leaked into the PUBLISHED doc:
+camelCase names bypassed the underscore-suffix sensitivity heuristic -- now
+token-aware matching + UNC bare-host redaction + a fail-loud post-scan
+`redaction_verifier` gate (scan exits 2, writes no output on findings). (2) Phase 2
+chunk agents fabricated analyses for jobs whose evidence they never held (substring
+"visible units" check + "every unit MUST appear" contract) -- char-chunker and LLM
+merge deleted; per-job evidence tasks (`evidence_tasks.py`, job-boundary bin-packing
+via `MCP_PHASE2_TASK_EVIDENCE_BYTES`), honest headers, deterministic Python assembly,
+one `GROUP_SUMMARY`/`CROSS_JOB_FINDINGS` synthesis call. (3) Phase 3 writers anchored
+on derived-map noise and mis-attributed shared-context values -- deterministic
+per-unit evidence bundles (`target_evidence.py`, verbatim code/tMap/SQL, provenance-
+tagged context, bundle-first context order, per-unit filtered maps) + pre-acceptance
+`fabrication_validators.py` (component-echo, no-unavailability claims).
+NOTE: config_runtime_map "ssl=require inconsistency" across jobs was verified as a
+GENUINE customer-source finding (job exports carry different context snapshots), not
+an aggregator bug -- do not "fix" it.
+**Open operator actions**: rotate the leaked Maximo credential; purge leaky artifacts
+(`intodoc-output/{reverseEngineer,alitalend,reverse_engineer_VW}/scan*`,
+`output/reverseEngineer/docs/_facts/*`, published `...SendServiceRequest.md`); check
+Qdrant for the ingested leaky doc; optional end-to-end regen as final proof.
+
+## Previously Completed (2026-07-13) -- Two scanner fixes for the VolkerWessels Assetcheck export (committed b620fb4)
+
+Validating the VW Werkorder reverse-engineering POC export (root `Assetcheck/`,
+ASSETCHECK + REFERENCES Talend projects) exposed and fixed two scanner defects:
+(1) credential-filter URL redaction rewrote `xmlns` declaration URIs, silently
+dropping tMap MapperData from ALL jobs (namespaced `xsi:type` lookup failed) and
+degrading `xmi:id` connection indexing -- xmlns values are now masked before
+redaction and restored verbatim, and URL redaction honors `_SAFE_DOMAINS` like
+FQDN filtering; (2) Talend exports keep every saved item version and the parser
+emitted all of them as active jobs -- now only the highest version per
+(directory, name) survives, count in `stats.superseded_job_versions`.
+Assetcheck re-scan: 66 jobs (513 superseded skipped), 13 ESB routes, 22 jobs
+with tMap data (was 0). POC gap analysis lives in the 2026-07-13 conversation:
+next KB work for the POC is a "VW Reverse Engineering" plugin pack, combined
+ASSETCHECK+REFERENCES scan, and (later, if VISE-side flows enter scope) TDM
+`Maps/*.xml` parsing. Security: the export contains plaintext MAS API keys in
+`REFERENCES/context/MAS/` -- advise client rotation; keep `Assetcheck/` untracked.
+
+## Previously Completed (2026-07-11) -- Evidence-update endpoint committed after Inspector PASS
 
 The MCP evidence-based doc update endpoint (`POST /mcp/projects/{project_id}/docs/{filename}/evidence-update`, `EvidenceDocUpdateService`, schemas, RBAC matrix coverage) is committed as `e4747c3` on `spike/nexus-agentic-harness`, split from the RAG-side harness batch (`498bad1`). Inspector verdict PASS_WITH_WARNINGS (root `.plans/inspection_report.md`). KB-relevant follow-up (WARN-4): the endpoint trusts `project_id`/`filename` path segments that today are constrained only by the RAG-side caller's filename regex -- add validation at this endpoint/provider boundary before the Nexus model-backed planner starts supplying arguments.
 
@@ -349,3 +410,10 @@ Enterprise documentation quality gates and verdicts: enterprise mode is now the 
 | EP-001 deployment | In Progress -- VPS blocked |
 | Dashboard | Stable |
 | RAG pipeline | Stable |
+
+## Latest Nexus Harness Integration (2026-07-12)
+
+- MCP now exposes authoritative documentation-generation status and version-bound evidence document update/revert operations used by the Nexus harness.
+- Updates require the expected base SHA, return version/reconciliation receipts, and restore the prior file when RAG indexing fails. Revert validates the receipt against the document/version and is itself rollback-protected.
+- Focused update/revert/RBAC tests: 78 passed. Full MCP suite: 1098 passed with one unrelated catalogue assertion for `route33/z-ai/glm-4.7-flash`.
+- Live update/revert restored `final_agentic_e2e/00_AGENT_BRIEF.md` to its exact original SHA. No temporary evidence marker remains.
