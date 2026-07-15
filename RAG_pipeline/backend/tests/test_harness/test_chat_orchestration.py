@@ -11,6 +11,7 @@ from src.api.routes.conversations import get_conversation
 from src.harness.chat import (
     HarnessPlannerDecision,
     _recompose_persisted_evidence,
+    _resolve_documentation_pack_id,
     _scope_safe_fallback_decision,
     _with_turn_plan,
     detect_harness_chat_intent,
@@ -30,6 +31,7 @@ from src.harness.models import (
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
+    DOCUMENTATION_PACK_CREATE_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
     OPERATIONAL_INVESTIGATION_CAPABILITY,
     PROJECT_ONBOARDING_CAPABILITY,
@@ -125,6 +127,36 @@ def _provider(status_code: int = 200, json_body: dict | None = None) -> McpDocum
         base_url="http://mcp.internal/mcp",
         transport=httpx.MockTransport(handler),
     )
+
+
+async def test_docs_pack_name_resolves_to_reusable_pack_id() -> None:
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 17,
+                        "manifest_name": "Operations Handbook",
+                        "version": "1.0.0",
+                        "description": "Operations documentation",
+                    }
+                ],
+            )
+            if request.url.path == "/mcp/plugins"
+            else httpx.Response(404)
+        ),
+    )
+
+    pack_id = await _resolve_documentation_pack_id(
+        arguments={},
+        query='Generate docs for customer_orders using pack "Operations Handbook"',
+        provider=provider,
+        access_token=None,
+    )
+
+    assert pack_id == 17
 
 
 def _doc_update_provider(seen: dict[str, object] | None = None) -> McpDocumentationProvider:
@@ -224,6 +256,62 @@ async def test_zip_onboarding_routes_to_the_onboarding_workflow(db_session) -> N
     assert decision.action == "call_capability"
     assert decision.arguments["project_id"] == "acceptance_zip"
     assert decision.capability_id == PROJECT_ONBOARDING_CAPABILITY.id
+
+
+async def test_pack_creation_clarification_keeps_pack_management_task(
+    db_session, monkeypatch
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+
+    async def fake_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(
+                action=PlannerAction.CLARIFY,
+                confidence=0.91,
+                clarification="Who will read this Pack, and which documents should it contain?",
+            )
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", fake_plan)
+    decision = await plan_model_harness_chat_turn(
+        query="/pack create",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions={"manage_projects"},
+        access_token=None,
+    )
+
+    assert decision.action == "ask_clarification"
+    assert decision.mode == "create_documentation_pack"
+    assert decision.capability_id == DOCUMENTATION_PACK_CREATE_CAPABILITY.id
+    assert decision.direct_answer == (
+        "Who will read this Pack, and which documents should it contain?"
+    )
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+    assert decision.turn_plan.execution_mode is TurnExecutionMode.CLARIFICATION
+
+    await run_harness_chat_turn(
+        conversation=conversation,
+        query="/pack create",
+        db=db_session,
+        user_id=user.id,
+        project_ids=["project-a"],
+        planner_decision=decision,
+    )
+    follow_up = await plan_model_harness_chat_turn(
+        query="It is for operations teams and should cover schedules and recovery.",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions={"manage_projects"},
+        access_token=None,
+    )
+
+    assert follow_up.mode == "create_documentation_pack"
+    assert follow_up.turn_plan is not None
+    assert follow_up.turn_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
 
 
 async def test_unavailable_named_connector_cannot_be_answered_as_if_searched(

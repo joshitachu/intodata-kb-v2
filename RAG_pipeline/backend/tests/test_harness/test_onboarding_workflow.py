@@ -47,11 +47,11 @@ class _OnboardingExecutor:
     ("onboarding_request", "attachment_capability"),
     [
         (
-            OnboardingRequest(workflow_run_id=11, project_id="fixture-project", repo_url="https://github.com/acme/fixture.git", selected_pack_ids=["nexus.documentation"]),
+            OnboardingRequest(workflow_run_id=11, project_id="fixture-project", repo_url="https://github.com/acme/fixture.git", selected_pack_ids=["nexus.documentation"], plugin_pack_id=17),
             ATTACH_GIT_SOURCE_CAPABILITY.id,
         ),
         (
-            OnboardingRequest(workflow_run_id=12, project_id="fixture-project", upload_receipt="x" * 32, selected_pack_ids=["nexus.documentation"]),
+            OnboardingRequest(workflow_run_id=12, project_id="fixture-project", upload_receipt="x" * 32, selected_pack_ids=["nexus.documentation"], plugin_pack_id=17),
             ATTACH_ZIP_SOURCE_CAPABILITY.id,
         ),
     ],
@@ -78,3 +78,4 @@ async def test_git_and_zip_onboarding_share_the_same_downstream_workflow(
         PUBLISH_INDEX_CAPABILITY.id,
     ]
     assert executor.requests[3].arguments["selected_pack_ids"] == ["nexus.documentation"]
+    assert executor.requests[3].arguments["plugin_pack_id"] == 17

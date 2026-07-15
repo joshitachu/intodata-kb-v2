@@ -60,6 +60,7 @@ from src.harness.models import (
     ActivityEventStatus,
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
+    DOCUMENTATION_PACK_CREATE_CAPABILITY,
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
@@ -137,6 +138,12 @@ _DOC_GENERATION_RE = re.compile(
     r")\b.{0,80}\b("
     r"generate|regenerate|create|build|make|publish|run|start|trigger|update"
     r")\b",
+    re.IGNORECASE,
+)
+
+_DOCUMENTATION_PACK_CREATE_RE = re.compile(
+    r"\b(?:create|build|define|design|manage)\b.{0,80}\b(?:documentation\s+)?pack\b"
+    r"|\b(?:documentation\s+)?pack\b.{0,40}\bcreate\b",
     re.IGNORECASE,
 )
 
@@ -388,6 +395,19 @@ def plan_harness_chat_turn(query: str) -> HarnessPlannerDecision:
         return HarnessPlannerDecision(
             action=_PLANNER_USE_RAG, mode="rag", confidence=0.8, matched_rule="doc_qa"
         )
+    if _DOCUMENTATION_PACK_CREATE_RE.search(stripped):
+        return HarnessPlannerDecision(
+            action=_PLANNER_ASK_CLARIFICATION,
+            mode="create_documentation_pack",
+            capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
+            confidence=0.8,
+            user_visible_reason="The user wants to design a reusable documentation Pack.",
+            direct_answer=(
+                "What should this Pack document, and who is the intended reader? "
+                "I’ll use that to propose the document set and sections before saving it."
+            ),
+            matched_rule="documentation_pack_create",
+        )
     if _DOC_GENERATION_RE.search(stripped):
         return HarnessPlannerDecision(
             action=_PLANNER_CALL_CAPABILITY,
@@ -477,11 +497,34 @@ async def plan_model_harness_chat_turn(
                 )
         elif model_decision.action == PlannerAction.CLARIFY:
             deterministic = plan_harness_chat_turn(query)
-            if deterministic.mode == "generate_docs":
+            if deterministic.mode in {"generate_docs", "create_documentation_pack"}:
                 decision = replace(
                     deterministic,
                     confidence=model_decision.confidence,
-                    user_visible_reason="Documentation generation needs a project scope.",
+                    user_visible_reason=(
+                        "Documentation generation needs a project scope."
+                        if deterministic.mode == "generate_docs"
+                        else "Reusable Pack creation needs a few design choices."
+                    ),
+                    direct_answer=(
+                        model_decision.clarification
+                        or deterministic.direct_answer
+                    ),
+                )
+            elif (
+                prior_plan is not None
+                and prior_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+            ):
+                decision = HarnessPlannerDecision(
+                    action=_PLANNER_ASK_CLARIFICATION,
+                    mode="create_documentation_pack",
+                    capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
+                    confidence=model_decision.confidence,
+                    user_visible_reason="Continuing the reusable Pack design.",
+                    direct_answer=(
+                        model_decision.clarification
+                        or "What should I refine before saving this reusable Pack?"
+                    ),
                 )
             else:
                 decision = HarnessPlannerDecision(
@@ -1030,6 +1073,7 @@ def _mode_for_capability(capability_id: str) -> str | None:
         return "runtime_answer"
     return {
         _CAPABILITY_ID: "generate_docs",
+        DOCUMENTATION_PACK_CREATE_CAPABILITY.id: "create_documentation_pack",
         _DOC_STATUS_CAPABILITY_ID: "documentation_generation_status",
         _DOC_UPDATE_CAPABILITY_ID: "update_docs_from_evidence",
         _INVESTIGATION_CAPABILITY_ID: "operational_investigation",
@@ -1090,6 +1134,20 @@ def _with_turn_plan(
         task_type = TurnTaskType.DIRECT_ANSWER
         execution_mode = TurnExecutionMode.DIRECT
         output_contract = "conversational_answer"
+        allowed = set()
+        preferred = []
+    elif decision.mode == "create_documentation_pack":
+        task_type = TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+        execution_mode = (
+            TurnExecutionMode.CLARIFICATION
+            if decision.action == _PLANNER_ASK_CLARIFICATION
+            else TurnExecutionMode.WORKFLOW
+        )
+        output_contract = (
+            "typed_clarification"
+            if decision.action == _PLANNER_ASK_CLARIFICATION
+            else "documentation_pack_receipt"
+        )
         allowed = set()
         preferred = []
     elif decision.action == _PLANNER_ASK_CLARIFICATION:
@@ -1537,6 +1595,54 @@ def _match_project_in_query(query: str, project_options: list[ProjectOption]) ->
     return None
 
 
+def _documentation_pack_name_from_query(query: str) -> str | None:
+    quoted = re.search(
+        r"\busing\s+(?:the\s+)?(?:documentation\s+)?pack\s+[\"']([^\"']+)[\"']",
+        query,
+        re.IGNORECASE,
+    )
+    if quoted:
+        return quoted.group(1).strip()
+    unquoted = re.search(
+        r"\busing\s+(?:the\s+)?(?:documentation\s+)?pack\s+(.+?)\s*$",
+        query,
+        re.IGNORECASE,
+    )
+    return unquoted.group(1).strip(" .") if unquoted else None
+
+
+async def _resolve_documentation_pack_id(
+    *,
+    arguments: dict[str, Any],
+    query: str,
+    provider: McpDocumentationProvider,
+    access_token: str | None,
+) -> int | None:
+    explicit_id = arguments.get("plugin_pack_id")
+    if isinstance(explicit_id, int) and not isinstance(explicit_id, bool) and explicit_id > 0:
+        return explicit_id
+    raw_name = (
+        arguments.get("documentation_pack")
+        or arguments.get("pack_name")
+        or _documentation_pack_name_from_query(query)
+    )
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        return None
+    requested = re.sub(r"[\s_-]+", " ", raw_name.strip()).casefold()
+    packs = await provider.list_documentation_packs(access_token=access_token)
+    matches = [
+        pack
+        for pack in packs
+        if re.sub(r"[\s_-]+", " ", pack.name.strip()).casefold() == requested
+    ]
+    if len(matches) == 1:
+        return matches[0].id
+    available = ", ".join(f"`{pack.name}`" for pack in packs[:8]) or "none"
+    raise McpDocumentationProviderError(
+        f"Documentation Pack `{raw_name.strip()}` was not found. Available Packs: {available}."
+    )
+
+
 async def _conversation_focus(
     db: AsyncSession,
     conversation: Conversation,
@@ -1732,6 +1838,25 @@ async def run_harness_chat_turn(
             answer=answer,
             latency_ms=_latency_ms(start),
             workflow_run_id=workflow_run_id,
+        )
+
+    if decision.mode == "create_documentation_pack":
+        run, answer, _ = await _execute_documentation_pack_creation(
+            conversation=conversation,
+            query=query,
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            provider=docs_provider,
+            decision=decision,
+            user_permissions=user_permissions,
+        )
+        return await _persist_assistant_message(
+            conversation=conversation,
+            db=db,
+            answer=answer,
+            latency_ms=_latency_ms(start),
+            workflow_run_id=run.id,
         )
 
     if decision.mode == "connector_evidence":
@@ -2052,6 +2177,20 @@ async def run_harness_chat_turn_stream(
             workflow_run_id = status_run.id
             for activity in activities:
                 yield ("harness_activity", json.dumps(_activity_payload(activity)))
+    elif decision.mode == "create_documentation_pack":
+        pack_run, answer, activities = await _execute_documentation_pack_creation(
+            conversation=conversation,
+            query=query,
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            provider=docs_provider,
+            decision=decision,
+            user_permissions=user_permissions,
+        )
+        workflow_run_id = pack_run.id
+        for activity in activities:
+            yield ("harness_activity", json.dumps(_activity_payload(activity)))
     elif decision.mode == "connector_evidence":
         connector_run, answer, activities = await _execute_model_selected_connector(
             conversation=conversation,
@@ -2444,6 +2583,90 @@ def _documentation_generation_status_answer(project_id: str, data: dict[str, Any
     return f"The latest documentation generation status for `{project_id}` is {status}."
 
 
+async def _execute_documentation_pack_creation(
+    *,
+    conversation: Conversation,
+    query: str,
+    db: AsyncSession,
+    user_id: int,
+    access_token: str | None,
+    provider: McpDocumentationProvider,
+    decision: HarnessPlannerDecision,
+    user_permissions: set[str] | None,
+) -> tuple[WorkflowRun, str, list[ActivityEvent]]:
+    registry = default_capability_registry()
+    service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
+    run = await service.start_run(
+        conversation_id=conversation.id,
+        user_id=user_id,
+        project_id=None,
+        intent_mode="create_documentation_pack",
+        capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
+        input_summary=_input_summary(query),
+    )
+    activities = [
+        await service.record_activity(
+            run,
+            event_type="planner.decision",
+            label="Planned Pack creation",
+            status=ActivityEventStatus.SUCCEEDED,
+            summary=_planner_summary(decision),
+            safe_details=_planner_safe_details(decision),
+            runtime_node="plan",
+        )
+    ]
+    observation = await HarnessCapabilityExecutor(
+        registry,
+        docs_provider=provider,
+    ).execute(
+        CapabilityExecutionRequest(
+            capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
+            arguments=dict(decision.arguments or {}),
+            idempotency_key=f"pack-create:{run.id}",
+        ),
+        CapabilityExecutionContext(
+            user_id=user_id,
+            conversation_id=conversation.id,
+            permissions=user_permissions,
+            approvals={DOCUMENTATION_PACK_CREATE_CAPABILITY.id},
+            access_token=access_token,
+        ),
+    )
+    succeeded = observation.succeeded
+    activities.append(
+        await service.record_activity(
+            run,
+            event_type="capability.completed" if succeeded else "capability.failed",
+            label="Created documentation Pack" if succeeded else "Documentation Pack creation failed",
+            status=(ActivityEventStatus.SUCCEEDED if succeeded else ActivityEventStatus.FAILED),
+            summary=observation.summary or observation.error_message,
+            safe_details=observation.safe_details,
+            runtime_node="execute",
+        )
+    )
+    updated = await HarnessWorkflowRepository(db).update_run(
+        [],
+        run.id,
+        WorkflowRunUpdate(
+            status=(WorkflowRunStatus.SUCCEEDED if succeeded else WorkflowRunStatus.FAILED),
+            output_summary=observation.summary if succeeded else None,
+            error_message=None if succeeded else observation.error_message,
+            runtime_provider_id="nexus.harness",
+            current_node="complete" if succeeded else "failed",
+            finished_at=datetime.datetime.now(datetime.UTC),
+        ),
+        owner_user_id=user_id,
+    )
+    if not succeeded:
+        return updated, observation.error_message or "The documentation Pack could not be created.", activities
+    pack_name = str(observation.data.get("name") or "the new Pack")
+    return (
+        updated,
+        f"Created reusable documentation Pack `{pack_name}`. It is now available for onboarding, project defaults, and `/docs` runs.",
+        activities,
+    )
+
+
 async def _trigger_documentation_generation(
     *,
     conversation: Conversation,
@@ -2493,6 +2716,37 @@ async def _trigger_documentation_generation(
         safe_details={"project_id": project_id},
     ))
     provider = provider or McpDocumentationProvider()
+    try:
+        plugin_pack_id = await _resolve_documentation_pack_id(
+            arguments=dict(decision.arguments or {}) if decision is not None else {},
+            query=query,
+            provider=provider,
+            access_token=access_token,
+        )
+    except McpDocumentationProviderError as exc:
+        failed = await HarnessWorkflowRepository(db).update_run(
+            [project_id],
+            run.id,
+            WorkflowRunUpdate(
+                status=WorkflowRunStatus.FAILED,
+                error_message=exc.safe_message,
+                current_node="resolve_documentation_pack",
+                finished_at=datetime.datetime.now(datetime.UTC),
+            ),
+            owner_user_id=user_id,
+        )
+        return failed, None, exc.safe_message, activities
+    runtime_arguments: dict[str, Any] = {"project_id": project_id, "resume": True}
+    if plugin_pack_id is not None:
+        runtime_arguments["plugin_pack_id"] = plugin_pack_id
+        activities.append(await service.record_activity(
+            run,
+            event_type="scope.documentation_pack",
+            label="Resolved documentation Pack",
+            status=ActivityEventStatus.SUCCEEDED,
+            summary="Using the requested reusable documentation Pack for this run.",
+            safe_details={"plugin_pack_id": plugin_pack_id},
+        ))
     runtime_result = await default_langgraph_runtime_provider().run_turn(
         RuntimeTurnRequest(
             message=query,
@@ -2501,7 +2755,7 @@ async def _trigger_documentation_generation(
                 scope=ManifestScope(permissions=user_permissions),
             ),
             planned_capability_id=_CAPABILITY_ID,
-            arguments={"project_id": project_id, "resume": True},
+            arguments=runtime_arguments,
             workflow_run_id=run.id,
         ),
         executor=HarnessCapabilityExecutor(
@@ -3549,14 +3803,40 @@ async def _execute_project_onboarding(
         catalog.resolve(
             PackActivation(enabled_pack_ids=frozenset(selected_pack_ids))
         )
+    try:
+        plugin_pack_id = await _resolve_documentation_pack_id(
+            arguments=arguments,
+            query=query,
+            provider=docs_provider,
+            access_token=access_token,
+        )
+    except McpDocumentationProviderError as exc:
+        updated = await HarnessWorkflowRepository(db).update_run(
+            list(project_scope or []),
+            run.id,
+            WorkflowRunUpdate(
+                status=WorkflowRunStatus.FAILED,
+                error_message=exc.safe_message,
+                current_node="resolve_documentation_pack",
+                finished_at=datetime.datetime.now(datetime.UTC),
+            ),
+            owner_user_id=user_id,
+        )
+        return updated, exc.safe_message, []
     request = OnboardingRequest(
         workflow_run_id=run.id,
         project_id=project_id,
         repo_url=arguments.get("repo_url"),
+        source_type=(
+            str(arguments.get("source_type")).lower()
+            if arguments.get("source_type") in {"git", "zip"}
+            else "zip" if "zip upload" in query.lower() else None
+        ),
         platform=arguments.get("platform") or "generic",
         installation_id=arguments.get("installation_id"),
         upload_receipt=arguments.get("upload_receipt"),
         selected_pack_ids=selected_pack_ids,
+        plugin_pack_id=plugin_pack_id,
     )
     allowed_scope = list(dict.fromkeys([*(project_scope or []), project_id]))
     from src.harness.models import (
@@ -3614,7 +3894,9 @@ async def _execute_project_onboarding(
                 "arguments": {
                     "project_id": project_id,
                     "platform": request.platform,
+                    "source_type": request.source_type,
                     "selected_pack_ids": request.selected_pack_ids,
+                    "plugin_pack_id": request.plugin_pack_id,
                 },
             },
             interrupt_type=WorkflowInterruptType.CLARIFICATION,
@@ -3623,6 +3905,7 @@ async def _execute_project_onboarding(
             scope_snapshot={
                 "project_id": project_id,
                 "platform": request.platform,
+                "source_type": request.source_type,
                 "required_fields": result.interrupt_fields,
                 "available_projects": allowed_scope,
             },
@@ -3632,6 +3915,7 @@ async def _execute_project_onboarding(
                 "repo_url": None,
                 "platform": request.platform,
                 "selected_pack_ids": request.selected_pack_ids,
+                "plugin_pack_id": request.plugin_pack_id,
             },
         )
         return (
@@ -3649,6 +3933,12 @@ async def _execute_project_onboarding(
             workflow_key="documentation",
             active_pack_ids=request.selected_pack_ids,
             user_id=user_id,
+        )
+    if request.plugin_pack_id is not None and result.status != "failed":
+        await docs_provider.set_project_documentation_pack(
+            project_id=project_id,
+            plugin_pack_id=request.plugin_pack_id,
+            access_token=access_token,
         )
     repo = HarnessWorkflowRepository(db)
     if result.status == "failed":
@@ -3721,11 +4011,17 @@ async def resume_project_onboarding_workflow(
     arguments = metadata_arguments if isinstance(metadata_arguments, dict) else {}
     project_id = str(arguments.get("project_id") or run.project_id)
     platform = str(arguments.get("platform") or "generic")
+    source_type = arguments.get("source_type")
+    if source_type not in {"git", "zip"}:
+        source_type = None
     selected_pack_ids = [
         str(value)
         for value in arguments.get("selected_pack_ids", [])
         if isinstance(value, str)
     ]
+    plugin_pack_id = arguments.get("plugin_pack_id")
+    if not isinstance(plugin_pack_id, int) or isinstance(plugin_pack_id, bool) or plugin_pack_id < 1:
+        plugin_pack_id = None
     registry = await _project_execution_registry(db, project_id, "onboarding")
     from src.harness.models import (
         ATTACH_GIT_SOURCE_CAPABILITY,
@@ -3741,16 +4037,19 @@ async def resume_project_onboarding_workflow(
         approvals={ATTACH_GIT_SOURCE_CAPABILITY.id, ATTACH_ZIP_SOURCE_CAPABILITY.id},
         access_token=access_token,
     )
+    docs_provider = McpDocumentationProvider()
     executor = HarnessCapabilityExecutor(
         registry,
-        docs_provider=McpDocumentationProvider(),
+        docs_provider=docs_provider,
         projects_provider=McpProjectsProvider(),
     )
     request = OnboardingRequest(
         workflow_run_id=run.id,
         project_id=project_id,
         platform=platform,
+        source_type=source_type,
         selected_pack_ids=selected_pack_ids,
+        plugin_pack_id=plugin_pack_id,
         thread_id=run.runtime_thread_id,
     )
     workflow = default_project_onboarding_workflow()
@@ -3815,7 +4114,9 @@ async def resume_project_onboarding_workflow(
                 "arguments": {
                     "project_id": project_id,
                     "platform": platform,
+                    "source_type": source_type,
                     "selected_pack_ids": selected_pack_ids,
+                    "plugin_pack_id": plugin_pack_id,
                 },
             },
             interrupt_type=WorkflowInterruptType.CLARIFICATION,
@@ -3824,6 +4125,7 @@ async def resume_project_onboarding_workflow(
             scope_snapshot={
                 "project_id": project_id,
                 "platform": platform,
+                "source_type": source_type,
                 "required_fields": result.interrupt_fields,
                 "available_projects": list(
                     dict.fromkeys([*(project_scope or []), project_id])
@@ -3834,6 +4136,7 @@ async def resume_project_onboarding_workflow(
                 "project_id": project_id,
                 "platform": platform,
                 "selected_pack_ids": selected_pack_ids,
+                "plugin_pack_id": plugin_pack_id,
                 "required_fields": result.interrupt_fields,
             },
         )
@@ -3868,6 +4171,12 @@ async def resume_project_onboarding_workflow(
             workflow_key="documentation",
             active_pack_ids=selected_pack_ids,
             user_id=user_id,
+        )
+    if plugin_pack_id is not None and result.status != "failed":
+        await docs_provider.set_project_documentation_pack(
+            project_id=project_id,
+            plugin_pack_id=plugin_pack_id,
+            access_token=access_token,
         )
     updated = await HarnessWorkflowRepository(db).update_run(
         [],
@@ -4838,6 +5147,7 @@ def _capability_fallback_answer() -> str:
 def _capability_label(decision: HarnessPlannerDecision) -> str:
     labels = {
         "generate_docs": "generate documentation",
+        "create_documentation_pack": "create a reusable documentation Pack",
         "update_docs_from_evidence": "update documentation",
         "operational_investigation": "run an operational investigation",
         "connector_inventory": "read connector metadata",

@@ -8,6 +8,7 @@ POST   /mcp/plugins/branch-files                - list editable files in a branc
 POST   /mcp/plugins/branch-file                 - preview one branch file
 POST   /mcp/plugins/upload                      - upload a zip and register the pack
 POST   /mcp/plugins                             - register a pack path or Git branch
+POST   /mcp/documentation-packs                 - create a reusable documentation pack
 PATCH  /mcp/plugins/{id}                        - update auto_update flag or pull
 DELETE /mcp/plugins/{id}                        - delete pack registration
 GET    /mcp/plugins/{id}/files                  - list editable files in pack
@@ -21,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import re
 import shutil
 import tempfile
 import zipfile
@@ -28,8 +30,9 @@ from pathlib import Path
 from stat import S_IFLNK, S_IFMT
 from urllib.parse import urlparse
 
+import yaml
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 
 from mcp_server.config import config
@@ -42,7 +45,7 @@ from mcp_server.services.git_remote_service import (
     strip_url_credentials,
 )
 from mcp_server.services.plugin_schema import PluginPackManifest, load_plugin_manifest
-from mcp_server.api.permissions import require_project_management
+from mcp_server.api.permissions import require_pack_management, require_project_management
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +128,18 @@ class AssignPluginRequest(BaseModel):
     plugin_pack_id: int | None = None
 
 
+class DocumentationPackDocumentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    sections: list[str] = Field(default_factory=list, max_length=30)
+    instructions: str | None = Field(default=None, max_length=8_000)
+
+
+class CreateDocumentationPackRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9 _-]*$")
+    description: str | None = Field(default=None, max_length=1_000)
+    documents: list[DocumentationPackDocumentRequest] = Field(min_length=1, max_length=30)
+
+
 class FileContentOut(BaseModel):
     path: str
     content: str
@@ -136,6 +151,7 @@ class SaveFileRequest(BaseModel):
 
 _ALLOWED_EXTENSIONS = {".yaml", ".yml", ".md", ".txt"}
 _ZIP_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_PACK_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +178,25 @@ def _resolve_pack_file(pack_path: str, file_path: str) -> Path:
 
 def _starter_pack_dir() -> Path:
     return config.data_dir / "swap_pack_starter"
+
+
+def _documentation_pack_slug(name: str) -> str:
+    slug = _PACK_SLUG_RE.sub("-", name.strip().lower()).strip("-")
+    if not slug:
+        raise HTTPException(status_code=422, detail="Pack name must contain letters or numbers.")
+    return slug[:100]
+
+
+def _normalized_document_definition(
+    document: DocumentationPackDocumentRequest,
+) -> tuple[dict[str, object], str | None]:
+    name = document.name.strip().upper().replace("-", "_")
+    sections = list(dict.fromkeys(section.strip() for section in document.sections if section.strip()))
+    definition: dict[str, object] = {"name": name}
+    if sections:
+        definition["required_sections"] = sections
+    instructions = document.instructions.strip() if document.instructions else None
+    return definition, instructions or None
 
 
 def _branch_slug(branch: str) -> str:
@@ -465,6 +500,94 @@ async def read_plugin_branch_file(body: PreviewPackBranchFileRequest):
 # ---------------------------------------------------------------------------
 # Registration routes
 # ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/documentation-packs",
+    response_model=PluginPackOut,
+    status_code=201,
+)
+async def create_documentation_pack(
+    body: CreateDocumentationPackRequest,
+    request: Request,
+):
+    """Create a reusable local IntoDoc documentation Pack."""
+    await require_pack_management(request)
+    slug = _documentation_pack_slug(body.name)
+    pack_root = config.data_dir / "plugin_packs"
+    destination = pack_root / slug
+    if destination.exists():
+        raise HTTPException(status_code=409, detail="A documentation Pack with this name already exists.")
+
+    documents: list[dict[str, object]] = []
+    prompts: dict[str, str] = {}
+    seen_names: set[str] = set()
+    for requested_document in body.documents:
+        definition, instructions = _normalized_document_definition(requested_document)
+        document_name = str(definition["name"])
+        if document_name in seen_names:
+            raise HTTPException(status_code=422, detail=f"Duplicate document name: {document_name}")
+        seen_names.add(document_name)
+        documents.append(definition)
+        if instructions:
+            prompts[document_name] = instructions
+
+    manifest = {
+        "name": body.name.strip(),
+        "version": "1.0.0",
+        "description": (body.description or "").strip(),
+        "docs": documents,
+        "steps": [{"id": "generate-docs", "type": "harness"}],
+    }
+
+    pack_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{slug}-", dir=pack_root))
+    try:
+        (temporary / "plugin.yaml").write_text(
+            yaml.safe_dump(manifest, sort_keys=False, allow_unicode=False),
+            encoding="utf-8",
+        )
+        for document_name, instructions in prompts.items():
+            prompt_path = temporary / "prompts" / "docs" / f"{document_name}.md"
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            prompt_path.write_text(instructions.rstrip() + "\n", encoding="utf-8")
+        validated = load_plugin_manifest(temporary)
+        temporary.replace(destination)
+    except HTTPException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=f"Invalid documentation Pack: {exc}") from exc
+
+    try:
+        async with async_session_factory() as db:
+            existing = (
+                await db.execute(select(PluginPack).where(PluginPack.name == validated.name))
+            ).scalar_one_or_none()
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="A documentation Pack with this name already exists.")
+            pack = PluginPack(
+                name=validated.name,
+                manifest_name=validated.name,
+                version=validated.version,
+                path=str(destination),
+                description=validated.description or None,
+                repo_url=None,
+                repo_branch=None,
+                last_commit_sha=None,
+                auto_update=False,
+            )
+            db.add(pack)
+            await db.commit()
+            await db.refresh(pack)
+            return PluginPackOut.model_validate(pack)
+    except HTTPException:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
 
 
 @router.post("/plugins/upload", response_model=PluginPackOut, status_code=201)

@@ -11,6 +11,7 @@ import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { PackManager } from "./harness-packs/PackManager";
+import { OnboardingLauncher } from "./onboarding/OnboardingLauncher";
 import type { UploadedZipReceipt } from "@/lib/mcpClient";
 import type { ChatMode } from "./ModeToggle";
 import type {
@@ -64,6 +65,11 @@ export function ChatWindow({
   const isDeepDive = mode === "deep-dive";
   const inputDisabled = isDeepDive && !selectedProject;
   const [showPacks, setShowPacks] = useState(false);
+  const [packMode, setPackMode] = useState<"list" | "select" | "create">("list");
+  const [packProjectOverride, setPackProjectOverride] = useState<string | null>(null);
+  const [packInitialName, setPackInitialName] = useState<string | undefined>();
+  const [packCommandError, setPackCommandError] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const { commands: slashCommands } = useSlashCommands();
 
   const latestPendingAction = useMemo(
@@ -80,9 +86,9 @@ export function ChatWindow({
           platform: latestPendingAction.platform ?? "generic",
         }
       : undefined;
-  const packProjectId = selectedProject || latestPendingAction?.project_id || "";
-
   const { data: userProjectsData } = useUserProjects();
+  const contextualPackProjectId = selectedProject || latestPendingAction?.project_id || "";
+  const packProjectId = packProjectOverride === null ? contextualPackProjectId : packProjectOverride;
   const selectedProjectName = !isDeepDive
     ? userProjectsData?.projects.find((p) => p.id === selectedProject)?.display_name
     : undefined;
@@ -98,6 +104,51 @@ export function ChatWindow({
 
   function handleSend(message: string, images?: string[]) {
     onSendMessage({ query: message, project_id: selectedProject || undefined, images });
+  }
+
+  function handleSlashCommand(name: string, argumentsText: string): boolean {
+    if (name === "onboard" || name === "onboarding") {
+      setShowPacks(false);
+      setShowOnboarding(true);
+      return true;
+    }
+    if (name !== "pack" && name !== "packs") return false;
+    const parts = argumentsText.split(/\s+/).filter(Boolean);
+    const action = parts[0]?.toLowerCase();
+    if (action === "create") return false;
+    if (!action || action === "list") {
+      setPackProjectOverride("");
+      setPackInitialName(undefined);
+      setPackMode("list");
+      setPackCommandError(null);
+      setShowOnboarding(false);
+      setShowPacks(true);
+      return true;
+    }
+    const useMatch = argumentsText.match(/^use\s+(.+?)\s+for\s+(.+)$/i);
+    const requestedPack = useMatch?.[1].trim().replace(/^["']|["']$/g, "");
+    const projectQuery = (useMatch?.[2] ?? argumentsText).trim().toLowerCase();
+    let resolvedProject = contextualPackProjectId;
+    if (projectQuery) {
+      const match = userProjectsData?.projects.find((project) => (
+        project.id.toLowerCase() === projectQuery || project.display_name.toLowerCase() === projectQuery
+      ));
+      if (!match) {
+        setPackCommandError(`Project “${projectQuery}” is not available in your current scope.`);
+        setShowPacks(true);
+        return true;
+      }
+      resolvedProject = match.id;
+    } else if (!resolvedProject && userProjectsData?.projects.length === 1) {
+      resolvedProject = userProjectsData.projects[0].id;
+    }
+    setPackProjectOverride(resolvedProject);
+    setPackInitialName(requestedPack);
+    setPackMode("select");
+    setPackCommandError(resolvedProject ? null : "Choose a project before managing its documentation Pack.");
+    setShowOnboarding(false);
+    setShowPacks(true);
+    return true;
   }
 
   function handleSuggestionClick(suggestion: string) {
@@ -152,13 +203,19 @@ export function ChatWindow({
       <ModeToggle mode={mode} onModeChange={onModeChange} />
       {isDeepDive ? <ProjectSelector /> : <RagProjectSelector />}
       <RuntimeStatusIndicator />
-      {!isDeepDive && packProjectId && (
+      {!isDeepDive && (
         <button
           type="button"
-          onClick={() => setShowPacks((value) => !value)}
-          aria-label="Configure Packs"
+          onClick={() => {
+            setPackProjectOverride(null);
+            setPackInitialName(undefined);
+            setPackMode(contextualPackProjectId ? "select" : "list");
+            setShowOnboarding(false);
+            setShowPacks((value) => !value);
+          }}
+          aria-label="Documentation Pack"
           aria-expanded={showPacks}
-          title="Configure Packs"
+          title="Documentation Pack"
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <Package className="h-4 w-4" />
@@ -212,6 +269,7 @@ export function ChatWindow({
                 hideImagePicker={isDeepDive}
                 toolbarContent={toolbarContent}
                 slashCommands={slashCommands}
+                onSlashCommand={handleSlashCommand}
                 zipUploadTarget={zipUploadTarget}
                 onZipUploaded={zipUploadTarget ? handleZipUploaded : undefined}
                 placeholder={
@@ -223,6 +281,28 @@ export function ChatWindow({
                 }
               />
             </div>
+
+            {showOnboarding && (
+              <div className="mt-5 max-h-[50vh] w-full overflow-y-auto border-y py-4 text-left">
+                <OnboardingLauncher
+                  onStart={(message) => {
+                    setShowOnboarding(false);
+                    handleSend(message);
+                  }}
+                />
+              </div>
+            )}
+            {showPacks && (
+              <div className="mt-5 max-h-[45vh] w-full overflow-y-auto border-y py-4 text-left">
+                {packCommandError && <p role="alert" className="text-sm text-destructive">{packCommandError}</p>}
+                <PackManager
+                  key={`${packProjectId}:${packMode}:${packInitialName ?? ""}`}
+                  projectId={packProjectId || undefined}
+                  initialMode={packMode}
+                  initialPackName={packInitialName}
+                />
+              </div>
+            )}
 
             {/* Two large CTA cards (Perplexity-style) -- capability categories,
                 not pre-baked questions. Click switches chat mode. */}
@@ -293,9 +373,25 @@ export function ChatWindow({
       </div>
 
       <div className="max-w-3xl mx-auto w-full">
-        {showPacks && packProjectId && (
+        {showOnboarding && (
+          <div className="max-h-[55vh] overflow-y-auto border-t px-4 py-4">
+            <OnboardingLauncher
+              onStart={(message) => {
+                setShowOnboarding(false);
+                handleSend(message);
+              }}
+            />
+          </div>
+        )}
+        {showPacks && (
           <div className="max-h-[45vh] overflow-y-auto border-t px-4 py-4">
-            <PackManager projectId={packProjectId} />
+            {packCommandError && <p role="alert" className="text-sm text-destructive">{packCommandError}</p>}
+            <PackManager
+              key={`${packProjectId}:${packMode}:${packInitialName ?? ""}`}
+              projectId={packProjectId || undefined}
+              initialMode={packMode}
+              initialPackName={packInitialName}
+            />
           </div>
         )}
         <ChatInput
@@ -305,6 +401,7 @@ export function ChatWindow({
           hideImagePicker={isDeepDive}
           toolbarContent={toolbarContent}
           slashCommands={slashCommands}
+          onSlashCommand={handleSlashCommand}
           zipUploadTarget={zipUploadTarget}
           onZipUploaded={zipUploadTarget ? handleZipUploaded : undefined}
           placeholder={

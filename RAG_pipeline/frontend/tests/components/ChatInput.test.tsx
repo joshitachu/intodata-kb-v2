@@ -40,4 +40,23 @@ describe("ChatInput", () => {
 
     expect(screen.getByText("Choose a ZIP archive")).toBeInTheDocument();
   });
+
+  it("handles local documentation Pack library commands without sending a chat turn", () => {
+    const onSend = vi.fn();
+    const onSlashCommand = vi.fn().mockReturnValue(true);
+    render(
+      <ChatInput
+        onSend={onSend}
+        onSlashCommand={onSlashCommand}
+        isLoading={false}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "/pack list" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(onSlashCommand).toHaveBeenCalledWith("pack", "list");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
 });

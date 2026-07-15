@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from src.harness.providers.mcp_docs import (
+    McpDocumentationPackDocumentDraft,
     McpDocumentationProvider,
     McpDocumentationProviderError,
 )
@@ -119,6 +120,53 @@ async def test_project_documentation_pack_get_and_set_forward_cookie() -> None:
         ("GET", "/mcp/projects", b""),
         ("PATCH", "/mcp/projects/p1/plugin", b'{"plugin_pack_id":8}'),
     ]
+
+
+async def test_create_documentation_pack_forwards_safe_definition() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["payload"] = request.read()
+        seen["cookie"] = request.headers.get("cookie")
+        return httpx.Response(
+            201,
+            json={
+                "id": 12,
+                "name": "Operations Handbook",
+                "manifest_name": "Operations Handbook",
+                "version": "1.0.0",
+                "description": "Operations docs",
+            },
+        )
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(handler),
+    )
+
+    pack = await provider.create_documentation_pack(
+        name="Operations Handbook",
+        description="Operations docs",
+        documents=[
+            McpDocumentationPackDocumentDraft(
+                name="RUNBOOK",
+                sections=["Overview", "Recovery"],
+                instructions="Use evidence.",
+            )
+        ],
+        access_token="user-jwt",
+    )
+
+    assert seen["path"] == "/mcp/documentation-packs"
+    assert seen["cookie"] == "access_token=user-jwt"
+    assert seen["payload"] == (
+        b'{"name":"Operations Handbook","description":"Operations docs",'
+        b'"documents":[{"name":"RUNBOOK","sections":["Overview","Recovery"],'
+        b'"instructions":"Use evidence."}]}'
+    )
+    assert pack.id == 12
+    assert pack.name == "Operations Handbook"
 
 
 @pytest.mark.parametrize("plugin_pack_id", [0, -1, True, "7"])

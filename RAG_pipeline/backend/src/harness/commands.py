@@ -39,14 +39,14 @@ class ResolvedSlashCommand:
 _COMMANDS = (
     SlashCommand(
         name="onboard",
-        description="Create a project and start source onboarding.",
-        argument_hint="project name and optional Git URL",
+        description="Create a project from Git or ZIP and select its documentation Pack.",
+        argument_hint="project, source, platform, and Pack (optional)",
         planner_template="Onboard a project {arguments}",
     ),
     SlashCommand(
         name="docs",
-        description="Generate or refresh project documentation.",
-        argument_hint="project name",
+        description="Generate or refresh project documentation with a reusable Pack.",
+        argument_hint="project and optional Pack",
         planner_template="Generate documentation {arguments}",
     ),
     SlashCommand(
@@ -56,10 +56,10 @@ _COMMANDS = (
         planner_template="Investigate an operational failure {arguments}",
     ),
     SlashCommand(
-        name="packs",
-        description="Review project packs available for the current scope.",
-        argument_hint="project name (optional)",
-        planner_template="Show available project packs {arguments}",
+        name="pack",
+        description="Create, browse, or assign reusable documentation Packs.",
+        argument_hint="create, list, or use <Pack> for <project>",
+        planner_template="Manage the documentation Pack {arguments}",
     ),
     SlashCommand(
         name="status",
@@ -67,8 +67,15 @@ _COMMANDS = (
         argument_hint="project name (optional)",
         planner_template="Show documentation generation status {arguments}",
     ),
+    SlashCommand(
+        name="capabilities",
+        description="Explain what Nexus can currently do.",
+        argument_hint=None,
+        planner_template="Explain your currently available capabilities without executing tools {arguments}",
+    ),
 )
 _BY_NAME = {command.name: command for command in _COMMANDS}
+_ALIASES = {"packs": "pack", "onboarding": "onboard"}
 _COMMAND_RE = re.compile(r"^/(?P<name>[a-z][a-z0-9_-]*)(?:\s+(?P<arguments>.*))?$", re.IGNORECASE)
 
 
@@ -87,7 +94,8 @@ def resolve_slash_command(query: str) -> ResolvedSlashCommand | None:
     match = _COMMAND_RE.fullmatch(query.strip())
     if match is None:
         return None
-    command = _BY_NAME.get(match.group("name").lower())
+    command_name = match.group("name").lower()
+    command = _BY_NAME.get(_ALIASES.get(command_name, command_name))
     if command is None:
         return None
     arguments = (match.group("arguments") or "").strip()

@@ -264,6 +264,66 @@ async def test_documentation_pack_api_sets_the_mcp_project_default(db_session, m
     assert calls["plugin_pack_id"] == 7
 
 
+async def test_documentation_pack_api_creates_and_selects_an_intodoc_pack(db_session, monkeypatch) -> None:
+    from src.api.routes import harness_packs as harness_packs_mod
+
+    user = User(username="documentation-pack-creator", email="documentation-pack-creator@example.com", is_superadmin=True)
+    db_session.add(user)
+    await db_session.flush()
+    calls: dict[str, object] = {}
+
+    class FakeDocumentationProvider:
+        async def create_documentation_pack(self, **kwargs):
+            calls.update(kwargs)
+            return harness_packs_mod.McpDocumentationPack(
+                id=12,
+                name="Operations Handbook",
+                version="1.0.0",
+                description="Operations docs",
+            )
+
+        async def list_documentation_packs(self, *, access_token=None):
+            return [
+                harness_packs_mod.McpDocumentationPack(
+                    id=12,
+                    name="Operations Handbook",
+                    version="1.0.0",
+                    description="Operations docs",
+                )
+            ]
+
+    monkeypatch.setattr(harness_packs_mod, "McpDocumentationProvider", FakeDocumentationProvider)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/harness/packs/documentation-packs",
+                json={
+                    "name": "Operations Handbook",
+                    "description": "Operations docs",
+                    "documents": [
+                        {
+                            "name": "RUNBOOK",
+                            "sections": ["Overview", "Recovery"],
+                            "instructions": "Use evidence.",
+                        }
+                    ],
+                },
+                headers=CSRF_HEADERS,
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json()["id"] == 12
+    assert calls["name"] == "Operations Handbook"
+    documents = calls["documents"]
+    assert isinstance(documents, list)
+    assert documents[0].name == "RUNBOOK"
+
+
 async def test_list_harness_connectors_reuses_runtime_source_registry(db_session) -> None:
     user = User(
         username="harness-connector-user",

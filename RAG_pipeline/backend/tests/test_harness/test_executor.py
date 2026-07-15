@@ -12,6 +12,7 @@ from src.harness.executor import (
 from src.harness.models import (
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
+    DOCUMENTATION_PACK_CREATE_CAPABILITY,
     RUNTIME_EVIDENCE_CAPABILITY,
     EvidenceQueryResult,
 )
@@ -61,6 +62,59 @@ async def test_executor_triggers_docs_generation_through_provider() -> None:
     assert seen["path"] == "/mcp/generate"
     payload = json.loads(seen["payload"])
     assert payload["plugin_pack_id"] == 7
+
+
+async def test_executor_creates_reusable_documentation_pack() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["payload"] = json.loads(request.read())
+        return httpx.Response(
+            201,
+            json={
+                "id": 12,
+                "name": "Operations Pack",
+                "version": "1.0.0",
+                "description": "Operational documentation",
+                "document_count": 1,
+                "enabled": True,
+            },
+        )
+
+    executor = HarnessCapabilityExecutor(
+        default_capability_registry(),
+        docs_provider=McpDocumentationProvider(
+            base_url="http://mcp.internal/mcp",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    observation = await executor.execute(
+        CapabilityExecutionRequest(
+            capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
+            arguments={
+                "name": "Operations Pack",
+                "description": "Operational documentation",
+                "documents": [
+                    {
+                        "name": "OPERATIONS",
+                        "sections": ["Schedules", "Recovery"],
+                        "instructions": "Explain how the system runs",
+                    }
+                ],
+            },
+        ),
+        CapabilityExecutionContext(
+            user_id=1,
+            permissions={"manage_projects"},
+            approvals={DOCUMENTATION_PACK_CREATE_CAPABILITY.id},
+        ),
+    )
+
+    assert observation.status == "succeeded"
+    assert observation.data["plugin_pack_id"] == 12
+    assert seen["path"] == "/mcp/documentation-packs"
+    assert seen["payload"]["name"] == "Operations Pack"
 
 
 async def test_executor_reads_structured_generation_status() -> None:

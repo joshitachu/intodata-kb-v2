@@ -2,8 +2,14 @@ import {
   HarnessPackActivationSchema,
   HarnessPackCatalogSchema,
   HarnessPackRecommendationSchema,
+  DocumentationPackCatalogSchema,
+  DocumentationPackSchema,
   DocumentationPackSelectionSchema,
+  CreateDocumentationPackRequestSchema,
+  type CreateDocumentationPackRequest,
   type DocumentationPackSelection,
+  type DocumentationPack,
+  type DocumentationPackCatalog,
   type HarnessPackActivation,
   type HarnessPackCatalog,
   type HarnessPackRecommendation,
@@ -59,6 +65,12 @@ export async function fetchDocumentationPackSelection(projectId: string): Promis
   ));
 }
 
+export async function fetchDocumentationPacks(): Promise<DocumentationPackCatalog> {
+  return DocumentationPackCatalogSchema.parse(await request(
+    "/api/harness/packs/documentation-packs",
+  ));
+}
+
 export async function saveDocumentationPackSelection(
   projectId: string,
   pluginPackId: number | null,
@@ -69,6 +81,20 @@ export async function saveDocumentationPackSelection(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ plugin_pack_id: pluginPackId }),
+    },
+  ));
+}
+
+export async function createDocumentationPack(
+  draft: CreateDocumentationPackRequest,
+): Promise<DocumentationPack> {
+  const payload = CreateDocumentationPackRequestSchema.parse(draft);
+  return DocumentationPackSchema.parse(await request(
+    "/api/harness/packs/documentation-packs",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     },
   ));
 }

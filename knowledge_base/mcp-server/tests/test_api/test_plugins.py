@@ -5,8 +5,6 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
-import pytest
-
 from mcp_server.api.routes import plugins as plugins_mod
 
 
@@ -127,3 +125,46 @@ async def test_discover_marks_registered_branch(client, monkeypatch, tmp_path):
     branch = discover_resp.json()["branches"][0]
     assert branch["registered"] is True
     assert branch["registered_pack_id"] == register_resp.json()["id"]
+
+
+async def test_create_documentation_pack_registers_reusable_files(client, tmp_path):
+    response = await client.post(
+        "/mcp/documentation-packs",
+        json={
+            "name": "Operations Handbook",
+            "description": "Project operations documentation",
+            "documents": [
+                {
+                    "name": "RUNBOOK",
+                    "sections": ["Overview", "Recovery", "Evidence Register"],
+                    "instructions": "Use source evidence and state unknowns explicitly.",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["manifest_name"] == "Operations Handbook"
+    assert body["version"] == "1.0.0"
+    pack_dir = tmp_path / "data" / "plugin_packs" / "operations-handbook"
+    assert (pack_dir / "plugin.yaml").exists()
+    assert (pack_dir / "prompts" / "docs" / "RUNBOOK.md").read_text() == (
+        "Use source evidence and state unknowns explicitly.\n"
+    )
+
+
+async def test_create_documentation_pack_rejects_duplicate_document_names(client):
+    response = await client.post(
+        "/mcp/documentation-packs",
+        json={
+            "name": "Duplicate Documents",
+            "documents": [
+                {"name": "SUMMARY", "sections": []},
+                {"name": "summary", "sections": []},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Duplicate document name" in response.json()["detail"]

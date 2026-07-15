@@ -22,6 +22,7 @@ import {
   HelpCircle,
   Database,
   ScrollText,
+  Settings2,
   User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -66,6 +67,7 @@ const adminSubLinks: AdminSubLink[] = [
   { href: "/admin/access-requests", label: "Access", icon: UserPlus, superadminOnly: true },
   { href: "/admin/roles", label: "Roles", icon: KeyRound, superadminOnly: true },
   { href: "/admin/project-assignments", label: "Projects", icon: FolderKanban, perm: "create_projects" },
+  { href: "/admin/application-profile", label: "Profiles", icon: Settings2, perm: "manage_projects" },
   { href: "/admin/usage", label: "Usage", icon: BarChart3, perm: "view_audit_logs" },
   { href: "/admin/logs", label: "Logs", icon: ScrollText, perm: "view_audit_logs" },
   { href: "/admin/benchmark", label: "Benchmark", icon: FlaskConical, perm: "view_audit_logs" },

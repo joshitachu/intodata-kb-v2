@@ -40,10 +40,12 @@ class OnboardingRequest(BaseModel):
     workflow_run_id: int
     project_id: str
     repo_url: str | None = None
+    source_type: str | None = None
     platform: str = "generic"
     installation_id: int | None = None
     upload_receipt: str | None = Field(default=None, min_length=32, max_length=4096)
     selected_pack_ids: list[str] = Field(default_factory=list)
+    plugin_pack_id: int | None = Field(default=None, ge=1)
     thread_id: str | None = None
 
 
@@ -64,6 +66,7 @@ class _OnboardingState(TypedDict, total=False):
     repo_url: str | None
     upload_receipt: str | None
     selected_pack_ids: list[str]
+    plugin_pack_id: int | None
     source_type: str
     platform: str
     installation_id: int | None
@@ -99,10 +102,12 @@ class ProjectOnboardingWorkflow:
         state: _OnboardingState = {
             "project_id": request.project_id,
             "repo_url": request.repo_url,
+            "source_type": request.source_type,
             "platform": request.platform,
             "installation_id": request.installation_id,
             "upload_receipt": request.upload_receipt,
             "selected_pack_ids": _selected_pack_ids(request.selected_pack_ids),
+            "plugin_pack_id": request.plugin_pack_id,
             "activity": [],
             "observations": [],
             "artifact_links": [],
@@ -137,7 +142,10 @@ class ProjectOnboardingWorkflow:
             repo_url = state.get("repo_url")
             upload_receipt = state.get("upload_receipt")
             platform = _normalized_platform(state.get("platform"))
-            source_type = "zip" if upload_receipt else "git" if repo_url else ""
+            source_type = (
+                str(state.get("source_type") or "").lower()
+                or ("zip" if upload_receipt else "git" if repo_url else "")
+            )
             if not source_type:
                 response = interrupt(
                     {
@@ -286,6 +294,7 @@ class ProjectOnboardingWorkflow:
                         "project_id": state["project_id"],
                         "resume": True,
                         "selected_pack_ids": state.get("selected_pack_ids", []),
+                        "plugin_pack_id": state.get("plugin_pack_id"),
                     },
                     idempotency_key=f"onboard:{state['project_id']}:docs",
                 ),

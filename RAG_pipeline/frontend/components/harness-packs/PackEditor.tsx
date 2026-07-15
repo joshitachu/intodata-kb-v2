@@ -41,11 +41,11 @@ export function PackEditor({ onSave }: PackEditorProps) {
   }
 
   return (
-    <section className="border border-border p-4" aria-label="Custom Pack editor">
-      <label className="block text-sm font-semibold" htmlFor="pack-manifest">Custom Pack JSON</label>
+    <section className="border border-border p-4" aria-label="Policy Pack editor">
+      <label className="block text-sm font-semibold" htmlFor="pack-manifest">Policy Pack manifest</label>
       <textarea id="pack-manifest" className="mt-2 min-h-64 w-full resize-y border border-input bg-background p-3 font-mono text-xs" value={value} onChange={(event) => setValue(event.target.value)} spellCheck={false} />
       {error && <p role="alert" className="mt-2 text-sm text-destructive">{error}</p>}
-      <div className="mt-3 flex justify-end"><Button onClick={save} isLoading={saving}><Save className="h-3.5 w-3.5" aria-hidden />Save Pack</Button></div>
+      <div className="mt-3 flex justify-end"><Button onClick={save} isLoading={saving}><Save className="h-3.5 w-3.5" aria-hidden />Create policy Pack</Button></div>
     </section>
   );
 }

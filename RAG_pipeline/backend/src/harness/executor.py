@@ -13,6 +13,7 @@ from src.harness.models import (
     ATTACH_ZIP_SOURCE_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
+    DOCUMENTATION_PACK_CREATE_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
     DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY,
     PROJECT_STATUS_CAPABILITY,
@@ -24,6 +25,7 @@ from src.harness.models import (
 )
 from src.harness.providers.mcp_projects import McpProjectsProvider, McpProjectsProviderError
 from src.harness.providers.mcp_docs import (
+    McpDocumentationPackDocumentDraft,
     McpDocumentationProvider,
     McpDocumentationProviderError,
 )
@@ -312,6 +314,55 @@ class HarnessCapabilityExecutor:
                     "truncated": result.truncated,
                 },
                 safe_details={"evidence_count": len(result.items)},
+            )
+
+        if capability.id == DOCUMENTATION_PACK_CREATE_CAPABILITY.id:
+            provider = self._docs_provider or McpDocumentationProvider()
+            raw_documents = request.arguments.get("documents")
+            if not isinstance(raw_documents, list) or not raw_documents:
+                raise ValueError("A documentation Pack needs at least one document")
+            documents: list[McpDocumentationPackDocumentDraft] = []
+            for item in raw_documents:
+                if not isinstance(item, Mapping):
+                    raise ValueError("Invalid documentation Pack document")
+                name = item.get("name")
+                sections = item.get("sections", [])
+                instructions = item.get("instructions")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("Every documentation Pack document needs a name")
+                if not isinstance(sections, list) or not all(isinstance(value, str) for value in sections):
+                    raise ValueError("Document sections must be a list of strings")
+                if instructions is not None and not isinstance(instructions, str):
+                    raise ValueError("Document instructions must be text")
+                documents.append(
+                    McpDocumentationPackDocumentDraft(
+                        name=name,
+                        sections=sections,
+                        instructions=instructions,
+                    )
+                )
+            pack = await provider.create_documentation_pack(
+                name=str(request.arguments["name"]),
+                description=(
+                    str(request.arguments["description"])
+                    if request.arguments.get("description") is not None
+                    else None
+                ),
+                documents=documents,
+                access_token=context.access_token,
+            )
+            return CapabilityObservation(
+                capability_id=capability.id,
+                status="succeeded",
+                output_type=capability.output_type,
+                summary=f"Created reusable documentation Pack {pack.name}.",
+                data={
+                    "plugin_pack_id": pack.id,
+                    "name": pack.name,
+                    "version": pack.version,
+                    "description": pack.description,
+                },
+                safe_details={"provider_type": capability.provider_type.value},
             )
 
         if capability.id == DOCUMENTATION_GENERATION_CAPABILITY.id:

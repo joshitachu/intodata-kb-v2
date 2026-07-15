@@ -130,7 +130,7 @@ class TestSlashCommands:
         assert response.status_code == 200
         commands = response.json()["commands"]
         assert [command["name"] for command in commands] == [
-            "onboard", "docs", "investigate", "packs", "status",
+            "onboard", "docs", "investigate", "pack", "status", "capabilities",
         ]
         assert all("planner_template" not in command for command in commands)
 

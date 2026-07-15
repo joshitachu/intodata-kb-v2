@@ -73,6 +73,12 @@ _ROUTES = [
     # --- Body-based project_id ---
     ("POST", "/mcp/scan",         {"project_id": "p1", "force": False},                   "scan"),
     ("POST", "/mcp/generate",     {"project_id": "p1"},                                    "generate"),
+    (
+        "POST",
+        "/mcp/documentation-packs",
+        {"name": "Operations Pack", "documents": [{"name": "RUNBOOK", "sections": []}]},
+        "documentation_pack_create",
+    ),
     ("PATCH", "/mcp/projects/p1/plugin", {"plugin_pack_id": None},                           "project_plugin"),
     ("POST", "/mcp/push-to-rag",  {"project_id": "p1"},                                    "push_to_rag"),
     ("POST", "/mcp/reset-status", {"project_id": "p1"},                                    "reset_status"),

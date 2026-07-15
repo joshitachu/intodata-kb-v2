@@ -1,4 +1,4 @@
-"""Project-scoped Pack selection and custom data-only Pack API."""
+"""Reusable documentation Packs and project-scoped capability policy Packs."""
 
 from __future__ import annotations
 
@@ -16,8 +16,13 @@ from src.harness.packs.project_service import (
     ProjectPackService,
 )
 from src.harness.registry import base_capability_registry
-from src.harness.providers.mcp_docs import McpDocumentationPack, McpDocumentationProvider, McpDocumentationProviderError
-from src.rbac.permissions import can_manage_project, get_user_project_ids
+from src.harness.providers.mcp_docs import (
+    McpDocumentationPack,
+    McpDocumentationPackDocumentDraft,
+    McpDocumentationProvider,
+    McpDocumentationProviderError,
+)
+from src.rbac.permissions import MANAGE_PROJECTS, can_manage_project, get_user_project_ids, has_permission
 
 router = APIRouter(prefix="/harness/packs", tags=["harness-packs"])
 
@@ -47,8 +52,24 @@ class DocumentationPackSelectionResponse(BaseModel):
     packs: list[DocumentationPackView]
 
 
+class DocumentationPackCatalogResponse(BaseModel):
+    packs: list[DocumentationPackView]
+
+
 class DocumentationPackSelectionRequest(BaseModel):
     plugin_pack_id: int | None = Field(default=None, ge=1)
+
+
+class DocumentationPackDocumentDraft(BaseModel):
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    sections: list[str] = Field(default_factory=list, max_length=30)
+    instructions: str | None = Field(default=None, max_length=8_000)
+
+
+class CreateDocumentationPackRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9 _-]*$")
+    description: str | None = Field(default=None, max_length=1_000)
+    documents: list[DocumentationPackDocumentDraft] = Field(min_length=1, max_length=30)
 
 
 async def _require_project_access(user: CurrentUser, db: DBSession, project_id: str) -> None:
@@ -73,6 +94,28 @@ def _documentation_pack_view(pack: McpDocumentationPack) -> DocumentationPackVie
         name=pack.name,
         version=pack.version,
         description=pack.description,
+    )
+
+
+@router.get(
+    "/documentation-packs",
+    response_model=DocumentationPackCatalogResponse,
+)
+async def list_documentation_packs(
+    request: Request,
+    user: CurrentUser,
+) -> DocumentationPackCatalogResponse:
+    """Return reusable IntoDoc documentation Packs visible in this workspace."""
+    del user
+    provider = McpDocumentationProvider()
+    try:
+        packs = await provider.list_documentation_packs(
+            access_token=request.cookies.get("access_token")
+        )
+    except McpDocumentationProviderError as exc:
+        raise HTTPException(status_code=502, detail=exc.safe_message) from exc
+    return DocumentationPackCatalogResponse(
+        packs=[_documentation_pack_view(pack) for pack in packs]
     )
 
 
@@ -138,6 +181,39 @@ async def set_documentation_pack_selection(
         selected_plugin_pack_id=selected_plugin_pack_id,
         packs=[_documentation_pack_view(pack) for pack in packs],
     )
+
+
+@router.post(
+    "/documentation-packs",
+    response_model=DocumentationPackView,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_documentation_pack(
+    payload: CreateDocumentationPackRequest,
+    request: Request,
+    user: CurrentUser,
+) -> DocumentationPackView:
+    """Create and register a reusable IntoDoc documentation Pack."""
+    if not has_permission(user, MANAGE_PROJECTS):
+        raise HTTPException(status_code=403, detail="Documentation Pack management permission required")
+    provider = McpDocumentationProvider()
+    try:
+        created = await provider.create_documentation_pack(
+            name=payload.name,
+            description=payload.description,
+            documents=[
+                McpDocumentationPackDocumentDraft(
+                    name=document.name,
+                    sections=document.sections,
+                    instructions=document.instructions,
+                )
+                for document in payload.documents
+            ],
+            access_token=request.cookies.get("access_token"),
+        )
+    except McpDocumentationProviderError as exc:
+        raise HTTPException(status_code=502, detail=exc.safe_message) from exc
+    return _documentation_pack_view(created)
 
 
 @router.get("/projects/{project_id}/recommendations", response_model=PackRecommendationsResponse)

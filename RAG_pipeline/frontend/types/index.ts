@@ -651,12 +651,31 @@ export const DocumentationPackSchema = z.object({
 });
 export type DocumentationPack = z.infer<typeof DocumentationPackSchema>;
 
+export const DocumentationPackCatalogSchema = z.object({
+  packs: z.array(DocumentationPackSchema),
+});
+export type DocumentationPackCatalog = z.infer<typeof DocumentationPackCatalogSchema>;
+
 export const DocumentationPackSelectionSchema = z.object({
   project_id: z.string().trim().min(1),
   selected_plugin_pack_id: z.number().int().positive().nullable(),
   packs: z.array(DocumentationPackSchema),
 });
 export type DocumentationPackSelection = z.infer<typeof DocumentationPackSelectionSchema>;
+
+export const DocumentationPackDocumentDraftSchema = z.object({
+  name: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/).max(80),
+  sections: z.array(z.string().trim().min(1).max(200)).max(30),
+  instructions: z.string().trim().max(8000).nullable().optional(),
+});
+export type DocumentationPackDocumentDraft = z.infer<typeof DocumentationPackDocumentDraftSchema>;
+
+export const CreateDocumentationPackRequestSchema = z.object({
+  name: z.string().trim().min(3).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9 _-]*$/),
+  description: z.string().trim().max(1000).nullable().optional(),
+  documents: z.array(DocumentationPackDocumentDraftSchema).min(1).max(30),
+});
+export type CreateDocumentationPackRequest = z.infer<typeof CreateDocumentationPackRequestSchema>;
 
 // --- Runtime logs API (EP-005 slice 2 contract; schemas in ./runtime) ---
 export {

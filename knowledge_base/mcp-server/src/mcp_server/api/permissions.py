@@ -85,3 +85,32 @@ async def require_project_management(request: Request, project_id: str) -> None:
             return
 
     raise HTTPException(status_code=403, detail="Project management permission required")
+
+
+async def require_pack_management(request: Request) -> None:
+    """Require workspace-level permission to create reusable documentation Packs."""
+    payload = getattr(request.state, "auth_payload", None)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user_id = int(payload.get("sub", 0))
+    async with async_session_factory() as db:
+        user_result = await db.execute(
+            text("SELECT is_superadmin FROM users WHERE id = :uid"),
+            {"uid": user_id},
+        )
+        user_row = user_result.fetchone()
+        if user_row and user_row[0]:
+            return
+
+        permission_result = await db.execute(text("""
+            SELECT 1 FROM permissions p
+            JOIN role_permissions rp ON rp.permission_id = p.id
+            JOIN user_roles ur ON ur.role_id = rp.role_id
+            WHERE ur.user_id = :uid AND p.codename = 'manage_projects'
+            LIMIT 1
+        """), {"uid": user_id})
+        if permission_result.fetchone():
+            return
+
+    raise HTTPException(status_code=403, detail="Documentation Pack management permission required")

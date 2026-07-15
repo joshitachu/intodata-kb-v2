@@ -282,18 +282,72 @@ PROJECT_ONBOARDING_CAPABILITY = CapabilityDefinition(
         "properties": {
             "project_id": {"type": "string"},
             "repo_url": {"type": ["string", "null"]},
+            "source_type": {
+                "type": ["string", "null"],
+                "enum": ["git", "zip", None],
+            },
             "platform": {
                 "type": ["string", "null"],
                 "enum": list(SUPPORTED_PROJECT_PLATFORMS),
                 "description": "Scanner platform of the codebase, not the code host.",
             },
             "installation_id": {"type": ["integer", "null"]},
+            "documentation_pack": {"type": ["string", "null"]},
+            "plugin_pack_id": {"type": ["integer", "null"], "minimum": 1},
         },
     },
     output_type="onboarding_workflow_receipt",
     risk_tier=HarnessRiskTier.TRIGGERS_WORKFLOW,
     required_permissions=["manage_projects"],
     packs=["onboarding"],
+)
+
+
+DOCUMENTATION_PACK_CREATE_CAPABILITY = CapabilityDefinition(
+    id="mcp.docs.create_documentation_pack",
+    label="Create reusable documentation Pack",
+    provider_type=HarnessProviderType.DOCUMENTATION,
+    provider_id="mcp.docs",
+    action="create_documentation_pack",
+    input_schema={
+        "type": "object",
+        "required": ["name", "documents"],
+        "properties": {
+            "name": {"type": "string"},
+            "description": {"type": ["string", "null"]},
+            "documents": {
+                "type": "array",
+                "description": (
+                    "Documents in the Pack. Each item has name, optional sections, "
+                    "and optional writing instructions."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "sections": {"type": "array", "items": {"type": "string"}},
+                        "instructions": {"type": ["string", "null"]},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    },
+    output_type="documentation_pack_receipt",
+    risk_tier=HarnessRiskTier.WRITES_CONTENT,
+    required_permissions=["manage_projects"],
+    packs=["documentation"],
+    use_when=[
+        "The user explicitly asks to create and save a reusable documentation Pack.",
+    ],
+    do_not_use_when=[
+        "The user only wants to select an existing Pack for a project.",
+        "The user wants to generate documentation from an existing Pack.",
+    ],
+    task_types=["documentation_pack_creation"],
+    output_contracts=["documentation_pack_receipt"],
 )
 
 SOURCE_OPTIONS_CAPABILITY = CapabilityDefinition(
@@ -426,6 +480,10 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
             "model": {"type": ["string", "null"]},
             "write_model": {"type": ["string", "null"]},
             "plugin_pack_id": {"type": ["integer", "null"], "minimum": 1},
+            "documentation_pack": {
+                "type": ["string", "null"],
+                "description": "Human-readable reusable documentation Pack name.",
+            },
             "selected_pack_ids": {"type": "array"},
         },
     },

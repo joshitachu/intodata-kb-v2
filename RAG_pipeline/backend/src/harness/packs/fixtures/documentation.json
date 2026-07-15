@@ -23,6 +23,17 @@
   ],
   "workflows": [
     {
+      "id": "documentation.manage-packs",
+      "label": "Manage documentation Packs",
+      "description": "Create reusable documentation definitions for projects and generation runs.",
+      "capability_ids": [
+        "mcp.docs.create_documentation_pack"
+      ],
+      "entity_type_ids": ["documentation.document"],
+      "connector_requirement_ids": [],
+      "artifact_template_ids": []
+    },
+    {
       "id": "documentation.generate",
       "label": "Generate documentation",
       "description": "Generate a scoped documentation set for a project.",

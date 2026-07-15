@@ -40,6 +40,7 @@ interface ChatInputProps {
   zipUploadTarget?: ZipUploadTarget;
   onZipUploaded?: (receipt: UploadedZipReceipt) => void | Promise<void>;
   slashCommands?: SlashCommand[];
+  onSlashCommand?: (name: string, argumentsText: string) => boolean;
 }
 
 export function ChatInput({
@@ -52,6 +53,7 @@ export function ChatInput({
   zipUploadTarget,
   onZipUploaded,
   slashCommands = [],
+  onSlashCommand,
 }: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [images, setImages] = useState<string[]>([]);
@@ -95,6 +97,13 @@ export function ChatInput({
     const trimmed = message.trim();
     const hasImages = images.length > 0;
     if ((trimmed.length > 0 || hasImages) && !isLoading && !disabled) {
+      const slashMatch = !hasImages ? trimmed.match(/^\/([a-z][a-z0-9_-]*)(?:\s+(.*))?$/i) : null;
+      if (slashMatch && onSlashCommand?.(slashMatch[1].toLowerCase(), (slashMatch[2] ?? "").trim())) {
+        setMessage("");
+        setSlashDismissed(false);
+        if (textareaRef.current) textareaRef.current.style.height = "auto";
+        return;
+      }
       onSend(
         trimmed.length > 0 ? trimmed : IMAGE_ONLY_PROMPT,
         hasImages ? images : undefined,

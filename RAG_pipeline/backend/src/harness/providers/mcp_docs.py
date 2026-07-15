@@ -86,6 +86,13 @@ class McpDocumentationPack:
 
 
 @dataclass(frozen=True)
+class McpDocumentationPackDocumentDraft:
+    name: str
+    sections: list[str]
+    instructions: str | None = None
+
+
+@dataclass(frozen=True)
 class McpEvidenceDocUpdateResult:
     project_id: str
     filename: str
@@ -512,6 +519,81 @@ class McpDocumentationProvider:
         if project is None:
             raise McpDocumentationProviderError("Documentation project was not found.")
         return project.plugin_pack_id
+
+    async def create_documentation_pack(
+        self,
+        *,
+        name: str,
+        description: str | None,
+        documents: list[McpDocumentationPackDocumentDraft],
+        access_token: str | None = None,
+    ) -> McpDocumentationPack:
+        """Create a reusable local IntoDoc documentation Pack through MCP."""
+        if not self._base_url:
+            raise McpDocumentationProviderError("Documentation provider is not configured.")
+        payload = {
+            "name": name,
+            "description": description,
+            "documents": [
+                {
+                    "name": document.name,
+                    "sections": document.sections,
+                    "instructions": document.instructions,
+                }
+                for document in documents
+            ],
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.post(
+                    "/documentation-packs",
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        data = _json_object(response)
+        pack_id = _optional_positive_int(data.get("id"))
+        raw_name = data.get("manifest_name") or data.get("name")
+        version = data.get("version")
+        if (
+            pack_id is None
+            or not isinstance(raw_name, str)
+            or not raw_name.strip()
+            or not isinstance(version, str)
+            or not version.strip()
+        ):
+            raise McpDocumentationProviderError(
+                "Documentation provider returned an invalid response."
+            )
+        raw_description = data.get("description")
+        return McpDocumentationPack(
+            id=pack_id,
+            name=_safe_text(raw_name),
+            version=_safe_text(version),
+            description=(
+                _safe_text(raw_description)
+                if isinstance(raw_description, str) and raw_description.strip()
+                else None
+            ),
+        )
 
     async def set_project_documentation_pack(
         self,

@@ -74,6 +74,7 @@ class TurnTaskType(str, Enum):
     RUNTIME_ANSWER = "runtime_answer"
     OPERATIONAL_INVESTIGATION = "operational_investigation"
     DOCUMENT_GENERATION = "document_generation"
+    DOCUMENTATION_PACK_MANAGEMENT = "documentation_pack_management"
     DOCUMENT_UPDATE = "document_update"
     PROJECT_ONBOARDING = "project_onboarding"
     CONNECTOR_INVENTORY = "connector_inventory"
