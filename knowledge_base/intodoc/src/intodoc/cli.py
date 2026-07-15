@@ -42,6 +42,10 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 )
 @click.option("--redaction-config", type=click.Path(exists=True, path_type=Path), default=None, help="Path to .intodoc-redact.yaml")
 @click.option("--no-redaction-audit", is_flag=True, default=False, help="Disable redaction_report.json output")
+@click.option(
+    "--allow-redaction-failures", is_flag=True, default=False,
+    help="Escape hatch: warn instead of aborting when post-scan redaction verification fails",
+)
 @click.pass_context
 def scan(
     ctx: click.Context,
@@ -51,6 +55,7 @@ def scan(
     redaction_level: str,
     redaction_config: Path | None,
     no_redaction_audit: bool,
+    allow_redaction_failures: bool,
 ) -> None:
     """Scan a repository and produce structured scan results."""
     # Auto-discover .intodoc-redact.yaml in repo root if not explicitly set
@@ -67,6 +72,7 @@ def scan(
         redaction_level=RedactionLevel(redaction_level),
         redaction_config=redaction_config,
         redaction_audit=not no_redaction_audit,
+        allow_redaction_failures=allow_redaction_failures,
     )
     scan_result, cred_filter = _do_scan(config)
 
@@ -75,13 +81,35 @@ def scan(
 
     filter_scan_result(scan_result, cred_filter)
 
+    # Layer 3: verification gate -- no scan output is written unless the
+    # filtered result independently verifies clean (or the operator
+    # explicitly opted into --allow-redaction-failures).
+    from intodoc.scanner.redaction_verifier import verify_scan_result
+
+    verification = verify_scan_result(scan_result, cred_filter)
+
+    # Write the audit report first so a failed gate is inspectable
+    if config.redaction_audit:
+        _save_redaction_report(cred_filter, config.output_dir, verification)
+        console.print(f"  Redaction report: {config.output_dir / 'redaction_report.json'}")
+
+    if not verification["passed"]:
+        n_findings = len(verification["findings"])
+        n_residual = sum(verification["residual_pattern_counts"].values())
+        summary = (
+            f"Redaction verification FAILED: {n_findings} unredacted sensitive "
+            f"value(s), {n_residual} residual pattern match(es). "
+            f"See redaction_report.json 'verification' section."
+        )
+        if config.allow_redaction_failures:
+            console.print(f"[red]WARNING: {summary} Proceeding due to --allow-redaction-failures.[/red]")
+        else:
+            console.print(f"[red]{summary}[/red]")
+            console.print("[red]Scan output NOT written. Fix redaction rules or re-run with --allow-redaction-failures.[/red]")
+            raise click.exceptions.Exit(2)
+
     _save_scan_result(scan_result, config.output_dir)
     console.print(f"[green]Scan saved to {config.output_dir / 'scan_result.json'}[/green]")
-
-    # Write audit report
-    if config.redaction_audit:
-        _save_redaction_report(cred_filter, config.output_dir)
-        console.print(f"  Redaction report: {config.output_dir / 'redaction_report.json'}")
 
 
 # ── Pipeline Steps ───────────────────────────────────────────────────
@@ -111,12 +139,12 @@ def _do_scan(config: IntodocConfig):
 # ── Persistence ──────────────────────────────────────────────────────
 
 
-def _save_redaction_report(cred_filter, output_dir: Path) -> None:
-    """Write the redaction audit report."""
-    from intodoc.scanner.credential_filter import CredentialFilter
-
+def _save_redaction_report(cred_filter, output_dir: Path, verification: dict | None = None) -> None:
+    """Write the redaction audit report, including the verification gate result."""
     output_dir.mkdir(parents=True, exist_ok=True)
     report = cred_filter.get_audit_report()
+    if verification is not None:
+        report["verification"] = verification
     path = output_dir / "redaction_report.json"
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     console.print(f"  Total redactions: [yellow]{report['total_redactions']}[/yellow]")

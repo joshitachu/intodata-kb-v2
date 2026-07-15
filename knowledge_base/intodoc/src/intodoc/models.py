@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -48,13 +49,28 @@ class Component(BaseModel):
     unique_name: str
     component_type: str  # e.g. "tMSSqlInput", "tMap", "tBigQueryOutput"
     params: list[ComponentParam] = Field(default_factory=list)
+    # Custom code carried by this component (tJava/tJavaRow/tJavaFlex CODE
+    # params, joined). Mirrors params[].CODE so downstream consumers doing
+    # component.get("code") find it; params stay unchanged for back-compat.
+    code: str | None = None
     incoming_connections: list[str] = Field(default_factory=list)
     outgoing_connections: list[str] = Field(default_factory=list)
     metadata_connection_ref: str = ""
 
+    # Param names that carry executable custom code, in execution order.
+    CODE_PARAM_NAMES: ClassVar[tuple[str, ...]] = (
+        "CODE_START", "CODE", "CODE_MAIN", "CODE_END", "CODE_ONCE",
+    )
+
     def compact_params(self) -> dict[str, str]:
         """Collapse [{name, value, field_type}] → {name: value} for LLM consumption."""
         return {p.name: p.value for p in self.params}
+
+    def derive_code_from_params(self) -> str | None:
+        """Join code-bearing param values (CODE, CODE_MAIN, ...) into one block."""
+        by_name = {p.name: p.value for p in self.params if p.value}
+        parts = [by_name[n] for n in self.CODE_PARAM_NAMES if n in by_name]
+        return "\n".join(parts) if parts else None
 
 
 class TMapEntry(BaseModel):

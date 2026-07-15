@@ -42,6 +42,17 @@ from mcp_server.providers.custom.debug_artifacts import (
 )
 from mcp_server.providers.custom.transient_artifacts import transient_dir, transient_write
 from mcp_server.providers.custom.evidence_bundles import CATEGORY_PATTERNS, EvidenceBundleBuilder
+from mcp_server.providers.custom.fabrication_validators import (
+    availability_claim_errors,
+    component_reference_errors,
+    extract_component_refs,
+    job_scoped_component_reference_errors,
+)
+from mcp_server.providers.custom.target_evidence import (
+    TargetEvidence,
+    TargetEvidenceBuilder,
+    filter_fact_table,
+)
 from mcp_server.providers.custom.talend_intelligence import write_talend_intelligence
 from mcp_server.providers.custom.agent_runtime import (
     AgentTaskContract,
@@ -100,7 +111,16 @@ from mcp_server.providers.custom.validators import (
 )
 from mcp_server.services.model_pricing import calculate_total_cost
 from mcp_server.services.generation_run_state import record_manifest_chunks
-from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
+from mcp_server.providers.custom.constants import (
+    CROSS_JOB_FINDINGS_SECTION,
+    GROUP_SUMMARY_SECTION,
+    LEGACY_CROSS_CHUNK_SECTION,
+)
+from mcp_server.providers.custom.evidence_tasks import (
+    EvidenceTask,
+    job_section_texts,
+    plan_evidence_tasks,
+)
 
 
 LARGE_CONTEXT_ARTIFACTS = {
@@ -109,7 +129,12 @@ LARGE_CONTEXT_ARTIFACTS = {
 }
 
 ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
-PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (GROUP_SUMMARY_SECTION, "CROSS_CHUNK_FINDINGS", ADDITIONAL_FINDINGS_SECTION,)
+PHASE2_SECTION_NAMES = tuple(ANALYSIS_SECTION_NAMES) + (
+    GROUP_SUMMARY_SECTION,
+    CROSS_JOB_FINDINGS_SECTION,
+    LEGACY_CROSS_CHUNK_SECTION,
+    ADDITIONAL_FINDINGS_SECTION,
+)
 BASELINE_BUNDLE_SECTIONS = {GROUP_SUMMARY_SECTION}
 
 # Maps evidence profile category strings -> Phase 2 section names.
@@ -554,6 +579,10 @@ class CustomHarnessProvider(DocGenerationProvider):
         self._plugin_manifest = None
         self._plugin_doc_definitions: dict[str, object] = {}
         self._per_job_doc_units: dict[str, str] = {}
+        # Per-doc deterministic evidence bundles (built lazily per run) and the
+        # builder instance caching the loaded scan for the current staging dir.
+        self._target_evidence: dict[str, TargetEvidence] = {}
+        self._target_evidence_builder: TargetEvidenceBuilder | None = None
         self._pack_evidence_paths: dict[str, dict[str, str]] = {}
         self._evidence_registry_paths: dict[str, str] = {}
         self._phase_model_overrides: dict[str, str] = {}
@@ -1516,34 +1545,43 @@ Fallback plan example:
                 timeout_s=300.0,
                 provider_options=self._provider_options(self.model_provider),
             )
-            chunks = self._phase2_group_chunks(group_file, group_units, analysis_dir)
-            record_manifest_chunks(ctx.staging_dir, phase="phase2", group=group, chunks=chunks)
+            tasks = plan_evidence_tasks(
+                group, group_file, group_units, analysis_dir, config.phase2_task_evidence_bytes
+            )
+            if not tasks:
+                raise RuntimeError(f"Phase 2 evidence task planning produced no tasks for {group}")
+            record_manifest_chunks(ctx.staging_dir, phase="phase2", group=group, chunks=[t.path for t in tasks])
             investigation_context = self._investigation_context(ctx, group)
-            chunk_outputs: list[str] = []
-            for idx, chunk_file in enumerate(chunks, start=1):
-                if not chunk_file.exists():
-                    raise RuntimeError(f"Phase 2 chunk file missing: {chunk_file.relative_to(ctx.staging_dir).as_posix()}")
-                prompt = group_analysis_prompt(state.facts_manifest, group, pack=self.pack, plugin_pack_dir=self.plugin_pack_dir, required_docs=self._required_docs)
-                if len(chunks) > 1:
-                    prompt += (
-                        f"\n\nThis is chunk {idx} of {len(chunks)} for group {group}. "
-                        "Analyze only the supplied chunk, but preserve exact unit names and platform-specific evidence."
-                    )
-                target = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
-                allowed_units = self._units_for_chunk(chunk_file, group_units)
+            task_outputs: list[str] = []
+            multi_task = len(tasks) > 1
+            for task in tasks:
+                if not task.path.exists():
+                    raise RuntimeError(f"Phase 2 task evidence file missing: {task.path.relative_to(ctx.staging_dir).as_posix()}")
+                prompt = group_analysis_prompt(
+                    state.facts_manifest,
+                    group,
+                    pack=self.pack,
+                    plugin_pack_dir=self.plugin_pack_dir,
+                    required_docs=self._required_docs,
+                    task_units=task.units if multi_task else None,
+                    missing_evidence_units=task.missing_units if multi_task else None,
+                    multi_task=multi_task,
+                )
+                target = task.task_id
+                allowed_units = task.all_units if multi_task else group_units
                 evidence_slice = EvidenceRegistryBuilder(ctx.staging_dir).build_phase2_slice(
-                    chunk_file.stem, allowed_units
+                    task.path.stem, allowed_units
                 )
                 evidence_brief = ctx.staging_dir / "_evidence_registry" / "evidence_brief.md"
-                # Replace the broad evidence_brief in shared_context with the per-chunk slice so
+                # Replace the broad evidence_brief in shared_context with the per-task slice so
                 # the model gets targeted evidence (~20-50 KB) instead of the full brief (~50 KB).
                 base_context = [f for f in shared_context if f != evidence_brief]
-                chunk_evidence = (
+                task_evidence = (
                     [evidence_slice]
                     if evidence_slice is not None
                     else ([evidence_brief] if evidence_brief.exists() else [])
                 )
-                context_files = [*base_context, *chunk_evidence, *investigation_context, chunk_file]
+                context_files = [*base_context, *task_evidence, *investigation_context, task.path]
                 contract = AgentTaskContract(
                     phase="phase2_group",
                     target_id=target,
@@ -1558,73 +1596,82 @@ Fallback plan example:
                 )
                 cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
                 if cached is not None:
-                    chunk_outputs.append(cached.strip())
+                    task_outputs.append(cached.strip())
                     await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 2 task {target} (accepted)", "info")
                     continue
 
-                async def _dispatch(task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
+                async def _dispatch(contract_task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
                     return await self._complete_core_generation(
                         ctx,
                         state,
                         provider=self.model_provider,
                         phase=phase_name,
-                        target=task.target_id,
+                        target=contract_task.target_id,
                         prompt=prompt,
                         context_files=context_files,
                         opts=opts,
                         log_cb=log_cb,
-                        task_contract=task,
+                        task_contract=contract_task,
                         scoped_tools=tools,
                     )
 
+                # Component references the agent is allowed to cite: whatever its
+                # own evidence (task file + investigation context) actually names.
+                # Anything else is fabrication (verified failure mode: invented
+                # component numbering for jobs outside the agent's evidence).
+                allowed_refs = self._allowed_component_refs([task.path, *investigation_context])
+                # Bin-packed tasks (>1 job in one call) get job-scoped checking on
+                # top of the task-wide fallback: a component real for one job in
+                # the batch must not be accepted when attributed to a sibling job
+                # in the same batch (verified failure mode, run 51: tMSSqlOutput_1
+                # real for AssetCheck_GetLocation, misattributed to sibling
+                # AssetCheck_GetWorkOrder, which actually uses tDBOutput_1).
+                job_refs: dict[str, frozenset[str]] = {}
+                if len(task.units) > 1:
+                    for unit, unit_text in job_section_texts(task.path, task.units).items():
+                        job_refs[unit] = frozenset(extract_component_refs(unit_text))
                 task_result = await runtime.run(
                     contract,
                     _dispatch,
-                    lambda text, units=contract.allowed_units: self._validate_agent_markdown(text, units),
+                    lambda text, units=contract.allowed_units, refs=allowed_refs, jrefs=job_refs: self._merge_component_ref_errors(
+                        self._validate_agent_markdown(text, units),
+                        text,
+                        refs,
+                        "this task's evidence file",
+                        job_refs=jrefs,
+                    ),
                 )
                 if not task_result.result.success:
                     raise RuntimeError(f"Phase 2 failed for {group}: {task_result.result.raw_error}")
                 if not task_result.accepted:
                     await log_cb(ctx.project_id, f"[custom] Phase 2 task {target} has validation gaps; using repair ladder", "warning")
-                chunk_outputs.append(task_result.result.text.strip())
+                task_outputs.append(task_result.result.text.strip())
 
-            if len(chunk_outputs) > 1:
-                if config.phase2_merge_mode.lower() == "llm":
-                    model_analysis = await self._phase2_merge_agent(
-                        ctx,
-                        state,
-                        runtime,
-                        group,
-                        group_units,
-                        chunk_outputs,
-                        shared_context,
-                        investigation_context,
-                        opts,
-                        log_cb,
-                    )
-                else:
-                    _guide_file = ctx.staging_dir / "_preprocess" / ctx.analysis_guide_file if ctx.analysis_guide_file else None
-                    _extra = _guide_section_names(_guide_file) if _guide_file else frozenset()
-                    model_analysis = self._deterministic_phase2_merge(group, chunk_outputs, _extra)
-                    await log_cb(
-                        ctx.project_id,
-                        f"[custom] Phase 2 deterministic merge complete: {group} ({len(chunk_outputs)} chunks)",
-                        "info",
-                    )
-                model_analysis = await self._phase2_cross_chunk_synthesis(
+            if multi_task:
+                _guide_file = ctx.staging_dir / "_preprocess" / ctx.analysis_guide_file if ctx.analysis_guide_file else None
+                _extra = _guide_section_names(_guide_file) if _guide_file else frozenset()
+                assembled, summary_fallback = self._assemble_phase2_task_sections(
+                    group, tasks, task_outputs, _extra
+                )
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Phase 2 deterministic assembly complete: {group} ({len(task_outputs)} tasks)",
+                    "info",
+                )
+                model_analysis = await self._phase2_group_synthesis(
                     ctx,
                     state,
                     group,
                     group_units,
-                    chunk_outputs,
-                    model_analysis,
+                    assembled,
+                    summary_fallback,
                     shared_context,
                     investigation_context,
                     opts,
                     log_cb,
                 )
             else:
-                model_analysis = "\n\n---\n\n".join(chunk_outputs)
+                model_analysis = "\n\n---\n\n".join(task_outputs)
             model_analysis = await self._complete_phase2_sections(
                 ctx,
                 state,
@@ -1649,24 +1696,61 @@ Fallback plan example:
             await log_cb(ctx.project_id, f"[custom] Phase 2 complete: {group}", "info")
 
     @classmethod
-    def _deterministic_phase2_merge(
-        cls, group: str, chunk_outputs: list[str], extra_section_names: frozenset[str] = frozenset()
-    ) -> str:
-        parsed_chunks = [cls._parse_phase2_sections(text, extra_section_names) for text in chunk_outputs]
-        parts: list[str] = [
-            f"Deterministic merge of {len(chunk_outputs)} Phase 2 chunk analyses for group `{group}`.",
-            "Chunk text is preserved verbatim under provenance headings.",
+    def _assemble_phase2_task_sections(
+        cls,
+        group: str,
+        tasks: list[EvidenceTask],
+        task_outputs: list[str],
+        extra_section_names: frozenset[str] = frozenset(),
+    ) -> tuple[str, str]:
+        """Deterministically assemble per-job task outputs into one group analysis body.
+
+        Pure selection: every body is verbatim LLM output, regrouped so each
+        registered section appears under exactly one ``### SECTION`` heading with
+        per-task provenance subheadings naming the units that task analyzed.
+
+        GROUP_SUMMARY bodies are excluded from the assembly and returned as a
+        pre-formatted fallback block: the group synthesis task writes the
+        authoritative group-level GROUP_SUMMARY (and CROSS_JOB_FINDINGS); the
+        fallback is used only if that synthesis call fails.
+        """
+        parsed_tasks = [cls._parse_phase2_sections(text, extra_section_names) for text in task_outputs]
+        provenance = [
+            f"task {task.task_id}: {', '.join(task.all_units) or 'unscoped'}"
+            for task in tasks
         ]
-        for section in PHASE2_SECTION_NAMES:
+        parts: list[str] = [
+            f"Deterministic assembly of {len(task_outputs)} per-job Phase 2 task analyses for group `{group}`.",
+            "Task text is preserved verbatim under provenance subheadings naming the analyzed units.",
+        ]
+        summary_sections = {GROUP_SUMMARY_SECTION, CROSS_JOB_FINDINGS_SECTION, LEGACY_CROSS_CHUNK_SECTION}
+        ordered_sections = PHASE2_SECTION_NAMES + tuple(
+            sorted(extra_section_names - set(PHASE2_SECTION_NAMES))
+        )
+        for section in ordered_sections:
+            if section in summary_sections:
+                continue
             section_parts: list[str] = []
-            for idx, sections in enumerate(parsed_chunks, start=1):
+            for label, sections in zip(provenance, parsed_tasks):
                 body = sections.get(section, "").strip()
                 if not body:
                     continue
-                section_parts.append(f"#### {group}_chunk_{idx}\n\n{body}")
+                section_parts.append(f"#### {label}\n\n{body}")
             if section_parts:
                 parts.append(f"### {section}\n\n" + "\n\n".join(section_parts))
-        return "\n\n".join(parts).rstrip() + "\n"
+        assembled = "\n\n".join(parts).rstrip() + "\n"
+
+        summary_parts: list[str] = []
+        for label, sections in zip(provenance, parsed_tasks):
+            body = sections.get(GROUP_SUMMARY_SECTION, "").strip()
+            if body:
+                summary_parts.append(f"#### {label}\n\n{body}")
+        summary_fallback = (
+            f"### {GROUP_SUMMARY_SECTION}\n\n" + "\n\n".join(summary_parts)
+            if summary_parts
+            else ""
+        )
+        return assembled, summary_fallback
 
     @staticmethod
     def _parse_phase2_sections(
@@ -1675,105 +1759,50 @@ Fallback plan example:
         from mcp_server.providers.custom.analysis_parser import parse_phase2_sections
         return parse_phase2_sections(text, extra_section_names)
 
-    async def _phase2_merge_agent(
-        self,
-        ctx: DocGenContext,
-        state: HarnessRunState,
-        runtime: AgentTaskRuntime,
-        group: str,
-        group_units: list[str],
-        chunk_outputs: list[str],
-        shared_context: list[Path],
-        investigation_context: list[Path],
-        opts: ModelOptions,
-        log_cb: LogCallback,
-    ) -> str:
-        merge_input = transient_dir(
-            ctx.staging_dir, f"phase2_merge_{self._safe_name(group)}.md"
-        )
-        transient_write(
-            merge_input,
-            "\n\n--- CHUNK ANALYSIS ---\n\n".join(chunk_outputs),
-        )
-        prompt = (
-            f"Merge the supplied Phase 2 chunk analyses for group `{group}` into one cohesive "
-            "group analysis body. Preserve all exact canonical unit names, expressions, risks, "
-            "and scanner-limited caveats. Do not invent new conclusions. Write markdown only.\n\n"
-            "Canonical units:\n"
-            + "\n".join(f"- {name}" for name in group_units)
-        )
-        context_files = [*shared_context, *investigation_context, merge_input]
-        contract = AgentTaskContract(
-            phase="phase2_merge",
-            target_id=group,
-            allowed_units=group_units,
-            allowed_groups=[group],
-            allowed_categories=self._default_evidence_categories(),
-            starter_context_files=[p.relative_to(ctx.staging_dir).as_posix() for p in context_files if p.exists()],
-            tool_budget=default_tool_budget(),
-            input_budget=default_input_budget(),
-            expected_artifact="merged analysis markdown",
-            max_attempts=config.agent_max_task_attempts,
-        )
-        cached = runtime.accepted_output(contract) if ctx.resume_state is not None else None
-        if cached is not None:
-            await log_cb(ctx.project_id, f"[custom] RESUME: skipping Phase 2 merge for {group} (accepted)", "info")
-            return cached.strip()
-
-        async def _dispatch(task: AgentTaskContract, tools: ScopedEvidenceTools) -> ModelResult:
-            return await self._complete_core_generation(
-                ctx,
-                state,
-                provider=self.model_provider,
-                phase="phase2.merge",
-                target=task.target_id,
-                prompt=prompt,
-                context_files=context_files,
-                opts=opts,
-                log_cb=log_cb,
-                task_contract=task,
-                scoped_tools=tools,
-            )
-
-        task_result = await runtime.run(
-            contract,
-            _dispatch,
-            lambda text: self._validate_agent_markdown(text, group_units),
-        )
-        if not task_result.result.success:
-            raise RuntimeError(f"Phase 2 merge failed for {group}: {task_result.result.raw_error}")
-        return task_result.result.text.strip()
-
-    async def _phase2_cross_chunk_synthesis(
+    async def _phase2_group_synthesis(
         self,
         ctx: DocGenContext,
         state: HarnessRunState,
         group: str,
         group_units: list[str],
-        chunk_outputs: list[str],
-        merged_analysis: str,
+        assembled_analysis: str,
+        summary_fallback: str,
         shared_context: list[Path],
         investigation_context: list[Path],
         opts: ModelOptions,
         log_cb: LogCallback,
     ) -> str:
-        """Append a bounded synthesis section for relationships only visible across chunks."""
+        """One group-level synthesis call: writes the cross-job sections only.
+
+        Per-job facts are carried verbatim by the deterministic assembly; the
+        synthesis model reads the assembled sections and contributes ONLY
+        CROSS_JOB_FINDINGS and the group-level GROUP_SUMMARY. If the call fails
+        or omits GROUP_SUMMARY, the per-task summary fallback (verbatim LLM
+        text under a structural heading) is used instead.
+        """
 
         synthesis_input = transient_dir(
             ctx.staging_dir, f"phase2_synthesis_{self._safe_name(group)}.md"
         )
         transient_write(
             synthesis_input,
-            "# Merged Phase 2 Analysis\n\n"
-            f"{merged_analysis.strip()}\n\n"
-            + "\n\n--- CHUNK ANALYSIS ---\n\n".join(chunk_outputs),
+            "# Assembled Per-Job Phase 2 Analysis\n\n"
+            f"{assembled_analysis.strip()}\n",
         )
         prompt = (
-            f"Analyze the supplied merged and per-chunk Phase 2 evidence for group `{group}`. "
-            "Write only a concise markdown section headed exactly `### CROSS_CHUNK_FINDINGS`. "
-            "Cover shared systems, dependencies, repeated patterns, contradictions, risks, and "
-            "end-to-end flows that require comparing multiple chunks. Preserve exact canonical "
-            "unit names. Do not invent facts beyond the supplied evidence.\n\n"
+            f"The supplied file contains the assembled per-job Phase 2 analysis sections for group "
+            f"`{group}`, preserved verbatim from per-job analysis tasks. Write ONLY the two "
+            "group-level markdown sections below, in this order, headed exactly as shown. Use only "
+            "the supplied evidence. Preserve exact canonical unit names. Do not invent facts and do "
+            "not restate the per-job sections.\n\n"
+            f"`### {CROSS_JOB_FINDINGS_SECTION}`\n"
+            "Shared systems, dependencies, repeated patterns, contradictions between jobs, "
+            "cross-cutting risks, and end-to-end flows that span multiple jobs.\n\n"
+            f"`### {GROUP_SUMMARY_SECTION}`\n"
+            "A concise group-level index for Phase 3: units covered and scanner-limited units; top "
+            "flows and entrypoints; external systems and runtime/config facts; business rules and "
+            "transformations with evidence pointers; top risks, unknowns, and redacted vs missing vs "
+            "scanner-limited distinctions; deep evidence pointers to the assembled sections.\n\n"
             "Canonical units:\n"
             + "\n".join(f"- {name}" for name in group_units)
         )
@@ -1790,20 +1819,27 @@ Fallback plan example:
             state,
             provider=self.model_provider,
             phase="phase2.synthesis",
-            target=f"{group}_cross_chunk",
+            target=f"{group}_synthesis",
             prompt=prompt,
             context_files=context_files,
             opts=synthesis_opts,
             log_cb=log_cb,
         )
         if not result.success:
-            await log_cb(ctx.project_id, f"[custom] Phase 2 cross-chunk synthesis skipped for {group}: {result.raw_error}", "warning")
-            return merged_analysis
+            await log_cb(
+                ctx.project_id,
+                f"[custom] Phase 2 group synthesis failed for {group}; "
+                f"using per-task summaries: {result.raw_error}",
+                "warning",
+            )
+            return f"{assembled_analysis.rstrip()}\n\n{summary_fallback}\n" if summary_fallback else assembled_analysis
         synthesis = result.text.strip()
-        if "CROSS_CHUNK_FINDINGS" not in synthesis:
-            synthesis = f"### CROSS_CHUNK_FINDINGS\n\n{synthesis}"
-        await log_cb(ctx.project_id, f"[custom] Phase 2 cross-chunk synthesis complete: {group}", "info")
-        return f"{merged_analysis.rstrip()}\n\n{synthesis}\n"
+        if CROSS_JOB_FINDINGS_SECTION not in synthesis:
+            synthesis = f"### {CROSS_JOB_FINDINGS_SECTION}\n\n{synthesis}"
+        if GROUP_SUMMARY_SECTION not in synthesis and summary_fallback:
+            synthesis = f"{synthesis}\n\n{summary_fallback}"
+        await log_cb(ctx.project_id, f"[custom] Phase 2 group synthesis complete: {group}", "info")
+        return f"{assembled_analysis.rstrip()}\n\n{synthesis}\n"
 
     async def _complete_phase2_sections(
         self,
@@ -2626,7 +2662,7 @@ Fallback plan example:
                 task_result = await runtime.run(
                     contract,
                     _dispatch,
-                    lambda text: self._validate_agent_markdown(text, [], min_bytes=200),
+                    lambda text, doc=doc_name: self._validate_phase3_doc(text, doc),
                 )
                 result = task_result.result
             if not result.success:
@@ -3941,27 +3977,6 @@ Allowed docs:
         )
 
     @staticmethod
-    def _units_for_chunk(chunk_file: Path, group_units: list[str]) -> list[str]:
-        try:
-            text = chunk_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return group_units
-        # Word-boundary match reduces false positives from simple substring matching.
-        # e.g. unit "Order" would wrongly match "OrderService", "OrderHeader", or any
-        # import statement containing the word; \b prevents those false assignments.
-        # Units whose names contain non-word chars (e.g. "Global.asax") fall back to
-        # substring match because \b doesn't apply cleanly across punctuation.
-        visible = []
-        for name in group_units:
-            if re.search(r"\w", name):
-                if re.search(r"\b" + re.escape(name) + r"\b", text):
-                    visible.append(name)
-            else:
-                if name in text:
-                    visible.append(name)
-        return visible or group_units
-
-    @staticmethod
     def _investigation_context(ctx: DocGenContext, group: str) -> list[Path]:
         investigation_dir = ctx.staging_dir / "_investigation"
         safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in group)
@@ -3991,6 +4006,67 @@ Allowed docs:
             "security",
             "operations",
         ]
+
+    def _validate_phase3_doc(self, text: str, doc_name: str) -> dict:
+        """Markdown sanity plus fabrication checks against the target evidence bundle.
+
+        Runs pre-acceptance so failures land in ``validation_gaps`` and drive
+        the repair attempt; docs without a unit-scoped bundle keep the plain
+        markdown validation.
+        """
+        report = self._validate_agent_markdown(text, [], min_bytes=200)
+        evidence = self._target_evidence.get(doc_name)
+        if evidence is None:
+            return report
+        errors = list(report.get("errors") or [])
+        errors.extend(
+            component_reference_errors(
+                text, evidence.component_refs, source_label="the target evidence bundle"
+            )
+        )
+        errors.extend(availability_claim_errors(text, evidence.categories))
+        return {**report, "ok": not errors, "errors": errors}
+
+    @staticmethod
+    def _merge_component_ref_errors(
+        report: dict,
+        text: str,
+        allowed_refs: frozenset[str],
+        source_label: str,
+        job_refs: dict[str, frozenset[str]] | None = None,
+    ) -> dict:
+        """Append component-fabrication errors to an existing validation report.
+
+        When ``job_refs`` is non-empty (a bin-packed task with more than one
+        job), references are checked per job-attributed span against that
+        job's own evidence, falling back to ``allowed_refs`` (the combined
+        task evidence) only for content not attributable to a single job.
+        Checking the whole output against the combined evidence alone would
+        let a component real for one job in the batch pass when misattributed
+        to a sibling job in the same batch -- the verified failure this
+        closes (see ``job_scoped_component_reference_errors``).
+        """
+        if job_refs:
+            ref_errors = job_scoped_component_reference_errors(
+                text, job_refs, allowed_refs, source_label=source_label
+            )
+        else:
+            ref_errors = component_reference_errors(text, allowed_refs, source_label=source_label)
+        if not ref_errors:
+            return report
+        errors = list(report.get("errors") or []) + ref_errors
+        return {**report, "ok": False, "errors": errors}
+
+    @staticmethod
+    def _allowed_component_refs(files: list[Path]) -> frozenset[str]:
+        """Union of component references present in the given evidence files."""
+        refs: set[str] = set()
+        for path in files:
+            try:
+                refs |= extract_component_refs(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        return frozenset(refs)
 
     @staticmethod
     def _validate_agent_markdown(text: str, required_units: list[str], min_bytes: int = 500) -> dict:
@@ -4433,37 +4509,30 @@ Allowed docs:
             units = [u.name for u in state.facts_manifest.units if u.group == group]
         return units
 
-    @staticmethod
-    def _phase2_group_chunks(group_file: Path, group_units: list[str], analysis_dir: Path) -> list[Path]:
-        if not group_file.exists() or group_file.stat().st_size <= 70_000:
-            return [group_file]
+    def _build_target_evidence(self, ctx: DocGenContext, doc_name: str) -> TargetEvidence | None:
+        """Build (and cache) the deterministic evidence bundle for a unit-scoped doc.
 
-        text = group_file.read_text(encoding="utf-8", errors="replace")
-        chunk_dir = analysis_dir / "_chunks"
-        chunk_dir.mkdir(parents=True, exist_ok=True)
-        chunk_size = 55_000
-        overlap = 2_500
-        chunks: list[Path] = []
-        start = 0
-        idx = 1
-        while start < len(text):
-            end = min(len(text), start + chunk_size)
-            body = text[start:end]
-            units_in_chunk = [name for name in group_units if name in body]
-            header = (
-                f"# Chunk {idx} from {group_file.name}\n\n"
-                "Target canonical units visible in this chunk:\n"
-                + "\n".join(f"- {name}" for name in units_in_chunk or group_units)
-                + "\n\n---\n\n"
+        Only docs mapped to a single unit (per-job expansion) get a bundle;
+        group-level docs keep their existing context flow untouched.
+        """
+        if doc_name in self._target_evidence:
+            return self._target_evidence[doc_name]
+        unit_name = self._per_job_doc_units.get(doc_name)
+        if not unit_name:
+            return None
+        if (
+            self._target_evidence_builder is None
+            or self._target_evidence_builder.staging_dir != ctx.staging_dir
+        ):
+            self._target_evidence_builder = TargetEvidenceBuilder(
+                scan_output_dir=config.intodoc_output_dir / ctx.project_id,
+                staging_dir=ctx.staging_dir,
+                max_bytes=config.phase3_target_evidence_bytes,
             )
-            path = chunk_dir / f"{group_file.stem}_chunk_{idx}.md"
-            path.write_text(header + body, encoding="utf-8")
-            chunks.append(path)
-            if end >= len(text):
-                break
-            start = max(0, end - overlap)
-            idx += 1
-        return chunks
+        evidence = self._target_evidence_builder.build(doc_name, unit_name)
+        if evidence is not None:
+            self._target_evidence[doc_name] = evidence
+        return evidence
 
     def _phase3_context_files(self, ctx: DocGenContext, doc_name: str) -> list[Path]:
         # Executive summary reads from scorecard + completed docs, not from analysis.
@@ -4484,6 +4553,11 @@ Allowed docs:
         pack_dir = ctx.staging_dir / "_assessment" / "prompt_packs"
         bundle = self._doc_bundle_map.get(doc_name, "core")
         files = []
+        # Unit-scoped docs get the deterministic scan-fact bundle FIRST: raw
+        # verbatim evidence outranks the analysis narration that follows it.
+        target_evidence = self._build_target_evidence(ctx, doc_name)
+        if target_evidence is not None:
+            files.append(target_evidence.path)
         # Pack path: analysis was skipped — Phase 3 writes from evidence bundle +
         # investigation output (when investigation: run).
         # bounded/run analysis falls through to the enterprise context path below.
@@ -4543,7 +4617,11 @@ Allowed docs:
             files.append(evidence_file)
         source_coverage = preprocess_dir / "_source_coverage.json"
         if not source_coverage.exists():
-            files.extend(self._engineering_fact_context(ctx, doc_name))
+            files.extend(
+                self._engineering_fact_context(
+                    ctx, doc_name, unit_name=self._per_job_doc_units.get(doc_name)
+                )
+            )
         if prompt_pack.exists():
             return files
         if source_coverage.exists():
@@ -4587,8 +4665,25 @@ Allowed docs:
             return evidence_brief
         return None
 
+    # Derived fact maps that dwarf a single unit's share of them. For
+    # unit-scoped docs these are delivered as unit-filtered copies so raw
+    # evidence is not buried under project-wide tables (118 KB dependency
+    # maps drowned verbatim code in production run 50).
+    _UNIT_FILTERED_FACT_MAPS = frozenset({
+        "dependency_map.md",
+        "known_risks.md",
+        "config_runtime_map.md",
+        "sql_usage.md",
+        "change_impact_matrix.md",
+        "data_flow_map.md",
+    })
+
     @staticmethod
-    def _engineering_fact_context(ctx: DocGenContext, doc_name: str | None = None) -> list[Path]:
+    def _engineering_fact_context(
+        ctx: DocGenContext,
+        doc_name: str | None = None,
+        unit_name: str | None = None,
+    ) -> list[Path]:
         if doc_name is None:
             # Phase 2 analysis: lightweight markdown only — large JSON indexes blow the context window
             names = ["engineering_facts.md", "sql_usage.md", "dependency_map.md", "known_risks.md", "config_runtime_map.md"]
@@ -4606,7 +4701,23 @@ Allowed docs:
                 names.extend(["test_coverage_map.md", "known_risks.md"])
             else:
                 names.extend(["dependency_map.md", "known_risks.md", "config_runtime_map.md"])
-        return [ctx.staging_dir / name for name in names if (ctx.staging_dir / name).exists()]
+        paths = [ctx.staging_dir / name for name in names if (ctx.staging_dir / name).exists()]
+        if unit_name is None:
+            return paths
+        filtered_paths: list[Path] = []
+        for path in paths:
+            if path.name in CustomHarnessProvider._UNIT_FILTERED_FACT_MAPS:
+                filtered = filter_fact_table(
+                    path,
+                    unit_name,
+                    ctx.staging_dir / "_analysis",
+                    config.phase3_filtered_map_bytes,
+                )
+                if filtered is not None:
+                    filtered_paths.append(filtered)
+            else:
+                filtered_paths.append(path)
+        return filtered_paths
 
     async def _log_call_metrics(
         self,

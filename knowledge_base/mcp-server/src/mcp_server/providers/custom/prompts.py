@@ -81,10 +81,43 @@ def group_analysis_prompt(
     pack: InstructionPack | None = None,
     plugin_pack_dir: "Path | None" = None,
     required_docs: "list[str] | None" = None,
+    task_units: "list[str] | None" = None,
+    missing_evidence_units: "list[str] | None" = None,
+    multi_task: bool = False,
 ) -> str:
-    unit_names = [u.name for u in facts.units if u.group == group or group.startswith(f"{u.group}_part")]
-    if not unit_names:
-        unit_names = [u.name for u in facts.units if u.group == group]
+    """Build the Phase 2 analysis prompt.
+
+    When ``task_units`` is given the enumeration obligation is scoped to exactly
+    those units (the ones whose evidence is physically in the task's context).
+    ``missing_evidence_units`` are assigned units with no evidence anywhere in
+    the scan; the prompt instructs the model to state what is missing for them
+    instead of reconstructing. Without ``task_units`` the obligation covers the
+    whole group (single-task groups and repair paths).
+    """
+    group_unit_names = [u.name for u in facts.units if u.group == group or group.startswith(f"{u.group}_part")]
+    if not group_unit_names:
+        group_unit_names = [u.name for u in facts.units if u.group == group]
+    unit_names = task_units if task_units is not None else group_unit_names
+    missing_names = missing_evidence_units or []
+    missing_block = ""
+    if missing_names:
+        missing_block = (
+            "\nThe following assigned units have NO evidence sections anywhere in the scan. "
+            "For each, write its name and state exactly what evidence is missing. Do NOT "
+            "infer or reconstruct their components, code, or configuration:\n"
+            + "\n".join(f"- {name}" for name in missing_names)
+            + "\n"
+        )
+    task_scope_note = ""
+    if multi_task:
+        task_scope_note = (
+            f"\nThis task covers a subset of group {group}; the remaining units are analyzed by "
+            "parallel tasks over their own evidence, and the group-level summary is synthesized "
+            "separately. Analyze ONLY the units listed above. Do NOT describe, summarize, or "
+            "invent analysis for any other unit, even if other unit names appear in shared "
+            "inventories, dependency lists, or routine maps inside the evidence. Keep your "
+            "GROUP_SUMMARY scoped to the units listed above.\n"
+        )
     section_headings = "\n".join(f"- `### {name}`" for name in (*ANALYSIS_SECTION_NAMES, GROUP_SUMMARY_SECTION))
     preamble = _resolve_preamble(
         plugin_pack_dir, "phase2.md",
@@ -98,6 +131,9 @@ def group_analysis_prompt(
         "DOC_COUNT": str(len(effective_docs)),
         "DOC_LIST": "\n".join(f"- {doc}.md" for doc in effective_docs),
         "UNIT_LIST": "\n".join(f"- {name}" for name in unit_names),
+        "TASK_UNIT_COUNT": str(len(unit_names)),
+        "MISSING_EVIDENCE_BLOCK": missing_block,
+        "TASK_SCOPE_NOTE": task_scope_note,
         "FACTS_SUMMARY": facts_summary(facts),
         "PLATFORM_ANALYSIS_REQUIREMENTS": platform_analysis_requirements(facts),
         "SECTION_HEADINGS": section_headings,

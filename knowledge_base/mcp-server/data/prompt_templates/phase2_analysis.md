@@ -10,12 +10,14 @@ Current Phase 3 document set (${DOC_COUNT} files):
 ${DOC_LIST}
 
 UNIT ENUMERATION OBLIGATION (enforced before writing any section):
-The following ${CANONICAL_UNIT_COUNT} ${CANONICAL_UNIT_LABEL} are the complete canonical
-inventory for group ${GROUP}. Every unit listed here MUST appear at least once in the
-COMPONENTS section with its type, purpose, and role. If a unit is absent from the scanner
-evidence, write its name and state exactly what evidence is missing -- do NOT silently omit it.
+The following ${TASK_UNIT_COUNT} ${CANONICAL_UNIT_LABEL} are assigned to THIS analysis task
+for group ${GROUP}. Every unit listed here MUST appear at least once in the COMPONENTS
+section with its type, purpose, and role. If a listed unit is absent from the scanner
+evidence, write its name and state exactly what evidence is missing -- do NOT silently omit
+it, and do NOT reconstruct it from indirect mentions. Analyze ONLY the units listed here.
 
 ${UNIT_LIST}
+${MISSING_EVIDENCE_BLOCK}${TASK_SCOPE_NOTE}
 
 Run facts:
 ${FACTS_SUMMARY}

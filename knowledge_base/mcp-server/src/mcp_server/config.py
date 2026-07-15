@@ -119,7 +119,7 @@ class MCPServerConfig(BaseSettings):
     doc_generation_enterprise_mode_default: bool = True
     doc_generation_quality_threshold: float = 4.0
     large_project_threshold: int = 200  # jobs; >=this splits Phase 3 into 4 agents
-    small_project_threshold: int = 10   # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
+    small_project_threshold: int = 5   # MCP_SMALL_PROJECT_THRESHOLD — unit count; <=this uses direct path (no Phase 1, no agent runtime for Phase 2)
 
     # API-based providers. First-party providers read ANTHROPIC_API_KEY,
     # OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY directly. Keep the generic
@@ -216,7 +216,17 @@ class MCPServerConfig(BaseSettings):
     core_context_soft_target_tokens: int = 80_000   # MCP_CORE_CONTEXT_SOFT_TARGET_TOKENS
     core_context_hard_ceiling_tokens: int = 120_000  # MCP_CORE_CONTEXT_HARD_CEILING_TOKENS
     core_slice_concurrency: int = 4       # MCP_CORE_SLICE_CONCURRENCY
-    phase2_merge_mode: str = "deterministic"  # MCP_PHASE2_MERGE_MODE: deterministic | llm
+    # Per-task evidence byte budget for job-boundary bin packing (Phase 1/2).
+    # Whole jobs are packed into tasks up to this size; a job is never split.
+    phase2_task_evidence_bytes: int = 70_000  # MCP_PHASE2_TASK_EVIDENCE_BYTES
+    # Per-target evidence bundle for unit-scoped Phase 3 docs: raw scan facts
+    # (code/tMap/SQL/context, verbatim) delivered ahead of the analysis doc
+    # pack. Derived niceties are trimmed first; verbatim evidence is never
+    # silently cut (over-budget bundles ship whole with a logged warning).
+    phase3_target_evidence_bytes: int = 120_000  # MCP_PHASE3_TARGET_EVIDENCE_BYTES
+    # Byte cap for unit-filtered copies of derived fact maps (dependency_map
+    # and friends) handed to unit-scoped Phase 3 docs instead of full maps.
+    phase3_filtered_map_bytes: int = 24_000  # MCP_PHASE3_FILTERED_MAP_BYTES
     source_context_mode: str = "direct_redacted"  # MCP_SOURCE_CONTEXT_MODE: structured | direct_redacted
     direct_source_inline_max_bytes: int = 120_000  # MCP_DIRECT_SOURCE_INLINE_MAX_BYTES
     direct_source_chunk_bytes: int = 80_000  # MCP_DIRECT_SOURCE_CHUNK_BYTES

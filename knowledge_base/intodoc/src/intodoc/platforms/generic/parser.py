@@ -432,10 +432,18 @@ class GenericParser(BaseParser):
             extra = self._extract_language_params(path, content)
             base_params.extend(extra)
 
+        comp_type = self._infer_component_type(ft)
         return Component(
             unique_name=path.stem,
-            component_type=self._infer_component_type(ft),
+            component_type=comp_type,
             params=base_params,
+            # Source-bearing files expose their content as top-level code so
+            # downstream consumers never infer "unavailable" from param layout.
+            code=(
+                content
+                if comp_type in ("CodeFile", "SQLScript") and not content.startswith("[")
+                else None
+            ),
         )
 
     @staticmethod

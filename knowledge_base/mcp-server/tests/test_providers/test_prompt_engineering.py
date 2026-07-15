@@ -261,6 +261,59 @@ class TestPluginPackOverride:
 
 
 # ---------------------------------------------------------------------------
+# Task-scoped unit enumeration (per-job Phase 2 tasks)
+# ---------------------------------------------------------------------------
+
+class TestTaskScopedUnitEnumeration:
+    def test_whole_group_scope_by_default(self) -> None:
+        facts = _make_facts(["UnitA", "UnitB", "UnitC"])
+        prompt = group_analysis_prompt(facts, "G")
+        assert "The following 3 jobs are assigned to THIS analysis task" in prompt
+        assert "- UnitA" in prompt and "- UnitB" in prompt and "- UnitC" in prompt
+
+    def test_task_units_scope_the_enumeration_obligation(self) -> None:
+        facts = _make_facts(["UnitA", "UnitB", "UnitC"])
+        prompt = group_analysis_prompt(
+            facts, "G", task_units=["UnitA"], multi_task=True
+        )
+        assert "The following 1 jobs are assigned to THIS analysis task" in prompt
+        # Only the task's unit is in the enumeration list (UnitB/UnitC appear
+        # nowhere in the obligation list; facts summary still names them).
+        obligation = prompt.split("UNIT ENUMERATION OBLIGATION", 1)[1].split("Run facts:", 1)[0]
+        assert "- UnitA" in obligation
+        assert "- UnitB" not in obligation
+        assert "- UnitC" not in obligation
+        assert "Analyze ONLY the units listed above" in prompt
+        assert "parallel tasks" in prompt
+
+    def test_missing_evidence_units_are_flagged_not_reconstructed(self) -> None:
+        facts = _make_facts(["UnitA", "GhostUnit"])
+        prompt = group_analysis_prompt(
+            facts, "G",
+            task_units=["UnitA"],
+            missing_evidence_units=["GhostUnit"],
+            multi_task=True,
+        )
+        assert "NO evidence sections anywhere in the scan" in prompt
+        assert "- GhostUnit" in prompt
+        assert "do NOT" in prompt.split("NO evidence sections", 1)[1][:400].replace("Do NOT", "do NOT")
+
+    def test_task_scope_applies_with_plugin_pack_preamble(self, tmp_path: Path) -> None:
+        """Plugin packs override the preamble only; unit scoping still applies."""
+        pack_dir = tmp_path / "pack"
+        (pack_dir / "prompts").mkdir(parents=True)
+        (pack_dir / "prompts" / "phase2.md").write_text("PLUGIN PREAMBLE", encoding="utf-8")
+        facts = _make_facts(["UnitA", "UnitB"])
+        prompt = group_analysis_prompt(
+            facts, "G", plugin_pack_dir=pack_dir, task_units=["UnitB"], multi_task=True
+        )
+        assert "PLUGIN PREAMBLE" in prompt
+        obligation = prompt.split("UNIT ENUMERATION OBLIGATION", 1)[1].split("Run facts:", 1)[0]
+        assert "- UnitB" in obligation
+        assert "- UnitA" not in obligation
+
+
+# ---------------------------------------------------------------------------
 # Template file raw-content checks (independent of rendering)
 # ---------------------------------------------------------------------------
 
@@ -315,6 +368,7 @@ class TestTemplateFileContent:
         # Known slots that must be present (they are rendered by prompts.py)
         known_slots = {
             "PREAMBLE", "GROUP", "DOC_COUNT", "DOC_LIST", "UNIT_LIST",
+            "TASK_UNIT_COUNT", "MISSING_EVIDENCE_BLOCK", "TASK_SCOPE_NOTE",
             "FACTS_SUMMARY", "PLATFORM_ANALYSIS_REQUIREMENTS", "SECTION_HEADINGS",
             "PLATFORM_SECTION_DEPTH", "CANONICAL_UNIT_COUNT", "CANONICAL_UNIT_LABEL",
         }

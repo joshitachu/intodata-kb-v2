@@ -204,6 +204,15 @@ class CredentialFilter:
         re.IGNORECASE,
     )
 
+    # UNC / share-path hosts WITHOUT a dot-TLD (e.g. \\srvt0156\share,
+    # //fileserver01/share). The FQDN pattern requires a known TLD, so bare
+    # intranet hostnames escaped redaction entirely and reached published
+    # docs. Lookbehind excludes ://  (URLs), escaped-JSON \\\\ noise and
+    # inline code like a//b; lookahead requires a path separator + segment.
+    _UNC_HOST_RE = re.compile(
+        r"(?<![\w:/\\])(\\\\|//)([A-Za-z][\w\-]*)(?=[\\/][^\s\"'<>\\/])"
+    )
+
     # Key names whose values should be redacted (case-insensitive match)
     _SENSITIVE_KEYS = frozenset({
         "password", "secret", "token", "apikey", "api_key",
@@ -219,19 +228,33 @@ class CredentialFilter:
         re.IGNORECASE,
     )
 
-    # ── Variable name patterns that indicate sensitive values ───────
-    _SENSITIVE_VAR_SUFFIXES = (
-        "_password", "_pass", "_pwd", "_secret", "_token", "_apikey",
-        "_api_key", "_bearer", "_client_secret", "_private_key",
-        "_access_key", "_credentials",
-    )
-    _SENSITIVE_VAR_EXACT = frozenset({
-        "password", "secret", "token", "apikey", "api_key",
-        "bearer", "client_secret", "private_key", "access_key",
+    # ── Variable name tokens that indicate sensitive values ─────────
+    # Names are tokenized on underscores, hyphens, dots, whitespace AND
+    # camelCase boundaries, so "MaximoPassword", "maximo_password" and
+    # "AES_Key" are all recognized. Suffix-only matching missed camelCase
+    # names entirely and let cleartext secrets through to scan output.
+    _SECRET_TOKENS = frozenset({
+        "password", "passwd", "pwd", "pass", "secret", "secrets",
+        "credential", "credentials", "bearer", "apikey", "token", "tokens",
     })
-    _INFRA_VAR_SUFFIXES = (
-        "_user", "_username", "_host", "_hostname", "_server",
-        "_url", "_endpoint", "_broker", "_uri",
+    # "key" is only sensitive when qualified by a crypto/auth token right
+    # before it: AES_Key, API_Key, AuthenticationKey, private_key -- but
+    # NOT KeyColumn, PrimaryKey, BusinessKey.
+    _KEY_QUALIFIER_TOKENS = frozenset({
+        "aes", "api", "auth", "authentication", "access", "private",
+        "client", "encryption", "signing", "hmac", "ssh", "rsa", "jwt",
+        "license", "session", "security",
+    })
+    _INFRA_TOKENS = frozenset({
+        "user", "username", "host", "hostname", "server",
+        "url", "endpoint", "broker", "uri",
+    })
+
+    # Name tokenizer: split on separators, then on camelCase boundaries
+    # (lower->Upper and ACRONYMWord boundaries like "logDB" -> log, DB).
+    _NAME_SEPARATOR_RE = re.compile(r"[_\-.\s]+")
+    _CAMEL_BOUNDARY_RE = re.compile(
+        r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])"
     )
 
     def __init__(
@@ -333,6 +356,20 @@ class CredentialFilter:
             return "[URL_REDACTED]"
         return self._URL_RE.sub(_replace_url, text)
 
+    def _filter_unc_hosts(self, text: str) -> str:
+        """Replace bare hostnames in UNC/share paths with [HOSTNAME].
+
+        Path structure is preserved: \\\\srvt0156\\share\\x becomes
+        \\\\[HOSTNAME]\\share\\x. Hosts matching a safe domain survive.
+        """
+        def _replace_host(m: re.Match[str]) -> str:
+            host = m.group(2)
+            if self._is_safe_domain(host):
+                return m.group(0)
+            self._record_redaction("unc_host", host)
+            return m.group(1) + "[HOSTNAME]"
+        return self._UNC_HOST_RE.sub(_replace_host, text)
+
     def _mask_xmlns_decls(self, text: str) -> tuple[str, list[str]]:
         """Replace xmlns declaration values with placeholders before redaction."""
         masked: list[str] = []
@@ -385,29 +422,51 @@ class CredentialFilter:
 
         text = self._SENSITIVE_KV.sub(_kv_repl, text)
 
-        # URL and FQDN filtering (standard+), safe domains preserved
+        # URL, FQDN and UNC-host filtering (standard+), safe domains preserved
         if self._level_includes(RedactionLevel.STANDARD):
             text = self._filter_urls(text)
             text = self._filter_fqdns(text)
+            text = self._filter_unc_hosts(text)
 
         if xmlns_values:
             text = self._restore_xmlns_decls(text, xmlns_values)
 
         return text
 
+    @classmethod
+    def tokenize_name(cls, name: str) -> list[str]:
+        """Split a variable/param name into lowercase tokens.
+
+        Splits on underscores, hyphens, dots and whitespace, then on
+        camelCase boundaries: "MaximoPassword" -> [maximo, password],
+        "connection_logDB_Username" -> [connection, log, db, username].
+        """
+        tokens: list[str] = []
+        for chunk in cls._NAME_SEPARATOR_RE.split(name):
+            if not chunk:
+                continue
+            tokens.extend(p for p in cls._CAMEL_BOUNDARY_RE.split(chunk) if p)
+        return [t.lower() for t in tokens]
+
     def is_sensitive_var_name(self, name: str) -> bool:
         """Check if a context variable name indicates a sensitive value.
 
-        Returns True for password/secret vars at all levels,
-        and for infra vars (_user, _host, etc.) at strict+ levels.
+        Token-based: matches camelCase, snake_case, kebab-case and exact
+        names uniformly. Returns True for password/secret/key vars at all
+        levels, and for infra vars (user, host, url, ...) at strict+.
         """
         name_lower = name.lower()
+        tokens = self.tokenize_name(name)
 
-        # Always sensitive: password, secret, token vars
-        if name_lower in self._SENSITIVE_VAR_EXACT:
+        # Secret tokens anywhere in the name: password, secret, token, ...
+        if any(t in self._SECRET_TOKENS for t in tokens):
             return True
-        for suffix in self._SENSITIVE_VAR_SUFFIXES:
-            if name_lower.endswith(suffix):
+
+        # "key"/"keys" only when the preceding token qualifies it as a
+        # crypto/auth key (AES_Key, API_Key, AuthenticationKey) -- plain
+        # KeyColumn / PrimaryKey / BusinessKey stay untouched.
+        for i, t in enumerate(tokens):
+            if t in ("key", "keys") and i > 0 and tokens[i - 1] in self._KEY_QUALIFIER_TOKENS:
                 return True
 
         # id_Password type (Talend convention)
@@ -421,28 +480,45 @@ class CredentialFilter:
 
         # Infrastructure vars: only at strict+
         if self._level_includes(RedactionLevel.STRICT):
-            for suffix in self._INFRA_VAR_SUFFIXES:
-                if name_lower.endswith(suffix):
-                    return True
+            if any(t in self._INFRA_TOKENS for t in tokens):
+                return True
 
         return False
 
     def has_credentials(self, text: str) -> bool:
         """Quick check if text likely contains credentials."""
-        for pattern, _ in self._active_patterns:
-            if pattern.search(text):
-                return True
-        if self._SENSITIVE_KV.search(text):
-            return True
+        return bool(self.detect(text))
+
+    def detect(self, text: str) -> dict[str, int]:
+        """Scan text for residual sensitive matches WITHOUT mutating it.
+
+        Returns {category: match_count}. Used by the post-scan redaction
+        verification gate; never returns raw values.
+        """
+        findings: dict[str, int] = {}
+
+        def _bump(category: str, count: int = 1) -> None:
+            if count:
+                findings[category] = findings.get(category, 0) + count
+
+        for pattern, repl in self._active_patterns:
+            if pattern is self._LOBSTER_BASE64_RE:
+                continue  # XML-only pattern; too noisy on serialized JSON
+            cat = repl.strip("[]").lower() if repl.startswith("[") else "pattern"
+            _bump(cat, len(pattern.findall(text)))
+        _bump("sensitive_kv", len(self._SENSITIVE_KV.findall(text)))
         if self._level_includes(RedactionLevel.STANDARD):
             for m in self._URL_RE.finditer(text):
                 host_match = self._URL_HOST_RE.match(m.group(0))
                 if not (host_match and self._is_safe_domain(host_match.group(1))):
-                    return True
+                    _bump("url")
             for m in self._FQDN_RE.finditer(text):
                 if not self._is_safe_domain(m.group(0)):
-                    return True
-        return False
+                    _bump("fqdn")
+            for m in self._UNC_HOST_RE.finditer(text):
+                if not self._is_safe_domain(m.group(2)):
+                    _bump("unc_host")
+        return findings
 
     def get_audit_report(self) -> dict[str, Any]:
         """Return audit data: category counts + hashes. Never raw values."""

@@ -78,20 +78,31 @@ class Phase1Investigation(Phase):
         sem = asyncio.Semaphore(self._helpers.concurrency_for_phase("investigation", config.agent_phase1_concurrency))
 
         async def _investigate_group(group: str) -> tuple[bool, list[InvestigationReport]]:
-            """Process all chunks for one group. Returns (missing_chunk_error, chunk_reports)."""
+            """Process all evidence tasks for one group. Returns (missing_task_error, chunk_reports)."""
             group_units = self._helpers.group_units(state, group)
-            chunks = self._helpers.phase2_group_chunks(preprocess_dir / f"{group}.md", group_units, investigation_dir)
+            tasks = self._helpers.plan_evidence_tasks(
+                group, preprocess_dir / f"{group}.md", group_units, investigation_dir
+            )
+            chunks = [t.path for t in tasks]
             record_manifest_chunks(ctx.staging_dir, phase="investigation", group=group, chunks=chunks)
             chunk_reports: list[InvestigationReport] = []
             missing_chunk = False
+            if not tasks:
+                await log_cb(
+                    ctx.project_id,
+                    f"[custom] Investigation source group file missing for {group}",
+                    "error",
+                )
+                return True, chunk_reports
 
+            # Unit assignment comes from the task planner (job-boundary authoritative),
+            # not from substring matching against the chunk text.
             all_assigned: set[str] = set()
             chunk_unit_map: dict[str, list[str]] = {}
-            for cf in chunks:
-                if cf.exists():
-                    cu = self._helpers.units_for_chunk(cf, group_units)
-                    chunk_unit_map[cf.stem] = sorted(cu)
-                    all_assigned.update(cu)
+            for task in tasks:
+                if task.path.exists():
+                    chunk_unit_map[task.path.stem] = sorted(task.all_units)
+                    all_assigned.update(task.all_units)
             covered_units: set[str] = set()
 
             if config.agent_phase1_agentic:
@@ -163,13 +174,14 @@ class Phase1Investigation(Phase):
                 return missing_chunk, chunk_reports
 
             async with sem:
-                for idx, chunk_file in enumerate(chunks, start=1):
+                for idx, task in enumerate(tasks, start=1):
+                    chunk_file = task.path
                     if all_assigned and covered_units >= all_assigned:
-                        skipped_count = len(chunks) - idx + 1
+                        skipped_count = len(tasks) - idx + 1
                         await log_cb(
                             ctx.project_id,
                             f"[custom] Investigation early stop for {group}: all {len(all_assigned)} units"
-                            f" covered, skipping {skipped_count} remaining chunk(s)",
+                            f" covered, skipping {skipped_count} remaining task(s)",
                             "info",
                         )
                         break
@@ -178,11 +190,11 @@ class Phase1Investigation(Phase):
                         missing_chunk = True
                         await log_cb(
                             ctx.project_id,
-                            f"[custom] Investigation chunk missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
+                            f"[custom] Investigation task evidence missing for {group}: {chunk_file.relative_to(ctx.staging_dir).as_posix()}",
                             "error",
                         )
                         break
-                    chunk_name = group if len(chunks) == 1 else f"{group}_chunk_{idx}"
+                    chunk_name = task.task_id
                     cached = self._helpers.load_investigation_artifact(investigation_dir, chunk_name)
                     if cached is not None and ctx.resume_state is not None:
                         chunk_reports.append(cached)
@@ -195,7 +207,7 @@ class Phase1Investigation(Phase):
                             "info",
                         )
                         continue
-                    chunk_units = self._helpers.units_for_chunk(chunk_file, group_units)
+                    chunk_units = task.all_units
                     try:
                         chunk_text = chunk_file.read_text(encoding="utf-8", errors="replace")
                     except OSError:

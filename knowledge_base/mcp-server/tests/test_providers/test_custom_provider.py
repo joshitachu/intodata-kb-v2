@@ -2389,26 +2389,54 @@ def test_core_generation_tools_enabled_for_tool_capable_provider():
     assert _provider_supports_tools(provider) is True
 
 
-def test_deterministic_phase2_merge_preserves_canonical_sections():
-    merged = CustomHarnessProvider._deterministic_phase2_merge(
+def test_assemble_phase2_task_sections_preserves_canonical_sections():
+    from mcp_server.providers.custom.evidence_tasks import EvidenceTask
+
+    tasks = [
+        EvidenceTask(index=1, task_id="Orders__task_1", path=Path("t1.md"), units=["JobA"]),
+        EvidenceTask(index=2, task_id="Orders__task_2", path=Path("t2.md"), units=["JobB"]),
+    ]
+    assembled, summary_fallback = CustomHarnessProvider._assemble_phase2_task_sections(
         "Orders",
+        tasks,
         [
-            "Intro evidence\n\n### COMPONENTS\nComponent A\n\n### DATA_FLOWS\nFlow A",
-            "### COMPONENTS\nComponent B\n\nLoose finding\n\n### RISK_FLAGS\nRisk B",
+            "Intro evidence\n\n### COMPONENTS\nComponent A\n\n### DATA_FLOWS\nFlow A\n\n### GROUP_SUMMARY\nSummary A",
+            "### COMPONENTS\nComponent B\n\nLoose finding\n\n### RISK_FLAGS\nRisk B\n\n### GROUP_SUMMARY\nSummary B",
         ],
     )
 
-    assert "### COMPONENTS" in merged
-    assert "#### Orders_chunk_1" in merged
-    assert "#### Orders_chunk_2" in merged
-    assert "Component A" in merged
-    assert "Component B" in merged
-    assert "### DATA_FLOWS" in merged
-    assert "Flow A" in merged
-    assert "### RISK_FLAGS" in merged
-    assert "Risk B" in merged
-    assert "### UNCLASSIFIED_OR_EXTRA_FINDINGS" in merged
-    assert "Intro evidence" in merged
+    assert "### COMPONENTS" in assembled
+    assert assembled.count("### COMPONENTS") == 1  # one heading per section
+    assert "#### task Orders__task_1: JobA" in assembled
+    assert "#### task Orders__task_2: JobB" in assembled
+    assert "Component A" in assembled
+    assert "Component B" in assembled
+    assert "### DATA_FLOWS" in assembled
+    assert "Flow A" in assembled
+    assert "### RISK_FLAGS" in assembled
+    assert "Risk B" in assembled
+    assert "### UNCLASSIFIED_OR_EXTRA_FINDINGS" in assembled
+    assert "Intro evidence" in assembled
+    # GROUP_SUMMARY is excluded from assembly (group synthesis writes it);
+    # per-task summaries are returned as the fallback block.
+    assert "### GROUP_SUMMARY" not in assembled
+    assert summary_fallback.startswith("### GROUP_SUMMARY")
+    assert "Summary A" in summary_fallback
+    assert "Summary B" in summary_fallback
+
+
+def test_assemble_phase2_task_sections_keeps_extra_guide_sections():
+    from mcp_server.providers.custom.evidence_tasks import EvidenceTask
+
+    tasks = [EvidenceTask(index=1, task_id="G__task_1", path=Path("t1.md"), units=["JobA"])]
+    assembled, _ = CustomHarnessProvider._assemble_phase2_task_sections(
+        "G",
+        tasks,
+        ["### COMPONENTS\ncomp\n\n### DEBUG_TESTING_EVIDENCE\ndebug body"],
+        frozenset({"DEBUG_TESTING_EVIDENCE"}),
+    )
+    assert "### DEBUG_TESTING_EVIDENCE" in assembled
+    assert "debug body" in assembled
 
 
 def test_parse_phase2_sections_h4_heading_does_not_break_parent_section():
@@ -4191,7 +4219,7 @@ async def test_phase2_section_repair_uses_no_model_tokens(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_phase2_cross_chunk_synthesis_appends_findings(tmp_path, monkeypatch):
+async def test_phase2_group_synthesis_appends_group_sections(tmp_path, monkeypatch):
     from mcp_server.config import config
 
     monkeypatch.setattr(config, "phase2_max_tokens", 32_000)
@@ -4207,7 +4235,10 @@ async def test_phase2_cross_chunk_synthesis_appends_findings(tmp_path, monkeypat
         async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
             return ModelResult(
                 success=True,
-                text="### CROSS_CHUNK_FINDINGS\n\nUnit A and Unit B share External API risk.",
+                text=(
+                    "### CROSS_JOB_FINDINGS\n\nUnit A and Unit B share External API risk.\n\n"
+                    "### GROUP_SUMMARY\n\nGroup-level summary."
+                ),
                 model_name=self.model_name,
             )
 
@@ -4228,21 +4259,75 @@ async def test_phase2_cross_chunk_synthesis_appends_findings(tmp_path, monkeypat
     async def log_cb(pid: str, message: str, level: str = "info"):
         pass
 
-    completed = await CustomHarnessProvider(_SynthesisProvider())._phase2_cross_chunk_synthesis(
+    completed = await CustomHarnessProvider(_SynthesisProvider())._phase2_group_synthesis(
         ctx,
         HarnessRunState(project_id="proj", facts_manifest=facts),
         "A",
         ["Unit A", "Unit B"],
-        ["### COMPONENTS\nUnit A calls External API", "### COMPONENTS\nUnit B calls External API"],
-        "### COMPONENTS\nmerged evidence",
+        "### COMPONENTS\nassembled evidence",
+        "### GROUP_SUMMARY\n\n#### task A__task_1: Unit A\n\nfallback summary",
         [],
         [],
         ModelOptions(),
         log_cb,
     )
 
-    assert "### CROSS_CHUNK_FINDINGS" in completed
+    assert "### CROSS_JOB_FINDINGS" in completed
     assert "External API risk" in completed
+    assert "### GROUP_SUMMARY" in completed
+    assert "assembled evidence" in completed
+
+
+@pytest.mark.asyncio
+async def test_phase2_group_synthesis_failure_falls_back_to_task_summaries(tmp_path, monkeypatch):
+    from mcp_server.config import config
+
+    monkeypatch.setattr(config, "phase2_max_tokens", 32_000)
+    monkeypatch.setattr(config, "phase3_max_tokens", 64_000)
+    facts = build_facts_manifest_from_units("proj", ["Unit A"])
+    staging = tmp_path / "docs_staging"
+    (staging / "_analysis").mkdir(parents=True)
+
+    class _FailingProvider:
+        model_name = "fake/model"
+        supports_tools = False
+
+        async def complete(self, prompt: str, context_files: list[Path] | None = None, options=None):
+            return ModelResult(success=False, model_name=self.model_name, raw_error="boom")
+
+    ctx = DocGenContext(
+        project_id="proj",
+        staging_dir=staging,
+        staging_abs=str(staging),
+        logs_abs=str(tmp_path / "logs"),
+        preprocess_groups=["A"],
+        total_jobs=1,
+        total_groups=1,
+        effective_model="fake/model",
+        write_model="fake/model",
+        platform="generic",
+        analysis_guide_file="_analysis_guide.md",
+    )
+
+    async def log_cb(pid: str, message: str, level: str = "info"):
+        pass
+
+    completed = await CustomHarnessProvider(_FailingProvider())._phase2_group_synthesis(
+        ctx,
+        HarnessRunState(project_id="proj", facts_manifest=facts),
+        "A",
+        ["Unit A"],
+        "### COMPONENTS\nassembled evidence",
+        "### GROUP_SUMMARY\n\n#### task A__task_1: Unit A\n\nfallback summary",
+        [],
+        [],
+        ModelOptions(),
+        log_cb,
+    )
+
+    assert "assembled evidence" in completed
+    assert "### GROUP_SUMMARY" in completed
+    assert "fallback summary" in completed
 
 
 @pytest.mark.asyncio

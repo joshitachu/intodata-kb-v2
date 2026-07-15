@@ -230,7 +230,7 @@ class Phase2Analysis(Phase):
             phase_name=self.name,
             calls_min=n,
             calls_max=n * 4,
-            notes="1 call per group (min), up to 4 with retries and repairs (max)",
+            notes="1 call per group (min); large groups fan out to per-job tasks plus one synthesis, with retries and repairs (max)",
         )
 
     async def _write_repair_plan(self, ctx: "DocGenContext", plan, name: str) -> None:

@@ -34,7 +34,7 @@ intodoc scan <source-dir> --platform talend --output-dir ../intodoc-output
 
 - MCP custom documentation generation now runs through a bounded internal agent runtime in `mcp-server/src/mcp_server/providers/custom/agent_runtime.py`.
 - The runtime persists task contracts and exact LLM-authored outputs under `docs_staging/_agent_tasks/{phase}/{target_id}/`, including validation reports, tool ledgers, provider metrics, and accepted/rejected status.
-- Phase 2 is group-agent based with configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Split group work is merged by an LLM merge task, not by Python-authored summaries.
+- Phase 2 is per-job task based (job-boundary bin packing via `MCP_PHASE2_TASK_EVIDENCE_BYTES`) with configurable concurrency (`MCP_AGENT_PHASE2_CONCURRENCY`, default 6). Multi-task groups are assembled deterministically in Python; one group synthesis task writes the cross-job sections.
 - Phase 2.6 scorecard and Phase 3 documents are also agent tasks. Phase 3 defaults to one document agent per required markdown doc with concurrency cap `MCP_AGENT_PHASE3_CONCURRENCY` (default 4).
 - Validator gaps now create targeted repair tasks where possible before the run fails.
 - Python supervises scanning, contracts, budgets, validation, retry/repair, cache/resume, and publish only. LLM agents author analysis and documentation prose.

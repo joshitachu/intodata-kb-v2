@@ -634,6 +634,9 @@ class TalendParser(BaseParser):
             params=params,
             metadata_connection_ref=conn_ref,
         )
+        # Surface custom code (tJava/tJavaRow/tJavaFlex) as a top-level
+        # field so downstream consumers don't have to know param layout.
+        comp.code = comp.derive_code_from_params()
         job.components.append(comp)
 
         # Extract tRunJob references

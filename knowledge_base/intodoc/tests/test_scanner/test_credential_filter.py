@@ -589,3 +589,130 @@ def test_aws_key_prefix_too_short_not_redacted():
     f = CredentialFilter()
     result = f.filter_text("AKIA123SHORT")
     assert "AKIA123SHORT" in result
+
+
+# ── Token-aware sensitive names (camelCase leak regression) ─────────
+# Regression for the verified leak: camelCase context vars (MaximoPassword,
+# AES_Key) bypassed the old underscore-suffix matching and reached scan
+# output, _facts and published docs in cleartext.
+
+
+def test_camelcase_password_sensitive_at_standard():
+    f = CredentialFilter()
+    assert f.is_sensitive_var_name("MaximoPassword")
+    assert f.is_sensitive_var_name("maximo_password")
+    assert f.is_sensitive_var_name("MyServiceSecret")
+    assert f.is_sensitive_var_name("ClientCredentials")
+
+
+def test_qualified_key_sensitive_at_standard():
+    f = CredentialFilter()
+    assert f.is_sensitive_var_name("AES_Key")
+    assert f.is_sensitive_var_name("API_Key")
+    assert f.is_sensitive_var_name("AuthenticationKey")
+    assert f.is_sensitive_var_name("EncryptionKey")
+    assert f.is_sensitive_var_name("private_key")
+    assert f.is_sensitive_var_name("access_key")
+
+
+def test_unqualified_key_not_sensitive():
+    """Plain data-modelling 'key' names must NOT be flagged."""
+    f = CredentialFilter(level=RedactionLevel.STRICT)
+    assert not f.is_sensitive_var_name("KeyColumn")
+    assert not f.is_sensitive_var_name("PrimaryKey")
+    assert not f.is_sensitive_var_name("BusinessKey")
+
+
+def test_benign_camelcase_names_not_sensitive():
+    f = CredentialFilter(level=RedactionLevel.STRICT)
+    assert not f.is_sensitive_var_name("AuthenticationExpiryHour")
+    assert not f.is_sensitive_var_name("ProcessCode")
+    assert not f.is_sensitive_var_name("LocationData")
+    assert not f.is_sensitive_var_name("GlobalFilename")
+
+
+def test_camelcase_infra_names_strict_only():
+    f_standard = CredentialFilter(level=RedactionLevel.STANDARD)
+    f_strict = CredentialFilter(level=RedactionLevel.STRICT)
+
+    assert not f_standard.is_sensitive_var_name("MaximoUser")
+    assert not f_standard.is_sensitive_var_name("connection_logDB_Username")
+
+    assert f_strict.is_sensitive_var_name("MaximoUser")
+    assert f_strict.is_sensitive_var_name("connection_logDB_Username")
+
+
+def test_tokenize_name_boundaries():
+    assert CredentialFilter.tokenize_name("MaximoPassword") == ["maximo", "password"]
+    assert CredentialFilter.tokenize_name("AES_Key") == ["aes", "key"]
+    assert CredentialFilter.tokenize_name("connection_logDB_Username") == [
+        "connection", "log", "db", "username",
+    ]
+
+
+# ── UNC / bare-hostname redaction ───────────────────────────────────
+# Regression: bare intranet hostnames (no dot-TLD) in UNC paths escaped
+# the FQDN pattern and reached published docs.
+
+
+def test_unc_backslash_host_redacted():
+    f = CredentialFilter()
+    text = r"path=\\fileserv01\Dev_Iface$\Some2Thing\LocationData\file.xml"
+    result = f.filter_text(text)
+    assert "fileserv01" not in result
+    assert r"\\[HOSTNAME]\Dev_Iface$" in result
+
+
+def test_unc_forwardslash_host_redacted():
+    f = CredentialFilter()
+    text = 'value="//srvx9999/share/folder/file.txt"'
+    result = f.filter_text(text)
+    assert "srvx9999" not in result
+    assert "//[HOSTNAME]/share" in result
+
+
+def test_unc_dotted_host_still_fqdn_redacted():
+    """Dotted share hosts keep going through the FQDN rule."""
+    f = CredentialFilter()
+    text = 'value="//fileshares-test.fakecorp.nl/Shares$/Interfaces/x/"'
+    result = f.filter_text(text)
+    assert "fakecorp.nl" not in result
+    assert "[HOSTNAME]" in result
+
+
+def test_unc_pattern_ignores_urls_and_comments():
+    f = CredentialFilter()
+    # protocol URLs are handled by the URL rule, not mangled by UNC
+    assert "[URL_REDACTED]" in f.filter_text("http://intranet-host.example.com/x/y")
+    # Java line comments must not be treated as share paths
+    code = "int a = 1; //import java.util.List;"
+    assert f.filter_text(code) == code
+
+
+def test_unc_xmlns_declarations_untouched():
+    f = CredentialFilter()
+    text = (
+        '<root xmlns:vw="//nonstd/ns/path">'
+        r'<param value="\\srvx9999\share\x"/></root>'
+    )
+    result = f.filter_text(text, filename="job.item")
+    assert 'xmlns:vw="//nonstd/ns/path"' in result
+    assert "srvx9999" not in result
+
+
+# ── detect() residual sweep ─────────────────────────────────────────
+
+
+def test_detect_reports_categories_without_mutating():
+    f = CredentialFilter()
+    text = "enc:system.encryption.key.v1:abc123def456 and 192.168.0.1"
+    findings = f.detect(text)
+    assert findings.get("encrypted_password") == 1
+    assert findings.get("server_ip") == 1
+    # detect() must not record audit entries
+    assert f.get_audit_report()["total_redactions"] == 0
+
+
+def test_detect_clean_text_empty():
+    f = CredentialFilter()
+    assert f.detect("SELECT ProcessID from Processes where x = 1") == {}

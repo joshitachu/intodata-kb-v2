@@ -57,3 +57,7 @@ class IntodocConfig(BaseSettings):
     redaction_level: RedactionLevel = Field(default=RedactionLevel.STANDARD, description="Redaction aggressiveness: standard, strict, paranoid")
     redaction_config: Path | None = Field(default=None, description="Path to .intodoc-redact.yaml with custom redaction rules")
     redaction_audit: bool = Field(default=True, description="Write redaction_report.json to output dir")
+    allow_redaction_failures: bool = Field(
+        default=False,
+        description="If True, a failed post-scan redaction verification only warns instead of aborting the scan",
+    )

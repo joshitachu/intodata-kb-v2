@@ -139,6 +139,11 @@ def _filter_job(
     # Component parameters: re-run text filter as catch-all
     for comp in job.components:
         _filter_component_params(comp.params, cred_filter)
+        # Top-level code mirrors code-bearing params; must be redacted too
+        if comp.code:
+            filtered = cred_filter.filter_text(comp.code)
+            if filtered != comp.code:
+                comp.code = filtered
 
     # tRunJob context params
     for ref in job.trunjob_refs:

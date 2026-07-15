@@ -38,8 +38,8 @@ def _make_ctx(staging: Path, groups: list[str]) -> MagicMock:
 
 
 def _phase1_helpers(
-    chunks_side_effect=None,
-    chunks_return_value: list | None = None,
+    tasks_side_effect=None,
+    tasks_return_value: list | None = None,
 ) -> MagicMock:
     h = MagicMock()
     h.plugin_pack_dir = None
@@ -48,15 +48,14 @@ def _phase1_helpers(
     h.provider_for_phase.return_value = MagicMock()
     h.concurrency_for_phase.return_value = 2
     h.load_investigation_artifact.return_value = None
-    h.units_for_chunk.return_value = []
     h.chunk_has_pack_relevant_content.return_value = False
     h.merge_investigation_reports.return_value = MagicMock()
-    if chunks_side_effect is not None:
-        h.phase2_group_chunks.side_effect = chunks_side_effect
-    elif chunks_return_value is not None:
-        h.phase2_group_chunks.return_value = chunks_return_value
+    if tasks_side_effect is not None:
+        h.plan_evidence_tasks.side_effect = tasks_side_effect
+    elif tasks_return_value is not None:
+        h.plan_evidence_tasks.return_value = tasks_return_value
     else:
-        h.phase2_group_chunks.return_value = []
+        h.plan_evidence_tasks.return_value = []
     return h
 
 
@@ -134,14 +133,18 @@ async def test_phase1_partial_failure_returns_true_and_emits_one_warning(
     preprocess = staging / "_preprocess"
     preprocess.mkdir()
 
-    # group_b has a real (small) chunk file → synthetic report path
+    # group_b has a real (small) evidence file → synthetic report path
     chunk_b = preprocess / "group_b.md"
     chunk_b.write_text("content", encoding="utf-8")
 
-    def _chunks(group_file: Path, group_units: list, inv_dir: Path) -> list[Path]:
-        return [chunk_b] if "group_b" in str(group_file) else []
+    from mcp_server.providers.custom.evidence_tasks import EvidenceTask
 
-    helpers = _phase1_helpers(chunks_side_effect=_chunks)
+    def _tasks(group: str, group_file: Path, group_units: list, out_dir: Path) -> list:
+        if "group_b" in str(group_file):
+            return [EvidenceTask(index=1, task_id="group_b", path=chunk_b, units=[])]
+        return []
+
+    helpers = _phase1_helpers(tasks_side_effect=_tasks)
 
     state = _make_state(unit_count=2)
     ctx = _make_ctx(staging, ["group_a", "group_b"])

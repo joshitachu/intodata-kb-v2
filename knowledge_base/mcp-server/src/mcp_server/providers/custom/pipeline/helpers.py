@@ -158,11 +158,13 @@ class HarnessHelpersImpl:  # noqa: PLR0904 — intentionally wide delegation sur
     def group_units(self, state: "HarnessRunState", group: str) -> "list[str]":
         return self._p._group_units(state, group)  # type: ignore[attr-defined]
 
-    def phase2_group_chunks(self, group_file: "Path", group_units: "list[str]", analysis_dir: "Path") -> "list[Path]":
-        return self._p._phase2_group_chunks(group_file, group_units, analysis_dir)  # type: ignore[attr-defined]
+    def plan_evidence_tasks(self, group: str, group_file: "Path", group_units: "list[str]", out_dir: "Path") -> list:
+        from mcp_server.config import config
+        from mcp_server.providers.custom.evidence_tasks import plan_evidence_tasks
 
-    def units_for_chunk(self, chunk_file: "Path", group_units: "list[str]") -> "list[str]":
-        return self._p._units_for_chunk(chunk_file, group_units)  # type: ignore[attr-defined]
+        return plan_evidence_tasks(
+            group, group_file, group_units, out_dir, config.phase2_task_evidence_bytes
+        )
 
     def load_investigation_artifact(self, investigation_dir: "Path", chunk_name: str) -> object:
         return self._p._load_investigation_artifact(investigation_dir, chunk_name)  # type: ignore[attr-defined]

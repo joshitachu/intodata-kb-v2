@@ -10,13 +10,22 @@ from __future__ import annotations
 import re
 
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
-from mcp_server.providers.custom.constants import GROUP_SUMMARY_SECTION
+from mcp_server.providers.custom.constants import (
+    CROSS_JOB_FINDINGS_SECTION,
+    GROUP_SUMMARY_SECTION,
+    LEGACY_CROSS_CHUNK_SECTION,
+)
 
 ADDITIONAL_FINDINGS_SECTION = "UNCLASSIFIED_OR_EXTRA_FINDINGS"
 
 PHASE2_SECTION_NAMES: tuple[str, ...] = (
     tuple(ANALYSIS_SECTION_NAMES)
-    + (GROUP_SUMMARY_SECTION, "CROSS_CHUNK_FINDINGS", ADDITIONAL_FINDINGS_SECTION)
+    + (
+        GROUP_SUMMARY_SECTION,
+        CROSS_JOB_FINDINGS_SECTION,
+        LEGACY_CROSS_CHUNK_SECTION,
+        ADDITIONAL_FINDINGS_SECTION,
+    )
 )
 
 
