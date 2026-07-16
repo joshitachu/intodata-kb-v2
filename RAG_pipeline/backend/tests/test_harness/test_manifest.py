@@ -4,6 +4,7 @@ from src.harness.manifest import ManifestScope, build_runtime_capability_manifes
 from src.harness.models import (
     CapabilityDefinition,
     CapabilityHealth,
+    EvidenceSource,
     HarnessProviderType,
     HarnessRiskTier,
 )
@@ -21,6 +22,8 @@ def test_runtime_manifest_hides_provider_metadata_and_raw_config() -> None:
             input_schema={"type": "object", "required": ["query"]},
             output_type="evidence_items",
             risk_tier=HarnessRiskTier.READ_ONLY,
+            task_types=["connector_evidence"],
+            evidence_sources=[EvidenceSource.CONNECTOR_EVIDENCE],
             metadata={
                 "execution_surface": "internal",
                 "api_key": "should-not-leak",
@@ -55,6 +58,7 @@ def test_runtime_manifest_filters_unavailable_pack_and_permission_mismatch() -> 
             risk_tier=HarnessRiskTier.TRIGGERS_WORKFLOW,
             required_permissions=["manage_projects"],
             packs=["documentation"],
+            task_types=["document_generation"],
         ),
         CapabilityDefinition(
             id="logs.search",
@@ -65,6 +69,8 @@ def test_runtime_manifest_filters_unavailable_pack_and_permission_mismatch() -> 
             output_type="evidence_items",
             risk_tier=HarnessRiskTier.READ_ONLY,
             packs=["operations"],
+            task_types=["runtime_answer"],
+            evidence_sources=[EvidenceSource.RUNTIME_EVIDENCE],
         ),
         CapabilityDefinition(
             id="disabled",

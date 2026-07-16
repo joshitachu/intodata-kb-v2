@@ -218,6 +218,7 @@ class RuntimeInsightRepository:
         since: datetime.datetime | None = None,
         until: datetime.datetime | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[RuntimeIncidentInsight]:
         """Return scoped incidents ordered by first_bad_at descending."""
         if self._denies_all(scope):
@@ -229,7 +230,9 @@ class RuntimeInsightRepository:
             stmt = stmt.where(RuntimeIncidentRow.first_bad_at >= since)
         if until is not None:
             stmt = stmt.where(RuntimeIncidentRow.first_bad_at <= until)
-        stmt = stmt.order_by(RuntimeIncidentRow.first_bad_at.desc()).limit(limit)
+        stmt = stmt.order_by(
+            RuntimeIncidentRow.first_bad_at.desc(), RuntimeIncidentRow.id.desc()
+        ).offset(offset).limit(limit)
         inc_rows = list((await self._session.execute(stmt)).scalars().all())
 
         if not inc_rows:
@@ -249,6 +252,22 @@ class RuntimeInsightRepository:
             estate_context = await self._load_estate_context(row.project_id, row.execution_id, exec_row)
             incidents.append(_to_incident_insight(row, exec_row, estate_context))
         return incidents
+
+    async def count_incidents(
+        self,
+        scope: ProjectScope,
+        since: datetime.datetime | None = None,
+        until: datetime.datetime | None = None,
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeIncidentRow)
+        stmt = self._apply_scope(stmt, RuntimeIncidentRow.project_id, scope)
+        if since is not None:
+            stmt = stmt.where(RuntimeIncidentRow.first_bad_at >= since)
+        if until is not None:
+            stmt = stmt.where(RuntimeIncidentRow.first_bad_at <= until)
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def get_incident(
         self, scope: ProjectScope, incident_id: str

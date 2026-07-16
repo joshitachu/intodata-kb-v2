@@ -7,6 +7,7 @@ from src.db.base import Base
 from src.db.models import runtime_data  # noqa: F401
 from src.runtime.models import RuntimeSourceUpdate
 from src.runtime.store import RuntimeStoreRepository
+from src.runtime.store import RuntimeDuplicateSourceError
 from src.runtime.secrets import PREVIOUS_KEY_ID
 
 
@@ -60,6 +61,17 @@ async def test_source_config_crud_and_credentials(source_session):
     assert updated.enabled is False
     assert updated.disabled_reason == "manual"
     assert updated.sync_interval_seconds == 30
+
+
+async def test_source_config_rejects_duplicate_physical_identity(source_session):
+    repo = RuntimeStoreRepository(source_session)
+    await repo.create_source_config(
+        project_id="project-a", source_type="provider-a", physical_identity="https://runtime.example", label="Primary"
+    )
+    with pytest.raises(RuntimeDuplicateSourceError):
+        await repo.create_source_config(
+            project_id="project-b", source_type="provider-a", physical_identity="https://runtime.example", label="Mirror"
+        )
 
 
 async def test_credentials_lazy_rotation(source_session, monkeypatch):

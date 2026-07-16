@@ -119,6 +119,12 @@ class MockRuntimeProvider:
     def static_ref_strategy(self) -> None:
         return None
 
+    def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
+        return "mock"
+
+    def source_type_aliases(self) -> set[str]:
+        return {self.provider_key()}
+
     async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
         return True, None
 

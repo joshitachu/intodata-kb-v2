@@ -102,6 +102,13 @@ class TestListExecutions:
             resp = await seeded_client.get("/api/v1/runtime/executions?limit=500")
         assert resp.status_code == 422
 
+    async def test_offset_page_keeps_honest_total(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/executions?limit=1&offset=1")
+        assert resp.status_code == 200
+        assert len(resp.json()["executions"]) == 1
+        assert resp.json()["total"] == 3
+
 
 class TestExecutionDetail:
     async def test_in_scope_returns_execution(self, seeded_client):
@@ -323,6 +330,13 @@ class TestRuntimeJobs:
             resp = await seeded_client.get(f"/api/v1/runtime/jobs?project_id={_OTHER}")
         assert resp.status_code == 200
         assert resp.json() == {"jobs": [], "total": 0}
+
+    async def test_jobs_offset_page_keeps_honest_total(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/jobs?limit=1&offset=1")
+        assert resp.status_code == 200
+        assert len(resp.json()["jobs"]) == 1
+        assert resp.json()["total"] >= 2
 
     async def test_scoped_job_runs(self, seeded_client):
         with _scope([_ESB]):

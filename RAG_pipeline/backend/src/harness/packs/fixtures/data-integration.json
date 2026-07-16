@@ -1,9 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "nexus.data-integration",
   "name": "Data Integration Operations",
   "version": "1.0.0",
   "pack_type": "domain",
+  "governance": {
+    "phase": "functional",
+    "owner": "intodata",
+    "authority": "intodata_certified",
+    "scope": "global",
+    "mutability": "immutable",
+    "trust": "certified",
+    "quality": {"quality_score": 0.92, "evaluation_score": 0.93}
+  },
   "includes": ["nexus.documentation"],
   "documentation_provider_ref": null,
   "vocabulary": [
@@ -63,6 +72,7 @@
       "capability_ids": [
         "nexus.workflow.operational_investigation",
         "runtime.tools.query_evidence",
+        "runtime.logs.search_evidence",
         "external.connector.read_evidence"
       ],
       "entity_type_ids": ["integration.flow", "integration.execution"],

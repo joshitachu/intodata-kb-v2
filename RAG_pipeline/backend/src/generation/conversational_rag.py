@@ -31,7 +31,7 @@ from src.generation.intent_classifier import (
     analyze_query_async,
     detect_runtime_keywords,
 )
-from src.generation.prompt_builder import build_conversation_summary_messages
+from src.generation.prompt_builder import build_conversation_summary_messages, presentation_instruction
 from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
@@ -78,6 +78,9 @@ from src.harness.evidence_store import (
 )
 from src.harness.evidence_store.synthesis import EvidenceAnswerSection
 from src.harness.planner import TurnPlan
+from src.harness.packs.models import StylePresentation
+from src.harness.packs.project_service import ProjectPackService
+from src.harness.registry import base_capability_registry
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,29 @@ _RUNTIME_UNAVAILABLE_NOTE = (
     "_Note: live runtime tools are unavailable for the active model, so this "
     "answer is based on indexed documents only._"
 )
+
+
+async def _project_presentation(
+    db: AsyncSession, project_ids: list[str] | None
+) -> StylePresentation | None:
+    """Resolve one persisted Style overlay once per RAG turn, never per token."""
+    if project_ids is None or len(project_ids) != 1:
+        return None
+    compiled = await ProjectPackService(
+        db, base_capability_registry()
+    ).resolve_governed_for_execution(project_ids[0], "documentation")
+    return compiled.presentation if compiled is not None else None
+
+
+def _with_presentation(
+    messages: list[dict[str, str]], presentation: StylePresentation | None
+) -> list[dict[str, str]]:
+    instruction = presentation_instruction(presentation)
+    if instruction is None:
+        return messages
+    # Keep presentation as a distinct rendering instruction, never in evidence
+    # context, tool schemas, or the planner manifest.
+    return [*messages[:1], {"role": "system", "content": instruction}, *messages[1:]]
 
 
 def build_context(
@@ -507,6 +533,7 @@ def build_conversational_messages_with_context(
     history: list[ConversationMessage],
     memory_context: str | None = None,
     answer_style: str = "assistant",
+    presentation: StylePresentation | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages for the context-first attempt.
 
@@ -526,6 +553,7 @@ def build_conversational_messages_with_context(
             "word -- respond with exactly [NEED_SEARCH] and nothing else."
         )
     messages.append({"role": "system", "content": system_prompt})
+    messages = _with_presentation(messages, presentation)
 
     if memory_context:
         messages.append({"role": "system", "content": memory_context})
@@ -598,6 +626,7 @@ def build_conversational_messages(
     answer_style: str = "assistant",
     context_first: bool = False,
     auxiliary_sources: list[Source] | None = None,
+    presentation: StylePresentation | None = None,
 ) -> list[dict[str, str]]:
     """Build chat messages with system prompt, context, history, and current query.
 
@@ -622,6 +651,7 @@ def build_conversational_messages(
     else:
         system_prompt = CONTEXT_FIRST_SYSTEM_PROMPT if context_first else CONVERSATIONAL_SYSTEM_PROMPT
     messages.append({"role": "system", "content": system_prompt})
+    messages = _with_presentation(messages, presentation)
 
     # 2. Memory context
     if memory_context:
@@ -776,40 +806,36 @@ class RAGContext:
 
 def _runtime_allowed_by_turn_plan(turn_plan: dict | None) -> bool | None:
     """Return the authoritative runtime gate, or None for legacy callers."""
-    if not isinstance(turn_plan, dict):
-        return None
-    policy = turn_plan.get("evidence_policy")
-    if not isinstance(policy, dict):
-        return False
-    allowed = set(policy.get("allowed") or [])
-    denied = set(policy.get("denied") or [])
-    return "runtime_evidence" in allowed and "runtime_evidence" not in denied
+    plan = _validated_turn_plan(turn_plan)
+    if plan is None:
+        return None if not isinstance(turn_plan, dict) else False
+    return plan.allows("runtime_evidence")
 
 
 def _documents_allowed_by_turn_plan(turn_plan: dict | None) -> bool | None:
-    if not isinstance(turn_plan, dict):
-        return None
-    policy = turn_plan.get("evidence_policy")
-    if not isinstance(policy, dict):
-        return False
-    allowed = set(policy.get("allowed") or [])
-    denied = set(policy.get("denied") or [])
-    document_sources = {"indexed_documentation", "generated_documentation"}
-    return bool((allowed - denied) & document_sources)
+    plan = _validated_turn_plan(turn_plan)
+    if plan is None:
+        return None if not isinstance(turn_plan, dict) else False
+    return plan.allows("indexed_documentation") or plan.allows("generated_documentation")
 
 
 def _task_type_by_turn_plan(turn_plan: dict | None) -> str | None:
-    if not isinstance(turn_plan, dict):
-        return None
-    task_type = turn_plan.get("task_type")
-    return task_type if isinstance(task_type, str) else None
+    plan = _validated_turn_plan(turn_plan)
+    return plan.task_type.value if plan is not None else None
 
 
 def _output_contract_by_turn_plan(turn_plan: dict | None) -> str | None:
+    plan = _validated_turn_plan(turn_plan)
+    return plan.output_contract if plan is not None else None
+
+
+def _validated_turn_plan(turn_plan: dict | None) -> TurnPlan | None:
     if not isinstance(turn_plan, dict):
         return None
-    value = turn_plan.get("output_contract")
-    return value if isinstance(value, str) else None
+    try:
+        return TurnPlan.model_validate(turn_plan)
+    except (TypeError, ValueError):
+        return None
 
 
 _OUTPUT_CONTRACT_GUIDES = {
@@ -1006,6 +1032,7 @@ async def _prepare_rag_context(
     allow_document_evidence: bool | None = None,
     planned_task_type: str | None = None,
     planned_output_contract: str | None = None,
+    presentation: StylePresentation | None = None,
 ) -> RAGContext:
     """Run intent routing, search, and context building.
 
@@ -1040,6 +1067,7 @@ async def _prepare_rag_context(
                 ],
                 planned_output_contract,
             )
+            messages = _with_presentation(messages, presentation)
             return RAGContext(
                 llm_messages=messages,
                 document_sources=previous_sources,
@@ -1116,12 +1144,8 @@ async def _prepare_rag_context(
         )
     document_sources: list[DocumentSource] = []
 
-    # Runtime-intent gate: single source of truth for whether this turn enters
-    # the runtime tool loop. The LLM classifier is authoritative; the keyword
-    # backstop may only rescue a turn when the classifier itself failed --
-    # never override a confident classifier 'no' (which misrouted doc
-    # questions mentioning 'job'/'talend'/'sync' into the tool loop).
-    # Computed once per turn so the streaming and non-streaming entry points agree.
+    # A supplied TurnPlan is the sole evidence authority. Legacy classifier
+    # routing remains only for callers that do not provide one.
     keyword_hit = detect_runtime_keywords(query)
     classifier_runtime_gate = analysis.runtime_intent or (
         analysis.classifier_failed and keyword_hit
@@ -1195,11 +1219,11 @@ async def _prepare_rag_context(
             messages = build_metadata_messages(
                 query, metadata.text,
                 sources=hybrid_sources, reference_numbers=ref_map,
-                memory_context=memory_context,
+                memory_context=memory_context, presentation=presentation,
             )
         else:
             messages = build_metadata_messages(
-                query, metadata.text, memory_context=memory_context,
+                query, metadata.text, memory_context=memory_context, presentation=presentation,
             )
 
         if precompute:
@@ -1218,7 +1242,7 @@ async def _prepare_rag_context(
     if analysis.action == Action.RESPOND:
         # Chitchat — skip search, respond via unified no-results prompt
         history = truncate_history(existing_messages) if has_history else None
-        messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge)
+        messages = build_no_results_messages(query, history=history, memory_context=memory_context, system_knowledge=system_knowledge, presentation=presentation)
         if precompute:
             answer = await generate_answer(messages)
         else:
@@ -1239,7 +1263,7 @@ async def _prepare_rag_context(
             max_tokens=MAX_HISTORY_TOKENS * 2,
             max_messages=MAX_HISTORY_MESSAGES * 2,
         )
-        messages = build_conversation_summary_messages(query, history, memory_context=memory_context)
+        messages = build_conversation_summary_messages(query, history, memory_context=memory_context, presentation=presentation)
         answer = await generate_answer(messages) if precompute else None
         return RAGContext(
             llm_messages=messages,
@@ -1276,7 +1300,7 @@ async def _prepare_rag_context(
                 max_tokens=MAX_HISTORY_TOKENS * 2,
                 max_messages=MAX_HISTORY_MESSAGES * 2,
             )
-            messages = build_conversation_summary_messages(query, history, memory_context=memory_context)
+            messages = build_conversation_summary_messages(query, history, memory_context=memory_context, presentation=presentation)
             answer = await generate_answer(messages) if precompute else None
             return RAGContext(
                 llm_messages=messages,
@@ -1287,7 +1311,7 @@ async def _prepare_rag_context(
             )
         else:
             logger.info("Could not resolve document for summary — falling back to no-results")
-            messages = build_no_results_messages(query, memory_context=memory_context, system_knowledge=system_knowledge)
+            messages = build_no_results_messages(query, memory_context=memory_context, system_knowledge=system_knowledge, presentation=presentation)
             if precompute:
                 answer = await generate_answer(messages)
             else:
@@ -1336,6 +1360,7 @@ async def _prepare_rag_context(
             memory_context=memory_context,
             answer_style=answer_style,
             auxiliary_sources=auxiliary_sources,
+            presentation=presentation,
         )
         llm_messages = _with_output_contract(llm_messages, planned_output_contract)
         return RAGContext(
@@ -1363,6 +1388,7 @@ async def _prepare_rag_context(
             query, context, existing_messages,
             memory_context=None,
             answer_style=answer_style,
+            presentation=presentation,
         )
         llm_messages = _with_output_contract(llm_messages, planned_output_contract)
         answer = await generate_answer(llm_messages)
@@ -1392,6 +1418,7 @@ async def _prepare_rag_context(
             query, context, existing_messages,
             memory_context=None,
             answer_style=answer_style,
+            presentation=presentation,
         )
         llm_messages = _with_output_contract(llm_messages, planned_output_contract)
         sniff = await _sniff_stream_sufficiency(llm_messages, images=None)
@@ -1497,6 +1524,7 @@ async def _prepare_rag_context(
                 answer_style=answer_style,
                 context_first=True,
                 auxiliary_sources=auxiliary_sources,
+                presentation=presentation,
             )
             rung1_messages = _with_output_contract(
                 rung1_messages, planned_output_contract
@@ -1571,6 +1599,7 @@ async def _prepare_rag_context(
                 memory_context=memory_context,
                 answer_style=answer_style,
                 context_first=True,
+                presentation=presentation,
             )
             answer = await generate_answer(llm_messages, images=images)
             if not needs_new_search(answer):
@@ -1615,6 +1644,7 @@ async def _prepare_rag_context(
                 answer_style=answer_style,
                 context_first=True,
                 auxiliary_sources=auxiliary_sources,
+                presentation=presentation,
             )
             answer = await generate_answer(llm_messages, images=images) if precompute else None
             return RAGContext(
@@ -1634,6 +1664,7 @@ async def _prepare_rag_context(
             memory_context=memory_context,
             system_knowledge=system_knowledge,
             answer_style=answer_style,
+            presentation=presentation,
         )
         if precompute:
             answer = await generate_answer(llm_messages)

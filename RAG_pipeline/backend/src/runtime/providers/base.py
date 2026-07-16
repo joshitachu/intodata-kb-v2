@@ -39,6 +39,12 @@ class RuntimeSourceProvider(Protocol):
     def static_ref_strategy(self) -> None:
         """Return the static-reference strategy; v1 reserves the slot as ``None``."""
 
+    def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
+        """Return a stable, secret-free identity for duplicate registration checks."""
+
+    def source_type_aliases(self) -> set[str]:
+        """Return historical source-type keys whose credentials use this identity."""
+
     async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
         """Validate credentials synchronously and return a sanitized status tuple."""
 

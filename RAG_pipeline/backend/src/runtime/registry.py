@@ -7,9 +7,10 @@ provider is reached — provider adapters only ever see validated input models.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from src.runtime.models import (
     AnalyzeExecutionFailureInput,
@@ -51,9 +52,30 @@ class RuntimeToolSpec:
     input_model: type[BaseModel]
 
 
+class SearchLogsInput(BaseModel):
+    """Narrow tool input for held-log search until the store owns richer filters."""
+
+    question: str = Field(min_length=1, max_length=2_000)
+    project_id: str | None = None
+    execution_id: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = Field(default=10, ge=1, le=20)
+
+
 _TOOL_SPECS: dict[str, RuntimeToolSpec] = {
     spec.name: spec
     for spec in (
+        RuntimeToolSpec(
+            name="search_logs",
+            description=(
+                "Search held runtime log content for a question or error phrase. Returns only "
+                "a bounded, credential-redacted snippet and an execution reference for each "
+                "match; it never returns complete raw logs. Use this for specific log-content "
+                "questions and incident evidence, not general execution inventory."
+            ),
+            input_model=SearchLogsInput,
+        ),
         # --- High-level insight tools (prefer these for failure analysis) -----
         RuntimeToolSpec(
             name="analyze_execution_failure",

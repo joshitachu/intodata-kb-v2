@@ -116,6 +116,11 @@ async def lifespan(app: FastAPI):
         from src.runtime.sync import RuntimeSyncScheduler, parse_project_ids
 
         project_ids = parse_project_ids(settings.runtime_sync_project_ids)
+        semantic_indexer = None
+        if settings.runtime_semantic_enabled:
+            from src.runtime.semantic.service import RuntimeSemanticService
+
+            semantic_indexer = RuntimeSemanticService(qdrant)
         if settings.runtime_sync_source_key == "talend_tmc" and project_ids:
             from src.runtime.providers.talend_tmc import provider as talend_tmc_provider
 
@@ -125,6 +130,7 @@ async def lifespan(app: FastAPI):
                 source_key="talend_tmc",
                 project_ids=project_ids,
                 interval_seconds=settings.runtime_sync_interval_seconds,
+                semantic_indexer=semantic_indexer,
             )
             runtime_scheduler.start_background()
             logger.info("Runtime sync scheduler started for source=talend_tmc")
@@ -137,6 +143,7 @@ async def lifespan(app: FastAPI):
                 source_key="mock",
                 project_ids=project_ids,
                 interval_seconds=settings.runtime_sync_interval_seconds,
+                semantic_indexer=semantic_indexer,
             )
             runtime_scheduler.start_background()
             logger.info("Runtime sync scheduler started for source=mock")

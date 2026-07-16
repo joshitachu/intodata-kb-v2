@@ -460,6 +460,7 @@ class RuntimeFailure(BaseModel):
     job_name: str
     failed_at: datetime
     error_summary: str
+    error_detail: str | None = None
 
 
 class RuntimeLogEvent(BaseModel):
@@ -467,6 +468,8 @@ class RuntimeLogEvent(BaseModel):
     timestamp: datetime
     severity: RuntimeLogSeverity
     message: str
+    # Position is part of a line's identity: repeated messages are valid log data.
+    line_ordinal: int = Field(default=0, ge=0)
 
 
 # --- Generic tool input models ---
@@ -479,6 +482,7 @@ class ListExecutionsInput(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     limit: int = Field(default=20, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetExecutionDetailsInput(BaseModel):
@@ -489,12 +493,14 @@ class DetectFailuresInput(BaseModel):
     since: datetime | None = None
     until: datetime | None = None
     limit: int = Field(default=20, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetExecutionLogsInput(BaseModel):
     execution_id: str
-    limit: int = Field(default=100, ge=1, le=1000)
+    limit: int = Field(default=100, ge=1, le=10_000)
     min_severity: RuntimeLogSeverity | None = None
+    offset: int = Field(default=0, ge=0)
 
 
 class AnalyzeExecutionFailureInput(BaseModel):
@@ -543,6 +549,7 @@ class ListRuntimeInventoryInput(BaseModel):
     source_key: str | None = None
     project_id: str | None = None
     limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
 
 
 class ListRuntimeEnginesInput(ListRuntimeInventoryInput):

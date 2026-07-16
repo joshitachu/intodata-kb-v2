@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.harness.evidence_policy import EvidenceSource
+
 
 class HarnessProviderType(str, Enum):
     MODEL = "model_provider"
@@ -87,7 +89,8 @@ class CapabilityDefinition(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     do_not_use_when: list[str] = Field(default_factory=list)
     task_types: list[str] = Field(default_factory=list)
-    evidence_sources: list[str] = Field(default_factory=list)
+    planning_task_type: str | None = None
+    evidence_sources: list[EvidenceSource] = Field(default_factory=list)
     output_contracts: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -300,6 +303,7 @@ PROJECT_ONBOARDING_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.TRIGGERS_WORKFLOW,
     required_permissions=["manage_projects"],
     packs=["onboarding"],
+    task_types=["project_onboarding"],
 )
 
 
@@ -511,6 +515,7 @@ DOCUMENTATION_GENERATION_STATUS_CAPABILITY = CapabilityDefinition(
     output_type="documentation_generation_status",
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
+    task_types=["documentation_generation_status"],
     metadata={
         "execution_surface": "existing_mcp_generation_run_ledger",
         "authoritative_for": "documentation_generation_status",
@@ -589,9 +594,57 @@ RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
     use_when=["The user explicitly asks about current or time-bounded runtime state, executions, or logs."],
     do_not_use_when=["The user asks what jobs or components do according to documentation."],
     task_types=["runtime_answer", "operational_investigation"],
+    planning_task_type="runtime_answer",
     evidence_sources=["runtime_evidence"],
     output_contracts=["runtime_answer", "runtime_ranking", "incident_report"],
     metadata={"execution_surface": "existing_runtime_tool_loop"},
+)
+
+LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
+    id="runtime.logs.search_evidence",
+    label="Search runtime logs",
+    provider_type=HarnessProviderType.LOG,
+    provider_id="runtime.stored",
+    action="search_logs",
+    input_schema={
+        "type": "object",
+        "required": ["question"],
+        "properties": {
+            "question": {"type": "string"},
+            "project_id": {"type": ["string", "null"]},
+            "project_ids": {"type": ["array", "null"], "items": {"type": "string"}},
+            "execution_id": {"type": ["string", "null"]},
+            "since": {"type": ["string", "null"], "format": "date-time"},
+            "until": {"type": ["string", "null"], "format": "date-time"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
+        "additionalProperties": False,
+    },
+    output_type="evidence_items",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "operations"],
+    use_when=[
+        "The user asks to search log content for a phrase, exception, symptom, or error.",
+        "An operational investigation needs bounded log evidence for a known or suspected incident.",
+    ],
+    do_not_use_when=[
+        "The user needs a complete raw log dump or unredacted diagnostic payload.",
+        "The question is only about documentation or runtime inventory without log content.",
+    ],
+    task_types=["runtime_answer", "operational_investigation"],
+    planning_task_type="runtime_answer",
+    evidence_sources=[EvidenceSource.RUNTIME_EVIDENCE],
+    output_contracts=["runtime_answer", "incident_report"],
+    metadata={
+        "execution_surface": "guarded_harness_executor",
+        "evidence_output": True,
+        "redaction_policy": {
+            "credential_redaction": "required",
+            "snippet_max_chars": 360,
+            "max_items": 20,
+            "raw_payload": "forbidden",
+        },
+    },
 )
 
 DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY = CapabilityDefinition(
@@ -617,6 +670,7 @@ DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.WRITES_CONTENT,
     health=CapabilityHealth.AVAILABLE,
     packs=["documentation"],
+    task_types=["document_update"],
     metadata={
         "execution_surface": "mcp_evidence_doc_update",
         "requires_explicit_user_evidence": True,
@@ -645,6 +699,7 @@ DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY = CapabilityDefinition(
     output_type="documentation_revert_receipt",
     risk_tier=HarnessRiskTier.WRITES_CONTENT,
     packs=["documentation"],
+    task_types=["document_update"],
     metadata={"execution_surface": "mcp_evidence_doc_revert"},
 )
 
@@ -667,6 +722,8 @@ EXTERNAL_CONNECTOR_READ_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.READ_ONLY,
     health=CapabilityHealth.AVAILABLE,
     packs=["connectors"],
+    task_types=["connector_evidence"],
+    evidence_sources=[EvidenceSource.CONNECTOR_EVIDENCE],
     metadata={
         "execution_surface": "existing_runtime_source_registry",
         "auth_required": True,

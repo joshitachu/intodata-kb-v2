@@ -19,6 +19,7 @@ from src.runtime.insights.models import (
     RuntimeSimilarFailures,
     RuntimeTimelineEvent,
 )
+from src.runtime.insights.parser import redact_credentials
 from src.runtime.insights.repository import RuntimeInsightRepository
 from src.runtime.models import (
     AnalyzeExecutionFailureInput,
@@ -58,6 +59,19 @@ from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
 from src.runtime.store import RuntimeRecordNotFoundError, RuntimeStoreRepository
 
 _TIMELINE_SIGNAL_MAX_CHARS = 200
+_LOG_SEARCH_SNIPPET_MAX_CHARS = 360
+_LOG_SEARCH_MAX_RESULTS = 20
+_LOG_SEARCH_FIELDS = (
+    "execution_id",
+    "project_id",
+    "job_name",
+    "source_key",
+    "timestamp",
+    "severity",
+    "snippet",
+    "message",
+    "occurrence_count",
+)
 
 
 class StoredRuntimeProvider:
@@ -77,6 +91,12 @@ class StoredRuntimeProvider:
 
     def static_ref_strategy(self) -> None:
         return None
+
+    def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
+        return "stored:central-runtime-store"
+
+    def source_type_aliases(self) -> set[str]:
+        return {self.provider_key()}
 
     async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
         return True, None
@@ -130,6 +150,33 @@ class StoredRuntimeProvider:
             return await repo.get_execution_logs(self._scope(context), params)
         except RuntimeRecordNotFoundError as e:
             raise RuntimeProviderError(str(e)) from e
+
+    async def search_logs(
+        self, params: Any, context: RuntimeProviderContext | None = None
+    ) -> list[dict[str, Any]]:
+        """Search held runtime logs and expose only bounded safe search observations.
+
+        The repository owns matching, ordering, and request scope. This adapter is
+        deliberately conservative at the provider boundary: no database row ids,
+        raw payloads, or unbounded messages can reach a runtime tool result.
+        """
+        repo = self._store_repository(context)
+        try:
+            rows = await repo.search_log_events(
+                self._scope(context),
+                query=params.question,
+                project_id=params.project_id,
+                execution_id=params.execution_id,
+                since=params.since,
+                until=params.until,
+                limit=params.limit,
+                snippet_chars=_LOG_SEARCH_SNIPPET_MAX_CHARS,
+            )
+        except RuntimeRecordNotFoundError as e:
+            raise RuntimeProviderError(str(e)) from e
+        except AttributeError as e:
+            raise RuntimeProviderError("Stored log search is not available") from e
+        return [_safe_log_search_row(row) for row in list(rows)[:_LOG_SEARCH_MAX_RESULTS]]
 
     async def analyze_execution_failure(
         self, params: AnalyzeExecutionFailureInput, context: RuntimeProviderContext | None = None
@@ -361,6 +408,20 @@ class StoredRuntimeProvider:
                 if item.failed_runs > 0 or item.current_failure_streak > 0
             ][: params.limit],
         )
+
+
+def _safe_log_search_row(row: Any) -> dict[str, Any]:
+    """Project a repository hit to the public runtime-tool contract."""
+    if hasattr(row, "model_dump"):
+        raw = row.model_dump(mode="json")
+    elif isinstance(row, Mapping):
+        raw = dict(row)
+    else:
+        raw = {}
+    result = {field: raw[field] for field in _LOG_SEARCH_FIELDS if raw.get(field) is not None}
+    text = result.pop("snippet", None) or result.pop("message", None) or ""
+    result["snippet"] = redact_credentials(str(text))[:_LOG_SEARCH_SNIPPET_MAX_CHARS]
+    return result
 
 
 provider = StoredRuntimeProvider()

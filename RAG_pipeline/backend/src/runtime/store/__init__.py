@@ -19,6 +19,10 @@ class RuntimeRecordNotFoundError(Exception):
     slice maps this to RuntimeProviderError at the provider boundary."""
 
 
+class RuntimeDuplicateSourceError(Exception):
+    """Raised when a physical runtime source has already been registered."""
+
+
 from src.runtime.store.repository import RuntimeStoreRepository  # noqa: E402
 
-__all__ = ["ProjectScope", "RuntimeRecordNotFoundError", "RuntimeStoreRepository"]
+__all__ = ["ProjectScope", "RuntimeDuplicateSourceError", "RuntimeRecordNotFoundError", "RuntimeStoreRepository"]

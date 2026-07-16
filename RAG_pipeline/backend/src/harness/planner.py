@@ -23,6 +23,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from src.harness.evidence_policy import EvidenceSource
+
 from src.generation.llm_client import generate_answer_with_runtime_tools
 from src.generation.providers.types import ToolAwareLLMResponse
 from src.harness.manifest import RuntimeCapabilityManifest, RuntimeCapabilityTool
@@ -134,10 +136,10 @@ class EvidencePolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    allowed: list[str] = Field(default_factory=list)
-    denied: list[str] = Field(default_factory=list)
-    preferred: list[str] = Field(default_factory=list)
-    required: list[str] = Field(default_factory=list)
+    allowed: list[EvidenceSource] = Field(default_factory=list)
+    denied: list[EvidenceSource] = Field(default_factory=list)
+    preferred: list[EvidenceSource] = Field(default_factory=list)
+    required: list[EvidenceSource] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_sets(self) -> EvidencePolicy:

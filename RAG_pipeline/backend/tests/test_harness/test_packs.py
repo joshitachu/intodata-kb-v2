@@ -38,6 +38,7 @@ ALLOWED_REFERENCES = PackReferenceSets(
             "mcp.docs.revert_evidence_update",
             "nexus.workflow.operational_investigation",
             "runtime.tools.query_evidence",
+            "runtime.logs.search_evidence",
             "external.connector.read_evidence",
             "nexus.workflow.onboard_project",
             "mcp.projects.list_source_options",

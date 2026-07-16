@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import re
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,9 @@ from src.runtime.models import (
 )
 from src.runtime.store import RuntimeStoreRepository
 from src.runtime.store import RuntimeRecordNotFoundError
+
+if TYPE_CHECKING:
+    from src.runtime.insights.semantic import RuntimeSemanticIndexer
 
 _MAX_ERROR_SUMMARY = 240
 _TOKENISH_RE = re.compile(
@@ -135,6 +138,7 @@ async def run_runtime_source_sync_cycle(
     *,
     source_id: int,
     now: datetime.datetime | None = None,
+    semantic_indexer: "RuntimeSemanticIndexer | None" = None,
 ) -> RuntimeSyncCycleResult:
     """Run one source-configured sync cycle and update source health."""
 
@@ -161,7 +165,9 @@ async def run_runtime_source_sync_cycle(
             container_key_field=provider.container_key_field(),
             batch=batch,
             cycle_at=cycle_at,
+            semantic_indexer=semantic_indexer,
         )
+        await repo.prune_expired_log_events(now=cycle_at)
     except Exception as exc:
         error_summary = sanitize_sync_error(str(exc) or exc.__class__.__name__)
         await repo.record_source_sync_failure(
@@ -216,6 +222,7 @@ async def _persist_source_batch_with_project_map(
     container_key_field: str,
     batch: RuntimeSyncBatch,
     cycle_at: datetime.datetime,
+    semantic_indexer: "RuntimeSemanticIndexer | None" = None,
 ) -> RuntimeSyncCycleResult:
     synced_at = _as_utc(batch.synced_at or cycle_at)
     status = RuntimeSyncStatus.PARTIAL if batch.partial else RuntimeSyncStatus.SUCCESS
@@ -270,6 +277,7 @@ async def _persist_source_batch_with_project_map(
             execution_id=execution.execution_id,
             source_key=source_key,
             ingested_at=synced_at,
+            semantic_indexer=semantic_indexer,
         )
         if result.enriched_events or result.had_incident:
             built += 1
@@ -321,6 +329,7 @@ async def run_runtime_sync_cycle(
     source_key: str,
     project_id: str,
     now: datetime.datetime | None = None,
+    semantic_indexer: "RuntimeSemanticIndexer | None" = None,
 ) -> RuntimeSyncCycleResult:
     """Run one adapter cycle and persist normalized runtime data.
 
@@ -385,6 +394,7 @@ async def run_runtime_sync_cycle(
         await repo.upsert_plan_run(project_id, plan_run, source_key, synced_at)
     for event in batch.log_events:
         await repo.upsert_log_event(project_id, event, source_key, synced_at)
+    await repo.prune_expired_log_events(now=cycle_at)
     for metric in batch.component_metrics:
         await repo.upsert_component_metric(project_id, metric, source_key, synced_at)
 
@@ -396,6 +406,7 @@ async def run_runtime_sync_cycle(
             execution_id=execution.execution_id,
             source_key=source_key,
             ingested_at=synced_at,
+            semantic_indexer=semantic_indexer,
         )
         if result.enriched_events or result.had_incident:
             built += 1

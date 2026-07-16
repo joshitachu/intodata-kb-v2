@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.harness.models import (
     CapabilityDefinition,
+    EvidenceSource,
     HarnessProviderType,
     HarnessRiskTier,
 )
@@ -50,6 +51,8 @@ async def build_request_capability_registry(
                 output_type=configured.output_type,
                 risk_tier=HarnessRiskTier(configured.risk_tier),
                 packs=list(configured.packs),
+                task_types=["connector_evidence"],
+                evidence_sources=[EvidenceSource.CONNECTOR_EVIDENCE],
                 metadata={
                     **connector_base.metadata,
                     "connector_instance_id": instance.id,

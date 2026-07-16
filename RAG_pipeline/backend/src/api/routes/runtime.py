@@ -66,7 +66,6 @@ from src.runtime.models import (
     RuntimePlan,
     RuntimePlanHealth,
     RuntimePlanRun,
-    RuntimeSource,
     RuntimeSourceRead,
     RuntimeSyncState,
     RuntimeStatusResponse,
@@ -78,8 +77,8 @@ router = APIRouter(prefix="/runtime", tags=["runtime"])
 
 
 # --- Response envelopes ------------------------------------------------------
-# `total` is the count of rows returned in this (bounded) response, not a
-# full-table pagination total — these endpoints cap results via `limit`.
+# `total` is the full count matching the server-scoped filters. Offset pagination
+# keeps payloads bounded while retaining compatibility with existing limit users.
 
 
 class ExecutionListResponse(BaseModel):
@@ -217,14 +216,16 @@ async def list_executions(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> ExecutionListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
+    params = ListExecutionsInput(job_name=job_name, state=state, since=since, until=until, limit=limit, offset=offset)
     executions = await repo.list_executions(
         _intersect_scope(scope, project_id),
-        ListExecutionsInput(job_name=job_name, state=state, since=since, until=until, limit=limit),
+        params,
     )
-    return ExecutionListResponse(executions=executions, total=len(executions))
+    return ExecutionListResponse(executions=executions, total=await repo.count_executions(_intersect_scope(scope, project_id), params))
 
 
 @router.get(
@@ -259,6 +260,7 @@ async def get_execution_logs(
     db: DBSession,
     min_severity: RuntimeLogSeverity | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ) -> LogEventListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
@@ -269,13 +271,14 @@ async def get_execution_logs(
     except RuntimeRecordNotFoundError:
         raise HTTPException(status_code=404, detail="Execution not found")
     try:
+        params = GetExecutionLogsInput(execution_id=execution_id, min_severity=min_severity, limit=limit, offset=offset)
         events = await repo.get_execution_logs(
             scope,
-            GetExecutionLogsInput(execution_id=execution_id, min_severity=min_severity, limit=limit),
+            params,
         )
     except RuntimeRecordNotFoundError:
         events = []
-    return LogEventListResponse(execution_id=execution_id, events=events, total=len(events))
+    return LogEventListResponse(execution_id=execution_id, events=events, total=await repo.count_execution_logs(scope, GetExecutionLogsInput(execution_id=execution_id, min_severity=min_severity)))
 
 
 @router.get("/failures", response_model=FailureListResponse, summary="List runtime failures")
@@ -286,14 +289,16 @@ async def list_failures(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> FailureListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
+    params = DetectFailuresInput(since=since, until=until, limit=limit, offset=offset)
     failures = await repo.detect_failures(
         _intersect_scope(scope, project_id),
-        DetectFailuresInput(since=since, until=until, limit=limit),
+        params,
     )
-    return FailureListResponse(failures=failures, total=len(failures))
+    return FailureListResponse(failures=failures, total=await repo.count_failures(_intersect_scope(scope, project_id), params))
 
 
 @router.get("/sync-status", response_model=SyncStatusResponse, summary="List runtime sync status")
@@ -362,19 +367,23 @@ async def list_runtime_engines(
     source_key: str | None = None,
     status: RuntimeEngineStatus | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimeEngineListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    engines = await repo.list_engines(
-        _intersect_scope(scope, project_id),
-        ListRuntimeEnginesInput(
-            project_id=project_id,
-            source_key=source_key,
-            status=status,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeEnginesInput(
+        project_id=project_id,
+        source_key=source_key,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimeEngineListResponse(engines=engines, total=len(engines))
+    engines = await repo.list_engines(selected_scope, params)
+    return RuntimeEngineListResponse(
+        engines=engines,
+        total=await repo.count_engines(selected_scope, params),
+    )
 
 
 @router.get(
@@ -431,22 +440,26 @@ async def list_runtime_jobs(
     engine_id: str | None = None,
     status: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimeJobListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    jobs = await repo.list_jobs(
-        _intersect_scope(scope, project_id),
-        ListRuntimeJobsInput(
-            project_id=project_id,
-            source_key=source_key,
-            environment_id=environment_id,
-            workspace_id=workspace_id,
-            engine_id=engine_id,
-            status=status,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimeJobsInput(
+        project_id=project_id,
+        source_key=source_key,
+        environment_id=environment_id,
+        workspace_id=workspace_id,
+        engine_id=engine_id,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimeJobListResponse(jobs=jobs, total=len(jobs))
+    jobs = await repo.list_jobs(selected_scope, params)
+    return RuntimeJobListResponse(
+        jobs=jobs,
+        total=await repo.count_jobs(selected_scope, params),
+    )
 
 
 @router.get("/artifacts", response_model=RuntimeArtifactListResponse, summary="List runtime artifacts")
@@ -615,21 +628,25 @@ async def list_runtime_plans(
     workspace_id: str | None = None,
     status: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> RuntimePlanListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeStoreRepository(db)
-    plans = await repo.list_plans(
-        _intersect_scope(scope, project_id),
-        ListRuntimePlansInput(
-            project_id=project_id,
-            source_key=source_key,
-            environment_id=environment_id,
-            workspace_id=workspace_id,
-            status=status,
-            limit=limit,
-        ),
+    selected_scope = _intersect_scope(scope, project_id)
+    params = ListRuntimePlansInput(
+        project_id=project_id,
+        source_key=source_key,
+        environment_id=environment_id,
+        workspace_id=workspace_id,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
-    return RuntimePlanListResponse(plans=plans, total=len(plans))
+    plans = await repo.list_plans(selected_scope, params)
+    return RuntimePlanListResponse(
+        plans=plans,
+        total=await repo.count_plans(selected_scope, params),
+    )
 
 
 @router.get("/plan-runs", response_model=RuntimePlanRunListResponse, summary="List runtime plan runs")
@@ -773,16 +790,22 @@ async def list_incidents(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> IncidentListResponse:
     scope = await get_user_project_ids(user, db)
     repo = RuntimeInsightRepository(db)
+    selected_scope = _intersect_scope(scope, project_id)
     incidents = await repo.list_incidents(
-        _intersect_scope(scope, project_id),
+        selected_scope,
         since=since,
         until=until,
         limit=limit,
+        offset=offset,
     )
-    return IncidentListResponse(incidents=incidents, total=len(incidents))
+    return IncidentListResponse(
+        incidents=incidents,
+        total=await repo.count_incidents(selected_scope, since=since, until=until),
+    )
 
 
 @router.get(

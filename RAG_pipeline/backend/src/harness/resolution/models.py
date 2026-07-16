@@ -59,6 +59,12 @@ class TimeWindowKind(str, Enum):
     EXPLICIT = "explicit"
 
 
+class SlotValueResolutionStatus(str, Enum):
+    RESOLVED = "resolved"
+    INVALID = "invalid"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, str_strip_whitespace=True, extra="forbid")
 
@@ -179,6 +185,27 @@ class TimeWindow(_FrozenModel):
             raise ValueError("candidate timestamp must include a timezone")
         utc_value = value.astimezone(UTC)
         return self.start <= utc_value < self.end
+
+
+class ContinuationSlotValueResolution(_FrozenModel):
+    """Typed result from resolving one pending continuation slot."""
+
+    slot_name: str = Field(min_length=1, max_length=80)
+    status: SlotValueResolutionStatus
+    value: TimeWindow | None = None
+    clarification: str | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> ContinuationSlotValueResolution:
+        if self.status is SlotValueResolutionStatus.RESOLVED:
+            if self.value is None or self.clarification is not None:
+                raise ValueError("resolved slot values require a value only")
+        elif self.status is SlotValueResolutionStatus.INVALID:
+            if self.value is not None or self.clarification is None:
+                raise ValueError("invalid slot values require clarification only")
+        elif self.value is not None or self.clarification is not None:
+            raise ValueError("non-applicable slot values cannot contain a value or clarification")
+        return self
 
 
 class ConversationalFocus(_FrozenModel):

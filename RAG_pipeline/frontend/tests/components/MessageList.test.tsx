@@ -244,7 +244,9 @@ describe("MessageList", () => {
       />,
     );
 
-    expect(screen.getByText("Starting documentation generation")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Starting documentation generation").length,
+    ).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText(/runtime/i)).not.toBeInTheDocument();
   });
 

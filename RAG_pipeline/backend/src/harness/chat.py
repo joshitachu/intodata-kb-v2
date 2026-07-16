@@ -29,6 +29,7 @@ from src.harness.evidence import (
     list_generated_doc_evidence,
     query_runtime_evidence,
     read_connector_evidence,
+    search_runtime_log_evidence,
     search_document_evidence,
 )
 from src.harness.evidence_store import (
@@ -50,6 +51,12 @@ from src.harness.executor import (
 )
 from src.harness.connectors import ConnectorRepository, ConnectorService, default_connector_provider_registry
 from src.harness.connectors.capabilities import build_request_capability_registry
+from src.harness.evidence_policy import (
+    ALL_EVIDENCE_SOURCES,
+    EvidenceSource,
+    resolve_evidence_source_constraint,
+    resolve_capability_turn_semantics,
+)
 from src.harness.manifest import (
     ManifestScope,
     build_runtime_capability_manifest,
@@ -60,11 +67,11 @@ from src.harness.models import (
     ActivityEventStatus,
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
-    DOCUMENTATION_PACK_CREATE_CAPABILITY,
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
+    LOG_SEARCH_EVIDENCE_CAPABILITY,
     EvidenceItem,
     OPERATIONAL_INVESTIGATION_CAPABILITY,
     PROJECT_ONBOARDING_CAPABILITY,
@@ -97,9 +104,8 @@ from src.harness.providers.mcp_docs import (
     McpProjectInfo,
 )
 from src.harness.providers.mcp_projects import McpProjectsProvider
-from src.harness.packs.models import PackActivation
 from src.harness.packs.project_service import ProjectPackService
-from src.harness.packs.runtime import compile_resolved_pack_registry
+from src.harness.packs.runtime import compile_governed_pack_registry
 from src.harness.registry import base_capability_registry
 from src.harness.resolution import (
     ConversationalFocus,
@@ -107,8 +113,10 @@ from src.harness.resolution import (
     EntityReference,
     EntityType,
     ResolutionStatus,
+    SlotValueResolutionStatus,
     WorkflowKind,
     merge_conversational_focus,
+    resolve_continuation_slot_value,
     resolve_entity,
     resolve_time_window,
 )
@@ -138,12 +146,6 @@ _DOC_GENERATION_RE = re.compile(
     r")\b.{0,80}\b("
     r"generate|regenerate|create|build|make|publish|run|start|trigger|update"
     r")\b",
-    re.IGNORECASE,
-)
-
-_DOCUMENTATION_PACK_CREATE_RE = re.compile(
-    r"\b(?:create|build|define|design|manage)\b.{0,80}\b(?:documentation\s+)?pack\b"
-    r"|\b(?:documentation\s+)?pack\b.{0,40}\bcreate\b",
     re.IGNORECASE,
 )
 
@@ -199,6 +201,11 @@ _INVESTIGATION_RE = re.compile(
     r"\b(fail|failed|failure|error|incident|broken|unhealthy)\b.{0,120}\b("
     r"investigate|diagnose|root cause"
     r")\b",
+    re.IGNORECASE,
+)
+_LOG_SEARCH_RE = re.compile(
+    r"\b(?:search|find|show|look\s+for|where)\b.{0,100}\b(?:logs?|exception|stack\s*trace|error)\b|"
+    r"\b(?:logs?|exception|stack\s*trace)\b.{0,100}\b(?:search|find|show|contain)\b",
     re.IGNORECASE,
 )
 
@@ -395,19 +402,6 @@ def plan_harness_chat_turn(query: str) -> HarnessPlannerDecision:
         return HarnessPlannerDecision(
             action=_PLANNER_USE_RAG, mode="rag", confidence=0.8, matched_rule="doc_qa"
         )
-    if _DOCUMENTATION_PACK_CREATE_RE.search(stripped):
-        return HarnessPlannerDecision(
-            action=_PLANNER_ASK_CLARIFICATION,
-            mode="create_documentation_pack",
-            capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
-            confidence=0.8,
-            user_visible_reason="The user wants to design a reusable documentation Pack.",
-            direct_answer=(
-                "What should this Pack document, and who is the intended reader? "
-                "I’ll use that to propose the document set and sections before saving it."
-            ),
-            matched_rule="documentation_pack_create",
-        )
     if _DOC_GENERATION_RE.search(stripped):
         return HarnessPlannerDecision(
             action=_PLANNER_CALL_CAPABILITY,
@@ -455,6 +449,14 @@ async def plan_model_harness_chat_turn(
     registry = await build_request_capability_registry(
         ConnectorRepository(db), project_ids=project_ids
     )
+    # Resolve once at the planner boundary when the turn has one project scope.
+    # The compiler excludes Style from the manifest, capability, and evidence path.
+    if project_ids is not None and len(project_ids) == 1:
+        compiled = await ProjectPackService(
+            db, registry
+        ).resolve_governed_for_execution(project_ids[0], "documentation")
+        if compiled is not None:
+            registry = compile_governed_pack_registry(registry, compiled)
     unavailable_requested_connectors = _unavailable_requested_connector_labels(
         query, registry.list(enabled_only=True)
     )
@@ -462,12 +464,13 @@ async def plan_model_harness_chat_turn(
     focus = await _conversation_focus(db, conversation)
     conversation_history = await _planner_conversation_history(db, conversation)
     prior_plan = await _latest_persisted_turn_plan(db, conversation)
+    manifest = build_runtime_capability_manifest(
+        registry,
+        scope=ManifestScope(permissions=user_permissions),
+    )
     result = await plan_harness_turn_detailed(
         user_message=query,
-        manifest=build_runtime_capability_manifest(
-            registry,
-            scope=ManifestScope(permissions=user_permissions),
-        ),
+        manifest=manifest,
         project_options=project_options,
         pending_workflow_summary=pending_summary,
         conversation_history=conversation_history,
@@ -477,11 +480,19 @@ async def plan_model_harness_chat_turn(
     if result.decision_source == "model":
         if model_decision.action == PlannerAction.EXECUTE:
             first = model_decision.tool_calls[0]
-            mode = _mode_for_capability(first.capability_id)
+            selected_capability = next(
+                (tool for tool in manifest.tools if tool.id == first.capability_id),
+                None,
+            )
+            semantics = (
+                resolve_capability_turn_semantics(selected_capability)
+                if selected_capability is not None
+                else None
+            )
+            mode = semantics.mode if semantics is not None else None
             if mode is not None:
-                action = _PLANNER_USE_RAG if mode == "document_answer" else _PLANNER_CALL_CAPABILITY
                 decision = HarnessPlannerDecision(
-                    action=action,
+                    action=semantics.action,
                     mode=mode,
                     capability_id=first.capability_id,
                     arguments=dict(first.arguments),
@@ -497,33 +508,18 @@ async def plan_model_harness_chat_turn(
                 )
         elif model_decision.action == PlannerAction.CLARIFY:
             deterministic = plan_harness_chat_turn(query)
-            if deterministic.mode in {"generate_docs", "create_documentation_pack"}:
+            if deterministic.mode == "generate_docs":
                 decision = replace(
                     deterministic,
                     confidence=model_decision.confidence,
                     user_visible_reason=(
                         "Documentation generation needs a project scope."
                         if deterministic.mode == "generate_docs"
-                        else "Reusable Pack creation needs a few design choices."
+                        else "Documentation generation needs a project scope."
                     ),
                     direct_answer=(
                         model_decision.clarification
                         or deterministic.direct_answer
-                    ),
-                )
-            elif (
-                prior_plan is not None
-                and prior_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
-            ):
-                decision = HarnessPlannerDecision(
-                    action=_PLANNER_ASK_CLARIFICATION,
-                    mode="create_documentation_pack",
-                    capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
-                    confidence=model_decision.confidence,
-                    user_visible_reason="Continuing the reusable Pack design.",
-                    direct_answer=(
-                        model_decision.clarification
-                        or "What should I refine before saving this reusable Pack?"
                     ),
                 )
             else:
@@ -561,7 +557,12 @@ async def plan_model_harness_chat_turn(
     if decision is None:
         # Compatibility only: preserve known safe flows when the configured
         # model cannot plan. Unknown requests return to ordinary RAG.
-        fallback = _scope_safe_fallback_decision(
+        fallback = _evidence_policy_fallback_decision(
+            query=query,
+            capabilities=manifest.tools,
+            prior_plan=prior_plan,
+            focus=focus,
+        ) or _scope_safe_fallback_decision(
             query=query,
             fallback=plan_harness_chat_turn(query),
             focus=focus,
@@ -765,6 +766,11 @@ async def _resume_continuation_decision(
         )
         return None
     slots = {slot.name: slot.model_copy() for slot in envelope.slots}
+    pending_before = [
+        name for name, slot in slots.items() if slot.required and slot.value is None
+    ]
+    target_slot = pending_before[0] if pending_before else None
+    slot_clarification: str | None = None
     if "requested_sections" in slots and re.fullmatch(r"(?:all(?:\s+of\s+(?:these|them))?|all)", normalized):
         slots["requested_sections"] = slots["requested_sections"].model_copy(
             update={"value": ["executions", "health", "events", "failures", "performance"]}
@@ -783,11 +789,15 @@ async def _resume_continuation_decision(
         exact = next((item for item in candidates if item.casefold() == normalized), None)
         if exact:
             slots["project_id"] = slots["project_id"].model_copy(update={"value": exact})
-    time_window = _query_time_window(query)
-    if "time_window" in slots and time_window is not None:
-        slots["time_window"] = slots["time_window"].model_copy(
-            update={"value": time_window.model_dump(mode="json")}
-        )
+    if target_slot is not None and slots[target_slot].value is None:
+        slot_resolution = resolve_continuation_slot_value(target_slot, query)
+        if slot_resolution.status is SlotValueResolutionStatus.RESOLVED:
+            assert slot_resolution.value is not None
+            slots[target_slot] = slots[target_slot].model_copy(
+                update={"value": slot_resolution.value.model_dump(mode="json")}
+            )
+        elif slot_resolution.status is SlotValueResolutionStatus.INVALID:
+            slot_clarification = slot_resolution.clarification
     missing = [name for name, slot in slots.items() if slot.required and slot.value is None]
     resolved_scope = dict(plan.resolved_scope)
     if slots.get("project_id") and slots["project_id"].value:
@@ -815,7 +825,14 @@ async def _resume_continuation_decision(
                 turn_plan=updated_plan,
             )
     if missing:
-        prompt = "Which project should I use?" if "project_id" in missing else "What time window should I use?"
+        if slot_clarification is not None:
+            prompt = f"{slot_clarification} What time window should I use?"
+        else:
+            prompt = (
+                "Which project should I use?"
+                if "project_id" in missing
+                else "What time window should I use?"
+            )
         return HarnessPlannerDecision(
             action=_PLANNER_ASK_CLARIFICATION,
             mode="continuation_clarification",
@@ -824,7 +841,11 @@ async def _resume_continuation_decision(
             user_visible_reason="Continuing the pending request.",
             direct_answer=prompt,
             decision_source="continuation_guard",
-            matched_rule="continuation_slot_fill",
+            matched_rule=(
+                "continuation_slot_invalid"
+                if slot_clarification is not None
+                else "continuation_slot_fill"
+            ),
             turn_plan=updated_plan,
         )
     if updated_plan.task_type is TurnTaskType.RUNTIME_ANSWER:
@@ -990,6 +1011,87 @@ def _scope_safe_fallback_decision(
     return fallback
 
 
+def _evidence_policy_fallback_decision(
+    *,
+    query: str,
+    capabilities: list[Any],
+    prior_plan: TurnPlan | None,
+    focus: ConversationalFocus,
+) -> HarnessPlannerDecision | None:
+    """Recover evidence turns without letting planner failure widen their policy.
+
+    This is a degradation policy, not another router: it selects an already
+    declared capability only for an explicit evidence-source request or a
+    source focus persisted by the prior TurnPlan.
+    """
+
+    requested = set(resolve_evidence_source_constraint(query).required)
+    if {
+        EvidenceSource.INDEXED_DOCUMENTATION,
+        EvidenceSource.GENERATED_DOCUMENTATION,
+    }.intersection(requested):
+        return HarnessPlannerDecision(
+            action=_PLANNER_USE_RAG,
+            mode="document_answer",
+            confidence=0.6,
+            user_visible_reason="Preserving the requested documentation evidence source while the planner is unavailable.",
+            matched_rule="evidence_policy_fallback",
+        )
+    if not requested and prior_plan is not None:
+        requested = set(prior_plan.evidence_policy.allowed) - set(
+            prior_plan.evidence_policy.denied
+        )
+    if not requested:
+        return None
+
+    candidates = [
+        capability
+        for capability in capabilities
+        if requested.intersection(set(capability.evidence_sources))
+        and resolve_capability_turn_semantics(capability) is not None
+    ]
+    if not candidates:
+        return None
+    prefer_log_search = bool(
+        re.search(r"\b(?:logs?|exceptions?|stack\s*trace)\b", query, re.I)
+    )
+    candidates.sort(
+        key=lambda capability: (
+            0
+            if prefer_log_search
+            and capability.id == LOG_SEARCH_EVIDENCE_CAPABILITY.id
+            else 1
+            if resolve_capability_turn_semantics(capability).mode == "runtime_answer"
+            else 2,
+            capability.id,
+        )
+    )
+    capability = candidates[0]
+    semantics = resolve_capability_turn_semantics(capability)
+    assert semantics is not None
+    arguments: dict[str, Any] = {"question": query}
+    if semantics.mode == "runtime_answer":
+        scope = prior_plan.resolved_scope if prior_plan is not None else {}
+        runtime_scope = scope.get("runtime_scope") if isinstance(scope, dict) else None
+        if isinstance(runtime_scope, dict):
+            project_ids = runtime_scope.get("project_ids")
+            if isinstance(project_ids, list) and len(project_ids) == 1:
+                arguments["project_id"] = project_ids[0]
+            elif isinstance(project_ids, list) and len(project_ids) > 1:
+                arguments["project_ids"] = project_ids
+        if "project_id" not in arguments and "project_ids" not in arguments and focus.project:
+            arguments["project_id"] = focus.project.stable_id
+    return HarnessPlannerDecision(
+        action=semantics.action,
+        mode=semantics.mode,
+        capability_id=capability.id,
+        arguments=arguments,
+        confidence=0.6,
+        user_visible_reason="Preserving the requested evidence source while the planner is unavailable.",
+        matched_rule="evidence_policy_fallback",
+    )
+
+
 def _record_planner_decision(decision: HarnessPlannerDecision) -> HarnessPlannerDecision:
     """Emit the routing decision to logs and metrics; returns it unchanged."""
     logger.info(
@@ -1015,6 +1117,15 @@ def _record_planner_decision(decision: HarnessPlannerDecision) -> HarnessPlanner
     if decision.fallback_reason:
         harness_planner_fallback_total.labels(reason=decision.fallback_reason).inc()
     return decision
+
+
+def _capability_allowed_by_turn_plan(capability: Any, plan: TurnPlan | None) -> bool:
+    """Return whether a capability's declared evidence is inside the plan boundary."""
+
+    if plan is None:
+        return True
+    sources = set(capability.evidence_sources)
+    return bool(sources) and all(plan.allows(source) for source in sources)
 
 
 _PENDING_SUMMARY_RECENT_FAILURE_SECONDS = 900
@@ -1064,30 +1175,14 @@ async def _pending_workflow_summary(
     return "; ".join(parts)[:_PENDING_SUMMARY_MAX_CHARS]
 
 
-def _mode_for_capability(capability_id: str) -> str | None:
-    if capability_id.startswith("connector.instance_"):
-        return "connector_evidence"
-    if capability_id in {DOCUMENT_SEARCH_CAPABILITY.id, DOCUMENT_LIST_CAPABILITY.id}:
-        return "document_answer"
-    if capability_id == RUNTIME_EVIDENCE_CAPABILITY.id:
-        return "runtime_answer"
-    return {
-        _CAPABILITY_ID: "generate_docs",
-        DOCUMENTATION_PACK_CREATE_CAPABILITY.id: "create_documentation_pack",
-        _DOC_STATUS_CAPABILITY_ID: "documentation_generation_status",
-        _DOC_UPDATE_CAPABILITY_ID: "update_docs_from_evidence",
-        _INVESTIGATION_CAPABILITY_ID: "operational_investigation",
-        _CONNECTOR_CAPABILITY_ID: "connector_inventory",
-        PROJECT_ONBOARDING_CAPABILITY.id: "project_onboarding",
-    }.get(capability_id)
+def _mode_for_capability(capability: Any) -> str | None:
+    """Compatibility helper backed by declared capability semantics."""
+
+    semantics = resolve_capability_turn_semantics(capability)
+    return semantics.mode if semantics is not None else None
 
 
-_ALL_EVIDENCE_SOURCES = {
-    "indexed_documentation",
-    "generated_documentation",
-    "runtime_evidence",
-    "connector_evidence",
-}
+_ALL_EVIDENCE_SOURCES = set(ALL_EVIDENCE_SOURCES)
 
 
 def _with_turn_plan(
@@ -1134,20 +1229,6 @@ def _with_turn_plan(
         task_type = TurnTaskType.DIRECT_ANSWER
         execution_mode = TurnExecutionMode.DIRECT
         output_contract = "conversational_answer"
-        allowed = set()
-        preferred = []
-    elif decision.mode == "create_documentation_pack":
-        task_type = TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
-        execution_mode = (
-            TurnExecutionMode.CLARIFICATION
-            if decision.action == _PLANNER_ASK_CLARIFICATION
-            else TurnExecutionMode.WORKFLOW
-        )
-        output_contract = (
-            "typed_clarification"
-            if decision.action == _PLANNER_ASK_CLARIFICATION
-            else "documentation_pack_receipt"
-        )
         allowed = set()
         preferred = []
     elif decision.action == _PLANNER_ASK_CLARIFICATION:
@@ -1301,21 +1382,31 @@ async def _latest_persisted_turn_plan(
     db: AsyncSession, conversation: Conversation
 ) -> TurnPlan | None:
     messages = list(conversation.__dict__.get("messages") or [])
-    if not messages:
-        messages = list(
-            (
-                await db.execute(
-                    select(ConversationMessage)
-                    .where(
-                        ConversationMessage.conversation_id == conversation.id,
-                        ConversationMessage.deleted_at.is_(None),
-                        ConversationMessage.turn_plan.is_not(None),
-                    )
-                    .order_by(ConversationMessage.id.desc())
-                    .limit(4)
+    messages.sort(key=lambda message: message.id or 0)
+    for message in reversed(messages):
+        if not isinstance(message.turn_plan, dict):
+            continue
+        try:
+            return TurnPlan.model_validate(message.turn_plan)
+        except (TypeError, ValueError):
+            continue
+    # Relationship collections can be populated without their latest rows
+    # after a flush. Always fall through to the persisted record before
+    # abandoning a conversation's evidence focus.
+    messages = list(
+        (
+            await db.execute(
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.conversation_id == conversation.id,
+                    ConversationMessage.deleted_at.is_(None),
+                    ConversationMessage.turn_plan.is_not(None),
                 )
-            ).scalars()
-        )
+                .order_by(ConversationMessage.id.desc())
+                .limit(4)
+            )
+        ).scalars()
+    )
     messages.sort(key=lambda message: message.id or 0)
     for message in reversed(messages):
         if not isinstance(message.turn_plan, dict):
@@ -1840,25 +1931,6 @@ async def run_harness_chat_turn(
             workflow_run_id=workflow_run_id,
         )
 
-    if decision.mode == "create_documentation_pack":
-        run, answer, _ = await _execute_documentation_pack_creation(
-            conversation=conversation,
-            query=query,
-            db=db,
-            user_id=user_id,
-            access_token=access_token,
-            provider=docs_provider,
-            decision=decision,
-            user_permissions=user_permissions,
-        )
-        return await _persist_assistant_message(
-            conversation=conversation,
-            db=db,
-            answer=answer,
-            latency_ms=_latency_ms(start),
-            workflow_run_id=run.id,
-        )
-
     if decision.mode == "connector_evidence":
         connector_run, answer, _ = await _execute_model_selected_connector(
             conversation=conversation,
@@ -2177,20 +2249,6 @@ async def run_harness_chat_turn_stream(
             workflow_run_id = status_run.id
             for activity in activities:
                 yield ("harness_activity", json.dumps(_activity_payload(activity)))
-    elif decision.mode == "create_documentation_pack":
-        pack_run, answer, activities = await _execute_documentation_pack_creation(
-            conversation=conversation,
-            query=query,
-            db=db,
-            user_id=user_id,
-            access_token=access_token,
-            provider=docs_provider,
-            decision=decision,
-            user_permissions=user_permissions,
-        )
-        workflow_run_id = pack_run.id
-        for activity in activities:
-            yield ("harness_activity", json.dumps(_activity_payload(activity)))
     elif decision.mode == "connector_evidence":
         connector_run, answer, activities = await _execute_model_selected_connector(
             conversation=conversation,
@@ -2581,90 +2639,6 @@ def _documentation_generation_status_answer(project_id: str, data: dict[str, Any
     if status in {"queued", "pending", "running", "triggered"}:
         return f"Documentation generation for `{project_id}` is still {status}."
     return f"The latest documentation generation status for `{project_id}` is {status}."
-
-
-async def _execute_documentation_pack_creation(
-    *,
-    conversation: Conversation,
-    query: str,
-    db: AsyncSession,
-    user_id: int,
-    access_token: str | None,
-    provider: McpDocumentationProvider,
-    decision: HarnessPlannerDecision,
-    user_permissions: set[str] | None,
-) -> tuple[WorkflowRun, str, list[ActivityEvent]]:
-    registry = default_capability_registry()
-    service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
-    run = await service.start_run(
-        conversation_id=conversation.id,
-        user_id=user_id,
-        project_id=None,
-        intent_mode="create_documentation_pack",
-        capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
-        input_summary=_input_summary(query),
-    )
-    activities = [
-        await service.record_activity(
-            run,
-            event_type="planner.decision",
-            label="Planned Pack creation",
-            status=ActivityEventStatus.SUCCEEDED,
-            summary=_planner_summary(decision),
-            safe_details=_planner_safe_details(decision),
-            runtime_node="plan",
-        )
-    ]
-    observation = await HarnessCapabilityExecutor(
-        registry,
-        docs_provider=provider,
-    ).execute(
-        CapabilityExecutionRequest(
-            capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
-            arguments=dict(decision.arguments or {}),
-            idempotency_key=f"pack-create:{run.id}",
-        ),
-        CapabilityExecutionContext(
-            user_id=user_id,
-            conversation_id=conversation.id,
-            permissions=user_permissions,
-            approvals={DOCUMENTATION_PACK_CREATE_CAPABILITY.id},
-            access_token=access_token,
-        ),
-    )
-    succeeded = observation.succeeded
-    activities.append(
-        await service.record_activity(
-            run,
-            event_type="capability.completed" if succeeded else "capability.failed",
-            label="Created documentation Pack" if succeeded else "Documentation Pack creation failed",
-            status=(ActivityEventStatus.SUCCEEDED if succeeded else ActivityEventStatus.FAILED),
-            summary=observation.summary or observation.error_message,
-            safe_details=observation.safe_details,
-            runtime_node="execute",
-        )
-    )
-    updated = await HarnessWorkflowRepository(db).update_run(
-        [],
-        run.id,
-        WorkflowRunUpdate(
-            status=(WorkflowRunStatus.SUCCEEDED if succeeded else WorkflowRunStatus.FAILED),
-            output_summary=observation.summary if succeeded else None,
-            error_message=None if succeeded else observation.error_message,
-            runtime_provider_id="nexus.harness",
-            current_node="complete" if succeeded else "failed",
-            finished_at=datetime.datetime.now(datetime.UTC),
-        ),
-        owner_user_id=user_id,
-    )
-    if not succeeded:
-        return updated, observation.error_message or "The documentation Pack could not be created.", activities
-    pack_name = str(observation.data.get("name") or "the new Pack")
-    return (
-        updated,
-        f"Created reusable documentation Pack `{pack_name}`. It is now available for onboarding, project defaults, and `/docs` runs.",
-        activities,
-    )
 
 
 async def _trigger_documentation_generation(
@@ -3149,9 +3123,22 @@ async def _execute_agentic_evidence_investigation(
         input_summary=_input_summary(query),
     )
     docs_provider = provider or McpDocumentationProvider()
+    turn_plan = decision.turn_plan
+    runtime_only = bool(
+        turn_plan
+        and turn_plan.allows(EvidenceSource.RUNTIME_EVIDENCE)
+        and not turn_plan.allows(EvidenceSource.INDEXED_DOCUMENTATION)
+        and not turn_plan.allows(EvidenceSource.GENERATED_DOCUMENTATION)
+        and not turn_plan.allows(EvidenceSource.CONNECTOR_EVIDENCE)
+    )
 
     async def doc_search_handler(arguments, _context):  # noqa: ANN001
-        if qdrant is None:
+        if (
+            runtime_only
+            or not turn_plan
+            or not turn_plan.allows(EvidenceSource.INDEXED_DOCUMENTATION)
+            or qdrant is None
+        ):
             return []
         return await search_document_evidence(
             qdrant=qdrant,
@@ -3162,6 +3149,8 @@ async def _execute_agentic_evidence_investigation(
         )
 
     async def doc_list_handler(arguments, _context):  # noqa: ANN001
+        if not turn_plan or not turn_plan.allows(EvidenceSource.GENERATED_DOCUMENTATION):
+            return []
         return await list_generated_doc_evidence(
             provider=docs_provider,
             project_id=str(arguments.get("project_id") or project_id),
@@ -3171,6 +3160,8 @@ async def _execute_agentic_evidence_investigation(
     runtime_answer_holder: dict[str, str] = {}
 
     async def runtime_handler(arguments, _context):  # noqa: ANN001
+        if not turn_plan or not turn_plan.allows(EvidenceSource.RUNTIME_EVIDENCE):
+            return []
         result = await query_runtime_evidence(
             question=str(arguments.get("question") or query),
             # The typed plan owns runtime scope. A tool/model argument cannot
@@ -3191,10 +3182,41 @@ async def _execute_agentic_evidence_investigation(
             runtime_answer_holder["answer"] = result.answer_draft
         return result
 
+    async def log_search_handler(arguments, _context):  # noqa: ANN001
+        if not turn_plan or not turn_plan.allows(EvidenceSource.RUNTIME_EVIDENCE):
+            return []
+        result = await search_runtime_log_evidence(
+            question=str(arguments.get("question") or query),
+            project_id=project_id,
+            project_ids=selected_runtime_projects,
+            project_scope=effective_runtime_scope,
+            db=db,
+            # Runtime-only plans must not invoke the document/vector layer,
+            # including optional semantic expansion of log evidence.
+            qdrant=None if runtime_only else qdrant,
+            execution_id=(
+                str(arguments["execution_id"])
+                if arguments.get("execution_id") is not None
+                else None
+            ),
+            since=_parse_evidence_datetime(arguments.get("since")),
+            until=_parse_evidence_datetime(arguments.get("until")),
+            limit=int(arguments.get("limit", 10)),
+        )
+        if result.answer_draft:
+            runtime_answer_holder["answer"] = result.answer_draft
+        if not result.items:
+            # A no-match log search is not enough to establish runtime state.
+            # Keep the older tool loop as a compatibility fallback for existing
+            # runtime evidence, but never run it beside successful log search.
+            return await runtime_handler(arguments, _context)
+        return result
+
     handlers = {
         DOCUMENT_SEARCH_CAPABILITY.id: doc_search_handler,
         DOCUMENT_LIST_CAPABILITY.id: doc_list_handler,
         RUNTIME_EVIDENCE_CAPABILITY.id: runtime_handler,
+        LOG_SEARCH_EVIDENCE_CAPABILITY.id: log_search_handler,
     }
     executor = HarnessCapabilityExecutor(
         registry,
@@ -3203,12 +3225,6 @@ async def _execute_agentic_evidence_investigation(
             connector_repo, default_connector_provider_registry()
         ),
         evidence_handlers=handlers,
-    )
-    turn_plan = decision.turn_plan
-    runtime_only = (
-        turn_plan is not None
-        and turn_plan.task_type is TurnTaskType.RUNTIME_ANSWER
-        and turn_plan.evidence_policy.allowed == ["runtime_evidence"]
     )
     runtime_question = turn_plan.objective if runtime_only else query
     time_window = (
@@ -3220,10 +3236,17 @@ async def _execute_agentic_evidence_investigation(
         DOCUMENT_SEARCH_CAPABILITY.id: EvidenceSourceClass.INDEXED_DOC,
         DOCUMENT_LIST_CAPABILITY.id: EvidenceSourceClass.GENERATED_DOC,
         RUNTIME_EVIDENCE_CAPABILITY.id: EvidenceSourceClass.CURRENT_RUNTIME,
+        LOG_SEARCH_EVIDENCE_CAPABILITY.id: EvidenceSourceClass.CURRENT_RUNTIME,
     }
     available_capabilities = {
         capability.id: capability for capability in registry.list(enabled_only=True)
     }
+    allowed_capability_ids = {
+        capability.id
+        for capability in available_capabilities.values()
+        if _capability_allowed_by_turn_plan(capability, turn_plan)
+    }
+    denied_capability_ids = set(available_capabilities) - allowed_capability_ids
     connector_capabilities = [
         capability
         for capability in available_capabilities.values()
@@ -3238,13 +3261,19 @@ async def _execute_agentic_evidence_investigation(
         runtime_arguments.update(
             since=time_window.start.isoformat(), until=time_window.end.isoformat()
         )
-    mandatory_calls = [
-        InvestigationCall(
-            capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-            source_class=EvidenceSourceClass.CURRENT_RUNTIME,
-            arguments=runtime_arguments,
-        ),
-    ]
+    search_logs = bool(
+        decision.capability_id == LOG_SEARCH_EVIDENCE_CAPABILITY.id
+        or _LOG_SEARCH_RE.search(query)
+        or decision.mode == "operational_investigation"
+    )
+    runtime_call = InvestigationCall(
+        capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
+        source_class=EvidenceSourceClass.CURRENT_RUNTIME,
+        arguments=runtime_arguments,
+    )
+    mandatory_calls = ([] if search_logs else [
+        runtime_call,
+    ])
     if not runtime_only:
         mandatory_calls = [
             InvestigationCall(
@@ -3267,14 +3296,44 @@ async def _execute_agentic_evidence_investigation(
             for capability in connector_capabilities[:2]
             ],
         ]
+    if search_logs:
+        log_arguments: dict[str, Any] = {"question": runtime_question}
+        if project_id is not None:
+            log_arguments["project_id"] = project_id
+        elif selected_runtime_projects:
+            log_arguments["project_ids"] = selected_runtime_projects
+        if time_window is not None:
+            log_arguments.update(
+                since=time_window.start.isoformat(), until=time_window.end.isoformat()
+            )
+        mandatory_calls.append(
+            InvestigationCall(
+                capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+                source_class=EvidenceSourceClass.CURRENT_RUNTIME,
+                arguments=log_arguments,
+            )
+        )
+    mandatory_calls = [
+        call
+        for call in mandatory_calls
+        if call.capability_id in allowed_capability_ids
+    ]
     proposed_calls: list[InvestigationCall] = []
     for item in decision.tool_calls:
         capability_id = str(item.get("capability_id") or "")
         capability = available_capabilities.get(capability_id)
-        if capability is None:
+        if capability is None or capability_id not in allowed_capability_ids:
+            continue
+        if search_logs and capability_id == RUNTIME_EVIDENCE_CAPABILITY.id:
+            # The legacy LLM tool loop remains available to existing callers,
+            # but log/incident evidence is collected through the guarded log
+            # capability so the workflow has one authority for those snippets.
             continue
         arguments = dict(item.get("arguments") or {})
-        if capability_id == RUNTIME_EVIDENCE_CAPABILITY.id:
+        if capability_id in {
+            RUNTIME_EVIDENCE_CAPABILITY.id,
+            LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+        }:
             arguments.pop("project_id", None)
             arguments.pop("project_ids", None)
             if project_id is not None:
@@ -3306,7 +3365,11 @@ async def _execute_agentic_evidence_investigation(
         )
     calls_by_capability = {call.capability_id: call for call in mandatory_calls}
     calls_by_capability.update({call.capability_id: call for call in proposed_calls})
-    calls = list(calls_by_capability.values())[:12]
+    calls = [
+        call
+        for call in calls_by_capability.values()
+        if call.capability_id in allowed_capability_ids
+    ][:12]
     unavailable_requested_connectors = [
         f"{label} connector"
         for label in _unavailable_requested_connector_labels(
@@ -3332,6 +3395,8 @@ async def _execute_agentic_evidence_investigation(
             project_scope=effective_runtime_scope,
             permissions=user_permissions,
             access_token=access_token,
+            allowed_capability_ids=allowed_capability_ids,
+            denied_capability_ids=denied_capability_ids,
         ),
     )
     runtime_draft = runtime_answer_holder.get("answer") or next(
@@ -3783,6 +3848,20 @@ async def _execute_project_onboarding(
 ) -> tuple[WorkflowRun, str, list[ActivityEvent]]:
     if project_id is None:
         raise ValueError("A project name is required to start onboarding")
+    arguments = dict(decision.arguments or {})
+    selected_pack_ids = [
+        value for value in (arguments.get("selected_pack_ids") or arguments.get("pack_ids") or [])
+        if isinstance(value, str)
+    ]
+    if selected_pack_ids:
+        # Compatibility input is activated through the governed service before
+        # any workflow runs; the executor subsequently sees only the pin.
+        await ProjectPackService(db, base_capability_registry()).activate(
+            project_id=project_id,
+            workflow_key="documentation",
+            active_pack_ids=selected_pack_ids,
+            user_id=user_id,
+        )
     registry = await _project_execution_registry(db, project_id, "onboarding")
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
@@ -3793,16 +3872,6 @@ async def _execute_project_onboarding(
         capability_id=PROJECT_ONBOARDING_CAPABILITY.id,
         input_summary=_input_summary(query),
     )
-    arguments = dict(decision.arguments or {})
-    selected_pack_ids = list(
-        arguments.get("selected_pack_ids") or arguments.get("pack_ids") or []
-    )
-    if selected_pack_ids:
-        pack_service = ProjectPackService(db, base_capability_registry())
-        catalog = await pack_service.catalog(project_id)
-        catalog.resolve(
-            PackActivation(enabled_pack_ids=frozenset(selected_pack_ids))
-        )
     try:
         plugin_pack_id = await _resolve_documentation_pack_id(
             arguments=arguments,
@@ -3924,16 +3993,6 @@ async def _execute_project_onboarding(
             activities,
         )
 
-    pack_activation = None
-    if request.selected_pack_ids:
-        pack_activation = await ProjectPackService(
-            db, base_capability_registry()
-        ).activate(
-            project_id=project_id,
-            workflow_key="documentation",
-            active_pack_ids=request.selected_pack_ids,
-            user_id=user_id,
-        )
     if request.plugin_pack_id is not None and result.status != "failed":
         await docs_provider.set_project_documentation_pack(
             project_id=project_id,
@@ -3977,11 +4036,6 @@ async def _execute_project_onboarding(
             current_node=result.current_node,
             runtime_metadata={
                 "graph": "project_onboarding",
-                **(
-                    {"pack_snapshot": pack_activation.snapshot.model_dump(mode="json")}
-                    if pack_activation is not None
-                    else {}
-                ),
             },
         ),
     )
@@ -4022,6 +4076,13 @@ async def resume_project_onboarding_workflow(
     plugin_pack_id = arguments.get("plugin_pack_id")
     if not isinstance(plugin_pack_id, int) or isinstance(plugin_pack_id, bool) or plugin_pack_id < 1:
         plugin_pack_id = None
+    if selected_pack_ids:
+        await ProjectPackService(db, base_capability_registry()).activate(
+            project_id=project_id,
+            workflow_key="documentation",
+            active_pack_ids=selected_pack_ids,
+            user_id=user_id,
+        )
     registry = await _project_execution_registry(db, project_id, "onboarding")
     from src.harness.models import (
         ATTACH_GIT_SOURCE_CAPABILITY,
@@ -4162,16 +4223,6 @@ async def resume_project_onboarding_workflow(
         if observation.capability_id == ATTACH_ZIP_SOURCE_CAPABILITY.id
         and observation.succeeded
     ]
-    pack_activation = None
-    if selected_pack_ids and result.status != "failed":
-        pack_activation = await ProjectPackService(
-            db, base_capability_registry()
-        ).activate(
-            project_id=project_id,
-            workflow_key="documentation",
-            active_pack_ids=selected_pack_ids,
-            user_id=user_id,
-        )
     if plugin_pack_id is not None and result.status != "failed":
         await docs_provider.set_project_documentation_pack(
             project_id=project_id,
@@ -4192,11 +4243,6 @@ async def resume_project_onboarding_workflow(
             current_node=result.current_node,
             runtime_metadata={
                 "graph": "project_onboarding",
-                **(
-                    {"pack_snapshot": pack_activation.snapshot.model_dump(mode="json")}
-                    if pack_activation is not None
-                    else {}
-                ),
             },
             finished_at=(datetime.datetime.now(datetime.UTC) if status == WorkflowRunStatus.FAILED else None),
         ),
@@ -4928,12 +4974,12 @@ async def _project_execution_registry(
     workflow_key: str,
 ):
     base = base_capability_registry()
-    resolved = await ProjectPackService(db, base).resolve_for_execution(
+    compiled = await ProjectPackService(db, base).resolve_governed_for_execution(
         project_id, workflow_key
     )
-    if resolved is None:
+    if compiled is None:
         return default_capability_registry()
-    return compile_resolved_pack_registry(base, resolved)
+    return compile_governed_pack_registry(base, compiled)
 
 
 def _artifact_links(result: McpDocumentationGenerationResult) -> list[dict[str, Any]]:

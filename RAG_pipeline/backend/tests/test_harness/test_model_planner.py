@@ -5,7 +5,13 @@ import json
 import pytest
 
 from src.generation.providers.types import RuntimeToolCallRequest, ToolAwareLLMResponse
+from src.harness.evidence_policy import (
+    ALL_EVIDENCE_SOURCES,
+    EvidenceSource,
+    resolve_capability_turn_semantics,
+)
 from src.harness.manifest import RuntimeCapabilityManifest, RuntimeCapabilityTool
+from src.harness.models import LOG_SEARCH_EVIDENCE_CAPABILITY
 from src.harness.planner import (
     EvidencePolicy,
     PlannerAction,
@@ -14,6 +20,7 @@ from src.harness.planner import (
     TurnTaskType,
     plan_harness_turn,
 )
+from src.harness.registry import base_capability_registry
 
 
 def test_turn_plan_rejects_overlapping_or_unapproved_evidence_policy() -> None:
@@ -37,6 +44,24 @@ def test_turn_plan_rejects_overlapping_or_unapproved_evidence_policy() -> None:
     )
     assert plan.allows("indexed_documentation")
     assert not plan.allows("runtime_evidence")
+
+
+def test_enabled_capability_semantics_use_closed_turn_plan_evidence_vocabulary() -> None:
+    for capability in base_capability_registry().list(enabled_only=True):
+        assert set(capability.evidence_sources).issubset(ALL_EVIDENCE_SOURCES)
+        if capability.metadata.get("runtime_hidden") is not True:
+            assert resolve_capability_turn_semantics(capability) is not None
+
+
+def test_runtime_log_search_semantics_resolve_to_runtime_mode() -> None:
+    semantics = resolve_capability_turn_semantics(LOG_SEARCH_EVIDENCE_CAPABILITY)
+
+    assert semantics is not None
+    assert semantics.mode == "runtime_answer"
+    assert semantics.task_type == "runtime_answer"
+    assert LOG_SEARCH_EVIDENCE_CAPABILITY.evidence_sources == [
+        EvidenceSource.RUNTIME_EVIDENCE
+    ]
 
 
 def _manifest() -> RuntimeCapabilityManifest:

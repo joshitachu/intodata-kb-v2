@@ -5,7 +5,8 @@ import re
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from src.api.dependencies import DBSession, RuntimeSourceReader, RuntimeSourceWriter
+from src.api.dependencies import DBSession, QdrantClient, RuntimeSourceReader, RuntimeSourceWriter
+from src.config import settings
 from src.rbac.permissions import get_user_project_ids
 from src.runtime.models import (
     RuntimeSourceCreate,
@@ -14,7 +15,7 @@ from src.runtime.models import (
     RuntimeSourceUpdate,
 )
 from src.runtime.source_registry import get_source_provider
-from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError, RuntimeStoreRepository
+from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError, RuntimeStoreRepository
 from src.runtime.sync import run_runtime_source_sync_cycle
 from src.runtime.audit import log_runtime_source_event
 
@@ -87,12 +88,30 @@ async def create_runtime_source(
     if not ok:
         raise HTTPException(status_code=400, detail=_sanitize_error(error) or "Connection validation failed")
     repo = RuntimeStoreRepository(db)
-    source = await repo.create_source_config(
-        project_id=body.project_id,
-        source_type=provider.provider_key(),
-        label=body.label,
-        sync_interval_seconds=body.sync_interval_seconds,
-    )
+    physical_identity = provider.physical_source_identity(body.credentials)
+    source_type_aliases = provider.source_type_aliases()
+    if await repo.find_source_id_by_physical_identity(physical_identity) is not None:
+        raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
+    # The migration cannot decrypt old source credentials. Promote matching
+    # migration-era identities lazily, then enforce the same generic guard.
+    for source_id in await repo.list_legacy_source_ids(source_type_aliases):
+        try:
+            credentials, _key_id = await repo.read_credentials(source_id)
+            if provider.physical_source_identity(credentials) == physical_identity:
+                await repo.promote_source_identity(source_id, physical_identity)
+                raise HTTPException(status_code=409, detail="That physical runtime source is already registered")
+        except RuntimeDuplicateSourceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    try:
+        source = await repo.create_source_config(
+            project_id=body.project_id,
+            source_type=provider.provider_key(),
+            physical_identity=physical_identity,
+            label=body.label,
+            sync_interval_seconds=body.sync_interval_seconds,
+        )
+    except RuntimeDuplicateSourceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     await repo.write_credentials(
         source_id=source.id,
         plaintext_payload=body.credentials,
@@ -186,12 +205,22 @@ async def sync_runtime_source_now(
     source_id: int,
     user: RuntimeSourceWriter,
     db: DBSession,
+    qdrant: QdrantClient,
 ) -> RuntimeSourceSyncResponse:
     repo = RuntimeStoreRepository(db)
     scope = await get_user_project_ids(user, db)
     try:
         await repo.get_source_config(source_id, scope)
-        result = await run_runtime_source_sync_cycle(db, source_id=source_id)
+        semantic_indexer = None
+        if settings.runtime_semantic_enabled:
+            from src.runtime.semantic.service import RuntimeSemanticService
+
+            semantic_indexer = RuntimeSemanticService(qdrant)
+        result = await run_runtime_source_sync_cycle(
+            db,
+            source_id=source_id,
+            semantic_indexer=semantic_indexer,
+        )
         source = await repo.get_source_config(source_id, scope)
     except RuntimeRecordNotFoundError as exc:
         raise HTTPException(status_code=409, detail=str(exc))

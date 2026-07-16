@@ -72,6 +72,7 @@ class RuntimeFailureRow(Base):
     job_name: Mapped[str] = mapped_column(String(255), nullable=False)
     failed_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     error_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -85,8 +86,9 @@ class RuntimeLogEventRow(Base):
         UniqueConstraint(
             "project_id",
             "execution_id",
+            "line_ordinal",
             "event_fingerprint",
-            name="uq_runtime_log_events_project_exec_fp",
+            name="uq_runtime_log_events_project_exec_ordinal_fp",
         ),
         Index("ix_runtime_log_events_project_id", "project_id"),
         Index("ix_runtime_log_events_execution_id", "execution_id"),
@@ -98,6 +100,7 @@ class RuntimeLogEventRow(Base):
     timestamp: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     severity: Mapped[str] = mapped_column(String(20), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    line_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     event_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     ingested_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -143,6 +146,7 @@ class RuntimeSourceRow(Base):
     project_id: Mapped[str] = mapped_column(String(255), nullable=False)
     source_key: Mapped[str] = mapped_column(String(100), nullable=False)
     source_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    physical_identity: Mapped[str] = mapped_column(String(512), nullable=False)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

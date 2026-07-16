@@ -502,6 +502,68 @@ class TestIdempotency:
         ).scalar()
         assert count == 1
 
+    async def test_repeated_log_lines_are_preserved_by_ordinal(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        await repo.upsert_log_event("project-a", _log(message="retry", ts=_T0), _SRC, _T0)
+        await repo.upsert_log_event(
+            "project-a", _log(message="retry", ts=_T0).model_copy(update={"line_ordinal": 1}), _SRC, _T0
+        )
+        events = await repo.get_execution_logs(None, GetExecutionLogsInput(execution_id="e1"))
+        assert [(event.message, event.line_ordinal) for event in events] == [("retry", 0), ("retry", 1)]
+
+
+class TestLogRetentionAndSearch:
+    async def test_prune_removes_only_expired_logs(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        now = _T0 + datetime.timedelta(days=100)
+        await repo.upsert_log_event("project-a", _log(message="old", ts=_T0), _SRC, now)
+        await repo.upsert_log_event(
+            "project-a", _log(message="fresh", ts=now).model_copy(update={"line_ordinal": 1}), _SRC, now
+        )
+        assert await repo.prune_expired_log_events(now=now) == 1
+        assert [event.message for event in await repo.get_execution_logs(None, GetExecutionLogsInput(execution_id="e1"))] == ["fresh"]
+
+    async def test_search_scopes_and_redacts_bounded_snippets(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        await repo.upsert_log_event(
+            "project-a", _log(message="ORA-12170 password=secret-value connection timeout"), _SRC, _T0
+        )
+        await repo.upsert_log_event(
+            "project-a",
+            _log(message="ORA-12170 password=secret-value connection timeout").model_copy(
+                update={"line_ordinal": 1}
+            ),
+            _SRC,
+            _T0,
+        )
+        await repo.upsert_log_event("project-b", _log(message="ORA-12170 private"), _SRC, _T0)
+        results = await repo.search_log_events(["project-a"], query="ORA-12170", snippet_chars=40)
+        assert len(results) == 1
+        assert results[0]["project_id"] == "project-a"
+        assert "secret-value" not in str(results[0]["snippet"])
+        assert len(str(results[0]["snippet"])) <= 40
+        assert results[0]["occurrence_count"] == 2
+
+
+class TestPagination:
+    async def test_execution_pagination_has_stable_tiebreaker_and_honest_total(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        await _seed_execution(repo, "project-a", _exec(execution_id="a", started=_T0))
+        await _seed_execution(repo, "project-a", _exec(execution_id="b", started=_T0))
+        params = ListExecutionsInput(limit=1, offset=1)
+        assert await repo.count_executions(["project-a"], params) == 2
+        page = await repo.list_executions(["project-a"], params)
+        assert len(page) == 1
+        assert page[0].execution_id == "a"
+
+    async def test_read_side_dedupe_counts_a_mirrored_execution_once(self, db_session):
+        repo = RuntimeStoreRepository(db_session)
+        await _seed_execution(repo, "project-a", _exec(execution_id="mirror"))
+        await _seed_execution(repo, "project-b", _exec(execution_id="mirror"))
+        params = ListExecutionsInput(limit=10)
+        assert await repo.count_executions(None, params) == 1
+        assert [item.execution_id for item in await repo.list_executions(None, params)] == ["mirror"]
+
     async def test_repeated_sync_state_update_is_idempotent(self, db_session):
         repo = RuntimeStoreRepository(db_session)
         await repo.update_sync_state(_SRC, "project-a", _T0)

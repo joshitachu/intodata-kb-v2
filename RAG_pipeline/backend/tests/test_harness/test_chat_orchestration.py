@@ -33,6 +33,10 @@ from src.harness.models import (
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_PACK_CREATE_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
+    CapabilityDefinition,
+    HarnessProviderType,
+    HarnessRiskTier,
+    LOG_SEARCH_EVIDENCE_CAPABILITY,
     OPERATIONAL_INVESTIGATION_CAPABILITY,
     PROJECT_ONBOARDING_CAPABILITY,
     RUNTIME_EVIDENCE_CAPABILITY,
@@ -43,6 +47,7 @@ from src.harness.models import (
 )
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.repository import HarnessWorkflowRepository
+from src.harness.registry import CapabilityRegistry
 from src.harness.planner import (
     EvidencePolicy,
     ModelPlannerDecision,
@@ -238,6 +243,183 @@ def test_fallback_preserves_focused_operational_scope() -> None:
 
     assert fallback.mode == "operational_investigation"
     assert fallback.arguments == {"project_id": "reingest-drill"}
+
+
+async def test_malformed_planner_output_preserves_explicit_runtime_source(
+    db_session, monkeypatch
+) -> None:
+    _, conversation = await _seed_conversation(db_session)
+
+    async def malformed_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.ANSWER, confidence=0),
+            decision_source="fallback",
+            fallback_reason="schema_validation",
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", malformed_plan)
+    decision = await plan_model_harness_chat_turn(
+        query="Tell me what jobs have failed according to the runtime logs.",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    assert decision.mode == "runtime_answer"
+    assert decision.capability_id == LOG_SEARCH_EVIDENCE_CAPABILITY.id
+    assert decision.fallback_reason == "schema_validation"
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.allows("runtime_evidence")
+    assert not decision.turn_plan.allows("indexed_documentation")
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_mode"),
+    [
+        ("Explain the runtime configuration according to the documentation.", "document_answer"),
+        ("What does the execution job do?", "rag"),
+        ("What is running right now?", "runtime_answer"),
+        ("According to the runtime logs, which workflows failed?", "runtime_answer"),
+    ],
+)
+async def test_planner_failure_resolves_evidence_source_not_domain_nouns(
+    db_session, monkeypatch, query: str, expected_mode: str
+) -> None:
+    _, conversation = await _seed_conversation(db_session)
+
+    async def malformed_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.ANSWER, confidence=0),
+            decision_source="fallback",
+            fallback_reason="schema_validation",
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", malformed_plan)
+    decision = await plan_model_harness_chat_turn(
+        query=query,
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    assert decision.mode == expected_mode
+    assert decision.turn_plan is not None
+    if expected_mode == "runtime_answer":
+        assert decision.turn_plan.allows("runtime_evidence")
+        assert not decision.turn_plan.allows("indexed_documentation")
+    else:
+        assert decision.turn_plan.allows("indexed_documentation")
+        assert not decision.turn_plan.allows("runtime_evidence")
+
+
+async def test_planner_failure_follow_up_keeps_prior_runtime_evidence_focus(
+    db_session, monkeypatch
+) -> None:
+    _, conversation = await _seed_conversation(db_session)
+    prior_plan = TurnPlan(
+        objective="Show runtime failures.",
+        task_type=TurnTaskType.RUNTIME_ANSWER,
+        resolved_scope={"project_id": "project-a", "project_ids": ["project-a"]},
+        evidence_policy=EvidencePolicy(
+            allowed=["runtime_evidence"],
+            denied=["indexed_documentation", "generated_documentation", "connector_evidence"],
+            preferred=["runtime_evidence"],
+            required=["runtime_evidence"],
+        ),
+        execution_mode=TurnExecutionMode.EVIDENCE,
+        output_contract="runtime_answer",
+        confidence=1,
+        capability_ids=[RUNTIME_EVIDENCE_CAPABILITY.id],
+    )
+    db_session.add(
+        ConversationMessage(
+            conversation=conversation,
+            role="assistant",
+            content="Prior runtime answer",
+            turn_plan=prior_plan.model_dump(mode="json"),
+        )
+    )
+    await db_session.flush()
+
+    async def malformed_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.ANSWER, confidence=0),
+            decision_source="fallback",
+            fallback_reason="schema_validation",
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", malformed_plan)
+    decision = await plan_model_harness_chat_turn(
+        query="Tell me what jobs have failed.",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    assert decision.mode == "runtime_answer"
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.allows("runtime_evidence")
+    assert not decision.turn_plan.allows("indexed_documentation")
+
+
+async def test_planner_failure_respects_docs_only_constraint(db_session, monkeypatch) -> None:
+    _, conversation = await _seed_conversation(db_session)
+
+    async def malformed_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.ANSWER, confidence=0),
+            decision_source="fallback",
+            fallback_reason="schema_validation",
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", malformed_plan)
+    decision = await plan_model_harness_chat_turn(
+        query="Use documentation only; do not use runtime logs.",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    assert decision.mode == "document_answer"
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.allows("indexed_documentation")
+    assert not decision.turn_plan.allows("runtime_evidence")
+
+
+async def test_planner_failure_for_ordinary_question_falls_back_to_document_rag(
+    db_session, monkeypatch
+) -> None:
+    _, conversation = await _seed_conversation(db_session)
+
+    async def malformed_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.ANSWER, confidence=0),
+            decision_source="fallback",
+            fallback_reason="schema_validation",
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", malformed_plan)
+    decision = await plan_model_harness_chat_turn(
+        query="What is a scheduled task?",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    assert decision.mode == "rag"
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.allows("indexed_documentation")
+    assert not decision.turn_plan.allows("runtime_evidence")
 
 
 async def test_zip_onboarding_routes_to_the_onboarding_workflow(db_session) -> None:
@@ -1203,6 +1385,144 @@ async def test_model_selected_runtime_call_cannot_bypass_requested_time_window(
     assert touched == ["indexed_docs", "generated_docs", "runtime"]
 
 
+async def test_runtime_only_log_plan_never_invokes_document_or_vector_search(
+    db_session, monkeypatch
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+    captured: dict[str, object] = {}
+
+    async def log_search(**kwargs):
+        captured.update(kwargs)
+        return EvidenceQueryResult(
+            capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+            status="succeeded",
+            items=[
+                EvidenceItem(
+                    id="runtime-log:1",
+                    capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+                    source_type="runtime_log_search",
+                    title="Failed component",
+                    summary="The component failed.",
+                )
+            ],
+            answer_draft="The component failed according to runtime logs.",
+        )
+
+    async def document_search_must_not_run(**_kwargs):
+        raise AssertionError("runtime-only turn must not search documentation")
+
+    monkeypatch.setattr("src.harness.chat.search_runtime_log_evidence", log_search)
+    monkeypatch.setattr("src.harness.chat.search_document_evidence", document_search_must_not_run)
+    monkeypatch.setattr("src.harness.chat.list_generated_doc_evidence", document_search_must_not_run)
+    await run_harness_chat_turn(
+        conversation=conversation,
+        query="What failed according to runtime logs?",
+        db=db_session,
+        user_id=user.id,
+        project_ids=["project-a"],
+        qdrant=object(),
+        planner_decision=HarnessPlannerDecision(
+            action="call_capability",
+            mode="runtime_answer",
+            capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+            arguments={"question": "What failed according to runtime logs?"},
+        ),
+    )
+
+    assert captured["qdrant"] is None
+
+
+async def test_runtime_only_plan_rejects_injected_document_and_connector_calls(
+    db_session, monkeypatch
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+    touched: list[str] = []
+    connector_capability = CapabilityDefinition(
+        id="connector.instance_99.search",
+        label="Search external evidence",
+        provider_type=HarnessProviderType.SOURCE,
+        provider_id="nexus.connector",
+        action="search",
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {"query": {"type": "string"}},
+        },
+        output_type="evidence_items",
+        risk_tier=HarnessRiskTier.READ_ONLY,
+        task_types=["connector_evidence"],
+        evidence_sources=["connector_evidence"],
+        metadata={"connector_instance_id": 99, "connector_capability_id": "search"},
+    )
+
+    async def registry_with_injected_connector(*_args, **_kwargs):
+        return CapabilityRegistry(
+            [
+                DOCUMENT_SEARCH_CAPABILITY,
+                DOCUMENT_LIST_CAPABILITY,
+                RUNTIME_EVIDENCE_CAPABILITY,
+                LOG_SEARCH_EVIDENCE_CAPABILITY,
+                OPERATIONAL_INVESTIGATION_CAPABILITY,
+                connector_capability,
+            ]
+        )
+
+    async def log_search(**_kwargs):
+        touched.append("runtime")
+        return EvidenceQueryResult(
+            capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+            status="succeeded",
+            items=[
+                EvidenceItem(
+                    id="runtime-log:policy",
+                    capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+                    source_type="runtime_log_search",
+                    title="Runtime failure",
+                    summary="A workflow failed.",
+                )
+            ],
+        )
+
+    async def must_not_run(**_kwargs):
+        raise AssertionError("TurnPlan-denied evidence layer executed")
+
+    async def connector_must_not_run(*_args, **_kwargs):
+        raise AssertionError("TurnPlan-denied connector executed")
+
+    monkeypatch.setattr(
+        "src.harness.chat.build_request_capability_registry", registry_with_injected_connector
+    )
+    monkeypatch.setattr("src.harness.chat.search_runtime_log_evidence", log_search)
+    monkeypatch.setattr("src.harness.chat.search_document_evidence", must_not_run)
+    monkeypatch.setattr("src.harness.chat.list_generated_doc_evidence", must_not_run)
+    monkeypatch.setattr("src.harness.chat.ConnectorService.read", connector_must_not_run)
+    await run_harness_chat_turn(
+        conversation=conversation,
+        query="What failed according to runtime logs?",
+        db=db_session,
+        user_id=user.id,
+        project_ids=["project-a"],
+        planner_decision=HarnessPlannerDecision(
+            action="call_capability",
+            mode="runtime_answer",
+            capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+            arguments={"question": "What failed according to runtime logs?"},
+            tool_calls=(
+                {
+                    "capability_id": DOCUMENT_LIST_CAPABILITY.id,
+                    "arguments": {"project_id": "project-a"},
+                },
+                {
+                    "capability_id": connector_capability.id,
+                    "arguments": {"query": "failed workflows"},
+                },
+            ),
+        ),
+    )
+
+    assert touched == ["runtime"]
+
+
 async def test_connector_inventory_records_read_only_connector_evidence(db_session, monkeypatch) -> None:
     user, conversation = await _seed_conversation(db_session)
 
@@ -1306,13 +1626,14 @@ async def test_runtime_continuation_resolves_slots_before_model_planning(db_sess
     )
 
     second = await plan_model_harness_chat_turn(
-        query="last 2 days", conversation=conversation, db=db_session, project_ids=["cdc"],
+        query="24 hours", conversation=conversation, db=db_session, project_ids=["cdc"],
         user_permissions=set(), access_token=None,
     )
     assert second.action == "call_capability"
     assert second.mode == "runtime_answer"
     assert second.turn_plan.resolved_scope["engine"] == "ESB_PROD"
-    assert second.turn_plan.resolved_scope["time_window"] is not None
+    assert second.turn_plan.resolved_scope["project_id"] == "cdc"
+    assert second.turn_plan.resolved_scope["time_window"]["expression"] == "24 hours"
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1361,6 +1682,9 @@ async def test_runtime_continuation_executes_persisted_objective_without_docs(
     await db_session.flush()
     captured: dict[str, object] = {}
 
+    async def must_not_plan(**_kwargs):
+        raise AssertionError("active continuation must resolve before model planning")
+
     async def runtime(**kwargs):
         captured.update(kwargs)
         return EvidenceQueryResult(
@@ -1384,39 +1708,69 @@ async def test_runtime_continuation_executes_persisted_objective_without_docs(
     monkeypatch.setattr("src.harness.chat.query_runtime_evidence", runtime)
     monkeypatch.setattr("src.harness.chat.search_document_evidence", docs_must_not_run)
     monkeypatch.setattr("src.harness.chat.list_generated_doc_evidence", docs_must_not_run)
-    decision = await plan_model_harness_chat_turn(
-        query="last 2 days",
-        conversation=conversation,
-        db=db_session,
-        project_ids=["cdc"],
-        user_permissions=set(),
-        access_token=None,
-    )
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", must_not_plan)
 
-    if stream:
-        events = [
-            event
-            async for event in run_harness_chat_turn_stream(
+    async def persist_turn(query: str, decision: HarnessPlannerDecision) -> None:
+        if stream:
+            events = [
+                event
+                async for event in run_harness_chat_turn_stream(
+                    conversation=conversation,
+                    query=query,
+                    db=db_session,
+                    user_id=user.id,
+                    project_ids=["cdc"],
+                    provider=_provider(),
+                    planner_decision=decision,
+                )
+            ]
+            assert any(event_type == "done" for event_type, _ in events)
+        else:
+            await run_harness_chat_turn(
                 conversation=conversation,
-                query="last 2 days",
+                query=query,
                 db=db_session,
                 user_id=user.id,
                 project_ids=["cdc"],
                 provider=_provider(),
                 planner_decision=decision,
             )
-        ]
-        assert any(event_type == "done" for event_type, _ in events)
-    else:
-        await run_harness_chat_turn(
+
+    for invalid_value in ("23", "later"):
+        invalid = await plan_model_harness_chat_turn(
+            query=invalid_value,
             conversation=conversation,
-            query="last 2 days",
             db=db_session,
-            user_id=user.id,
             project_ids=["cdc"],
-            provider=_provider(),
-            planner_decision=decision,
+            user_permissions=set(),
+            access_token=None,
         )
+        assert invalid.action == "ask_clarification"
+        assert invalid.matched_rule == "continuation_slot_invalid"
+        assert '"24 hours"' in (invalid.direct_answer or "")
+        assert invalid.turn_plan is not None
+        assert invalid.turn_plan.objective == objective
+        assert invalid.turn_plan.resolved_scope["project_id"] == "cdc"
+        assert invalid.turn_plan.missing_slots == ["time_window"]
+        await persist_turn(invalid_value, invalid)
+
+    decision = await plan_model_harness_chat_turn(
+        query="24 h",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["cdc"],
+        user_permissions=set(),
+        access_token=None,
+    )
+    assert decision.action == "call_capability"
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.objective == objective
+    assert decision.turn_plan.resolved_scope["project_id"] == "cdc"
+    assert decision.turn_plan.resolved_scope["time_window"]["expression"] == "24 h"
+    assert decision.turn_plan.missing_slots == []
+    assert decision.turn_plan.continuation["state"] == "ready"
+
+    await persist_turn("24 h", decision)
 
     assert captured["question"] == objective
     assert captured["project_id"] == "cdc"
@@ -1430,7 +1784,7 @@ async def test_runtime_continuation_executes_persisted_objective_without_docs(
         )
     ).scalar_one()
     assert continuation.status == "completed"
-    assert continuation.version == 3
+    assert continuation.version == 5
 
 
 async def test_explicit_docs_switch_supersedes_runtime_continuation(db_session) -> None:

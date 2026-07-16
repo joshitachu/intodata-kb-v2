@@ -16,6 +16,7 @@ from src.harness.models import (
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
+    LOG_SEARCH_EVIDENCE_CAPABILITY,
     RUNTIME_EVIDENCE_CAPABILITY,
     EvidenceItem,
     EvidenceQueryResult,
@@ -24,6 +25,10 @@ from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocument
 from src.retrieval.search import search_and_rerank, search_similar
 from src.runtime.source_registry import all_source_providers
 from src.runtime.store import RuntimeStoreRepository
+from src.runtime.providers import RuntimeProviderContext, RuntimeProviderError
+from src.runtime.providers.stored import StoredRuntimeProvider
+from src.runtime.registry import SearchLogsInput
+from src.runtime.insights.parser import redact_credentials
 
 
 async def search_document_evidence(
@@ -217,6 +222,153 @@ async def query_runtime_evidence(
         error_message="; ".join(errors)[:500] if errors and not items else None,
         answer_draft=final_answer[:12_000] if outcome.used_runtime_data and final_answer else None,
     )
+
+
+async def search_runtime_log_evidence(
+    *,
+    question: str,
+    project_scope: list[str] | None,
+    db: AsyncSession,
+    qdrant: AsyncQdrantClient | None = None,
+    project_id: str | None = None,
+    project_ids: list[str] | None = None,
+    execution_id: str | None = None,
+    since: datetime.datetime | None = None,
+    until: datetime.datetime | None = None,
+    limit: int = 10,
+) -> EvidenceQueryResult:
+    """Search held logs through the stored provider and normalize safe evidence.
+
+    This function is intentionally only an adapter: harness callers must invoke it
+    through ``HarnessCapabilityExecutor``. The stored provider owns repository
+    scope and produces credential-redacted snippets; this layer prevents internal
+    row identifiers or provider payloads from becoming evidence metadata.
+    """
+    selected_scope = _intersect_project_scopes(project_scope, project_ids)
+    if project_id is not None:
+        selected_scope = _intersect_scope(selected_scope, project_id)
+    try:
+        params = SearchLogsInput(
+            question=question,
+            project_id=project_id,
+            execution_id=execution_id,
+            since=since,
+            until=until,
+            limit=limit,
+        )
+        rows = await StoredRuntimeProvider().search_logs(
+            params,
+            RuntimeProviderContext(project_scope=selected_scope, db=db),
+        )
+    except (RuntimeProviderError, ValueError) as exc:
+        return EvidenceQueryResult(
+            capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+            status="failed",
+            error_message=str(exc)[:500],
+        )
+
+    items = [
+        _log_search_evidence_item(row, index=index)
+        for index, row in enumerate(rows[:limit], start=1)
+    ]
+    if settings.runtime_semantic_enabled and qdrant is not None:
+        from src.runtime.semantic.service import RuntimeSemanticService
+
+        semantic_hits = await RuntimeSemanticService(qdrant).search(
+            question,
+            project_ids=selected_scope,
+            top_k=limit,
+        )
+        items.extend(
+            _semantic_runtime_evidence_item(hit, index=index)
+            for index, hit in enumerate(semantic_hits, start=1)
+        )
+    items = _dedupe_runtime_search_items(items)[:limit]
+    return EvidenceQueryResult(
+        capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+        status="succeeded",
+        items=items,
+        answer_draft=_log_search_answer(question, items),
+    )
+
+
+def _semantic_runtime_evidence_item(hit: Any, *, index: int) -> EvidenceItem:
+    execution_id = hit.execution_id
+    record_ref = execution_id or hit.incident_id or hit.signature_hash or hit.record_id
+    return EvidenceItem(
+        id=f"runtime-semantic:{hit.source.value}:{hit.record_id}:{index}",
+        capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+        source_type=f"runtime_{hit.source.value}",
+        title=hit.source.value.replace("_", " ").title(),
+        summary=_preview(redact_credentials(hit.text)),
+        uri=(
+            f"/admin/logs/executions/{execution_id}"
+            if execution_id
+            else "/admin/logs/incidents"
+        ),
+        score=hit.score,
+        metadata={
+            "execution_ref": execution_id,
+            "record_ref": record_ref,
+            "project_id": hit.project_id,
+            "retrieval": "semantic",
+        },
+    )
+
+
+def _dedupe_runtime_search_items(items: list[EvidenceItem]) -> list[EvidenceItem]:
+    seen: set[tuple[str, str]] = set()
+    result: list[EvidenceItem] = []
+    for item in items:
+        key = (item.source_type, str(item.metadata.get("record_ref") or item.id))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _log_search_evidence_item(row: dict[str, Any], *, index: int) -> EvidenceItem:
+    execution_id = str(row.get("execution_id") or f"execution-{index}")
+    timestamp = row.get("timestamp")
+    severity = str(row.get("severity") or "info").lower()
+    snippet = _preview(redact_credentials(str(row.get("snippet") or "")))
+    job_name = str(row.get("job_name") or "runtime execution")
+    return EvidenceItem(
+        id=f"runtime-log:{execution_id}:{index}",
+        capability_id=LOG_SEARCH_EVIDENCE_CAPABILITY.id,
+        source_type="runtime_log_search",
+        title=f"Log match in {job_name}",
+        summary=snippet,
+        uri=f"/admin/logs/executions/{execution_id}",
+        observed_at=timestamp,
+        metadata={
+            "execution_ref": execution_id,
+            "project_id": row.get("project_id"),
+            "source_key": row.get("source_key"),
+            "severity": severity,
+            "occurrence_count": row.get("occurrence_count", 1),
+        },
+    )
+
+
+def _log_search_answer(question: str, items: list[EvidenceItem]) -> str:
+    """Return a bounded question-aware draft grounded in normalized log evidence."""
+    if not items:
+        return "No matching runtime log evidence was found for the requested scope."
+    execution_refs = list(dict.fromkeys(
+        str(item.metadata["execution_ref"])
+        for item in items
+        if item.metadata.get("execution_ref")
+    ))
+    first = items[0]
+    scope = ", ".join(execution_refs[:3]) or "curated runtime insights"
+    more = "" if len(execution_refs) <= 3 else f" and {len(execution_refs) - 3} more"
+    return (
+        f"For the log search question '{_preview(redact_credentials(question), limit=160)}', I found "
+        f"{len(items)} matching snippet(s) in execution(s) {scope}{more}. "
+        f"Most relevant {first.metadata.get('severity', 'log')} signal: {first.summary}"
+    )[:4_000]
 
 
 def _generic_runtime_items(

@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.runtime.sync.service import RuntimeSyncAdapter, RuntimeSyncCycleResult, run_runtime_sync_cycle
+from src.runtime.insights.semantic import RuntimeSemanticIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,14 @@ class RuntimeSyncScheduler:
         source_key: str,
         project_ids: Sequence[str],
         interval_seconds: int = 60,
+        semantic_indexer: RuntimeSemanticIndexer | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._adapter_factory = adapter_factory
         self._source_key = source_key
         self._project_ids = list(project_ids)
         self._interval_seconds = max(1, interval_seconds)
+        self._semantic_indexer = semantic_indexer
         self._stop = asyncio.Event()
         self._running = False
         self._task: asyncio.Task[None] | None = None
@@ -58,6 +61,7 @@ class RuntimeSyncScheduler:
                             adapter=adapter,
                             source_key=self._source_key,
                             project_id=project_id,
+                            semantic_indexer=self._semantic_indexer,
                         )
                         await session.commit()
                     except Exception:

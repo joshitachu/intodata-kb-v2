@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.harness.models import CapabilityDefinition, CapabilityHealth
+from src.harness.evidence_policy import validate_capability_turn_semantics
 from src.harness.registry import CapabilityRegistry
 
 
@@ -50,6 +51,7 @@ class RuntimeCapabilityTool(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     do_not_use_when: list[str] = Field(default_factory=list)
     task_types: list[str] = Field(default_factory=list)
+    planning_task_type: str | None = None
     evidence_sources: list[str] = Field(default_factory=list)
     output_contracts: list[str] = Field(default_factory=list)
     activity_label: str
@@ -126,6 +128,7 @@ def _is_visible_to_runtime(capability: CapabilityDefinition, scope: ManifestScop
 
 
 def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
+    validate_capability_turn_semantics(capability)
     safe_metadata = {
         key: value
         for key, value in capability.metadata.items()
@@ -144,6 +147,7 @@ def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
         use_when=list(capability.use_when),
         do_not_use_when=list(capability.do_not_use_when),
         task_types=list(capability.task_types),
+        planning_task_type=capability.planning_task_type,
         evidence_sources=list(capability.evidence_sources),
         output_contracts=list(capability.output_contracts),
         activity_label=str(safe_metadata.get("activity_label") or capability.label),

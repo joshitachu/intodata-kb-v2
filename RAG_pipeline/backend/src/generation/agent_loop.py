@@ -65,6 +65,8 @@ _RUNTIME_TOOL_GUIDE = (
     "steps, and status.\n"
     "\n"
     "LOW-LEVEL lookup tools (use to find execution IDs):\n"
+    "  search_logs       — search held log content for a phrase or error. Returns only bounded, "
+    "credential-redacted snippets plus execution references; never request a raw log dump.\n"
     "  detect_failures    — 'what failed recently?' → gives execution_id for further calls.\n"
     "  list_executions    — 'recent runs of X' or any listing question.\n"
     "  get_execution_details — details of one execution.\n"
@@ -98,7 +100,7 @@ _HEADLINE_MAX_CHARS = 200
 
 # Tools whose data consists of timestamped events with message text — keep only
 # the execution pointer in the summary, never event messages or excerpts.
-_EVENT_LIKE_TOOLS = frozenset({"get_execution_logs", "get_execution_timeline"})
+_EVENT_LIKE_TOOLS = frozenset({"get_execution_logs", "get_execution_timeline", "search_logs"})
 
 
 def build_runtime_tool_summary(

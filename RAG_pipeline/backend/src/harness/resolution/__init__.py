@@ -4,6 +4,7 @@ from .models import (
     AmbiguityOption,
     Confidence,
     ConfidenceLevel,
+    ContinuationSlotValueResolution,
     ConversationalFocus,
     EntityCandidate,
     EntityMatch,
@@ -13,11 +14,13 @@ from .models import (
     MatchReason,
     ResolutionAmbiguity,
     ResolutionStatus,
+    SlotValueResolutionStatus,
     TimeWindow,
     TimeWindowKind,
     WorkflowKind,
     WorkflowKindResolution,
 )
+from .slot_values import resolve_continuation_slot_value
 from .service import (
     confidence_level,
     merge_conversational_focus,
@@ -31,6 +34,7 @@ __all__ = [
     "AmbiguityOption",
     "Confidence",
     "ConfidenceLevel",
+    "ContinuationSlotValueResolution",
     "ConversationalFocus",
     "EntityCandidate",
     "EntityMatch",
@@ -40,6 +44,7 @@ __all__ = [
     "MatchReason",
     "ResolutionAmbiguity",
     "ResolutionStatus",
+    "SlotValueResolutionStatus",
     "TimeWindow",
     "TimeWindowKind",
     "WorkflowKind",
@@ -48,6 +53,7 @@ __all__ = [
     "merge_conversational_focus",
     "normalize_reference_text",
     "resolve_entity",
+    "resolve_continuation_slot_value",
     "resolve_time_window",
     "resolve_workflow_kind",
 ]

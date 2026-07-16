@@ -10,9 +10,6 @@ from src.runtime.models import (
     GetExecutionTimelineInput,
     GetRuntimeIncidentInput,
     ListExecutionsInput,
-    ListRuntimeArtifactsInput,
-    ListRuntimeConnectionsInput,
-    ListRuntimeDependenciesInput,
     ListRuntimeEnginesInput,
     ListRuntimeHealthInput,
     ListRuntimeInventoryInput,
@@ -33,6 +30,7 @@ class TestListRuntimeToolDefinitions:
         definitions = list_runtime_tool_definitions()
         names = {d.name for d in definitions}
         assert names == {
+            "search_logs",
             "list_executions",
             "get_execution_details",
             "detect_failures",
@@ -52,7 +50,7 @@ class TestListRuntimeToolDefinitions:
             "list_runtime_plans",
             "list_runtime_unhealthy",
         }
-        assert len(definitions) == 18
+        assert len(definitions) == 19
 
     def test_high_level_tool_descriptions_steer_model(self):
         definitions = {d.name: d for d in list_runtime_tool_definitions()}

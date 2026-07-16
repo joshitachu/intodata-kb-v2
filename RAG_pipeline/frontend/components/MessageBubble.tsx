@@ -17,7 +17,7 @@ import { SourceCitation } from "./SourceCitation";
 import { MarkdownContent } from "./MarkdownContent";
 import { HarnessActivityStatus } from "./HarnessActivityStatus";
 import { HarnessPendingAction } from "./HarnessPendingAction";
-import { RuntimeToolStatus } from "./RuntimeToolStatus";
+import { RuntimeToolStatus, runtimeToolLabel } from "./RuntimeToolStatus";
 import { StructuredAnswer } from "./StructuredAnswer";
 import { submitFeedback } from "@/lib/feedback";
 import { useViewport } from "@/hooks/useViewport";
@@ -29,6 +29,23 @@ import type {
   RuntimeToolProgress,
   UsageStats,
 } from "@/types";
+
+export function currentActivityLabel(args: {
+  latestRunningStep?: AgentStep;
+  harnessActivities?: HarnessActivityEvent[];
+  runtimeTools?: RuntimeToolProgress[];
+  hasSources?: boolean;
+}): string {
+  const { latestRunningStep, harnessActivities, runtimeTools, hasSources } = args;
+  if (latestRunningStep?.status === "running") return latestRunningStep.label;
+  const runningActivity = harnessActivities?.findLast(
+    (activity) => activity.status === "running",
+  );
+  if (runningActivity?.label) return runningActivity.label;
+  const runningTool = runtimeTools?.findLast((tool) => tool.status === "running");
+  if (runningTool) return `${runtimeToolLabel(runningTool.toolName)}...`;
+  return hasSources ? "Thinking..." : "Searching...";
+}
 
 interface MessageBubbleProps {
   message: MessageResponse;
@@ -86,7 +103,6 @@ export function MessageBubble({
   const sourceCount = message.sources?.length ?? 0;
   const imageList = message.image_data;
   const latestRunningStep = steps?.findLast((step) => step.status === "running");
-  const latestStep = latestRunningStep ?? steps?.at(-1);
 
   const closeLightbox = useCallback(() => setLightboxImage(null), []);
   const { isMobile } = useViewport();
@@ -175,7 +191,12 @@ export function MessageBubble({
                 ) : isStreaming ? (
                   <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
                     <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
-                    {latestStep?.label ?? (hasSources ? "Thinking..." : "Searching documents...")}
+                    {currentActivityLabel({
+                      latestRunningStep,
+                      harnessActivities,
+                      runtimeTools,
+                      hasSources,
+                    })}
                   </span>
                 ) : null}
                 {isStreaming && message.content && (

@@ -15,10 +15,12 @@ from src.harness.resolution import (
     EntityType,
     MatchReason,
     ResolutionStatus,
+    SlotValueResolutionStatus,
     TimeWindowKind,
     WorkflowKind,
     merge_conversational_focus,
     normalize_reference_text,
+    resolve_continuation_slot_value,
     resolve_entity,
     resolve_time_window,
     resolve_workflow_kind,
@@ -326,6 +328,53 @@ def test_past_24_hours_excludes_stale_and_end_boundary_evidence() -> None:
     assert window.contains(NOW - timedelta(hours=24))
     assert not window.contains(NOW - timedelta(hours=24, microseconds=1))
     assert not window.contains(NOW)
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_delta"),
+    [
+        ("24 hours", timedelta(hours=24)),
+        ("24 h", timedelta(hours=24)),
+        ("2 days", timedelta(days=2)),
+        ("  24   H  ", timedelta(hours=24)),
+        ("LAST 2 DAYS", timedelta(days=2)),
+    ],
+)
+def test_pending_time_window_slot_accepts_contextual_duration_values(
+    expression: str,
+    expected_delta: timedelta,
+) -> None:
+    result = resolve_continuation_slot_value("time_window", expression, now=NOW)
+
+    assert result.status is SlotValueResolutionStatus.RESOLVED
+    assert result.value is not None
+    assert result.value.end == NOW
+    assert result.value.start == NOW - expected_delta
+
+
+def test_bare_duration_is_not_a_general_time_window_expression() -> None:
+    with pytest.raises(ValueError, match="unsupported"):
+        resolve_time_window("24 hours", now=NOW)
+
+
+@pytest.mark.parametrize("expression", ["23", "soon", "0 h", ""])
+def test_pending_time_window_slot_rejects_incomplete_or_invalid_values(
+    expression: str,
+) -> None:
+    result = resolve_continuation_slot_value("time_window", expression, now=NOW)
+
+    assert result.status is SlotValueResolutionStatus.INVALID
+    assert result.value is None
+    assert result.clarification is not None
+    assert '"24 hours"' in result.clarification
+    assert '"2 days"' in result.clarification
+
+
+def test_unknown_continuation_slot_is_left_to_its_domain_resolver() -> None:
+    result = resolve_continuation_slot_value("project_id", "alitalend", now=NOW)
+
+    assert result.status is SlotValueResolutionStatus.NOT_APPLICABLE
+    assert result.value is None
 
 
 def test_today_is_midnight_utc_through_now() -> None:

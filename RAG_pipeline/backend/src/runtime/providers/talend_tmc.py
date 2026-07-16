@@ -60,7 +60,8 @@ from src.runtime.sync import RuntimeSyncBatch
 
 logger = logging.getLogger(__name__)
 
-_LOG_PAGE_SIZE = 200
+_LOG_PAGE_SIZE = 500
+_LOG_CAPTURE_LIMIT = 10_000
 _LOG_MAX_POLL_ATTEMPTS = 3
 _LOG_POLL_INTERVAL_SECONDS = 0.0
 _COMPONENT_PAGE_SIZE = 50
@@ -116,6 +117,17 @@ class TalendTmcRuntimeProvider:
 
     def static_ref_strategy(self) -> None:
         return None
+
+    def physical_source_identity(self, credentials: Mapping[str, Any]) -> str:
+        base_url = str(credentials.get("base_url") or "").strip().rstrip("/").lower()
+        if not base_url:
+            raise RuntimeProviderError("Missing TMC base URL")
+        return f"tmc:{base_url}"
+
+    def source_type_aliases(self) -> set[str]:
+        # Historical runtime mirrors used ``talend_tmc`` before self-service
+        # source configuration standardized on the shorter provider key.
+        return {self.provider_key(), "talend_tmc"}
 
     async def validate_credentials(self, credentials: Mapping[str, Any]) -> tuple[bool, str | None]:
         token = str(credentials.get("api_token") or "").strip()
@@ -295,7 +307,9 @@ class TalendTmcRuntimeProvider:
         logs = await self._get_execution_logs_async(params.execution_id)
         if logs is None:
             logs = await self._get_execution_logs_paginated(params.execution_id, params.limit)
-        events = [_to_log_event(item, params.execution_id) for item in logs]
+        else:
+            logs = logs[: params.limit]
+        events = [_to_log_event(item, params.execution_id, ordinal) for ordinal, item in enumerate(logs)]
         if params.min_severity is not None:
             allowed = _severities_at_or_above(params.min_severity)
             events = [item for item in events if item.severity in allowed]
@@ -369,6 +383,7 @@ class TalendTmcRuntimeProvider:
                 job_name=run.job_name,
                 failed_at=run.ended_at or run.started_at,
                 error_summary=_failure_summary_for_task_run(raw, run),
+                error_detail=_failure_detail_for_task_run(raw),
             )
             for raw, run in zip(task_runs_raw, job_runs, strict=False)
             if run.state == RuntimeExecutionState.FAILED
@@ -376,11 +391,10 @@ class TalendTmcRuntimeProvider:
         log_events: list[RuntimeLogEvent] = []
         component_metrics: list[RuntimeComponentMetric] = []
         for run in job_runs:
-            if run.state == RuntimeExecutionState.FAILED:
-                try:
-                    log_events.extend(await self.get_execution_logs(GetExecutionLogsInput(execution_id=run.run_id, limit=200)))
-                except RuntimeProviderError:
-                    logger.warning("TMC log fetch failed for execution %s", run.run_id)
+            try:
+                log_events.extend(await self.get_execution_logs(GetExecutionLogsInput(execution_id=run.run_id, limit=_LOG_CAPTURE_LIMIT)))
+            except RuntimeProviderError:
+                logger.warning("TMC log fetch failed for execution %s", run.run_id)
             try:
                 component_metrics.extend(await self.get_component_metrics(run.run_id))
             except RuntimeProviderError:
@@ -909,7 +923,7 @@ def _execution_from_job_run(run: RuntimeJobRun, project_id: str) -> RuntimeExecu
     )
 
 
-def _to_log_event(item: Any, fallback_execution_id: str) -> RuntimeLogEvent:
+def _to_log_event(item: Any, fallback_execution_id: str, line_ordinal: int = 0) -> RuntimeLogEvent:
     if not isinstance(item, dict):
         raise RuntimeProviderError("Talend TMC log entry is not an object")
     timestamp = _parse_dt(_field(item, "timestamp", "logTimestamp", "time", "date"))
@@ -920,6 +934,7 @@ def _to_log_event(item: Any, fallback_execution_id: str) -> RuntimeLogEvent:
         timestamp=timestamp,
         severity=_normalize_severity(_field(item, "severity", "level", "logLevel")),
         message=_required_str(item, "logMessage", "message", "text"),
+        line_ordinal=line_ordinal,
     )
 
 
@@ -949,6 +964,11 @@ def _failure_summary_for_task_run(raw: dict[str, Any], run: RuntimeJobRun) -> st
     if message:
         return message[:300]
     return f"{run.job_name} failed in Talend TMC"
+
+
+def _failure_detail_for_task_run(raw: dict[str, Any]) -> str | None:
+    """Preserve the provider error payload; redaction happens at the sync boundary."""
+    return _str_field(raw, "errorMessage", "error_message", "errorDetails", "error_details")
 
 
 def _plan_status(item: dict[str, Any]) -> str | None:

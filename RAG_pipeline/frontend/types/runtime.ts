@@ -49,6 +49,8 @@ export type RuntimeLogEvent = z.infer<typeof RuntimeLogEventSchema>;
 export const ExecutionListResponseSchema = z.object({
   executions: z.array(RuntimeExecutionSchema),
   total: z.number(),
+  offset: z.number().optional().default(0),
+  limit: z.number().optional().default(0),
 });
 export type ExecutionListResponse = z.infer<typeof ExecutionListResponseSchema>;
 
@@ -185,6 +187,8 @@ export type RuntimeSourceListResponse = z.infer<typeof RuntimeSourceListResponse
 export const RuntimeEngineListResponseSchema = z.object({
   engines: z.array(RuntimeEngineSchema),
   total: z.number(),
+  offset: z.number().optional().default(0),
+  limit: z.number().optional().default(0),
 });
 export type RuntimeEngineListResponse = z.infer<typeof RuntimeEngineListResponseSchema>;
 
@@ -271,6 +275,8 @@ export type RuntimeEngineHealth = z.infer<typeof RuntimeEngineHealthSchema>;
 export const RuntimeJobListResponseSchema = z.object({
   jobs: z.array(RuntimeJobSchema),
   total: z.number(),
+  offset: z.number().optional().default(0),
+  limit: z.number().optional().default(0),
 });
 export type RuntimeJobListResponse = z.infer<typeof RuntimeJobListResponseSchema>;
 
@@ -454,6 +460,8 @@ export type RuntimePlanHealth = z.infer<typeof RuntimePlanHealthSchema>;
 export const RuntimePlanListResponseSchema = z.object({
   plans: z.array(RuntimePlanSchema),
   total: z.number(),
+  offset: z.number().optional().default(0),
+  limit: z.number().optional().default(0),
 });
 export type RuntimePlanListResponse = z.infer<typeof RuntimePlanListResponseSchema>;
 
@@ -575,6 +583,8 @@ export type RuntimeIncidentInsight = z.infer<typeof RuntimeIncidentInsightSchema
 export const IncidentListResponseSchema = z.object({
   incidents: z.array(RuntimeIncidentInsightSchema),
   total: z.number(),
+  offset: z.number().optional().default(0),
+  limit: z.number().optional().default(0),
 });
 export type IncidentListResponse = z.infer<typeof IncidentListResponseSchema>;
 

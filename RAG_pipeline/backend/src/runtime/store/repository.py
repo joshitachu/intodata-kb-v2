@@ -18,7 +18,7 @@ import math
 import uuid
 from collections import defaultdict
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.runtime_data import (
@@ -96,7 +96,8 @@ from src.runtime.secrets import (
     decrypt_and_rotate_if_needed,
     encrypt,
 )
-from src.runtime.store import ProjectScope, RuntimeRecordNotFoundError
+from src.runtime.insights.parser import redact_credentials
+from src.runtime.store import ProjectScope, RuntimeDuplicateSourceError, RuntimeRecordNotFoundError
 
 # Severity ordering for min_severity filtering (low -> high).
 _SEVERITY_ORDER: list[RuntimeLogSeverity] = list(RuntimeLogSeverity)
@@ -109,7 +110,7 @@ def _severities_at_or_above(minimum: RuntimeLogSeverity) -> list[str]:
 
 def log_event_fingerprint(event: RuntimeLogEvent) -> str:
     """Deterministic fingerprint for log idempotency (no natural unique id upstream)."""
-    raw = f"{event.timestamp.isoformat()}|{event.severity.value}|{event.message}"
+    raw = f"{event.timestamp.isoformat()}|{event.severity.value}|{event.line_ordinal}|{event.message}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:64]
 
 
@@ -162,9 +163,17 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeExecutionRow.started_at >= params.since)
         if params.until:
             stmt = stmt.where(RuntimeExecutionRow.started_at <= params.until)
-        stmt = stmt.order_by(RuntimeExecutionRow.started_at.desc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeExecutionRow.started_at.desc(), RuntimeExecutionRow.id.desc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
-        return [_to_execution(row) for row in rows]
+        # Defensive read-side protection for historical mirrored writes. A source
+        # owns its execution ids, so an identical (source_key, execution_id) is
+        # one physical event even if an old mirror still exists temporarily.
+        seen: set[tuple[str, str]] = set()
+        return [
+            _to_execution(row)
+            for row in rows
+            if not ((key := (row.source_key, row.execution_id)) in seen or seen.add(key))
+        ]
 
     async def get_execution_details(
         self, scope: ProjectScope, params: GetExecutionDetailsInput
@@ -191,7 +200,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeFailureRow.failed_at >= params.since)
         if params.until:
             stmt = stmt.where(RuntimeFailureRow.failed_at <= params.until)
-        stmt = stmt.order_by(RuntimeFailureRow.failed_at.desc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeFailureRow.failed_at.desc(), RuntimeFailureRow.id.desc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_failure(row) for row in rows]
 
@@ -208,7 +217,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(
                 RuntimeLogEventRow.severity.in_(_severities_at_or_above(params.min_severity))
             )
-        stmt = stmt.order_by(RuntimeLogEventRow.timestamp.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeLogEventRow.timestamp.asc(), RuntimeLogEventRow.line_ordinal.asc(), RuntimeLogEventRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         if not rows:
             raise RuntimeRecordNotFoundError(f"Unknown execution_id: {params.execution_id}")
@@ -231,6 +240,104 @@ class RuntimeStoreRepository:
             return None
         return _as_utc(max(values))
 
+    async def count_executions(self, scope: ProjectScope, params: ListExecutionsInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(RuntimeExecutionRow.source_key, RuntimeExecutionRow.execution_id)
+        stmt = self._apply_scope(stmt, RuntimeExecutionRow.project_id, scope)
+        if params.project_name:
+            stmt = stmt.where(RuntimeExecutionRow.project_name == params.project_name)
+        if params.job_name:
+            stmt = stmt.where(RuntimeExecutionRow.job_name == params.job_name)
+        if params.state is not None:
+            stmt = stmt.where(RuntimeExecutionRow.state == params.state.value)
+        if params.since:
+            stmt = stmt.where(RuntimeExecutionRow.started_at >= params.since)
+        if params.until:
+            stmt = stmt.where(RuntimeExecutionRow.started_at <= params.until)
+        deduped = stmt.distinct().subquery()
+        return int((await self._session.execute(select(func.count()).select_from(deduped))).scalar_one())
+
+    async def count_failures(self, scope: ProjectScope, params: DetectFailuresInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeFailureRow)
+        stmt = self._apply_scope(stmt, RuntimeFailureRow.project_id, scope)
+        if params.since:
+            stmt = stmt.where(RuntimeFailureRow.failed_at >= params.since)
+        if params.until:
+            stmt = stmt.where(RuntimeFailureRow.failed_at <= params.until)
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def count_execution_logs(self, scope: ProjectScope, params: GetExecutionLogsInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeLogEventRow).where(RuntimeLogEventRow.execution_id == params.execution_id)
+        stmt = self._apply_scope(stmt, RuntimeLogEventRow.project_id, scope)
+        if params.min_severity is not None:
+            stmt = stmt.where(RuntimeLogEventRow.severity.in_(_severities_at_or_above(params.min_severity)))
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def prune_expired_log_events(self, *, now: datetime.datetime | None = None, retention_days: int = 90) -> int:
+        cutoff = (now or datetime.datetime.now(datetime.UTC)) - datetime.timedelta(days=retention_days)
+        result = await self._session.execute(delete(RuntimeLogEventRow).where(RuntimeLogEventRow.timestamp < cutoff))
+        await self._session.flush()
+        return int(result.rowcount or 0)
+
+    async def search_log_events(
+        self, scope: ProjectScope, *, query: str, project_id: str | None = None,
+        execution_id: str | None = None, since: datetime.datetime | None = None,
+        until: datetime.datetime | None = None, limit: int = 20, snippet_chars: int = 300,
+    ) -> list[dict[str, object]]:
+        """Search redacted raw logs with bounded snippets; scope is always server-derived."""
+        if self._denies_all(scope) or not query.strip():
+            return []
+        stmt = select(RuntimeLogEventRow)
+        stmt = self._apply_scope(stmt, RuntimeLogEventRow.project_id, scope)
+        if project_id is not None:
+            stmt = stmt.where(RuntimeLogEventRow.project_id == project_id)
+        if execution_id is not None:
+            stmt = stmt.where(RuntimeLogEventRow.execution_id == execution_id)
+        if since is not None:
+            stmt = stmt.where(RuntimeLogEventRow.timestamp >= since)
+        if until is not None:
+            stmt = stmt.where(RuntimeLogEventRow.timestamp <= until)
+        dialect = self._session.bind.dialect.name if self._session.bind is not None else ""
+        if dialect == "postgresql":
+            vector = func.to_tsvector("simple", RuntimeLogEventRow.message)
+            tsquery = func.plainto_tsquery("simple", query)
+            stmt = stmt.where(
+                vector.op("@@")(tsquery) | RuntimeLogEventRow.message.op("%")(query)
+            ).order_by(
+                func.ts_rank_cd(vector, tsquery).desc(),
+                func.similarity(RuntimeLogEventRow.message, query).desc(),
+                RuntimeLogEventRow.timestamp.desc(),
+                RuntimeLogEventRow.id.desc(),
+            )
+        else:
+            stmt = stmt.where(RuntimeLogEventRow.message.ilike(f"%{query}%")).order_by(RuntimeLogEventRow.timestamp.desc(), RuntimeLogEventRow.id.desc())
+        rows = (
+            await self._session.execute(stmt.limit(min(max(limit * 5, limit), 500)))
+        ).scalars().all()
+        results: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        for row in rows:
+            safe_message = redact_credentials(row.message)
+            key = (row.project_id, row.execution_id, row.severity, safe_message)
+            existing = results.get(key)
+            if existing is not None:
+                existing["occurrence_count"] = int(existing["occurrence_count"]) + 1
+                continue
+            results[key] = {
+                "project_id": row.project_id,
+                "execution_id": row.execution_id,
+                "timestamp": _as_utc(row.timestamp),
+                "severity": row.severity,
+                "line_ordinal": row.line_ordinal,
+                "snippet": safe_message[:snippet_chars],
+                "occurrence_count": 1,
+            }
+        return list(results.values())[:limit]
+
     async def list_sync_states(
         self,
         scope: ProjectScope,
@@ -248,7 +355,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeSyncStateRow.source_key == source_key)
         if project_id is not None:
             stmt = stmt.where(RuntimeSyncStateRow.project_id == project_id)
-        stmt = stmt.order_by(RuntimeSyncStateRow.updated_at.desc()).limit(limit)
+        stmt = stmt.order_by(RuntimeSyncStateRow.updated_at.desc(), RuntimeSyncStateRow.id.desc()).limit(limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_sync_state(row) for row in rows]
 
@@ -345,7 +452,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeSourceRow.project_id == project_id)
         if source_key is not None:
             stmt = stmt.where(RuntimeSourceRow.source_key == source_key)
-        stmt = stmt.order_by(RuntimeSourceRow.last_seen_at.desc().nullslast()).limit(limit)
+        stmt = stmt.order_by(RuntimeSourceRow.last_seen_at.desc().nullslast(), RuntimeSourceRow.id.desc()).limit(limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_source(row) for row in rows]
 
@@ -357,14 +464,22 @@ class RuntimeStoreRepository:
         project_id: str,
         source_type: str,
         label: str,
+        physical_identity: str | None = None,
         sync_interval_seconds: int = 60,
     ) -> RuntimeSourceRead:
+        physical_identity = physical_identity or f"local:{source_type}:{uuid.uuid4().hex}"
+        existing = (await self._session.execute(select(RuntimeSourceRow.id).where(
+            RuntimeSourceRow.physical_identity == physical_identity,
+        ))).scalar_one_or_none()
+        if existing is not None:
+            raise RuntimeDuplicateSourceError("That physical runtime source is already registered")
         now = datetime.datetime.now(datetime.UTC)
         source_key = f"{source_type}-{uuid.uuid4().hex[:12]}"
         row = RuntimeSourceRow(
             project_id=project_id,
             source_key=source_key,
             source_type=source_type,
+            physical_identity=physical_identity,
             label=label,
             status=RuntimeSyncStatus.SUCCESS.value,
             enabled=True,
@@ -386,6 +501,34 @@ class RuntimeStoreRepository:
         health = await self._get_source_health_row(row.id)
         return _to_source_read(row, health)
 
+    async def promote_source_identity(self, source_id: int, physical_identity: str) -> None:
+        """Replace a migration-era legacy identity after credentials are verified."""
+        row = await self._get_source_row(source_id, None)
+        collision = (await self._session.execute(select(RuntimeSourceRow.id).where(
+            RuntimeSourceRow.physical_identity == physical_identity,
+            RuntimeSourceRow.id != source_id,
+        ))).scalar_one_or_none()
+        if collision is not None:
+            raise RuntimeDuplicateSourceError("That physical runtime source is already registered")
+        row.physical_identity = physical_identity
+        await self._session.flush()
+
+    async def get_source_physical_identity(self, source_id: int) -> str:
+        return (await self._get_source_row(source_id, None)).physical_identity
+
+    async def find_source_id_by_physical_identity(self, physical_identity: str) -> int | None:
+        return (await self._session.execute(select(RuntimeSourceRow.id).where(
+            RuntimeSourceRow.physical_identity == physical_identity,
+        ))).scalar_one_or_none()
+
+    async def list_legacy_source_ids(self, source_types: set[str]) -> list[int]:
+        if not source_types:
+            return []
+        return list((await self._session.execute(select(RuntimeSourceRow.id).where(
+            RuntimeSourceRow.source_type.in_(source_types),
+            RuntimeSourceRow.physical_identity.startswith("legacy:"),
+        ))).scalars().all())
+
     async def list_source_configs(
         self,
         scope: ProjectScope,
@@ -399,7 +542,7 @@ class RuntimeStoreRepository:
         stmt = self._apply_scope(stmt, RuntimeSourceRow.project_id, scope)
         if project_id is not None:
             stmt = stmt.where(RuntimeSourceRow.project_id == project_id)
-        stmt = stmt.order_by(RuntimeSourceRow.ingested_at.desc()).limit(limit)
+        stmt = stmt.order_by(RuntimeSourceRow.ingested_at.desc(), RuntimeSourceRow.id.desc()).limit(limit)
         rows = list((await self._session.execute(stmt)).scalars().all())
         health_rows = {
             row.source_id: row
@@ -632,9 +775,24 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeEngineRow.source_key == params.source_key)
         if params.status is not None:
             stmt = stmt.where(RuntimeEngineRow.status == params.status.value)
-        stmt = stmt.order_by(RuntimeEngineRow.name.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeEngineRow.name.asc(), RuntimeEngineRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_engine(row) for row in rows]
+
+    async def count_engines(
+        self, scope: ProjectScope, params: ListRuntimeEnginesInput
+    ) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeEngineRow)
+        stmt = self._apply_scope(stmt, RuntimeEngineRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeEngineRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeEngineRow.source_key == params.source_key)
+        if params.status is not None:
+            stmt = stmt.where(RuntimeEngineRow.status == params.status.value)
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def list_engine_health(
         self,
@@ -717,9 +875,28 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobRow.engine_id == params.engine_id)
         if params.status is not None:
             stmt = stmt.where(RuntimeJobRow.status == params.status)
-        stmt = stmt.order_by(RuntimeJobRow.name.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeJobRow.name.asc(), RuntimeJobRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_job(row) for row in rows]
+
+    async def count_jobs(self, scope: ProjectScope, params: ListRuntimeJobsInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimeJobRow)
+        stmt = self._apply_scope(stmt, RuntimeJobRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimeJobRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimeJobRow.source_key == params.source_key)
+        if params.environment_id is not None:
+            stmt = stmt.where(RuntimeJobRow.environment_id == params.environment_id)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimeJobRow.workspace_id == params.workspace_id)
+        if params.engine_id is not None:
+            stmt = stmt.where(RuntimeJobRow.engine_id == params.engine_id)
+        if params.status is not None:
+            stmt = stmt.where(RuntimeJobRow.status == params.status)
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def list_artifacts(
         self,
@@ -739,7 +916,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeArtifactRow.workspace_id == params.workspace_id)
         if params.artifact_type is not None:
             stmt = stmt.where(RuntimeArtifactRow.artifact_type == params.artifact_type)
-        stmt = stmt.order_by(RuntimeArtifactRow.name.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeArtifactRow.name.asc(), RuntimeArtifactRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_artifact(row) for row in rows]
 
@@ -761,7 +938,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeConnectionRow.workspace_id == params.workspace_id)
         if params.connection_type is not None:
             stmt = stmt.where(RuntimeConnectionRow.connection_type == params.connection_type)
-        stmt = stmt.order_by(RuntimeConnectionRow.name.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeConnectionRow.name.asc(), RuntimeConnectionRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_connection(row) for row in rows]
 
@@ -785,7 +962,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobDependencyRow.dependency_id == params.dependency_id)
         if params.job_id is not None:
             stmt = stmt.where(RuntimeJobDependencyRow.job_id == params.job_id)
-        stmt = stmt.order_by(RuntimeJobDependencyRow.job_name.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeJobDependencyRow.job_name.asc(), RuntimeJobDependencyRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_job_dependency(row) for row in rows]
 
@@ -860,7 +1037,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimeJobRunRow.started_at >= params.since)
         if params.until is not None:
             stmt = stmt.where(RuntimeJobRunRow.started_at <= params.until)
-        stmt = stmt.order_by(RuntimeJobRunRow.started_at.desc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimeJobRunRow.started_at.desc(), RuntimeJobRunRow.id.desc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_job_run(row) for row in rows]
 
@@ -941,9 +1118,26 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimePlanRow.workspace_id == params.workspace_id)
         if params.status is not None:
             stmt = stmt.where(RuntimePlanRow.status == params.status)
-        stmt = stmt.order_by(RuntimePlanRow.name.asc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimePlanRow.name.asc(), RuntimePlanRow.id.asc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_plan(row) for row in rows]
+
+    async def count_plans(self, scope: ProjectScope, params: ListRuntimePlansInput) -> int:
+        if self._denies_all(scope):
+            return 0
+        stmt = select(func.count()).select_from(RuntimePlanRow)
+        stmt = self._apply_scope(stmt, RuntimePlanRow.project_id, scope)
+        if params.project_id is not None:
+            stmt = stmt.where(RuntimePlanRow.project_id == params.project_id)
+        if params.source_key is not None:
+            stmt = stmt.where(RuntimePlanRow.source_key == params.source_key)
+        if params.environment_id is not None:
+            stmt = stmt.where(RuntimePlanRow.environment_id == params.environment_id)
+        if params.workspace_id is not None:
+            stmt = stmt.where(RuntimePlanRow.workspace_id == params.workspace_id)
+        if params.status is not None:
+            stmt = stmt.where(RuntimePlanRow.status == params.status)
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def list_plan_runs(
         self,
@@ -967,7 +1161,7 @@ class RuntimeStoreRepository:
             stmt = stmt.where(RuntimePlanRunRow.started_at >= params.since)
         if params.until is not None:
             stmt = stmt.where(RuntimePlanRunRow.started_at <= params.until)
-        stmt = stmt.order_by(RuntimePlanRunRow.started_at.desc()).limit(params.limit)
+        stmt = stmt.order_by(RuntimePlanRunRow.started_at.desc(), RuntimePlanRunRow.id.desc()).offset(params.offset).limit(params.limit)
         rows = (await self._session.execute(stmt)).scalars().all()
         return [_to_plan_run(row) for row in rows]
 
@@ -1156,6 +1350,7 @@ class RuntimeStoreRepository:
             row = RuntimeSourceRow(project_id=project_id, source_key=source.source_key)
             self._session.add(row)
         row.source_type = source.source_type
+        row.physical_identity = f"observed:{source.source_key}"
         row.label = source.label
         row.status = source.status.value
         row.is_demo = 1 if source.is_demo else 0
@@ -1531,7 +1726,8 @@ class RuntimeStoreRepository:
             self._session.add(row)
         row.job_name = failure.job_name
         row.failed_at = failure.failed_at
-        row.error_summary = failure.error_summary
+        row.error_summary = redact_credentials(failure.error_summary)[:300]
+        row.error_detail = redact_credentials(failure.error_detail) if failure.error_detail else None
         row.source_key = source_key
         row.ingested_at = ingested_at
         await self._session.flush()
@@ -1547,6 +1743,7 @@ class RuntimeStoreRepository:
         stmt = select(RuntimeLogEventRow).where(
             RuntimeLogEventRow.project_id == project_id,
             RuntimeLogEventRow.execution_id == event.execution_id,
+            RuntimeLogEventRow.line_ordinal == event.line_ordinal,
             RuntimeLogEventRow.event_fingerprint == fingerprint,
         )
         row = (await self._session.execute(stmt)).scalars().first()
@@ -1555,11 +1752,13 @@ class RuntimeStoreRepository:
                 project_id=project_id,
                 execution_id=event.execution_id,
                 event_fingerprint=fingerprint,
+                line_ordinal=event.line_ordinal,
             )
             self._session.add(row)
         row.timestamp = event.timestamp
         row.severity = event.severity.value
-        row.message = event.message
+        row.message = redact_credentials(event.message)
+        row.line_ordinal = event.line_ordinal
         row.source_key = source_key
         row.ingested_at = ingested_at
         await self._session.flush()
@@ -1654,6 +1853,7 @@ def _to_failure(row: RuntimeFailureRow) -> RuntimeFailure:
         job_name=row.job_name,
         failed_at=_as_utc(row.failed_at),
         error_summary=row.error_summary,
+        error_detail=row.error_detail,
     )
 
 
@@ -1663,6 +1863,7 @@ def _to_log_event(row: RuntimeLogEventRow) -> RuntimeLogEvent:
         timestamp=_as_utc(row.timestamp),
         severity=RuntimeLogSeverity(row.severity),
         message=row.message,
+        line_ordinal=row.line_ordinal,
     )
 
 

@@ -62,11 +62,13 @@ export interface ExecutionFilters {
   jobName?: string;
   state?: RuntimeExecutionState;
   limit?: number;
+  offset?: number;
 }
 
 export interface FailureFilters {
   projectId?: string;
   limit?: number;
+  offset?: number;
 }
 
 export interface HealthFilters {
@@ -79,6 +81,7 @@ export interface InventoryFilters {
   projectId?: string;
   sourceKey?: string;
   limit?: number;
+  offset?: number;
 }
 
 export interface EngineFilters extends InventoryFilters {
@@ -132,6 +135,7 @@ export interface PlanRunFilters extends InventoryFilters {
 export interface LogFilters {
   minSeverity?: RuntimeLogSeverity;
   limit?: number;
+  offset?: number;
 }
 
 /** Build a query string from defined, non-empty filter values. */
@@ -156,6 +160,7 @@ async function fetchExecutions(
     job_name: filters.jobName,
     state: filters.state,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(`/api/runtime/executions${query}`, { cache: "no-store" });
   if (!res.ok) {
@@ -201,6 +206,7 @@ async function fetchExecutionLogs(
   const query = buildQuery({
     min_severity: filters.minSeverity,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(
     `/api/runtime/executions/${encodeURIComponent(executionId)}/logs${query}`,
@@ -229,6 +235,7 @@ async function fetchFailures(filters: FailureFilters): Promise<FailureListRespon
   const query = buildQuery({
     project_id: filters.projectId,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(`/api/runtime/failures${query}`, { cache: "no-store" });
   if (!res.ok) {
@@ -293,6 +300,7 @@ async function fetchEngines(filters: EngineFilters): Promise<RuntimeEngineListRe
     source_key: filters.sourceKey,
     status: filters.status,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(`/api/runtime/engines${query}`, { cache: "no-store" });
   if (!res.ok) {
@@ -362,6 +370,7 @@ async function fetchJobs(filters: JobFilters): Promise<RuntimeJobListResponse> {
     engine_id: filters.engineId,
     status: filters.status,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(`/api/runtime/jobs${query}`, { cache: "no-store" });
   if (!res.ok) {
@@ -535,6 +544,7 @@ async function fetchPlans(filters: PlanFilters): Promise<RuntimePlanListResponse
     workspace_id: filters.workspaceId,
     status: filters.status,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(`/api/runtime/plans${query}`, { cache: "no-store" });
   if (!res.ok) {
@@ -606,6 +616,7 @@ export interface IncidentFilters {
   since?: string;
   until?: string;
   limit?: number;
+  offset?: number;
 }
 
 export interface TimelineFilters {
@@ -679,6 +690,7 @@ async function fetchIncidents(filters: IncidentFilters): Promise<IncidentListRes
     since: filters.since,
     until: filters.until,
     limit: filters.limit,
+    offset: filters.offset,
   });
   const res = await fetch(`/api/runtime/incidents${query}`, { cache: "no-store" });
   if (!res.ok) {

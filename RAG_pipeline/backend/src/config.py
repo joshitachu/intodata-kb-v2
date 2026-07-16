@@ -249,6 +249,9 @@ class Settings(BaseSettings):
     runtime_sync_interval_seconds: int = 60
     runtime_sync_source_key: str = ""
     runtime_sync_project_ids: str = ""
+    # Optional semantic recall over curated runtime summaries/incidents. Raw log
+    # lines remain in Postgres and are never embedded.
+    runtime_semantic_enabled: bool = False
 
     # Runtime source credentials. The primary Fernet key encrypts newly-written
     # source credentials; the previous key is optional and used only during lazy

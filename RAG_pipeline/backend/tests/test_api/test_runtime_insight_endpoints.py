@@ -259,6 +259,13 @@ class TestIncidentList:
         assert incident["job_name"] == "esb_order_sync_route"
         assert incident["state"] == "failed"
 
+    async def test_incident_offset_does_not_change_total(self, seeded_client):
+        with _scope([_ESB]):
+            resp = await seeded_client.get("/api/v1/runtime/incidents?limit=1&offset=1")
+        assert resp.status_code == 200
+        assert resp.json()["incidents"] == []
+        assert resp.json()["total"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Incident detail

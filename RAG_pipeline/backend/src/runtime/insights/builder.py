@@ -15,6 +15,7 @@ import dataclasses
 import datetime
 import hashlib
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,9 @@ from src.db.models.runtime_insights import (
 from src.runtime.insights.catalog import CATALOG
 from src.runtime.insights.llm_fallback import maybe_run_llm_fallback
 from src.runtime.insights.parser import ParsedRuntimeLog, parse_runtime_log_message, redact_credentials
+
+if TYPE_CHECKING:
+    from src.runtime.insights.semantic import RuntimeSemanticIndexer
 
 _SEV_WARNING = "warning"
 _SEV_ERROR = "error"
@@ -81,6 +85,7 @@ async def build_runtime_insights_for_execution(
     execution_id: str,
     source_key: str,
     ingested_at: datetime.datetime,
+    semantic_indexer: "RuntimeSemanticIndexer | None" = None,
 ) -> InsightBuildResult:
     """Build and persist insight rows for one (project_id, execution_id) pair.
 
@@ -116,12 +121,25 @@ async def build_runtime_insights_for_execution(
             summary=summary,
         )
 
-    return InsightBuildResult(
+    result = InsightBuildResult(
         enriched_events=len(log_rows),
         had_incident=incident_id is not None,
         incident_id=incident_id,
         signature_hash=sig_hash,
     )
+    if semantic_indexer is not None:
+        # Optional Qdrant/embedding failures are isolated by the hook; the SQL
+        # insight write above remains the authoritative result of this builder.
+        from src.runtime.insights.semantic import index_runtime_insights_for_execution
+
+        await index_runtime_insights_for_execution(
+            session,
+            project_id=project_id,
+            execution_id=execution_id,
+            signature_hash=sig_hash,
+            indexer=semantic_indexer,
+        )
+    return result
 
 
 async def rebuild_runtime_insights(
