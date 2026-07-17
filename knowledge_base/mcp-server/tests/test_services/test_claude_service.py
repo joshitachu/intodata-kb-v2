@@ -160,6 +160,54 @@ async def test_generate_docs_cli_not_found(claude_svc, monkeypatch, tmp_path):
     assert result is False or result.get("success") is False
 
 
+async def test_generate_docs_revalidates_pack_governance_before_execution(
+    claude_svc,
+    monkeypatch,
+    tmp_path,
+):
+    import mcp_server.services.claude_service as claude_mod
+    from mcp_server.config import config
+    from mcp_server.services.pack_governance import PackGovernanceDenied
+
+    monkeypatch.setattr(config, "project_root", tmp_path)
+    project = SimpleNamespace(platform="talend", plugin_pack_id=7)
+    pack = SimpleNamespace(id=7, name="changed-after-assignment", path=str(tmp_path / "pack"))
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return pack
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def execute(self, _statement):
+            return _Result()
+
+    async def reject_changed_pack(_pack):
+        raise PackGovernanceDenied("Pack integrity changed after assignment. Submit changes through Git/PR.")
+
+    monkeypatch.setattr(claude_mod, "async_session_factory", _FakeSession)
+    monkeypatch.setattr(
+        claude_mod.pack_governance,
+        "require_generation_authority",
+        reject_changed_pack,
+    )
+
+    with patch(
+        "mcp_server.services.project_registry.ProjectRegistry.get_project",
+        return_value=project,
+    ):
+        result = await claude_svc.generate_docs("proj", plugin_pack_id=7)
+
+    assert result["success"] is False
+    assert "integrity changed after assignment" in result["error"]
+    assert not (tmp_path / "output" / "proj" / "docs_staging" / ".generation.lock").exists()
+
+
 async def test_claude_cli_command_uses_resolved_cli_model(monkeypatch, tmp_path):
     from mcp_server.config import config
 

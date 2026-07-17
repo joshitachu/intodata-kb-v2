@@ -36,8 +36,16 @@ from src.db.models.harness_connector import (
 from src.db.models.harness_evidence import HarnessEvidenceRow
 from src.db.models.harness_pack import (
     HarnessCustomPackVersionRow,
+    HarnessOrganizationGovernancePolicyRow,
     HarnessPackActivationSnapshotRow,
     HarnessProjectPackActivationRow,
+    HarnessStylePackVersionRow,
+    HarnessPackDraftRow,
+    HarnessPrivateAnalysisPackRow,
+    HarnessPrivateAnalysisPackVersionRow,
+    HarnessPrivateAnalysisPackShareRow,
+    HarnessPackPreviewReceiptRow,
+    HarnessPackPromotionProposalRow,
 )
 from src.db.models.runtime_data import (
     RuntimeComponentMetricRow,
@@ -99,8 +107,16 @@ __all__ = [
     "HarnessConnectorCapabilityBindingRow",
     "HarnessEvidenceRow",
     "HarnessCustomPackVersionRow",
+    "HarnessOrganizationGovernancePolicyRow",
     "HarnessPackActivationSnapshotRow",
     "HarnessProjectPackActivationRow",
+    "HarnessStylePackVersionRow",
+    "HarnessPackDraftRow",
+    "HarnessPrivateAnalysisPackRow",
+    "HarnessPrivateAnalysisPackVersionRow",
+    "HarnessPrivateAnalysisPackShareRow",
+    "HarnessPackPreviewReceiptRow",
+    "HarnessPackPromotionProposalRow",
     "RuntimeExecutionRow",
     "RuntimeFailureRow",
     "RuntimeLogEventRow",

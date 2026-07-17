@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import re
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
+
+from src.harness.packs.models import PackArtifactV3
 
 import httpx
 
@@ -77,19 +80,15 @@ class McpProjectInfo:
 
 @dataclass(frozen=True)
 class McpDocumentationPack:
-    """Safe metadata for an installed MCP document-generation pack."""
+    """Generation-authoritative MCP document Pack metadata."""
 
     id: int
     name: str
     version: str
     description: str | None
-
-
-@dataclass(frozen=True)
-class McpDocumentationPackDocumentDraft:
-    name: str
-    sections: list[str]
-    instructions: str | None = None
+    certification_status: str
+    mutable: bool
+    blocked_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +167,11 @@ class McpDocumentationProvider:
         write_model: str | None = None,
         plugin_pack_id: int | None = None,
         nexus_pack_ids: list[str] | None = None,
+        nexus_pack_snapshot: dict[str, Any] | None = None,
+        nexus_presentation: dict[str, Any] | None = None,
+        nexus_audience_render: dict[str, Any] | None = None,
+        nexus_private_pack_receipts: list[dict[str, Any]] | None = None,
+        nexus_private_analysis_packs: list[dict[str, Any]] | None = None,
         resume: bool | None = None,
         mode: str | None = None,
     ) -> McpDocumentationGenerationResult:
@@ -192,7 +196,66 @@ class McpDocumentationProvider:
         if nexus_pack_ids is not None:
             if not all(isinstance(pack_id, str) and pack_id for pack_id in nexus_pack_ids):
                 raise McpDocumentationProviderError("Invalid selected documentation packs.")
-            payload["nexus_pack_ids"] = sorted(set(nexus_pack_ids))
+            if len(nexus_pack_ids) != len(set(nexus_pack_ids)):
+                raise McpDocumentationProviderError("Duplicate documentation Pack selection.")
+            payload["nexus_pack_ids"] = list(nexus_pack_ids)
+        if nexus_pack_snapshot is not None:
+            if not isinstance(nexus_pack_snapshot, dict) or not isinstance(
+                nexus_pack_snapshot.get("snapshot_hash"), str
+            ):
+                raise McpDocumentationProviderError("Invalid governed Pack snapshot.")
+            payload["nexus_pack_snapshot"] = nexus_pack_snapshot
+        if nexus_presentation is not None:
+            if not isinstance(nexus_presentation, dict):
+                raise McpDocumentationProviderError("Invalid governed Pack presentation.")
+            payload["nexus_presentation"] = nexus_presentation
+        if nexus_audience_render is not None:
+            if not isinstance(nexus_audience_render, dict) or not set(nexus_audience_render) <= {
+                "seniority", "domain_familiarity", "decision_horizon", "detail_level"
+            } or not all(isinstance(value, str) for value in nexus_audience_render.values()):
+                raise McpDocumentationProviderError("Invalid normalized Pack audience rendering.")
+            payload["nexus_audience_render"] = nexus_audience_render
+        if nexus_private_pack_receipts is not None:
+            if not isinstance(nexus_private_pack_receipts, list) or len(nexus_private_pack_receipts) > 20:
+                raise McpDocumentationProviderError("Invalid private Pack receipts.")
+            for receipt in nexus_private_pack_receipts:
+                if not isinstance(receipt, dict) or not isinstance(receipt.get("content_hash"), str) or len(receipt["content_hash"]) != 64:
+                    raise McpDocumentationProviderError("Invalid private Pack receipt.")
+            payload["nexus_private_pack_receipts"] = nexus_private_pack_receipts
+        if nexus_private_analysis_packs is not None:
+            if not isinstance(nexus_private_analysis_packs, list) or len(nexus_private_analysis_packs) > 20:
+                raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
+            receipts: list[dict[str, Any]] = []
+            for item in nexus_private_analysis_packs:
+                if not isinstance(item, dict) or set(item) != {
+                    "receipt", "artifact", "missing_optional_capability_ids"
+                }:
+                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
+                receipt = item["receipt"]
+                artifact = item["artifact"]
+                missing = item["missing_optional_capability_ids"]
+                if (
+                    not isinstance(receipt, dict)
+                    or not isinstance(receipt.get("content_hash"), str)
+                    or len(receipt["content_hash"]) != 64
+                    or not isinstance(artifact, dict)
+                    or not isinstance(missing, list)
+                    or not all(isinstance(capability_id, str) for capability_id in missing)
+                ):
+                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
+                try:
+                    PackArtifactV3.model_validate_json(json.dumps(artifact), strict=True)
+                except (TypeError, ValueError):
+                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.") from None
+                receipts.append(receipt)
+            if len({receipt["content_hash"] for receipt in receipts}) != len(receipts):
+                raise McpDocumentationProviderError("Duplicate private Analysis Pack payload.")
+            if nexus_private_pack_receipts is not None and receipts != nexus_private_pack_receipts:
+                raise McpDocumentationProviderError("Private Analysis Pack receipts do not match payload.")
+            payload["nexus_private_analysis_packs"] = nexus_private_analysis_packs
+            payload.setdefault("nexus_private_pack_receipts", receipts)
+            if len(receipts) == 1:
+                payload.setdefault("nexus_audience_render", receipts[0].get("audience_render", {}))
         _set_if_present(payload, "resume", resume)
         _set_if_present(payload, "mode", mode)
 
@@ -461,7 +524,7 @@ class McpDocumentationProvider:
     async def list_documentation_packs(
         self, *, access_token: str | None = None
     ) -> list[McpDocumentationPack]:
-        """List installed MCP plugin packs without exposing their filesystem paths."""
+        """List only certified immutable Packs eligible for generation selection."""
         if not self._base_url:
             raise McpDocumentationProviderError("Documentation provider is not configured.")
         try:
@@ -495,7 +558,17 @@ class McpDocumentationProvider:
             pack_id = _optional_positive_int(item.get("id"))
             raw_name = item.get("manifest_name") or item.get("name")
             version = item.get("version")
-            if pack_id is None or not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(version, str) or not version.strip():
+            certification_status = item.get("certification_status")
+            mutable = item.get("mutable")
+            if (
+                pack_id is None
+                or not isinstance(raw_name, str)
+                or not raw_name.strip()
+                or not isinstance(version, str)
+                or not version.strip()
+                or certification_status != "certified"
+                or mutable is not False
+            ):
                 continue
             description = item.get("description")
             packs.append(
@@ -504,6 +577,9 @@ class McpDocumentationProvider:
                     name=_safe_text(raw_name),
                     version=_safe_text(version),
                     description=_safe_text(description) if isinstance(description, str) and description.strip() else None,
+                    certification_status=certification_status,
+                    mutable=mutable,
+                    blocked_reason=None,
                 )
             )
         return packs
@@ -519,81 +595,6 @@ class McpDocumentationProvider:
         if project is None:
             raise McpDocumentationProviderError("Documentation project was not found.")
         return project.plugin_pack_id
-
-    async def create_documentation_pack(
-        self,
-        *,
-        name: str,
-        description: str | None,
-        documents: list[McpDocumentationPackDocumentDraft],
-        access_token: str | None = None,
-    ) -> McpDocumentationPack:
-        """Create a reusable local IntoDoc documentation Pack through MCP."""
-        if not self._base_url:
-            raise McpDocumentationProviderError("Documentation provider is not configured.")
-        payload = {
-            "name": name,
-            "description": description,
-            "documents": [
-                {
-                    "name": document.name,
-                    "sections": document.sections,
-                    "instructions": document.instructions,
-                }
-                for document in documents
-            ],
-        }
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout,
-                transport=self._transport,
-                cookies={"access_token": access_token} if access_token else None,
-            ) as client:
-                response = await client.post(
-                    "/documentation-packs",
-                    json=payload,
-                )
-        except httpx.TimeoutException as exc:
-            raise McpDocumentationProviderError(
-                f"Documentation provider timed out after {self._timeout:g}s."
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise McpDocumentationProviderError(
-                _safe_error("Documentation provider could not be reached", str(exc))
-            ) from exc
-        if response.status_code >= 400:
-            raise McpDocumentationProviderError(
-                _safe_error(
-                    f"Documentation provider returned HTTP {response.status_code}",
-                    _response_error_text(response),
-                )
-            )
-        data = _json_object(response)
-        pack_id = _optional_positive_int(data.get("id"))
-        raw_name = data.get("manifest_name") or data.get("name")
-        version = data.get("version")
-        if (
-            pack_id is None
-            or not isinstance(raw_name, str)
-            or not raw_name.strip()
-            or not isinstance(version, str)
-            or not version.strip()
-        ):
-            raise McpDocumentationProviderError(
-                "Documentation provider returned an invalid response."
-            )
-        raw_description = data.get("description")
-        return McpDocumentationPack(
-            id=pack_id,
-            name=_safe_text(raw_name),
-            version=_safe_text(version),
-            description=(
-                _safe_text(raw_description)
-                if isinstance(raw_description, str) and raw_description.strip()
-                else None
-            ),
-        )
 
     async def set_project_documentation_pack(
         self,
