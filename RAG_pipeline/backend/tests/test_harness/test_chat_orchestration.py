@@ -31,7 +31,7 @@ from src.harness.models import (
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
-    DOCUMENTATION_PACK_CREATE_CAPABILITY,
+    DOCUMENTATION_PACK_LIST_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
     CapabilityDefinition,
     HarnessProviderType,
@@ -146,6 +146,8 @@ async def test_docs_pack_name_resolves_to_reusable_pack_id() -> None:
                         "manifest_name": "Operations Handbook",
                         "version": "1.0.0",
                         "description": "Operations documentation",
+                        "certification_status": "certified",
+                        "mutable": False,
                     }
                 ],
             )
@@ -440,7 +442,7 @@ async def test_zip_onboarding_routes_to_the_onboarding_workflow(db_session) -> N
     assert decision.capability_id == PROJECT_ONBOARDING_CAPABILITY.id
 
 
-async def test_pack_creation_clarification_keeps_pack_management_task(
+async def test_pack_creation_cannot_reactivate_the_retired_chat_capability(
     db_session, monkeypatch
 ) -> None:
     user, conversation = await _seed_conversation(db_session)
@@ -465,35 +467,13 @@ async def test_pack_creation_clarification_keeps_pack_management_task(
     )
 
     assert decision.action == "ask_clarification"
-    assert decision.mode == "create_documentation_pack"
-    assert decision.capability_id == DOCUMENTATION_PACK_CREATE_CAPABILITY.id
+    assert decision.mode == "model_clarification"
+    assert decision.capability_id is None
     assert decision.direct_answer == (
         "Who will read this Pack, and which documents should it contain?"
     )
     assert decision.turn_plan is not None
-    assert decision.turn_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
-    assert decision.turn_plan.execution_mode is TurnExecutionMode.CLARIFICATION
-
-    await run_harness_chat_turn(
-        conversation=conversation,
-        query="/pack create",
-        db=db_session,
-        user_id=user.id,
-        project_ids=["project-a"],
-        planner_decision=decision,
-    )
-    follow_up = await plan_model_harness_chat_turn(
-        query="It is for operations teams and should cover schedules and recovery.",
-        conversation=conversation,
-        db=db_session,
-        project_ids=["project-a"],
-        user_permissions={"manage_projects"},
-        access_token=None,
-    )
-
-    assert follow_up.mode == "create_documentation_pack"
-    assert follow_up.turn_plan is not None
-    assert follow_up.turn_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+    assert decision.turn_plan.task_type is not TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
 
 
 async def test_unavailable_named_connector_cannot_be_answered_as_if_searched(
@@ -823,6 +803,52 @@ async def test_model_clarification_state_is_typed_and_durable(db_session) -> Non
         )
     ).scalars().all()
     assert messages[0].turn_plan == messages[1].turn_plan == response.turn_plan
+
+
+async def test_pack_catalog_question_uses_catalog_capability_not_application_modules(
+    db_session,
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json=[{
+                    "id": 7,
+                    "name": "volkerwessels-reverse-engineering",
+                    "manifest_name": "VolkerWessels Reverse Engineering",
+                    "version": "2.0.0",
+                    "description": "Organization reverse-engineering documentation.",
+                    "certification_status": "certified",
+                    "mutable": False,
+                }],
+            )
+        ),
+    )
+    response = await run_harness_chat_turn(
+        conversation=conversation,
+        query="Which Packs are available to use?",
+        db=db_session,
+        user_id=user.id,
+        project_ids=None,
+        provider=provider,
+        planner_decision=HarnessPlannerDecision(
+            action="call_capability",
+            mode="documentation_pack_catalog",
+            capability_id=DOCUMENTATION_PACK_LIST_CAPABILITY.id,
+            arguments={"scope": "all"},
+            confidence=1,
+            decision_source="model",
+        ),
+    )
+
+    assert "VolkerWessels Reverse Engineering" in response.content
+    assert "You do not have any saved personal Packs yet" in response.content
+    assert "nexus.data-integration" not in response.content
+    assert response.turn_plan is not None
+    assert response.turn_plan["task_type"] == "documentation_pack_management"
 
 
 async def test_harness_chat_turn_triggers_docs_generation_and_persists_receipt(db_session) -> None:
