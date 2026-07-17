@@ -1,13 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
-from src.harness.providers.mcp_docs import (
-    McpDocumentationPackDocumentDraft,
-    McpDocumentationProvider,
-    McpDocumentationProviderError,
-)
+from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocumentationProviderError
 
 
 async def test_trigger_generation_posts_minimal_payload_and_forwards_cookie() -> None:
@@ -66,6 +64,55 @@ async def test_trigger_generation_passes_only_explicit_options() -> None:
     )
 
 
+async def test_trigger_generation_keeps_governed_snapshot_and_presentation_separate() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.read())
+        return httpx.Response(200, json={"status": "generation_triggered", "message": "started"})
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(handler),
+    )
+    snapshot = {
+        "policy_id": "org.default",
+        "policy_hash": "a" * 64,
+        "foundation_pack_id": "nexus.documentation",
+        "functional_pack_ids": ["nexus.data-integration"],
+        "style_pack_ids": ["style.user.1.concise"],
+        "resolved_packs": [],
+        "snapshot_hash": "b" * 64,
+    }
+    presentation = {"audience": "engineering", "tone": "concise", "formatting": ["markdown"]}
+
+    await provider.trigger_generation(
+        project_id="p1",
+        plugin_pack_id=7,
+        nexus_pack_ids=["nexus.documentation", "nexus.data-integration", "style.user.1.concise"],
+        nexus_pack_snapshot=snapshot,
+        nexus_presentation=presentation,
+    )
+
+    assert captured["json"] == {
+        "project_id": "p1",
+        "plugin_pack_id": 7,
+        "nexus_pack_ids": ["nexus.documentation", "nexus.data-integration", "style.user.1.concise"],
+        "nexus_pack_snapshot": snapshot,
+        "nexus_presentation": presentation,
+    }
+
+
+async def test_trigger_generation_rejects_duplicate_pack_ids() -> None:
+    provider = McpDocumentationProvider(base_url="http://mcp.internal/mcp")
+
+    with pytest.raises(McpDocumentationProviderError, match="Duplicate documentation Pack selection"):
+        await provider.trigger_generation(
+            project_id="p1",
+            nexus_pack_ids=["nexus.documentation", "nexus.documentation"],
+        )
+
+
 async def test_list_documentation_packs_returns_safe_metadata_without_paths() -> None:
     seen: dict[str, object] = {}
 
@@ -81,6 +128,8 @@ async def test_list_documentation_packs_returns_safe_metadata_without_paths() ->
                     "manifest_name": "Talend migration",
                     "version": "2.1.0",
                     "description": "Talend to Azure documentation instructions.",
+                    "certification_status": "certified",
+                    "mutable": False,
                     "path": "/private/plugin-packs/talend-migration",
                 }
             ],
@@ -98,6 +147,40 @@ async def test_list_documentation_packs_returns_safe_metadata_without_paths() ->
     assert packs[0].name == "Talend migration"
     assert packs[0].version == "2.1.0"
     assert not hasattr(packs[0], "path")
+
+
+async def test_list_documentation_packs_filters_legacy_or_mutable_entries() -> None:
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": 1,
+                        "name": "Certified",
+                        "version": "1.0.0",
+                        "certification_status": "certified",
+                        "mutable": False,
+                    },
+                    {
+                        "id": 2,
+                        "name": "Legacy",
+                        "version": "1.0.0",
+                        "certification_status": "legacy_untrusted",
+                        "mutable": True,
+                        "blocked_reason": "Git/PR certification required",
+                    },
+                ],
+            )
+        ),
+    )
+
+    packs = await provider.list_documentation_packs()
+
+    assert [pack.id for pack in packs] == [1]
+    assert packs[0].certification_status == "certified"
+    assert packs[0].mutable is False
 
 
 async def test_project_documentation_pack_get_and_set_forward_cookie() -> None:
@@ -120,53 +203,6 @@ async def test_project_documentation_pack_get_and_set_forward_cookie() -> None:
         ("GET", "/mcp/projects", b""),
         ("PATCH", "/mcp/projects/p1/plugin", b'{"plugin_pack_id":8}'),
     ]
-
-
-async def test_create_documentation_pack_forwards_safe_definition() -> None:
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["payload"] = request.read()
-        seen["cookie"] = request.headers.get("cookie")
-        return httpx.Response(
-            201,
-            json={
-                "id": 12,
-                "name": "Operations Handbook",
-                "manifest_name": "Operations Handbook",
-                "version": "1.0.0",
-                "description": "Operations docs",
-            },
-        )
-
-    provider = McpDocumentationProvider(
-        base_url="http://mcp.internal/mcp",
-        transport=httpx.MockTransport(handler),
-    )
-
-    pack = await provider.create_documentation_pack(
-        name="Operations Handbook",
-        description="Operations docs",
-        documents=[
-            McpDocumentationPackDocumentDraft(
-                name="RUNBOOK",
-                sections=["Overview", "Recovery"],
-                instructions="Use evidence.",
-            )
-        ],
-        access_token="user-jwt",
-    )
-
-    assert seen["path"] == "/mcp/documentation-packs"
-    assert seen["cookie"] == "access_token=user-jwt"
-    assert seen["payload"] == (
-        b'{"name":"Operations Handbook","description":"Operations docs",'
-        b'"documents":[{"name":"RUNBOOK","sections":["Overview","Recovery"],'
-        b'"instructions":"Use evidence."}]}'
-    )
-    assert pack.id == 12
-    assert pack.name == "Operations Handbook"
 
 
 @pytest.mark.parametrize("plugin_pack_id", [0, -1, True, "7"])

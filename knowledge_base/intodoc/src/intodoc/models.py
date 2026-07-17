@@ -632,11 +632,45 @@ class MigrationAssessment(BaseModel):
     summary: dict = Field(default_factory=dict)
 
 
-# ── Column-Level Lineage (Pass 20) ────────────────────────────────
+# ── Column-Level Lineage (Pass 20, extended by the S4 deterministic pass) ──
+#
+# Originally populated by the abandoned 21-pass LLM analyzer (dead code --
+# nothing referenced these models until the S4 lineage pass, see
+# RAG_pipeline/docs/topology-lineage-runtime-architecture.md sec 2.2/D5).
+# `intodoc/src/intodoc/lineage.py` now populates these deterministically from
+# tMap expressions; no LLM involved.
+
+
+class LineageConfidence(str, Enum):
+    """How much to trust a lineage edge, in decreasing order of trust.
+
+    CERTAIN  -- a clean, single, statically-resolved reference end to end.
+    LIKELY   -- statically resolved but via a multi-ref expression, a lookup
+                join, or a mix of resolved and dynamic references.
+    DYNAMIC  -- no static reference could be resolved (globalMap/context/
+                routine calls only); never fabricated as if it were known.
+    OPAQUE   -- reserved for component types that carry no structured
+                expression data at all (tXMLMap, tJavaRow, ...); the S4 tMap
+                pass never emits this today (see architecture doc D4).
+    INFERRED -- a job-boundary edge stitched by the S5 cross-job pass from
+                circumstantial evidence (trunjob context-param passing, or
+                output/input table identity) rather than a parsed
+                expression; always distinct from the S4 intra-job tiers
+                above, never claimed to be CERTAIN/LIKELY.
+    """
+
+    CERTAIN = "certain"
+    LIKELY = "likely"
+    DYNAMIC = "dynamic"
+    OPAQUE = "opaque"
+    INFERRED = "inferred"
 
 
 class ColumnTransformation(BaseModel):
-    transformation_type: str = ""  # "direct_map", "expression", "aggregation", "lookup", "constant"
+    # "direct_map", "expression", "constant", "lookup", "dynamic" (S4 tokenizer
+    # classification); "trunjob_context_param", "table_identity" (S5 cross-job
+    # stitching); or the legacy LLM-pass value "aggregation".
+    transformation_type: str = ""
     expression: str = ""
     human_explanation: str = ""
 
@@ -649,11 +683,37 @@ class LineageEntry(BaseModel):
     target_table: str = ""
     target_column: str = ""
     job_name: str = ""
-    confidence: str = ""  # "certain", "likely", "inferred"
+    confidence: LineageConfidence = LineageConfidence.OPAQUE
+    # -- S4 additions (deterministic scanner pass) --
+    # Talend component unique_name upstream of source_table / downstream of
+    # target_table, resolved via the job's `connections` (never the
+    # unreliable per-component incoming/outgoing lists, see architecture
+    # doc sec 1.2). Empty when the row name has no matching connection.
+    source_component: str = ""
+    target_component: str = ""
+    # True only when source_table/source_column were resolved from a real
+    # static reference (never true for constant/dynamic-only entries, which
+    # still get emitted -- never silently dropped -- with empty source_*).
+    resolved: bool = False
+    # Unresolved identifier.field references found alongside this entry's
+    # expression (globalMap.get, context.X, routine calls, ...), recorded
+    # verbatim as "identifier.field" strings so nothing is silently dropped.
+    dynamic_refs: list[str] = Field(default_factory=list)
+    # -- S5 addition (cross-job stitching) --
+    # Name of the job that owns source_table/source_column/source_component
+    # when it differs from `job_name` (which always names the job that owns
+    # target_table/target_column/target_component). Empty for every S4
+    # intra-job entry, where source and target share the same job -- only
+    # ever populated on `confidence: inferred` job-boundary edges, so its
+    # presence (together with the confidence tier) is what distinguishes a
+    # stitched cross-job edge from an intra-job one.
+    source_job_name: str = ""
 
 
 class LineageMatrix(BaseModel):
-    """Pass 20 result: column-level lineage tracing."""
+    """Column-level lineage tracing. Populated by `intodoc.lineage` (S4,
+    deterministic tokenizer over tMap expressions) rather than the
+    abandoned LLM Pass 20 this schema originally shipped for."""
     entries: list[LineageEntry] = Field(default_factory=list)
     unmapped_columns: list[dict] = Field(default_factory=list)
     summary: dict = Field(default_factory=dict)

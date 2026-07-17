@@ -111,6 +111,36 @@ def scan(
     _save_scan_result(scan_result, config.output_dir)
     console.print(f"[green]Scan saved to {config.output_dir / 'scan_result.json'}[/green]")
 
+    # Deterministic lineage pass (S4): tMap expression tokenizer + Var
+    # chaining + row->component resolution. Runs after the main scan gate
+    # so lineage.json is built from already Layer-1/2-filtered data, and
+    # is independently verified before being written (Layer 3, D6) --
+    # mirrors the scan_result.json gate above exactly.
+    from intodoc.lineage import build_lineage_matrix, save_lineage_matrix
+    from intodoc.scanner.redaction_verifier import verify_lineage_matrix
+
+    lineage_matrix = build_lineage_matrix(scan_result, cred_filter)
+    lineage_verification = verify_lineage_matrix(lineage_matrix, cred_filter)
+
+    if not lineage_verification["passed"]:
+        n_residual = sum(lineage_verification["residual_pattern_counts"].values())
+        summary = (
+            f"Lineage redaction verification FAILED: {n_residual} residual "
+            f"pattern match(es) in scan/lineage.json."
+        )
+        if config.allow_redaction_failures:
+            console.print(f"[red]WARNING: {summary} Proceeding due to --allow-redaction-failures.[/red]")
+        else:
+            console.print(f"[red]{summary}[/red]")
+            console.print("[red]scan/lineage.json NOT written. Fix redaction rules or re-run with --allow-redaction-failures.[/red]")
+            raise click.exceptions.Exit(2)
+
+    lineage_path = save_lineage_matrix(lineage_matrix, config.output_dir)
+    console.print(
+        f"[green]Lineage saved to {lineage_path}[/green] "
+        f"({lineage_matrix.summary['total_entries']} entries)"
+    )
+
 
 # ── Pipeline Steps ───────────────────────────────────────────────────
 
