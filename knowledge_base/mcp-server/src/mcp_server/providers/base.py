@@ -10,7 +10,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import TYPE_CHECKING, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from mcp_server.schemas import NexusPresentation, NexusPrivateAnalysisPack
 
 
 @dataclass
@@ -73,6 +76,10 @@ class DocGenContext:
     # (no ``.md`` suffix) are regenerated; all other baseline docs are preserved
     # byte-stable. ``None`` => regenerate the full required-doc set.
     scoped_docs: set[str] | None = None
+    # Governed Style Pack output. Only Phase 3 prompt rendering may consume it.
+    nexus_presentation: "NexusPresentation | None" = None
+    # Verified V3 declarations may only be consumed by Phase 3 document rendering.
+    nexus_private_analysis_packs: tuple["NexusPrivateAnalysisPack", ...] = ()
 
 
 # Type alias for the log callback passed to providers

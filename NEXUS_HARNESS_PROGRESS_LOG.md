@@ -1,6 +1,6 @@
 # Nexus Harness Progress Log
 
-Last updated: 2026-07-11
+Last updated: 2026-07-16
 
 This file tracks how far the current implementation is compared with
 `NEXUS_HARNESS_VISION.md` and `NEXUS_HARNESS_DESIGN_V0.md`.
@@ -319,11 +319,66 @@ Important remaining gap:
 | Documentation update | Evidence-backed, versioned, reversible doc updates | Explicit evidence-text update path exists; no file upload parsing yet; no rich section patching workflow yet | Partial |
 | Automatic doc update | Nexus updates stale docs based on evidence and workflow outcomes | Manual chat-triggered evidence update exists; proactive stale-doc update not yet | Early |
 | Operational investigation | Uses docs, source, runtime, logs, connectors to explain failures with evidence | Basic investigation workflow uses indexed docs, generated docs metadata, runtime evidence; external logs/connectors not mature yet | Early V0 |
-| Packs | Domain packs define vocabulary, workflows, evidence ranking, templates, connector bindings | Documentation packs exist in Intodoc/MCP world; Nexus domain packs are still conceptual | Not yet |
-| Application agnosticism | Same core works for different domains via packs/connectors/rules | Harness code uses generic capability/provider language; first concrete provider is docs/MCP; domain packs not first-class yet | Directionally aligned |
-| Risk tiers/permissions | Actions classified and governed by risk/policy/HITL | Risk tiers exist in registry and workflow metadata; full policy/HITL approval model not implemented | Partial |
+| Packs | Domain packs define vocabulary, workflows, evidence ranking, templates, connector bindings | Pack Governance V1 is implemented: certified Foundation/Core, policy-selected Functional/Analysis, bounded editable Style/Presentation, deterministic activation snapshots, and governed documentation catalog | Strong V1 boundary; broader domain-pack coverage remains |
+| Application agnosticism | Same core works for different domains via packs/connectors/rules | Governed Packs are first-class and provider-neutral, but only the initial documentation/data-integration domain shape is implemented; a second domain and production connector catalogue are still missing | Directionally aligned |
+| Risk tiers/permissions | Actions classified and governed by risk/policy/HITL | Pack policy protects permissions, safety, evidence, findings, and required sections; broader cross-workflow HITL policy is still incomplete | Partial |
 | Model/provider agnosticism | No hardcoded model or truth assumptions | Some model/provider configuration exists, but planner is deterministic and older RAG/model defaults remain | Partial |
-| Admin-managed configuration | Providers/connectors configured through UI/admin, not code | Runtime source admin exists; capability registry itself is code-defined | Early |
+| Admin-managed configuration | Providers/connectors configured through UI/admin, not code | `/pack` exposes policy, certified library, activation, and Style editing; provider/connector registry lifecycle remains partly code-defined | Partial |
+
+## Pack Governance V1 - 2026-07-16
+
+Implemented and validated in the current branch:
+
+- Three layers: mandatory immutable IntoData-certified Foundation/Core;
+  immutable certified, organization-selectable Functional/Analysis modules;
+  and user/project-editable Style/Presentation overlays restricted to bounded
+  enums.
+- Mandatory organization policy with required certified Packs, allowed
+  Functional IDs, permitted Style values, minimum quality/evaluation scores,
+  and protected invariants. Lower layers cannot override higher-layer semantic,
+  evidence, policy, permission, capability, safety, or required-output content.
+- Deterministic compiled stack and activation snapshot hashes. Canonical
+  SHA-256 content, policy, selection, Pack identity, presentation, and receipt
+  hashes are persisted and checked by the execution contract.
+- Quality scoring records evaluator and metadata. A version becomes
+  promotion-eligible only when both configured thresholds pass; eligibility is
+  not promotion. Certified semantic promotion remains a Git/PR operation.
+- MCP trust enforcement checks configured source/provenance and digest; Git
+  sources additionally require a configured ref, reviewed commit, clean
+  checkout, and integrity re-check before governed use, covering TOCTOU edits.
+- Style is injected only at Phase 3 presentation. It cannot affect Phase 1/2,
+  evidence, findings, permissions, safety, or required sections.
+- `/pack` provides certified library browsing, policy-aware stack selection,
+  activation snapshots, and private/project Style editing. `/pack list`,
+  `/pack create`, and `/pack use <Pack> for <project>` are supported. Arbitrary
+  semantic Pack creation, ZIP/local mutation, and direct local Pack edits are
+  retired in favor of file/Git-backed PR certification.
+
+Validation facts:
+
+- The complete RAG backend suite passed: `1323 passed`. Pack-focused
+  unit/API/runtime/migration tests cover layer composition, protected-content
+  rejection, deterministic hash changes, policy and quality gates, evaluator
+  separation, activation persistence, canonical Pack ordering, and runtime
+  receipt validation.
+- MCP governance and execution-contract coverage passed inside a broader
+  focused run (`185` relevant tests passed). The complete MCP suite reported
+  `1225 passed` and three pre-existing environment/catalogue failures: one
+  stale model-catalogue expectation and two tests that import an unavailable
+  local `intodoc` package.
+- The complete frontend suite passed (`37` files, `205` tests), and both local
+  and Docker production builds completed. Coverage includes `/pack` rendering,
+  stack selection, Style editing, slash resolution, and governed workspace
+  fallback states.
+- The current local Docker deployment is up and healthy: backend `/health` is
+  healthy with database, Qdrant, Ollama, and Hindsight checks; MCP `/health`
+  is `ok`; and the frontend responds. Live API checks created and activated a
+  bounded Style, rejected protected fields, rejected untrusted generation,
+  verified certified Pack assignment, returned deterministic `410` responses
+  for retired creation/import routes, and passed a compiled stack into the MCP
+  execution contract without starting a generation run. Temporary test data
+  and assignment changes were removed afterward. This is deployment evidence
+  for the current branch, not proof that the full harness vision is complete.
 
 ## Overall Assessment
 
@@ -349,14 +404,15 @@ But we are not yet at the full Nexus harness vision.
 The architecture is currently around:
 
 ```text
-25-35% implemented as product architecture
-60-70% proven for the documentation-generation wedge
-10-20% implemented for fully application-agnostic packs/connectors
+30-40% implemented as product architecture
+65-75% proven for the documentation-generation wedge
+20-30% implemented for fully application-agnostic packs/connectors
 ```
 
-The main reason: the core execution rails exist, but Packs, connector contracts,
-entity memory, model-backed planning, evidence ranking, and admin-managed
-provider configuration are not first-class yet.
+These are deliberately broad estimates, not completion metrics. The core
+execution rails and Pack Governance V1 now exist, but connector contracts,
+entity memory, model-backed planning, proactive behavior, and admin-managed
+provider configuration are not complete.
 
 ## What Is Actually Demoable Now
 
@@ -450,14 +506,14 @@ Implemented:
   - no raw capability IDs in normal chat answers
   - real API path now filters by user permissions
 
-Important boundary:
+Important boundary at the time of this foundation entry:
 
 ```text
-LangGraph is not integrated as a dependency yet.
+LangGraph was not integrated as a dependency yet.
 The codebase is now ready to add it behind the runtime provider boundary.
 ```
 
-Next architecture step:
+Next architecture step recorded at that time:
 
 ```text
 Add real LangGraph dependency
@@ -492,3 +548,17 @@ spike/nexus-agentic-harness
 There are many uncommitted files from the broader harness spike. Do not treat
 the current diff as a small isolated patch. It includes prior harness rails plus
 the current capability-aware planner slices.
+
+## 2026-07-17: Generic Conversational Pack Draft Builder
+
+- Added migration `062_pack_draft_builder` for persistent conversation drafts,
+  owner-only private versions, shares, preview receipts, promotion proposals,
+  and exact-version activation receipts.
+- Added LangGraph-backed builder operation orchestration and a hard conversation
+  gate before both planner/RAG paths for active or newly started Pack drafts.
+- Added V3 additive artifact validation, normalized audience rendering,
+  optional/required capability compatibility, bounded preview generation, and
+  blocked-not-configured GitHub promotion proposals with no certification or
+  installation side effect.
+- Scoped validation passed: backend Pack suites `19 passed`, MCP contract/API
+  suites `27 passed`, frontend production build passed, Alembic head is `062`.
