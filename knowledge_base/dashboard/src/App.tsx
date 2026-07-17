@@ -123,7 +123,7 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
                   {nav.charAt(0).toUpperCase() + nav.slice(1)}
                 </button>
               ))}
-              {user?.is_superadmin && (
+              {isAuthenticated && (
                 <button
                   className={`px-3 py-1.5 text-sm rounded transition-all ${
                     topNav === "packs"
@@ -254,8 +254,8 @@ function AppContent({ isAuthenticated, user }: { isAuthenticated: boolean; user:
           {/* Help / reference panel */}
           {topNav === "docs" && <HelpPanel />}
 
-          {/* Plugin packs page (superadmin only) */}
-          {topNav === "packs" && user?.is_superadmin && <PluginPacksPage />}
+          {/* Documentation Pack workspace; legacy registry editing is admin-only inside it. */}
+          {topNav === "packs" && <PluginPacksPage isSuperadmin={Boolean(user?.is_superadmin)} />}
 
           {/* Fleet / Mission Control — nexus operator server only */}
           {topNav === "fleet" && FLEET_ENABLED && user?.is_superadmin && <FleetPage />}

@@ -38,6 +38,17 @@ class MCPServerConfig(BaseSettings):
     # Public starter repo admins can clone and branch to create swap packs.
     swap_pack_starter_repo_url: str = "https://github.com/joshitachu/swap-pack-starter"
 
+    # Pack Governance V1. A JSON array of explicit certification authorities.
+    # Example:
+    # [{"kind":"git","repo_url":"https://git.example.com/docs/packs.git",
+    #   "refs":["main","release/*"],"provenance":"platform-release"}]
+    # A Git pack must also declare the same provenance in plugin.yaml under
+    # ``certification.provenance``. ``kind: bundled`` may include
+    # ``manifest_name`` and ``allow_legacy_migration: true`` to establish a
+    # one-time digest baseline for an existing installed bundle. Empty or
+    # invalid configuration trusts no packs.
+    pack_governance_trusted_sources_json: str = ""
+
     # intodoc default output directory
     intodoc_output_dir: Path = Path(__file__).resolve().parent.parent.parent.parent / "intodoc-output"
 

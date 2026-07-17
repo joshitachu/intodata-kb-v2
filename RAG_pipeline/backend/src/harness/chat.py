@@ -67,6 +67,7 @@ from src.harness.models import (
     ActivityEventStatus,
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
+    DOCUMENTATION_PACK_LIST_CAPABILITY,
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
@@ -105,8 +106,9 @@ from src.harness.providers.mcp_docs import (
 )
 from src.harness.providers.mcp_projects import McpProjectsProvider
 from src.harness.packs.project_service import ProjectPackService
+from src.harness.packs.draft_service import PackDraftService
 from src.harness.packs.runtime import compile_governed_pack_registry
-from src.harness.registry import base_capability_registry
+from src.harness.registry import CapabilityRegistry, base_capability_registry
 from src.harness.resolution import (
     ConversationalFocus,
     EntityCandidate,
@@ -193,6 +195,7 @@ _DOC_UPDATE_CAPABILITY_ID = DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY.id
 _INVESTIGATION_CAPABILITY_ID = OPERATIONAL_INVESTIGATION_CAPABILITY.id
 _CONNECTOR_CAPABILITY_ID = EXTERNAL_CONNECTOR_READ_CAPABILITY.id
 _PENDING_PROJECT_SCOPE_ID = "__pending_project_scope__"
+_DOCUMENTATION_PACK_WORKFLOW_KEY = "documentation.generate"
 
 _INVESTIGATION_RE = re.compile(
     r"\b(investigate|diagnose|root cause|why)\b.{0,120}\b("
@@ -279,6 +282,7 @@ class HarnessPlannerDecision:
     planner_note: str | None = None
     planner_latency_ms: int = 0
     turn_plan: TurnPlan | None = None
+    governed_registry: CapabilityRegistry | None = None
 
 
 _PLANNER_ANSWER_DIRECT = "answer_direct"
@@ -452,11 +456,17 @@ async def plan_model_harness_chat_turn(
     # Resolve once at the planner boundary when the turn has one project scope.
     # The compiler excludes Style from the manifest, capability, and evidence path.
     if project_ids is not None and len(project_ids) == 1:
-        compiled = await ProjectPackService(
-            db, registry
-        ).resolve_governed_for_execution(project_ids[0], "documentation")
+        pack_service = ProjectPackService(db, registry)
+        compiled = await pack_service.resolve_governed_for_execution(
+            project_ids[0], _DOCUMENTATION_PACK_WORKFLOW_KEY
+        )
         if compiled is not None:
-            registry = compile_governed_pack_registry(registry, compiled)
+            private_packs = await pack_service.resolve_private_analysis_for_execution(
+                project_ids[0], _DOCUMENTATION_PACK_WORKFLOW_KEY
+            )
+            registry = compile_governed_pack_registry(
+                registry, compiled, tuple(item.provider_payload() for item in private_packs)
+            )
     unavailable_requested_connectors = _unavailable_requested_connector_labels(
         query, registry.list(enabled_only=True)
     )
@@ -698,6 +708,10 @@ async def plan_model_harness_chat_turn(
         project_ids=project_ids,
         prior_plan=prior_plan,
     )
+    # Carry the already-resolved immutable compilation into the executable
+    # path. It is never sourced from model arguments and is not persisted.
+    if project_ids is not None and len(project_ids) == 1:
+        decision = replace(decision, governed_registry=registry)
     return _record_planner_decision(decision)
 
 
@@ -1256,6 +1270,12 @@ def _with_turn_plan(
         output_contract = "workflow_receipt"
         allowed = set()
         preferred = []
+    elif decision.mode == "documentation_pack_catalog":
+        task_type = TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+        execution_mode = TurnExecutionMode.WORKFLOW
+        output_contract = "documentation_pack_catalog"
+        allowed = set()
+        preferred = []
     elif decision.mode == "update_docs_from_evidence":
         task_type = TurnTaskType.DOCUMENT_UPDATE
         execution_mode = TurnExecutionMode.WORKFLOW
@@ -1710,17 +1730,25 @@ async def _resolve_documentation_pack_id(
     access_token: str | None,
 ) -> int | None:
     explicit_id = arguments.get("plugin_pack_id")
-    if isinstance(explicit_id, int) and not isinstance(explicit_id, bool) and explicit_id > 0:
-        return explicit_id
     raw_name = (
         arguments.get("documentation_pack")
         or arguments.get("pack_name")
         or _documentation_pack_name_from_query(query)
     )
-    if not isinstance(raw_name, str) or not raw_name.strip():
+    has_explicit_id = (
+        isinstance(explicit_id, int) and not isinstance(explicit_id, bool) and explicit_id > 0
+    )
+    if not has_explicit_id and (not isinstance(raw_name, str) or not raw_name.strip()):
         return None
-    requested = re.sub(r"[\s_-]+", " ", raw_name.strip()).casefold()
     packs = await provider.list_documentation_packs(access_token=access_token)
+    if has_explicit_id:
+        if any(pack.id == explicit_id for pack in packs):
+            return explicit_id
+        raise McpDocumentationProviderError(
+            "The selected documentation Pack is unavailable or not certified for generation."
+        )
+    assert isinstance(raw_name, str)
+    requested = re.sub(r"[\s_-]+", " ", raw_name.strip()).casefold()
     matches = [
         pack
         for pack in packs
@@ -1929,6 +1957,22 @@ async def run_harness_chat_turn(
             answer=answer,
             latency_ms=_latency_ms(start),
             workflow_run_id=workflow_run_id,
+        )
+
+    if decision.mode == "documentation_pack_catalog":
+        answer, _ = await _execute_documentation_pack_catalog(
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            decision=decision,
+            provider=docs_provider,
+            user_permissions=user_permissions,
+        )
+        return await _persist_assistant_message(
+            conversation=conversation,
+            db=db,
+            answer=answer,
+            latency_ms=_latency_ms(start),
         )
 
     if decision.mode == "connector_evidence":
@@ -2249,6 +2293,28 @@ async def run_harness_chat_turn_stream(
             workflow_run_id = status_run.id
             for activity in activities:
                 yield ("harness_activity", json.dumps(_activity_payload(activity)))
+    elif decision.mode == "documentation_pack_catalog":
+        answer, pack_count = await _execute_documentation_pack_catalog(
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            decision=decision,
+            provider=docs_provider,
+            user_permissions=user_permissions,
+        )
+        yield (
+            "harness_activity",
+            json.dumps(
+                _adhoc_activity(
+                    event_type="documentation_packs.catalog_read",
+                    label="Checked documentation Packs",
+                    status="completed",
+                    summary=f"Found {pack_count} available documentation Pack(s).",
+                    capability_id=DOCUMENTATION_PACK_LIST_CAPABILITY.id,
+                    safe_details={"pack_count": pack_count},
+                )
+            ),
+        )
     elif decision.mode == "connector_evidence":
         connector_run, answer, activities = await _execute_model_selected_connector(
             conversation=conversation,
@@ -2424,6 +2490,103 @@ async def run_harness_chat_turn_stream(
     yield ("done", json.dumps({"message_id": assistant_msg.id, "latency_ms": assistant_msg.latency_ms or 0}))
 
 
+async def _execute_documentation_pack_catalog(
+    *,
+    db: AsyncSession,
+    user_id: int,
+    access_token: str | None,
+    decision: HarnessPlannerDecision,
+    provider: McpDocumentationProvider,
+    user_permissions: set[str] | None,
+) -> tuple[str, int]:
+    """Read the two user-facing layers of the Documentation Pack catalog."""
+
+    requested_scope = str((decision.arguments or {}).get("scope") or "all")
+
+    async def catalog_handler(arguments, _context):  # noqa: ANN001
+        scope = str(arguments.get("scope") or "all")
+        items: list[dict[str, Any]] = []
+        if scope in {"all", "organization"}:
+            for pack in await provider.list_documentation_packs(access_token=access_token):
+                items.append(
+                    {
+                        "id": f"organization:{pack.id}",
+                        "kind": "organization",
+                        "name": pack.name,
+                        "version": pack.version,
+                        "description": pack.description,
+                        "plugin_pack_id": pack.id,
+                    }
+                )
+        if scope in {"all", "private"}:
+            versions = await PackDraftService(db, base_capability_registry()).list_versions(user_id)
+            latest_by_pack: dict[str, Any] = {}
+            for version in versions:
+                latest_by_pack.setdefault(version.pack_id, version)
+            for version in latest_by_pack.values():
+                items.append(
+                    {
+                        "id": f"private:{version.id}",
+                        "kind": "private",
+                        "name": version.name,
+                        "version": version.version,
+                        "description": version.artifact.purpose,
+                        "private_version_id": version.id,
+                        "adds": [document.title for document in version.artifact.output_documents],
+                    }
+                )
+        return items
+
+    executor = HarnessCapabilityExecutor(
+        base_capability_registry(),
+        docs_provider=provider,
+        evidence_handlers={DOCUMENTATION_PACK_LIST_CAPABILITY.id: catalog_handler},
+    )
+    observation = await executor.execute(
+        CapabilityExecutionRequest(
+            capability_id=DOCUMENTATION_PACK_LIST_CAPABILITY.id,
+            arguments={"scope": requested_scope},
+        ),
+        CapabilityExecutionContext(
+            user_id=user_id,
+            permissions=user_permissions,
+            access_token=access_token,
+        ),
+    )
+    if not observation.succeeded:
+        return observation.error_message or "I could not load the documentation Pack catalog.", 0
+
+    raw_items = observation.data.get("items")
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    organization = [item for item in items if item.get("kind") == "organization"]
+    private = [item for item in items if item.get("kind") == "private"]
+    lines = ["## Available Documentation Packs", ""]
+    if requested_scope in {"all", "organization"}:
+        lines.append("### Organization Packs")
+        if organization:
+            for item in organization:
+                detail = f" - {item['description']}" if item.get("description") else ""
+                lines.append(f"- **{item['name']}** (v{item['version']}){detail}")
+        else:
+            lines.append("No certified organization Packs are currently available.")
+        lines.append("")
+    if requested_scope in {"all", "private"}:
+        lines.append("### My Packs")
+        if private:
+            for item in private:
+                additions = item.get("adds") or []
+                suffix = f" Adds: {', '.join(str(value) for value in additions)}." if additions else ""
+                lines.append(f"- **{item['name']}** (v{item['version']}) - {item['description']}{suffix}")
+        else:
+            lines.append("You do not have any saved personal Packs yet.")
+        lines.append("")
+    lines.append(
+        "Organization Packs provide the protected documentation baseline. "
+        "My Packs add analysis, documents, or presentation choices without replacing that baseline."
+    )
+    return "\n".join(lines).strip(), len(items)
+
+
 async def _execute_documentation_generation_status(
     *,
     conversation: Conversation,
@@ -2437,7 +2600,7 @@ async def _execute_documentation_generation_status(
     provider: McpDocumentationProvider | None,
 ) -> tuple[WorkflowRun, str, list[ActivityEvent]]:
     """Read MCP's run ledger and reconcile Nexus's matching workflow receipt."""
-    registry = await _project_execution_registry(db, project_id, "documentation")
+    registry = await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
         conversation_id=conversation.id,
@@ -2653,7 +2816,11 @@ async def _trigger_documentation_generation(
     decision: HarnessPlannerDecision | None = None,
     user_permissions: set[str] | None = None,
 ) -> tuple[WorkflowRun, McpDocumentationGenerationResult | None, str | None, list[ActivityEvent]]:
-    registry = await _project_execution_registry(db, project_id, "documentation")
+    registry = (
+        decision.governed_registry
+        if decision is not None and decision.governed_registry is not None
+        else await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
+    )
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
         conversation_id=conversation.id,
@@ -2838,7 +3005,7 @@ async def _trigger_documentation_generation(
         runtime_thread_id=runtime_result.thread_id,
         runtime_run_id=runtime_result.runtime_run_id,
         current_node=runtime_result.current_node,
-        artifact_receipts=observation.artifact_links,
+        artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
         runtime_metadata=runtime_result.runtime_metadata,
     )
     return run, result, None, activities
@@ -2858,7 +3025,7 @@ async def resume_documentation_generation_workflow(
     """Continue one owner-authorized docs workflow after project clarification."""
     if project_scope is not None and project_id not in project_scope:
         raise ValueError("Project access required")
-    registry = await _project_execution_registry(db, project_id, "documentation")
+    registry = await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
     docs_provider = provider or McpDocumentationProvider()
     executor = HarnessCapabilityExecutor(registry, docs_provider=docs_provider)
     context = CapabilityExecutionContext(
@@ -2930,7 +3097,7 @@ async def resume_documentation_generation_workflow(
                 runtime_thread_id=runtime_result.thread_id,
                 runtime_run_id=runtime_result.runtime_run_id,
                 current_node=runtime_result.current_node,
-                artifact_receipts=observation.artifact_links,
+                artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
                 runtime_metadata=runtime_result.runtime_metadata,
             ),
             owner_user_id=user_id,
@@ -3858,11 +4025,15 @@ async def _execute_project_onboarding(
         # any workflow runs; the executor subsequently sees only the pin.
         await ProjectPackService(db, base_capability_registry()).activate(
             project_id=project_id,
-            workflow_key="documentation",
+            workflow_key=_DOCUMENTATION_PACK_WORKFLOW_KEY,
             active_pack_ids=selected_pack_ids,
             user_id=user_id,
         )
-    registry = await _project_execution_registry(db, project_id, "onboarding")
+    registry = (
+        decision.governed_registry
+        if not selected_pack_ids and decision.governed_registry is not None
+        else await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
+    )
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
         conversation_id=conversation.id,
@@ -4030,7 +4201,7 @@ async def _execute_project_onboarding(
             status=WorkflowRunStatus.TRIGGERED,
             output_summary="Project onboarding started.",
             artifact_links=result.artifact_links,
-            artifact_receipts=result.artifact_links,
+            artifact_receipts=_with_pack_governance_receipt(run, result.artifact_links),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=result.thread_id,
             current_node=result.current_node,
@@ -4079,11 +4250,11 @@ async def resume_project_onboarding_workflow(
     if selected_pack_ids:
         await ProjectPackService(db, base_capability_registry()).activate(
             project_id=project_id,
-            workflow_key="documentation",
+            workflow_key=_DOCUMENTATION_PACK_WORKFLOW_KEY,
             active_pack_ids=selected_pack_ids,
             user_id=user_id,
         )
-    registry = await _project_execution_registry(db, project_id, "onboarding")
+    registry = await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
     from src.harness.models import (
         ATTACH_GIT_SOURCE_CAPABILITY,
         ATTACH_ZIP_SOURCE_CAPABILITY,
@@ -4237,7 +4408,9 @@ async def resume_project_onboarding_workflow(
             output_summary="Project onboarding resumed." if status == WorkflowRunStatus.TRIGGERED else None,
             error_message=error,
             artifact_links=result.artifact_links,
-            artifact_receipts=[*result.artifact_links, *source_receipts],
+            artifact_receipts=_with_pack_governance_receipt(
+                run, [*result.artifact_links, *source_receipts]
+            ),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=result.thread_id,
             current_node=result.current_node,
@@ -4543,7 +4716,7 @@ async def _execute_doc_update_from_evidence(
             status=WorkflowRunStatus.SUCCEEDED,
             output_summary=observation.summary,
             artifact_links=observation.artifact_links,
-            artifact_receipts=observation.artifact_links,
+            artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=runtime_result.thread_id,
             current_node=runtime_result.current_node,
@@ -4680,7 +4853,7 @@ async def resume_documentation_update_workflow(
             status=WorkflowRunStatus.SUCCEEDED,
             output_summary=observation.summary,
             artifact_links=observation.artifact_links,
-            artifact_receipts=observation.artifact_links,
+            artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=runtime_result.thread_id,
             current_node=runtime_result.current_node,
@@ -4974,12 +5147,14 @@ async def _project_execution_registry(
     workflow_key: str,
 ):
     base = base_capability_registry()
-    compiled = await ProjectPackService(db, base).resolve_governed_for_execution(
-        project_id, workflow_key
-    )
+    pack_service = ProjectPackService(db, base)
+    compiled = await pack_service.resolve_governed_for_execution(project_id, workflow_key)
     if compiled is None:
         return default_capability_registry()
-    return compile_governed_pack_registry(base, compiled)
+    private_packs = await pack_service.resolve_private_analysis_for_execution(project_id, workflow_key)
+    return compile_governed_pack_registry(
+        base, compiled, tuple(item.provider_payload() for item in private_packs)
+    )
 
 
 def _artifact_links(result: McpDocumentationGenerationResult) -> list[dict[str, Any]]:
@@ -4987,6 +5162,16 @@ def _artifact_links(result: McpDocumentationGenerationResult) -> list[dict[str, 
         {"label": "Generation Status", "url": result.status_path, "kind": "status"},
         {"label": "Project Documentation", "url": result.docs_path, "kind": "documentation"},
     ]
+
+
+def _with_pack_governance_receipt(
+    run: WorkflowRun, receipts: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    result = list(receipts or [])
+    receipt = run.runtime_metadata.get("pack_governance")
+    if isinstance(receipt, dict) and not any(item.get("kind") == "pack_governance" for item in result):
+        result.append({"kind": "pack_governance", **receipt})
+    return result
 
 
 def _success_answer(
@@ -5193,7 +5378,6 @@ def _capability_fallback_answer() -> str:
 def _capability_label(decision: HarnessPlannerDecision) -> str:
     labels = {
         "generate_docs": "generate documentation",
-        "create_documentation_pack": "create a reusable documentation Pack",
         "update_docs_from_evidence": "update documentation",
         "operational_investigation": "run an operational investigation",
         "connector_inventory": "read connector metadata",
