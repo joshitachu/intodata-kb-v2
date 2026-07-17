@@ -26,6 +26,7 @@ import {
   ScrollText,
   Settings2,
   User,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthContext } from "@/components/AuthProvider";
@@ -58,6 +59,7 @@ const navItems = [
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/docs", label: "Project Docs", icon: BookOpen },
   { href: "/topology", label: "Topology", icon: Network },
+  { href: "/pack", label: "Packs", icon: Package },
 ];
 
 type PermissionCodename =

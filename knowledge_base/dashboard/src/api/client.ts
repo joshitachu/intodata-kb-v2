@@ -17,6 +17,7 @@ import {
   PluginPackFilesSchema,
   PluginPackListSchema,
   PluginPackSchema,
+  NexusPackWorkspaceSchema,
   ProjectListResponseSchema,
   ProjectSchema,
   ProjectUsageSchema,
@@ -237,6 +238,30 @@ export const api = {
       PluginPackBranchDiscoverySchema
     ),
 
+  getPackWorkspace: (projectId: string) =>
+    request<import("../types").NexusPackWorkspace>(
+      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/workspace`,
+      {},
+      NexusPackWorkspaceSchema,
+    ),
+
+  updatePackWorkspace: (
+    projectId: string,
+    organizationPackId: number | null,
+    privateVersionIds: number[],
+  ) =>
+    request<import("../types").NexusPackWorkspace>(
+      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/workspace`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          organization_pack_id: organizationPackId,
+          private_version_ids: privateVersionIds,
+        }),
+      },
+      NexusPackWorkspaceSchema,
+    ),
+
   assignPluginPack: (projectId: string, pluginPackId: number | null) =>
     request<{ project_id: string; plugin_pack_id: number | null }>(
       `/mcp/projects/${projectId}/plugin`,
@@ -391,17 +416,23 @@ export const api = {
     investigationModel?: string | null,
     model?: string | null,
     writeModel?: string | null,
-    pluginPackId?: number | null,
+    organizationPackId: number | null = null,
+    privateVersionIds: number[] = [],
   ) =>
-    request<import("../types").StatusResponse>("/mcp/generate", {
-      method: "POST",
-      body: JSON.stringify({
-        project_id: projectId,
-        resume,
-        investigation_model: investigationModel ?? null,
-        model: model ?? null,
-        write_model: writeModel ?? null,
-        plugin_pack_id: pluginPackId ?? null,
-      }),
-    }, StatusResponseSchema),
+    request<import("../types").StatusResponse>(
+      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/generate`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: projectId,
+          resume,
+          investigation_model: investigationModel ?? null,
+          model: model ?? null,
+          write_model: writeModel ?? null,
+          organization_pack_id: organizationPackId,
+          private_version_ids: privateVersionIds,
+        }),
+      },
+      StatusResponseSchema,
+    ),
 };

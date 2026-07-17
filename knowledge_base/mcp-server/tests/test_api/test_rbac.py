@@ -1,4 +1,4 @@
-"""RBAC enforcement tests for all protected project routes.
+"""RBAC enforcement tests for protected project and Pack-management routes.
 
 Two invariants are verified for every protected endpoint:
   1. Non-superadmin user with no project assignment → 403.
@@ -41,6 +41,13 @@ _ROUTES = [
     ),
     ("GET",    "/mcp/projects/p1/graph",                      None,  "graph"),
     ("GET",    "/mcp/projects/p1/jobs/myjob/detail",          None,  "job_detail"),
+    ("GET",    "/mcp/projects/p1/jobs/myjob/graph",           None,  "job_graph"),
+    (
+        "GET",
+        "/mcp/projects/p1/lineage/field?job=myjob&table=row1&column=x",
+        None,
+        "lineage_field",
+    ),
     ("GET",    "/mcp/projects/p1/github-webhook/status",      None,  "webhook_status"),
     ("GET",    "/mcp/projects/p1/assessment",                 None,  "assessment_get"),
     ("POST",   "/mcp/projects/p1/generate-pdfs",              None,  "generate_pdfs"),
@@ -78,6 +85,42 @@ _ROUTES = [
         "/mcp/documentation-packs",
         {"name": "Operations Pack", "documents": [{"name": "RUNBOOK", "sections": []}]},
         "documentation_pack_create",
+    ),
+    (
+        "POST",
+        "/mcp/plugins",
+        {"repo_url": "https://git.example.test/packs.git", "repo_branch": "main"},
+        "plugin_register",
+    ),
+    (
+        "POST",
+        "/mcp/plugins/discover",
+        {"repo_url": "https://git.example.test/packs.git"},
+        "plugin_discover",
+    ),
+    (
+        "POST",
+        "/mcp/plugins/branch-files",
+        {"repo_url": "https://git.example.test/packs.git", "repo_branch": "main"},
+        "plugin_branch_files",
+    ),
+    (
+        "POST",
+        "/mcp/plugins/branch-file",
+        {
+            "repo_url": "https://git.example.test/packs.git",
+            "repo_branch": "main",
+            "file_path": "plugin.yaml",
+        },
+        "plugin_branch_file",
+    ),
+    ("PATCH", "/mcp/plugins/1", {"pull": True}, "plugin_pull"),
+    ("DELETE", "/mcp/plugins/1", None, "plugin_delete"),
+    (
+        "PUT",
+        "/mcp/plugins/1/files/prompts/phase3.md",
+        {"content": "changed"},
+        "plugin_file_write",
     ),
     ("PATCH", "/mcp/projects/p1/plugin", {"plugin_pack_id": None},                           "project_plugin"),
     ("POST", "/mcp/push-to-rag",  {"project_id": "p1"},                                    "push_to_rag"),
@@ -164,3 +207,19 @@ async def test_superadmin_passes_rbac(client, method, path, body):
     assert resp.status_code not in (401, 403), (
         f"{method} {path}: superadmin should not be RBAC-blocked, got {resp.status_code} — {resp.text[:300]}"
     )
+
+
+async def test_non_owner_cannot_upload_pack_zip(non_owner_client):
+    response = await non_owner_client.post(
+        "/mcp/plugins/upload",
+        files={"file": ("pack.zip", b"not-a-pack", "application/zip")},
+    )
+    assert response.status_code == 403
+
+
+async def test_superadmin_pack_zip_reaches_retired_route(client):
+    response = await client.post(
+        "/mcp/plugins/upload",
+        files={"file": ("pack.zip", b"not-a-pack", "application/zip")},
+    )
+    assert response.status_code == 410
