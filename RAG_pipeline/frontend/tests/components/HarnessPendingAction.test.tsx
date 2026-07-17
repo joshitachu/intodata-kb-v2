@@ -18,6 +18,7 @@ describe("HarnessPendingAction", () => {
         kind: "clarification",
         prompt: "Which project should I use?",
         choices: [{ label: "Customer API", value: "customer-api" }],
+        required_fields: [],
       }} />,
     );
 
@@ -47,6 +48,7 @@ describe("HarnessPendingAction", () => {
         kind: "approval",
         prompt: "Approve this documentation update?",
         choices: [],
+        required_fields: [],
       }} />,
     );
 
@@ -76,6 +78,7 @@ describe("HarnessPendingAction", () => {
         kind: "approval",
         prompt: "Approve this update?",
         choices: [],
+        required_fields: [],
       }} />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
@@ -101,6 +104,7 @@ describe("HarnessPendingAction", () => {
         kind: "clarification",
         prompt: "Which Git repository should I attach?",
         choices: [],
+        required_fields: [],
       }} />,
     );
 

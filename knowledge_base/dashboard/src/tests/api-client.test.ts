@@ -168,4 +168,47 @@ describe("API client", () => {
     expect(body.project_id).toBe("my-project");
     expect(body.force).toBe(true);
   });
+
+  it("loads the Nexus pack workspace through the dashboard prefix", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        project_id: "p1",
+        organization_packs: [],
+        personal_packs: [],
+        selected_organization_pack_id: null,
+        selected_private_version_ids: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await api.getPackWorkspace("p1");
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/nexus-api/harness/packs/projects/p1/workspace",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("sends unified pack selections to Nexus generation", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "generation_started", message: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await api.generate("p1", true, "investigator", "analyst", "writer", 10, [21]);
+
+    const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+    expect(fetchCall[0]).toBe("/nexus-api/harness/packs/projects/p1/generate");
+    expect(JSON.parse(fetchCall[1]?.body as string)).toMatchObject({
+      project_id: "p1",
+      resume: true,
+      investigation_model: "investigator",
+      model: "analyst",
+      write_model: "writer",
+      organization_pack_id: 10,
+      private_version_ids: [21],
+    });
+    expect(JSON.parse(fetchCall[1]?.body as string)).not.toHaveProperty("plugin_pack_id");
+  });
 });

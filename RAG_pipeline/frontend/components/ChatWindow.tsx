@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { FolderOpen, FileText, Network, Package } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
@@ -10,7 +11,7 @@ import { RagProjectSelector } from "./RagProjectSelector";
 import { RuntimeStatusIndicator } from "./RuntimeStatusIndicator";
 import { useUserProjects } from "@/hooks/useUserProjects";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
-import { PackManager } from "./harness-packs/PackManager";
+import { resolvePackCommand } from "@/lib/packCommand";
 import { OnboardingLauncher } from "./onboarding/OnboardingLauncher";
 import type { UploadedZipReceipt } from "@/lib/mcpClient";
 import type { ChatMode } from "./ModeToggle";
@@ -64,13 +65,10 @@ export function ChatWindow({
 }: ChatWindowProps) {
   const isDeepDive = mode === "deep-dive";
   const inputDisabled = isDeepDive && !selectedProject;
-  const [showPacks, setShowPacks] = useState(false);
-  const [packMode, setPackMode] = useState<"list" | "select" | "create">("list");
-  const [packProjectOverride, setPackProjectOverride] = useState<string | null>(null);
-  const [packInitialName, setPackInitialName] = useState<string | undefined>();
-  const [packCommandError, setPackCommandError] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [packCommandError, setPackCommandError] = useState<string | null>(null);
   const { commands: slashCommands } = useSlashCommands();
+  const router = useRouter();
 
   const latestPendingAction = useMemo(
     () => [...(conversation?.messages ?? [])]
@@ -87,10 +85,8 @@ export function ChatWindow({
         }
       : undefined;
   const { data: userProjectsData } = useUserProjects();
-  const contextualPackProjectId = selectedProject || latestPendingAction?.project_id || "";
-  const packProjectId = packProjectOverride === null ? contextualPackProjectId : packProjectOverride;
   const selectedProjectName = !isDeepDive
-    ? userProjectsData?.projects.find((p) => p.id === selectedProject)?.display_name
+    ? userProjectsData?.projects.find((project) => project.id === selectedProject)?.display_name
     : undefined;
 
   // Deep dive content exists independently of whether a conversation record loaded
@@ -108,46 +104,27 @@ export function ChatWindow({
 
   function handleSlashCommand(name: string, argumentsText: string): boolean {
     if (name === "onboard" || name === "onboarding") {
-      setShowPacks(false);
+      setPackCommandError(null);
       setShowOnboarding(true);
       return true;
     }
     if (name !== "pack" && name !== "packs") return false;
-    const parts = argumentsText.split(/\s+/).filter(Boolean);
-    const action = parts[0]?.toLowerCase();
-    if (action === "create") return false;
-    if (!action || action === "list") {
-      setPackProjectOverride("");
-      setPackInitialName(undefined);
-      setPackMode("list");
-      setPackCommandError(null);
+    const resolution = resolvePackCommand(
+      argumentsText,
+      userProjectsData?.projects ?? [],
+      selectedProject || latestPendingAction?.project_id || undefined,
+    );
+    if ("error" in resolution) {
+      setPackCommandError(resolution.error);
       setShowOnboarding(false);
-      setShowPacks(true);
       return true;
     }
-    const useMatch = argumentsText.match(/^use\s+(.+?)\s+for\s+(.+)$/i);
-    const requestedPack = useMatch?.[1].trim().replace(/^["']|["']$/g, "");
-    const projectQuery = (useMatch?.[2] ?? argumentsText).trim().toLowerCase();
-    let resolvedProject = contextualPackProjectId;
-    if (projectQuery) {
-      const match = userProjectsData?.projects.find((project) => (
-        project.id.toLowerCase() === projectQuery || project.display_name.toLowerCase() === projectQuery
-      ));
-      if (!match) {
-        setPackCommandError(`Project “${projectQuery}” is not available in your current scope.`);
-        setShowPacks(true);
-        return true;
-      }
-      resolvedProject = match.id;
-    } else if (!resolvedProject && userProjectsData?.projects.length === 1) {
-      resolvedProject = userProjectsData.projects[0].id;
+    setPackCommandError(null);
+    if ("message" in resolution) {
+      handleSend(resolution.message);
+      return true;
     }
-    setPackProjectOverride(resolvedProject);
-    setPackInitialName(requestedPack);
-    setPackMode("select");
-    setPackCommandError(resolvedProject ? null : "Choose a project before managing its documentation Pack.");
-    setShowOnboarding(false);
-    setShowPacks(true);
+    router.push(resolution.href);
     return true;
   }
 
@@ -206,16 +183,9 @@ export function ChatWindow({
       {!isDeepDive && (
         <button
           type="button"
-          onClick={() => {
-            setPackProjectOverride(null);
-            setPackInitialName(undefined);
-            setPackMode(contextualPackProjectId ? "select" : "list");
-            setShowOnboarding(false);
-            setShowPacks((value) => !value);
-          }}
-          aria-label="Documentation Pack"
-          aria-expanded={showPacks}
-          title="Documentation Pack"
+          onClick={() => router.push(selectedProject ? `/pack?project=${encodeURIComponent(selectedProject)}` : "/pack")}
+          aria-label="Pack governance"
+          title="Pack governance"
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <Package className="h-4 w-4" />
@@ -282,6 +252,8 @@ export function ChatWindow({
               />
             </div>
 
+            {packCommandError && <p role="alert" className="mt-3 w-full border-y border-amber-300 bg-amber-50 py-2 text-left text-sm text-amber-900">{packCommandError}</p>}
+
             {showOnboarding && (
               <div className="mt-5 max-h-[50vh] w-full overflow-y-auto border-y py-4 text-left">
                 <OnboardingLauncher
@@ -289,17 +261,6 @@ export function ChatWindow({
                     setShowOnboarding(false);
                     handleSend(message);
                   }}
-                />
-              </div>
-            )}
-            {showPacks && (
-              <div className="mt-5 max-h-[45vh] w-full overflow-y-auto border-y py-4 text-left">
-                {packCommandError && <p role="alert" className="text-sm text-destructive">{packCommandError}</p>}
-                <PackManager
-                  key={`${packProjectId}:${packMode}:${packInitialName ?? ""}`}
-                  projectId={packProjectId || undefined}
-                  initialMode={packMode}
-                  initialPackName={packInitialName}
                 />
               </div>
             )}
@@ -383,17 +344,6 @@ export function ChatWindow({
             />
           </div>
         )}
-        {showPacks && (
-          <div className="max-h-[45vh] overflow-y-auto border-t px-4 py-4">
-            {packCommandError && <p role="alert" className="text-sm text-destructive">{packCommandError}</p>}
-            <PackManager
-              key={`${packProjectId}:${packMode}:${packInitialName ?? ""}`}
-              projectId={packProjectId || undefined}
-              initialMode={packMode}
-              initialPackName={packInitialName}
-            />
-          </div>
-        )}
         <ChatInput
           onSend={handleSend}
           isLoading={isSending || (deepDiveState?.isStreaming ?? false)}
@@ -412,6 +362,7 @@ export function ChatWindow({
               : "Ask a follow-up..."
           }
         />
+        {packCommandError && <p role="alert" className="mx-4 mt-2 border-y border-amber-300 bg-amber-50 py-2 text-sm text-amber-900">{packCommandError}</p>}
         <p className="text-xs text-muted-foreground text-center pb-2">
           AI can make mistakes. Always review responses before acting on them.
         </p>
