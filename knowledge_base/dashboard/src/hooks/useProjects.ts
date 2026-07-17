@@ -48,16 +48,52 @@ export function useGenerate() {
       investigationModel,
       model,
       writeModel,
-      pluginPackId,
+      organizationPackId = null,
+      privateVersionIds = [],
     }: {
       projectId: string;
       resume?: boolean;
       investigationModel?: string | null;
       model?: string | null;
       writeModel?: string | null;
-      pluginPackId?: number | null;
-    }) => api.generate(projectId, resume, investigationModel, model, writeModel, pluginPackId),
+      organizationPackId?: number | null;
+      privateVersionIds?: number[];
+    }) => api.generate(
+      projectId,
+      resume,
+      investigationModel,
+      model,
+      writeModel,
+      organizationPackId,
+      privateVersionIds,
+    ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+}
+
+export function usePackWorkspace(projectId: string | null) {
+  return useQuery({
+    queryKey: ["pack-workspace", projectId],
+    queryFn: () => api.getPackWorkspace(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+export function useUpdatePackWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      organizationPackId,
+      privateVersionIds,
+    }: {
+      projectId: string;
+      organizationPackId: number | null;
+      privateVersionIds: number[];
+    }) => api.updatePackWorkspace(projectId, organizationPackId, privateVersionIds),
+    onSuccess: (workspace) => {
+      qc.setQueryData(["pack-workspace", workspace.project_id], workspace);
+    },
   });
 }
 

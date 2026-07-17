@@ -1,0 +1,13 @@
+name: test
+version: 1.0.0
+description: A documentation pack for creating a single summary file of the project
+docs:
+- name: PROJECT_SUMMARY
+  required_sections:
+  - Overview
+  - Key Components
+  - Architecture
+  - Dependencies
+steps:
+- id: generate-docs
+  type: harness

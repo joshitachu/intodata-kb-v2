@@ -68,7 +68,15 @@ def mock_deps():
     app.dependency_overrides[get_qdrant] = lambda: mock_qdrant
     app.dependency_overrides[get_current_user] = lambda: user
 
-    yield {"db": mock_db, "qdrant": mock_qdrant, "user": user}
+    # Most route tests use a single canned execute() result for the conversation.
+    # Keep the independent Pack-draft lookup out of those legacy mocks; builder
+    # routing has dedicated tests with a real database/service.
+    with patch(
+        "src.api.routes.conversations.PackDraftService.active_for_conversation",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield {"db": mock_db, "qdrant": mock_qdrant, "user": user}
     app.dependency_overrides.clear()
 
 

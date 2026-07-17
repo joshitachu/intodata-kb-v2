@@ -30,9 +30,9 @@ ALLOWED_REFERENCES = PackReferenceSets(
     capability_ids=frozenset(
         {
             "mcp.docs.generate_project_documentation",
-            "mcp.docs.create_documentation_pack",
             "mcp.docs.get_generation_status",
             "mcp.docs.list_project_docs",
+            "nexus.docs.list_documentation_packs",
             "rag.docs.search_evidence",
             "mcp.docs.update_from_evidence",
             "mcp.docs.revert_evidence_update",

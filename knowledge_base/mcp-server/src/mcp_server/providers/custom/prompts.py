@@ -11,6 +11,8 @@ from mcp_server.platforms import get_platform_strategy
 from mcp_server.providers.custom.prompt_packs import ANALYSIS_SECTION_NAMES
 from mcp_server.providers.custom.prompt_renderer import get_renderer
 from mcp_server.services.pack_loader import InstructionPack
+from mcp_server.services.nexus_execution_contract import presentation_instructions_for_phase
+from mcp_server.schemas import NexusPresentation
 
 
 def facts_summary(facts: FactsManifest) -> str:
@@ -236,6 +238,8 @@ def doc_prompt(
     plugin_pack_dir: "Path | None" = None,
     extra_section_requirements: "dict[str, list[str]] | None" = None,
     scoped_unit: str | None = None,
+    nexus_presentation: NexusPresentation | None = None,
+    private_analysis_instructions: str = "",
 ) -> str:
     required_headings = (
         (extra_section_requirements or {}).get(doc_name)
@@ -251,6 +255,11 @@ def doc_prompt(
             "directly evidenced as dependencies of this job.\n\n"
             + doc_specific
         )
+    presentation = presentation_instructions_for_phase("phase3", nexus_presentation)
+    if presentation:
+        doc_specific = f"{presentation}\n\n{doc_specific}".rstrip()
+    if private_analysis_instructions:
+        doc_specific = f"{private_analysis_instructions}\n\n{doc_specific}".rstrip()
     raw_preamble = _resolve_preamble(
         plugin_pack_dir, "phase3.md",
         pack, "phase3_preamble",

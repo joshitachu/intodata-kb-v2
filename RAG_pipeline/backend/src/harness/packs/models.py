@@ -20,6 +20,234 @@ class StrictPackModel(BaseModel):
 class PackType(StrEnum):
     DOCUMENTATION = "documentation"
     DOMAIN = "domain"
+    STYLE = "style"
+
+
+class PackPhase(StrEnum):
+    """Governance layer for a Pack's declarative content."""
+
+    FOUNDATION = "foundation"
+    FUNCTIONAL = "functional"
+    STYLE = "style"
+
+
+class PackOwner(StrEnum):
+    INTODATA = "intodata"
+    ORGANIZATION = "organization"
+    PROJECT = "project"
+    USER = "user"
+
+
+class PackAuthority(StrEnum):
+    INTODATA_CERTIFIED = "intodata_certified"
+    ORGANIZATION_CERTIFIED = "organization_certified"
+    PROJECT_MANAGED = "project_managed"
+    USER_MANAGED = "user_managed"
+
+
+class PackScope(StrEnum):
+    GLOBAL = "global"
+    ORGANIZATION = "organization"
+    PROJECT = "project"
+    USER = "user"
+
+
+class PackMutability(StrEnum):
+    IMMUTABLE = "immutable"
+    EDITABLE = "editable"
+
+
+class PackTrust(StrEnum):
+    CERTIFIED = "certified"
+    UNREVIEWED = "unreviewed"
+
+
+class StyleAudience(StrEnum):
+    EXECUTIVE = "executive"
+    BUSINESS = "business"
+    ENGINEERING = "engineering"
+    OPERATIONS = "operations"
+
+
+class StyleTone(StrEnum):
+    NEUTRAL = "neutral"
+    CONCISE = "concise"
+    EXPLANATORY = "explanatory"
+
+
+class TechnicalDepth(StrEnum):
+    SUMMARY = "summary"
+    STANDARD = "standard"
+    DEEP = "deep"
+
+
+class OutputOrganization(StrEnum):
+    DIRECT_ANSWER = "direct_answer"
+    SECTIONED = "sectioned"
+    INCIDENT_REPORT = "incident_report"
+
+
+class FormattingOption(StrEnum):
+    MARKDOWN = "markdown"
+    BULLETED_LISTS = "bulleted_lists"
+    TABLES = "tables"
+    CODE_BLOCKS = "code_blocks"
+
+
+class CommunicationOption(StrEnum):
+    QUALIFY_UNCERTAINTY = "qualify_uncertainty"
+    ACTION_ORIENTED = "action_oriented"
+    INCLUDE_SOURCES = "include_sources"
+
+
+class StyleField(StrEnum):
+    AUDIENCE = "audience"
+    TONE = "tone"
+    TECHNICAL_DEPTH = "technical_depth"
+    OUTPUT_ORGANIZATION = "output_organization"
+    FORMATTING = "formatting"
+    COMMUNICATION = "communication"
+
+
+class ProtectedInvariant(StrEnum):
+    EVIDENCE_POLICY = "evidence_policy"
+    FINDINGS = "findings"
+    ENTITY_SEMANTICS = "entity_semantics"
+    REQUIRED_ANALYSIS = "required_analysis"
+    SECURITY_REDACTION = "security_redaction"
+    PERMISSIONS = "permissions"
+    RISK_TIERS = "risk_tiers"
+    QUALITY_THRESHOLDS = "quality_thresholds"
+    CAPABILITIES = "capabilities"
+
+
+_PROTECTED_INVARIANTS = frozenset(ProtectedInvariant)
+
+
+class PackQuality(StrictPackModel):
+    quality_score: float = Field(ge=0, le=1)
+    evaluation_score: float = Field(ge=0, le=1)
+
+
+class PackGovernance(StrictPackModel):
+    """Authority metadata. It governs a Pack; it is not Pack content."""
+
+    phase: PackPhase
+    owner: PackOwner
+    authority: PackAuthority
+    scope: PackScope
+    mutability: PackMutability
+    trust: PackTrust
+    quality: PackQuality | None = None
+
+    @model_validator(mode="after")
+    def validate_phase_authority(self) -> PackGovernance:
+        if self.phase is PackPhase.FOUNDATION:
+            expected = (
+                self.owner is PackOwner.INTODATA
+                and self.authority is PackAuthority.INTODATA_CERTIFIED
+                and self.scope is PackScope.GLOBAL
+                and self.mutability is PackMutability.IMMUTABLE
+                and self.trust is PackTrust.CERTIFIED
+                and self.quality is not None
+            )
+            if not expected:
+                raise ValueError("foundation Packs must be global, IntoData-certified, immutable")
+        elif self.phase is PackPhase.FUNCTIONAL:
+            certified = (
+                (self.owner is PackOwner.INTODATA and self.authority is PackAuthority.INTODATA_CERTIFIED)
+                or (
+                    self.owner is PackOwner.ORGANIZATION
+                    and self.authority is PackAuthority.ORGANIZATION_CERTIFIED
+                )
+            )
+            if not (
+                certified
+                and self.scope in {PackScope.GLOBAL, PackScope.ORGANIZATION}
+                and self.mutability is PackMutability.IMMUTABLE
+                and self.trust is PackTrust.CERTIFIED
+                and self.quality is not None
+            ):
+                raise ValueError("functional Packs must be certified and immutable")
+        elif not (
+            self.owner in {PackOwner.PROJECT, PackOwner.USER}
+            and (
+                (self.owner is PackOwner.PROJECT and self.authority is PackAuthority.PROJECT_MANAGED)
+                or (self.owner is PackOwner.USER and self.authority is PackAuthority.USER_MANAGED)
+            )
+            and self.scope in {PackScope.PROJECT, PackScope.USER}
+            and self.mutability is PackMutability.EDITABLE
+            and self.trust is PackTrust.UNREVIEWED
+            and self.quality is None
+        ):
+            raise ValueError("style Packs must be user/project-managed editable overlays")
+        return self
+
+
+class StylePresentation(StrictPackModel):
+    """The complete Phase 3 namespace: display-only, bounded enum choices."""
+
+    audience: StyleAudience | None = None
+    tone: StyleTone | None = None
+    technical_depth: TechnicalDepth | None = None
+    output_organization: OutputOrganization | None = None
+    formatting: tuple[FormattingOption, ...] = Field(default=(), max_length=4)
+    communication: tuple[CommunicationOption, ...] = Field(default=(), max_length=3)
+
+    @model_validator(mode="after")
+    def validate_unique_options(self) -> StylePresentation:
+        if len(self.formatting) != len(set(self.formatting)):
+            raise ValueError("duplicate formatting option")
+        if len(self.communication) != len(set(self.communication)):
+            raise ValueError("duplicate communication option")
+        if not any(
+            (
+                self.audience,
+                self.tone,
+                self.technical_depth,
+                self.output_organization,
+                self.formatting,
+                self.communication,
+            )
+        ):
+            raise ValueError("style overlay must set at least one presentation field")
+        return self
+
+
+class StyleGovernancePolicy(StrictPackModel):
+    permitted_fields: frozenset[StyleField] = Field(default_factory=frozenset)
+    allowed_audiences: frozenset[StyleAudience] = Field(default_factory=frozenset)
+    allowed_tones: frozenset[StyleTone] = Field(default_factory=frozenset)
+    allowed_technical_depths: frozenset[TechnicalDepth] = Field(default_factory=frozenset)
+    allowed_output_organizations: frozenset[OutputOrganization] = Field(default_factory=frozenset)
+    allowed_formatting: frozenset[FormattingOption] = Field(default_factory=frozenset)
+    allowed_communication: frozenset[CommunicationOption] = Field(default_factory=frozenset)
+
+
+class MinimumQualityThresholds(StrictPackModel):
+    quality_score: float = Field(ge=0, le=1)
+    evaluation_score: float = Field(ge=0, le=1)
+
+
+class OrganizationGovernancePolicy(StrictPackModel):
+    id: ReferenceId
+    required_certified_pack_ids: frozenset[PackId] = Field(default_factory=frozenset)
+    allowed_functional_pack_ids: frozenset[PackId] = Field(default_factory=frozenset)
+    permitted_style: StyleGovernancePolicy = Field(default_factory=StyleGovernancePolicy)
+    minimum_quality: MinimumQualityThresholds
+    protected_invariants: frozenset[ProtectedInvariant] = Field(
+        default_factory=lambda: _PROTECTED_INVARIANTS
+    )
+
+    @model_validator(mode="after")
+    def validate_protected_invariants(self) -> OrganizationGovernancePolicy:
+        missing = _PROTECTED_INVARIANTS - self.protected_invariants
+        if missing:
+            raise ValueError(
+                "governance policy cannot omit protected invariants: "
+                + ", ".join(sorted(item.value for item in missing))
+            )
+        return self
 
 
 class VocabularyTerm(StrictPackModel):
@@ -96,11 +324,14 @@ class OutputRules(StrictPackModel):
 
 
 class PackManifest(StrictPackModel):
-    schema_version: Annotated[int, Field(ge=1, le=1)] = 1
+    schema_version: Annotated[int, Field(ge=1, le=2)] = 2
     id: PackId
     name: str = Field(min_length=1, max_length=120)
     version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$")
     pack_type: PackType
+    # ``None`` is a deliberate migration state for persisted V1 manifests.
+    # The PackStack compiler rejects it, so it never grants user authority.
+    governance: PackGovernance | None = None
     includes: tuple[PackId, ...] = Field(default=(), max_length=50)
     documentation_provider_ref: ReferenceId | None = None
     vocabulary: tuple[VocabularyTerm, ...] = Field(default=(), max_length=200)
@@ -112,6 +343,7 @@ class PackManifest(StrictPackModel):
     default_scopes: DefaultScopes = Field(default_factory=DefaultScopes)
     policy_hints: PolicyHints = Field(default_factory=PolicyHints)
     output_rules: OutputRules = Field(default_factory=OutputRules)
+    style: StylePresentation | None = None
 
     @model_validator(mode="after")
     def validate_unique_local_ids(self) -> PackManifest:
@@ -126,6 +358,29 @@ class PackManifest(StrictPackModel):
                 raise ValueError(f"duplicate {label} id")
         if self.id in self.includes:
             raise ValueError("pack cannot include itself")
+        if self.governance is None:
+            return self
+        if self.governance.phase is PackPhase.STYLE:
+            if self.pack_type is not PackType.STYLE or self.style is None:
+                raise ValueError("style Packs require pack_type style and a style presentation")
+            if self.includes:
+                raise ValueError("style Packs cannot include or activate semantic Packs")
+            protected_content = (
+                self.documentation_provider_ref is not None
+                or self.vocabulary
+                or self.entities
+                or self.workflows
+                or self.evidence_ranking
+                or self.artifact_templates
+                or self.connector_requirements
+                or self.default_scopes != DefaultScopes()
+                or self.policy_hints != PolicyHints()
+                or self.output_rules != OutputRules()
+            )
+            if protected_content:
+                raise ValueError("style Packs cannot declare protected semantic, policy, or capability content")
+        elif self.pack_type is PackType.STYLE or self.style is not None:
+            raise ValueError("only style Packs may declare a style presentation")
         return self
 
 
@@ -158,6 +413,36 @@ class ResolvedPackSet(StrictPackModel):
     snapshot: PackSnapshot
 
 
+class PackStackSelection(StrictPackModel):
+    """Explicit Pack roots selected for a governed workflow scope."""
+
+    foundation_pack_ids: frozenset[PackId] = Field(default_factory=frozenset, max_length=1)
+    functional_pack_ids: frozenset[PackId] = Field(default_factory=frozenset, max_length=100)
+    style_pack_ids: frozenset[PackId] = Field(default_factory=frozenset, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_foundation_selection(self) -> PackStackSelection:
+        if len(self.foundation_pack_ids) != 1:
+            raise ValueError("exactly one foundation Pack must be selected")
+        return self
+
+
+class PackStackSnapshot(StrictPackModel):
+    policy_id: ReferenceId
+    policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    foundation_pack_id: PackId
+    functional_pack_ids: tuple[PackId, ...]
+    style_pack_ids: tuple[PackId, ...]
+    resolved_packs: tuple[PackIdentity, ...]
+    snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CompiledPackStack(StrictPackModel):
+    manifests: tuple[PackManifest, ...]
+    presentation: StylePresentation | None = None
+    snapshot: PackStackSnapshot
+
+
 class PackView(StrictPackModel):
     id: PackId
     name: str
@@ -186,3 +471,123 @@ class ProjectPackActivation(StrictPackModel):
     workflow_key: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,79}$")
     active_pack_ids: tuple[PackId, ...]
     snapshot: PackSnapshot
+
+
+# V3 private Analysis Packs deliberately use a separate contract from the
+# certified PackManifest.  They are additive declarations, never executable
+# manifests or a route for changing registry authority.
+class AudienceRenderProfile(StrictPackModel):
+    """Bounded, normalized values that may be sent to a renderer or model."""
+
+    seniority: str | None = Field(default=None, pattern=r"^(executive|director|manager|practitioner)$")
+    domain_familiarity: str | None = Field(default=None, pattern=r"^(introductory|working|expert)$")
+    decision_horizon: str | None = Field(default=None, pattern=r"^(immediate|near_term|strategic)$")
+    detail_level: str | None = Field(default=None, pattern=r"^(brief|standard|detailed)$")
+
+
+class PackAudienceProfile(StrictPackModel):
+    """Raw audience wording is display/audit data; render is safe and bounded."""
+
+    label: str = Field(min_length=1, max_length=160)
+    roles: tuple[str, ...] = Field(default=(), max_length=12)
+    decision_needs: tuple[str, ...] = Field(default=(), max_length=12)
+    domain_familiarity: str | None = Field(default=None, max_length=160)
+    desired_outcome: str | None = Field(default=None, max_length=300)
+    render: AudienceRenderProfile = Field(default_factory=AudienceRenderProfile)
+
+    @field_validator("roles", "decision_needs")
+    @classmethod
+    def validate_audience_words(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.strip() or len(value) > 120 for value in values):
+            raise ValueError("audience values must be non-empty bounded text")
+        return values
+
+    @model_validator(mode="after")
+    def reject_semantic_suppression(self) -> "PackAudienceProfile":
+        text = " ".join(
+            (self.label, *self.roles, *self.decision_needs, self.domain_familiarity or "", self.desired_outcome or "")
+        ).casefold()
+        forbidden = (
+            "hide finding", "suppress finding", "omit finding", "hide evidence", "suppress evidence",
+            "omit evidence", "hide uncertainty", "suppress uncertainty", "omit uncertainty",
+            "hide source", "suppress source", "omit source",
+        )
+        if any(term in text for term in forbidden):
+            raise ValueError("audience profile cannot suppress findings, evidence, uncertainty, or sources")
+        return self
+
+
+class PackAnalysis(StrictPackModel):
+    id: ReferenceId
+    label: str = Field(min_length=1, max_length=120)
+    purpose: str = Field(min_length=1, max_length=500)
+
+
+class PackEvidenceRequirement(StrictPackModel):
+    id: ReferenceId
+    label: str = Field(min_length=1, max_length=120)
+    required: bool = True
+    weight: int = Field(default=1, ge=1, le=100)
+
+
+class PackOutputSection(StrictPackModel):
+    id: ReferenceId
+    heading: str = Field(min_length=1, max_length=160)
+    order: int = Field(ge=1, le=100)
+
+
+class PackOutputDocument(StrictPackModel):
+    id: ReferenceId
+    title: str = Field(min_length=1, max_length=160)
+    sections: tuple[PackOutputSection, ...] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def ordered_sections(self) -> "PackOutputDocument":
+        orders = [section.order for section in self.sections]
+        if len(orders) != len(set(orders)) or orders != sorted(orders):
+            raise ValueError("output sections must have unique ascending order")
+        return self
+
+
+class PackScoringDimension(StrictPackModel):
+    id: ReferenceId
+    label: str = Field(min_length=1, max_length=120)
+    weight: int = Field(ge=1, le=100)
+
+
+class PackCapabilityRequirement(StrictPackModel):
+    capability_id: ReferenceId
+    required: bool = True
+    purpose: str = Field(min_length=1, max_length=240)
+
+
+class PackCompatibility(StrictPackModel):
+    supported_project_kinds: tuple[str, ...] = Field(default=(), max_length=20)
+    required_domains: tuple[str, ...] = Field(default=(), max_length=20)
+
+
+class PackArtifactV3(StrictPackModel):
+    """Declarative, additive private Analysis Pack artifact."""
+
+    schema_version: int = Field(default=3, ge=3, le=3)
+    purpose: str = Field(min_length=1, max_length=1000)
+    analyses: tuple[PackAnalysis, ...] = Field(min_length=1, max_length=30)
+    evidence_requirements: tuple[PackEvidenceRequirement, ...] = Field(min_length=1, max_length=30)
+    output_documents: tuple[PackOutputDocument, ...] = Field(min_length=1, max_length=12)
+    scoring_dimensions: tuple[PackScoringDimension, ...] = Field(default=(), max_length=20)
+    capability_requirements: tuple[PackCapabilityRequirement, ...] = Field(default=(), max_length=30)
+    compatibility: PackCompatibility = Field(default_factory=PackCompatibility)
+    audience: PackAudienceProfile
+
+    @model_validator(mode="after")
+    def validate_additive_identifiers(self) -> "PackArtifactV3":
+        for label, values in (
+            ("analysis", self.analyses), ("evidence", self.evidence_requirements),
+            ("output", self.output_documents), ("scoring", self.scoring_dimensions),
+        ):
+            ids = [item.id for item in values]
+            if len(ids) != len(set(ids)):
+                raise ValueError(f"duplicate {label} id")
+        if sum(item.weight for item in self.scoring_dimensions) > 1000:
+            raise ValueError("scoring weights are too large")
+        return self
