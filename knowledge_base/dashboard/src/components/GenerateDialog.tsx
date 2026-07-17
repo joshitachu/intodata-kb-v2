@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { useGenerate } from "../hooks/useProjects";
+import { useGenerate, usePackWorkspace } from "../hooks/useProjects";
 import { useModels } from "../hooks/useDiscovery";
-import { usePluginPacks } from "../hooks/useProjects";
 import type { Project } from "../types";
 
 interface Props {
@@ -12,18 +11,14 @@ interface Props {
   onTriggered?: (projectId: string) => void;
 }
 
-type PackChoice =
-  | { kind: "project_default" }
-  | { kind: "none" }
-  | { kind: "plugin"; id: number };
-
 export default function GenerateDialog({ project, open, onClose, onTriggered }: Props) {
   const generate = useGenerate();
   const { data: modelsData } = useModels();
-  const { data: pluginPacks } = usePluginPacks();
+  const workspaceQuery = usePackWorkspace(project.id);
 
   const [resume, setResume] = useState(true);
-  const [packChoice, setPackChoice] = useState<PackChoice>({ kind: "project_default" });
+  const [organizationPackId, setOrganizationPackId] = useState<number | null>(null);
+  const [privateVersionIds, setPrivateVersionIds] = useState<number[]>([]);
   const [runInvestigationModel, setRunInvestigationModel] = useState("");
   const [runAnalysisModel, setRunAnalysisModel] = useState("");
   const [runWriteModel, setRunWriteModel] = useState("");
@@ -31,12 +26,20 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
   useEffect(() => {
     if (open) {
       setResume(true);
-      setPackChoice({ kind: "project_default" });
+      setOrganizationPackId(null);
+      setPrivateVersionIds([]);
       setRunInvestigationModel("");
       setRunAnalysisModel("");
       setRunWriteModel("");
     }
   }, [open, project.id]);
+
+  useEffect(() => {
+    if (workspaceQuery.data?.project_id === project.id) {
+      setOrganizationPackId(workspaceQuery.data.selected_organization_pack_id);
+      setPrivateVersionIds(workspaceQuery.data.selected_private_version_ids);
+    }
+  }, [project.id, workspaceQuery.data]);
 
   useEffect(() => {
     if (!open) return;
@@ -72,23 +75,16 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
   const analysisModels = models.filter((m) => m.supports_analysis);
   const writingModels = models.filter((m) => m.supports_writing);
 
-  const savedPluginPack = useMemo(
-    () =>
-      pluginPacks?.find((p) => p.id === project.plugin_pack_id) ?? null,
-    [pluginPacks, project.plugin_pack_id],
-  );
-
   if (!open) return null;
 
-  function effectivePluginPackId(): number | null | "project_default" {
-    if (packChoice.kind === "plugin") return packChoice.id;
-    if (packChoice.kind === "none") return null;
-    return "project_default";
-  }
-
   function submit() {
-    const choice = effectivePluginPackId();
-    const pluginPackId = choice === "project_default" ? null : choice;
+    if (
+      workspaceQuery.isLoading ||
+      workspaceQuery.isError ||
+      workspaceQuery.data?.project_id !== project.id
+    ) {
+      return;
+    }
     generate.mutate(
       {
         projectId: project.id,
@@ -96,7 +92,8 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
         investigationModel: runInvestigationModel || savedInvestigation,
         model: runAnalysisModel || null,
         writeModel: runWriteModel || savedWrite,
-        pluginPackId,
+        organizationPackId,
+        privateVersionIds,
       },
       {
         onSuccess: () => {
@@ -146,46 +143,65 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
         <div className="flex-1 overflow-y-auto px-7 py-5 space-y-6">
         <section className="space-y-3">
           <h4 className="font-mono uppercase tracking-wider text-xs text-accent-primary/80">
-            Plugin Pack
+            Nexus Documentation Pack
           </h4>
-          <div className="space-y-1.5">
-            <PackOption
-              checked={packChoice.kind === "project_default"}
-              onCheck={() => setPackChoice({ kind: "project_default" })}
-              title="Use project default"
-              subtitle={
-                project.plugin_pack_id
-                  ? `Project is assigned to pack #${project.plugin_pack_id}${
-                      savedPluginPack ? ` — ${savedPluginPack.name} v${savedPluginPack.version}` : ""
-                    }`
-                  : "Project has no plugin pack assigned — generation will use the standard harness."
-              }
-            />
-            <PackOption
-              checked={packChoice.kind === "none"}
-              onCheck={() => setPackChoice({ kind: "none" })}
-              title="No plugin pack (force standard harness)"
-              subtitle="Ignore the project's assigned pack for this run only."
-            />
-            {(pluginPacks ?? []).map((pack) => (
+          {workspaceQuery.isLoading && (
+            <p className="text-sm text-slate-400">Loading this project's pack selection...</p>
+          )}
+          {workspaceQuery.error && (
+            <p className="text-sm text-amber-400">
+              Pack selection could not be loaded. Reload it before starting documentation generation.
+            </p>
+          )}
+          {workspaceQuery.data && (
+            <div className="space-y-1.5">
               <PackOption
-                key={pack.id}
-                checked={packChoice.kind === "plugin" && packChoice.id === pack.id}
-                onCheck={() => setPackChoice({ kind: "plugin", id: pack.id })}
-                title={`${pack.name} v${pack.version}`}
-                subtitle={
-                  pack.last_commit_sha
-                    ? `${pack.repo_url ?? "local"} @ ${pack.last_commit_sha.slice(0, 7)}`
-                    : (pack.repo_url ?? "local")
-                }
+                checked={organizationPackId === null}
+                onCheck={() => setOrganizationPackId(null)}
+                title="Organization default"
+                subtitle="Use the approved Nexus documentation baseline."
               />
-            ))}
-            {!pluginPacks?.length && (
-              <p className="text-sm text-slate-400 px-1">
-                No plugin packs registered. Ask a superadmin to register one on the Packs page.
-              </p>
-            )}
-          </div>
+              {workspaceQuery.data.organization_packs.map((pack) => (
+                <PackOption
+                  key={pack.id}
+                  checked={organizationPackId === pack.id}
+                  onCheck={() => setOrganizationPackId(pack.id)}
+                  title={`${pack.name} v${pack.version}`}
+                  subtitle={pack.description ?? "Organization base pack"}
+                />
+              ))}
+              {workspaceQuery.data.personal_packs.map((pack) => (
+                <label
+                  key={pack.id}
+                  className="flex items-start gap-3 px-3.5 py-2.5 rounded border border-white/[0.08] hover:border-white/[0.18] hover:bg-white/[0.04] cursor-pointer transition-all"
+                >
+                  <input
+                    type="checkbox"
+                    checked={privateVersionIds.includes(pack.id)}
+                    onChange={() =>
+                      setPrivateVersionIds((current) =>
+                        current.includes(pack.id)
+                          ? current.filter((id) => id !== pack.id)
+                          : [...current, pack.id],
+                      )
+                    }
+                    className="mt-1 h-4 w-4 accent-accent-primary"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-slate-100">
+                      Add {pack.name} v{pack.version}
+                    </span>
+                    <span className="mt-1 block text-xs text-slate-400">
+                      {pack.description ?? "Personal additive pack"}
+                      {pack.output_documents.length > 0
+                        ? ` Outputs: ${pack.output_documents.join(", ")}`
+                        : ""}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="space-y-3">
@@ -272,9 +288,18 @@ export default function GenerateDialog({ project, open, onClose, onTriggered }: 
             type="button"
             className="btn-primary"
             onClick={submit}
-            disabled={generate.isPending}
+            disabled={
+              generate.isPending ||
+              workspaceQuery.isLoading ||
+              workspaceQuery.isError ||
+              workspaceQuery.data?.project_id !== project.id
+            }
           >
-            {generate.isPending ? "Starting…" : "Generate"}
+            {workspaceQuery.isLoading
+              ? "Loading Packs..."
+              : generate.isPending
+                ? "Starting..."
+                : "Generate"}
           </button>
         </div>
       </div>
