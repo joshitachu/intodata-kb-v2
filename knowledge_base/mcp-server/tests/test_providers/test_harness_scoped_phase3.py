@@ -8,6 +8,13 @@ from unittest.mock import MagicMock
 from mcp_server.config import config
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.custom.harness import CustomHarnessProvider
+from mcp_server.providers.custom.models import FactsManifest, UnitFact
+from mcp_server.providers.custom.prompts import doc_prompt
+from mcp_server.schemas import (
+    NexusPrivateAnalysisArtifactV3,
+    NexusPrivateAnalysisPack,
+    compute_nexus_private_artifact_hash,
+)
 
 
 def _ctx(tmp_path: Path, scoped: set[str] | None) -> DocGenContext:
@@ -80,3 +87,68 @@ async def test_scoped_phase3_regenerates_doc_missing_from_baseline(tmp_path, mon
     # scoped 01_A -- never silently dropped.
     assert set(provider._required_docs) == {"01_A", "02_B"}
     assert not (ctx.staging_dir / "01_A.md").exists()
+
+
+def _supply_chain_pack() -> NexusPrivateAnalysisPack:
+    artifact = NexusPrivateAnalysisArtifactV3.model_validate({
+        "schema_version": 3,
+        "purpose": "Assess supply-chain disruption exposure.",
+        "analyses": [{"id": "risk", "label": "Disruption Risk", "purpose": "Assess supplier continuity."}],
+        "evidence_requirements": [{"id": "supplier", "label": "Supplier Evidence", "required": True, "weight": 80}],
+        "output_documents": [
+            {"id": "supplier-risk", "title": "Supplier Risk", "sections": [{"id": "exposure", "heading": "Exposure", "order": 1}]},
+            {"id": "cold-chain", "title": "Cold-Chain Readiness", "sections": [{"id": "controls", "heading": "Cold-Chain Controls", "order": 1}]},
+            {"id": "contingency", "title": "Contingency Plan", "sections": [{"id": "actions", "heading": "Contingency Actions", "order": 1}]},
+        ],
+        "scoring_dimensions": [{"id": "continuity", "label": "Continuity", "weight": 60}],
+        "capability_requirements": [{"capability_id": "connector.procurement.read", "required": False, "purpose": "Supplement procurement evidence."}],
+        "audience": {"label": "Cold-chain procurement audience", "render": {"seniority": "manager", "detail_level": "detailed"}},
+    })
+    return NexusPrivateAnalysisPack.model_validate({
+        "receipt": {
+            "version_id": 7, "pack_id": "analysis.supply-chain", "version": "1.0.0",
+            "content_hash": compute_nexus_private_artifact_hash(artifact),
+            "audience_render": {"seniority": "manager", "detail_level": "detailed"},
+        },
+        "artifact": artifact.model_dump(mode="json"),
+        "missing_optional_capability_ids": ["connector.procurement.read"],
+    })
+
+
+def test_private_analysis_pack_adds_three_phase3_documents_without_replacing_baseline(tmp_path) -> None:
+    provider = CustomHarnessProvider(MagicMock())
+    provider._required_docs = ["BASELINE_DOC"]
+    ctx = _ctx(tmp_path, scoped=None)
+    ctx.nexus_private_analysis_packs = (_supply_chain_pack(),)
+
+    provider._apply_private_analysis_packs(ctx)
+
+    assert provider._required_docs == [
+        "BASELINE_DOC",
+        "PRIVATE_ANALYSIS__ANALYSIS_SUPPLY_CHAIN__SUPPLIER_RISK",
+        "PRIVATE_ANALYSIS__ANALYSIS_SUPPLY_CHAIN__COLD_CHAIN",
+        "PRIVATE_ANALYSIS__ANALYSIS_SUPPLY_CHAIN__CONTINGENCY",
+    ]
+    doc_name = "PRIVATE_ANALYSIS__ANALYSIS_SUPPLY_CHAIN__COLD_CHAIN"
+    assert provider._doc_section_requirements_extra[doc_name] == ["Cold-Chain Controls"]
+    prompt = doc_prompt(
+        FactsManifest(project_id="p", platform="generic", canonical_unit_label="units", unit_count=1, groups={"A": 1}, units=[UnitFact(name="A", group="A")]),
+        doc_name,
+        extra_section_requirements=provider._doc_section_requirements_extra,
+        private_analysis_instructions=provider._private_analysis_instructions[doc_name],
+    )
+    assert "## Cold-Chain Controls" in prompt
+    assert "Declared document title: Cold-Chain Readiness" in prompt
+    assert "Cold-chain procurement audience" in prompt
+    assert "Unavailable optional capabilities" in prompt
+
+
+def test_no_private_analysis_pack_keeps_required_documents_unchanged(tmp_path) -> None:
+    provider = CustomHarnessProvider(MagicMock())
+    provider._required_docs = ["BASELINE_DOC"]
+    ctx = _ctx(tmp_path, scoped=None)
+
+    provider._apply_private_analysis_packs(ctx)
+
+    assert provider._required_docs == ["BASELINE_DOC"]
+    assert provider._doc_section_requirements_extra == {}
