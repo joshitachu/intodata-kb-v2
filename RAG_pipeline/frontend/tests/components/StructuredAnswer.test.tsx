@@ -53,8 +53,8 @@ describe("StructuredAnswer", () => {
           headline: "ADF migration proposal",
           summary: "AssetCheck is the candidate.",
           sections: [
-            { heading: "Current flow", body: "Maximo to SQL." },
-            { heading: "Target mapping", body: "ADF Copy Activity and Data Flow." },
+            { heading: "Current flow", body: "Maximo to SQL.", rows: [] },
+            { heading: "Target mapping", body: "ADF Copy Activity and Data Flow.", rows: [] },
           ],
           limitations: [],
           citations: [],

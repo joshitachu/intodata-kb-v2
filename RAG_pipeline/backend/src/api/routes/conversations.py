@@ -26,6 +26,9 @@ from src.harness.chat import (
     run_harness_chat_turn_stream,
 )
 from src.harness.commands import list_slash_commands, resolve_slash_command
+from src.harness.packs.builder_workflow import PackBuilderWorkflow, is_pack_builder_request
+from src.harness.packs.draft_service import PackDraftService
+from src.harness.registry import base_capability_registry
 from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository
 from src.rbac.permissions import get_user_permissions, get_user_project_ids
 from src.schemas import (
@@ -90,6 +93,28 @@ async def list_commands(user: CurrentUser) -> SlashCommandListResponse:
 def _planner_query(query: str) -> str:
     resolved = resolve_slash_command(query)
     return resolved.planner_query if resolved is not None else query
+
+
+async def _run_pack_builder_turn(
+    *, conversation: Conversation, query: str, db: DBSession, user_id: int
+) -> MessageResponse:
+    """Persist a builder exchange without invoking planner, retrieval, or RAG."""
+    service = PackDraftService(db, base_capability_registry())
+    _, answer = await PackBuilderWorkflow().run(
+        service=service, conversation_id=conversation.id, owner_user_id=user_id, query=query
+    )
+    user_message = ConversationMessage(conversation_id=conversation.id, role="user", content=query)
+    assistant_message = ConversationMessage(
+        conversation_id=conversation.id, role="assistant", content=answer,
+        turn_plan={"mode": "pack_builder", "rag_allowed": False},
+    )
+    db.add_all([user_message, assistant_message])
+    await db.flush()
+    await db.commit()
+    return MessageResponse(
+        id=assistant_message.id, role="assistant", content=answer, status="completed",
+        turn_plan=assistant_message.turn_plan, created_at=assistant_message.created_at,
+    )
 
 
 @router.get("", response_model=ConversationListResponse, summary="List conversations")
@@ -398,6 +423,17 @@ async def send_message(
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
 
+    # This is a hard gate: an active draft (or an explicit builder start) never
+    # reaches the general planner or RAG pipeline.
+    draft_service = PackDraftService(db, base_capability_registry())
+    if (
+        await draft_service.active_for_conversation(conversation.id, user.id) is not None
+        or is_pack_builder_request(planner_query)
+    ):
+        return await _run_pack_builder_turn(
+            conversation=conversation, query=request.query, db=db, user_id=user.id
+        )
+
     user_permissions = get_user_permissions(user)
     planner_decision = await plan_model_harness_chat_turn(
         query=planner_query,
@@ -493,6 +529,21 @@ async def send_message_stream(
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
         await db.flush()
+
+    # Same hard gate as the non-streaming endpoint.  Keep this before model
+    # planning so a builder turn cannot be reclassified as document Q&A.
+    draft_service = PackDraftService(db, base_capability_registry())
+    if (
+        await draft_service.active_for_conversation(conversation.id, user.id) is not None
+        or is_pack_builder_request(planner_query)
+    ):
+        async def builder_event_generator():
+            response = await _run_pack_builder_turn(
+                conversation=conversation, query=request.query, db=db, user_id=user.id
+            )
+            yield f"event: token\ndata: {json.dumps(response.content)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'message_id': response.id, 'latency_ms': 0})}\n\n"
+        return StreamingResponse(builder_event_generator(), media_type="text/event-stream")
 
     user_permissions = get_user_permissions(user)
     planner_decision = await plan_model_harness_chat_turn(

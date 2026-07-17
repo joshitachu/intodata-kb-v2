@@ -13,7 +13,6 @@ from src.harness.models import (
     ATTACH_ZIP_SOURCE_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
-    DOCUMENTATION_PACK_CREATE_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
     DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY,
     PROJECT_STATUS_CAPABILITY,
@@ -24,11 +23,7 @@ from src.harness.models import (
     HarnessRiskTier,
 )
 from src.harness.providers.mcp_projects import McpProjectsProvider, McpProjectsProviderError
-from src.harness.providers.mcp_docs import (
-    McpDocumentationPackDocumentDraft,
-    McpDocumentationProvider,
-    McpDocumentationProviderError,
-)
+from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocumentationProviderError
 from src.harness.registry import CapabilityRegistry
 from src.harness.connectors import ConnectorPolicyError, ConnectorService
 from src.harness.connectors.models import ConnectorQuery
@@ -316,70 +311,30 @@ class HarnessCapabilityExecutor:
                 safe_details={"evidence_count": len(result.items)},
             )
 
-        if capability.id == DOCUMENTATION_PACK_CREATE_CAPABILITY.id:
-            provider = self._docs_provider or McpDocumentationProvider()
-            raw_documents = request.arguments.get("documents")
-            if not isinstance(raw_documents, list) or not raw_documents:
-                raise ValueError("A documentation Pack needs at least one document")
-            documents: list[McpDocumentationPackDocumentDraft] = []
-            for item in raw_documents:
-                if not isinstance(item, Mapping):
-                    raise ValueError("Invalid documentation Pack document")
-                name = item.get("name")
-                sections = item.get("sections", [])
-                instructions = item.get("instructions")
-                if not isinstance(name, str) or not name.strip():
-                    raise ValueError("Every documentation Pack document needs a name")
-                if not isinstance(sections, list) or not all(isinstance(value, str) for value in sections):
-                    raise ValueError("Document sections must be a list of strings")
-                if instructions is not None and not isinstance(instructions, str):
-                    raise ValueError("Document instructions must be text")
-                documents.append(
-                    McpDocumentationPackDocumentDraft(
-                        name=name,
-                        sections=sections,
-                        instructions=instructions,
-                    )
-                )
-            pack = await provider.create_documentation_pack(
-                name=str(request.arguments["name"]),
-                description=(
-                    str(request.arguments["description"])
-                    if request.arguments.get("description") is not None
-                    else None
-                ),
-                documents=documents,
-                access_token=context.access_token,
-            )
-            return CapabilityObservation(
-                capability_id=capability.id,
-                status="succeeded",
-                output_type=capability.output_type,
-                summary=f"Created reusable documentation Pack {pack.name}.",
-                data={
-                    "plugin_pack_id": pack.id,
-                    "name": pack.name,
-                    "version": pack.version,
-                    "description": pack.description,
-                },
-                safe_details={"provider_type": capability.provider_type.value},
-            )
-
         if capability.id == DOCUMENTATION_GENERATION_CAPABILITY.id:
             provider = self._docs_provider or McpDocumentationProvider()
             generation_arguments: dict[str, Any] = {
                 "project_id": str(request.arguments["project_id"]),
                 "access_token": context.access_token,
                 "resume": bool(request.arguments.get("resume", True)),
+                "investigation_model": request.arguments.get("investigation_model"),
                 "model": request.arguments.get("model"),
                 "write_model": request.arguments.get("write_model"),
             }
-            selected_pack_ids = (
-                request.arguments.get("selected_pack_ids")
-                or capability.metadata.get("nexus_pack_ids")
-            )
+            # Pack authority is compiled by the server.  Request arguments are
+            # model/user input and must never select or replace Pack policy.
+            selected_pack_ids = capability.metadata.get("nexus_pack_ids")
             if selected_pack_ids:
                 generation_arguments["nexus_pack_ids"] = list(selected_pack_ids)
+            pack_snapshot = capability.metadata.get("nexus_pack_snapshot")
+            if isinstance(pack_snapshot, dict) and "policy_id" in pack_snapshot:
+                generation_arguments["nexus_pack_snapshot"] = pack_snapshot
+            presentation = capability.metadata.get("nexus_pack_presentation")
+            if isinstance(presentation, dict):
+                generation_arguments["nexus_presentation"] = presentation
+            private_analysis_packs = capability.metadata.get("nexus_private_analysis_packs")
+            if isinstance(private_analysis_packs, list):
+                generation_arguments["nexus_private_analysis_packs"] = private_analysis_packs
             plugin_pack_id = request.arguments.get("plugin_pack_id")
             if plugin_pack_id is not None:
                 generation_arguments["plugin_pack_id"] = plugin_pack_id

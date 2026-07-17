@@ -112,6 +112,7 @@ describe("MessageList", () => {
               kind: "clarification",
               prompt: "Which project should I use?",
               choices: [{ label: "Project A", value: "project-a" }],
+              required_fields: [],
             },
           },
         ]}
@@ -132,7 +133,7 @@ describe("MessageList", () => {
             content: "",
             sources: [
               {
-                document_id: "doc-1",
+                document_id: 1,
                 filename: "01_ARCHITECTURE_MAP.md",
                 display_name: "Architecture map",
                 text: `${"Documented architecture context. ".repeat(10)}FULL EVIDENCE EXCERPT TAIL: AssetCheck reads Maximo and writes SQL.`,

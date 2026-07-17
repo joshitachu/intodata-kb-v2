@@ -104,9 +104,15 @@ async def _project_presentation(
     """Resolve one persisted Style overlay once per RAG turn, never per token."""
     if project_ids is None or len(project_ids) != 1:
         return None
-    compiled = await ProjectPackService(
-        db, base_capability_registry()
-    ).resolve_governed_for_execution(project_ids[0], "documentation")
+    try:
+        compiled = await ProjectPackService(
+            db, base_capability_registry()
+        ).resolve_governed_for_execution(project_ids[0], "documentation.generate")
+    except Exception as exc:
+        # Presentation is optional. A missing/quarantined activation must not
+        # change existing RAG semantics or make ordinary document QA fail.
+        logger.warning("Unable to resolve optional project presentation: %s", exc)
+        return None
     return compiled.presentation if compiled is not None else None
 
 
@@ -1744,6 +1750,7 @@ async def run_conversational_rag(
     """
     start = time.perf_counter()
     scope = RequestScope.from_project_ids(project_ids)
+    presentation = await _project_presentation(db, scope.project_ids)
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
@@ -1760,6 +1767,7 @@ async def run_conversational_rag(
         planned_output_contract=(
             _output_contract_by_turn_plan(turn_plan) if enforce_turn_plan else None
         ),
+        presentation=presentation,
     )
 
     runtime_progress: list = []
@@ -1941,6 +1949,7 @@ async def run_conversational_rag_stream(
     """
     start = time.perf_counter()
     scope = RequestScope.from_project_ids(project_ids)
+    presentation = await _project_presentation(db, scope.project_ids)
 
     # Save user message before streaming starts
     user_msg = ConversationMessage(
@@ -1976,6 +1985,7 @@ async def run_conversational_rag_stream(
         planned_output_contract=(
             _output_contract_by_turn_plan(turn_plan) if enforce_turn_plan else None
         ),
+        presentation=presentation,
     )
 
     import json
