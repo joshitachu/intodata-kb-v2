@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query, Request
@@ -14,18 +15,22 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
-from src.db.models import Conversation, ConversationMessage
+from src.db.models import Conversation, ConversationMessage, QueryUsage
 from src.config import settings
 from src.generation.conversational_rag import (
     run_conversational_rag,
     run_conversational_rag_stream,
 )
+from src.generation.llm_client import get_turn_usage, reset_turn_usage
 from src.harness.chat import (
     plan_model_harness_chat_turn,
     run_harness_chat_turn,
     run_harness_chat_turn_stream,
 )
 from src.harness.commands import list_slash_commands, resolve_slash_command
+from src.harness.packs.builder_workflow import PackBuilderWorkflow, is_pack_builder_request
+from src.harness.packs.draft_service import PackDraftService
+from src.harness.registry import base_capability_registry
 from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository
 from src.rbac.permissions import get_user_permissions, get_user_project_ids
 from src.schemas import (
@@ -90,6 +95,48 @@ async def list_commands(user: CurrentUser) -> SlashCommandListResponse:
 def _planner_query(query: str) -> str:
     resolved = resolve_slash_command(query)
     return resolved.planner_query if resolved is not None else query
+
+
+async def _run_pack_builder_turn(
+    *, conversation: Conversation, query: str, db: DBSession, user_id: int
+) -> MessageResponse:
+    """Persist a builder exchange without invoking planner, retrieval, or RAG."""
+    reset_turn_usage()
+    start = time.perf_counter()
+    service = PackDraftService(db, base_capability_registry())
+    _, answer = await PackBuilderWorkflow().run(
+        service=service, conversation_id=conversation.id, owner_user_id=user_id, query=query
+    )
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    user_message = ConversationMessage(conversation_id=conversation.id, role="user", content=query)
+    assistant_message = ConversationMessage(
+        conversation_id=conversation.id, role="assistant", content=answer,
+        turn_plan={"mode": "pack_builder", "rag_allowed": False},
+    )
+    db.add_all([user_message, assistant_message])
+    usage = get_turn_usage()
+    if usage is not None:
+        db.add(
+            QueryUsage(
+                user_id=user_id,
+                interface="conversation",
+                query_text=query[:500],
+                model_name=usage.model,
+                provider=usage.provider,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cost_usd=usage.cost_usd,
+                latency_ms=latency_ms,
+                llm_ms=usage.latency_ms,
+                conversation_id=conversation.id,
+            )
+        )
+    await db.flush()
+    await db.commit()
+    return MessageResponse(
+        id=assistant_message.id, role="assistant", content=answer, status="completed",
+        turn_plan=assistant_message.turn_plan, created_at=assistant_message.created_at,
+    )
 
 
 @router.get("", response_model=ConversationListResponse, summary="List conversations")
@@ -398,7 +445,21 @@ async def send_message(
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
 
+    # This is a hard gate: an active draft (or an explicit builder start) never
+    # reaches the general planner or RAG pipeline.
+    draft_service = PackDraftService(db, base_capability_registry())
+    if (
+        await draft_service.active_for_conversation(conversation.id, user.id) is not None
+        or is_pack_builder_request(planner_query)
+    ):
+        return await _run_pack_builder_turn(
+            conversation=conversation, query=request.query, db=db, user_id=user.id
+        )
+
     user_permissions = get_user_permissions(user)
+    # Fresh turn: reset usage tracking so the planner + pipeline calls below
+    # are all attributed to this message and nothing leaks in from prior turns.
+    reset_turn_usage()
     planner_decision = await plan_model_harness_chat_turn(
         query=planner_query,
         conversation=conversation,
@@ -494,7 +555,26 @@ async def send_message_stream(
         conversation.title = request.query[:80].strip()
         await db.flush()
 
+    # Same hard gate as the non-streaming endpoint.  Keep this before model
+    # planning so a builder turn cannot be reclassified as document Q&A.
+    draft_service = PackDraftService(db, base_capability_registry())
+    if (
+        await draft_service.active_for_conversation(conversation.id, user.id) is not None
+        or is_pack_builder_request(planner_query)
+    ):
+        async def builder_event_generator():
+            yield f"event: workspace\ndata: {json.dumps({'workspace': 'pack', 'status': 'running'})}\n\n"
+            response = await _run_pack_builder_turn(
+                conversation=conversation, query=request.query, db=db, user_id=user.id
+            )
+            yield f"event: token\ndata: {json.dumps(response.content)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'message_id': response.id, 'latency_ms': 0})}\n\n"
+        return StreamingResponse(builder_event_generator(), media_type="text/event-stream")
+
     user_permissions = get_user_permissions(user)
+    # Fresh turn: reset usage tracking so the planner + pipeline calls below
+    # are all attributed to this message and nothing leaks in from prior turns.
+    reset_turn_usage()
     planner_decision = await plan_model_harness_chat_turn(
         query=planner_query,
         conversation=conversation,

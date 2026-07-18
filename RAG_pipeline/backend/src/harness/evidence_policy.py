@@ -128,14 +128,17 @@ _TASK_SEMANTICS = {
         "operational_investigation", "call_capability", "operational_investigation"
     ),
     "document_generation": CapabilityTurnSemantics("generate_docs", "call_capability", "document_generation"),
-    "documentation_pack_creation": CapabilityTurnSemantics(
-        "create_documentation_pack", "call_capability", "documentation_pack_creation"
+    "documentation_pack_management": CapabilityTurnSemantics(
+        "documentation_pack_catalog", "call_capability", "documentation_pack_management"
     ),
     "documentation_generation_status": CapabilityTurnSemantics(
         "documentation_generation_status", "call_capability", "documentation_generation_status"
     ),
     "document_update": CapabilityTurnSemantics("update_docs_from_evidence", "call_capability", "document_update"),
     "project_onboarding": CapabilityTurnSemantics("project_onboarding", "call_capability", "project_onboarding"),
+    "project_workflow_status": CapabilityTurnSemantics(
+        "project_workflow_status", "call_capability", "project_workflow_status"
+    ),
     "connector_evidence": CapabilityTurnSemantics("connector_evidence", "call_capability", "connector_evidence"),
 }
 
