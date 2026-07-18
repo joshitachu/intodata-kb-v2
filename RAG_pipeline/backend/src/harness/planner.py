@@ -16,6 +16,7 @@ import inspect
 import json
 import hashlib
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import Enum
@@ -68,6 +69,7 @@ class PlannerAction(str, Enum):
     EXECUTE = "execute"
     CONTINUE = "continue"
     CANCEL = "cancel"
+    REPLACE = "replace"
 
 
 class TurnTaskType(str, Enum):
@@ -79,6 +81,7 @@ class TurnTaskType(str, Enum):
     DOCUMENTATION_PACK_MANAGEMENT = "documentation_pack_management"
     DOCUMENT_UPDATE = "document_update"
     PROJECT_ONBOARDING = "project_onboarding"
+    PROJECT_WORKFLOW_STATUS = "project_workflow_status"
     CONNECTOR_INVENTORY = "connector_inventory"
     CLARIFICATION = "clarification"
 
@@ -300,6 +303,7 @@ async def plan_harness_turn(
     manifest: RuntimeCapabilityManifest,
     project_options: Sequence[Mapping[str, Any] | BaseModel] = (),
     pending_workflow_summary: str | None = None,
+    active_continuation: Mapping[str, Any] | None = None,
     conversation_history: Sequence[Mapping[str, Any]] = (),
     planner: PlannerCallable | None = None,
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
@@ -312,6 +316,7 @@ async def plan_harness_turn(
         manifest=manifest,
         project_options=project_options,
         pending_workflow_summary=pending_workflow_summary,
+        active_continuation=active_continuation,
         conversation_history=conversation_history,
         planner=planner,
         max_tool_calls=max_tool_calls,
@@ -326,6 +331,7 @@ async def plan_harness_turn_detailed(
     manifest: RuntimeCapabilityManifest,
     project_options: Sequence[Mapping[str, Any] | BaseModel] = (),
     pending_workflow_summary: str | None = None,
+    active_continuation: Mapping[str, Any] | None = None,
     conversation_history: Sequence[Mapping[str, Any]] = (),
     planner: PlannerCallable | None = None,
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
@@ -360,6 +366,7 @@ async def plan_harness_turn_detailed(
         application_context=manifest.application_context,
         project_options=project_options,
         pending_workflow_summary=pending_workflow_summary,
+        active_continuation=active_continuation,
         conversation_history=conversation_history,
         history_limit=history_limit,
         max_tool_calls=max_tool_calls,
@@ -404,7 +411,12 @@ async def plan_harness_turn_detailed(
                 provider_names=provider_names,
                 max_tool_calls=max_tool_calls,
             )
-            _validate_calls(decision, tools_by_id, max_tool_calls=max_tool_calls)
+            _validate_calls(
+                decision,
+                tools_by_id,
+                max_tool_calls=max_tool_calls,
+                user_message=user_message,
+            )
             if decision.action == PlannerAction.ANSWER and not (decision.answer or "").strip():
                 raise _PlanValidationError(
                     "answer decisions require answer text",
@@ -626,18 +638,29 @@ def _validate_calls(
     tools_by_id: Mapping[str, RuntimeCapabilityTool],
     *,
     max_tool_calls: int,
+    user_message: str,
 ) -> None:
     if len(decision.tool_calls) > max_tool_calls:
         raise _PlanValidationError(
             "planner exceeded the tool-call budget",
             reason=FALLBACK_BUDGET_EXCEEDED,
         )
+    words = set(re.findall(r"[a-z0-9]+", user_message.casefold()))
     for call in decision.tool_calls:
         tool = tools_by_id.get(call.capability_id)
         if tool is None:
             raise _PlanValidationError(
                 "planner selected an unknown or unavailable capability",
                 reason=FALLBACK_UNKNOWN_CAPABILITY,
+            )
+        if tool.requires_explicit_intent:
+            if not words.intersection(tool.explicit_intent_terms):
+                raise _PlanValidationError(
+                    "selected capability requires an explicit action request in the current turn"
+                )
+        if words.intersection(tool.forbidden_intent_terms):
+            raise _PlanValidationError(
+                "selected capability conflicts with the explicit action requested in the current turn"
             )
         _validate_schema(call.arguments, tool.input_schema, path="arguments")
 
@@ -718,6 +741,7 @@ def _planner_messages(
     application_context: Mapping[str, Any],
     project_options: Sequence[Mapping[str, Any] | BaseModel],
     pending_workflow_summary: str | None,
+    active_continuation: Mapping[str, Any] | None,
     conversation_history: Sequence[Mapping[str, Any]],
     history_limit: int,
     max_tool_calls: int,
@@ -745,24 +769,38 @@ def _planner_messages(
                 "task_types": tool.task_types,
                 "evidence_sources": tool.evidence_sources,
                 "output_contracts": tool.output_contracts,
+                "requires_explicit_intent": tool.requires_explicit_intent,
+                "explicit_intent_terms": tool.explicit_intent_terms,
+                "forbidden_intent_terms": tool.forbidden_intent_terms,
             }
             for tool in tools
         ],
         "projects": safe_projects,
         "pending_workflow": _bounded_text(pending_workflow_summary),
+        "active_continuation": _safe_continuation_context(active_continuation),
         "max_tool_calls": max_tool_calls,
         "application": dict(application_context),
     }
     system = (
         "You are the provider-neutral Nexus harness planner. Choose exactly one action: "
-        "answer, clarify, execute, continue, or cancel. Use only supplied capability IDs "
+        "answer, clarify, execute, continue, cancel, or replace. Use only supplied capability IDs "
         "and use only supplied project IDs when populating project_id or project_ids arguments. "
         "Use project_ids only for an explicit multi-project selection. Names in "
         "the request may instead identify runtime engines, jobs, sources, plans, or other "
         "domain entities; preserve those names in the capability question and never reject "
         "them merely because they are not project IDs. For an explicit runtime-data request, "
         "execute the runtime evidence capability and omit project_id when the user has not "
-        "selected one; the harness owns any required scope clarification. Never invent tools "
+        "selected one; the harness owns any required scope clarification. Do not answer questions "
+        "about currently available, organization, or private Documentation "
+        "Packs from memory; execute the supplied Documentation Pack catalog capability. "
+        "Internal application modules and capabilities are not Documentation Packs. Never present "
+        "them as Pack choices. Questions asking whether or how a capability can be used are "
+        "informational: answer them without executing that capability. Never infer workflow status "
+        "from runtime logs. When active_continuation is present, classify the latest message before "
+        "doing anything else: choose continue only when it supplies a requested slot or proceeds "
+        "with the same objective; choose cancel when it stops that objective; choose replace when "
+        "it corrects or asks a different objective. Do not execute a capability until the "
+        "continuation has been continued, cancelled, or replaced. Never invent tools "
         "or include provider identifiers, credentials, "
         "or secrets. For execute, call the supplied tool_name corresponding to the desired "
         "capability. Otherwise return only a "
@@ -777,6 +815,39 @@ def _planner_messages(
             messages.append({"role": role, "content": _bounded_text(content) or ""})
     messages.append({"role": "user", "content": _bounded_text(user_message) or ""})
     return messages
+
+
+def _safe_continuation_context(
+    continuation: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Bound the planner-visible subset of a server-owned continuation."""
+
+    if continuation is None:
+        return None
+    safe: dict[str, Any] = {}
+    for key in ("continuation_id", "version", "objective", "task_type"):
+        value = continuation.get(key)
+        if value is not None:
+            safe[key] = _bounded_text(value)
+    missing = continuation.get("missing_slots")
+    if isinstance(missing, list):
+        safe["missing_slots"] = [_bounded_text(value) for value in missing[:20]]
+    slots = continuation.get("slots")
+    if isinstance(slots, list):
+        safe["slots"] = [
+            {
+                key: (
+                    [_bounded_text(option) for option in value[:20]]
+                    if key == "options" and isinstance(value, list)
+                    else _bounded_text(value)
+                )
+                for key, value in slot.items()
+                if key in {"name", "required", "options"}
+            }
+            for slot in slots[:20]
+            if isinstance(slot, Mapping)
+        ]
+    return safe
 
 
 def _bounded_text(value: Any) -> str | None:

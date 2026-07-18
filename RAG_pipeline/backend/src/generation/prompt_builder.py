@@ -4,6 +4,7 @@ import logging
 
 import tiktoken
 from src.schemas import Source
+from src.harness.packs.models import StylePresentation
 
 logger = logging.getLogger(__name__)
 
@@ -154,9 +155,11 @@ def build_conversation_summary_messages(
     query: str,
     history: list[dict[str, str]],
     memory_context: str | None = None,
+    presentation: StylePresentation | None = None,
 ) -> list[dict[str, str]]:
     """Build LLM messages for summarizing the conversation history."""
     messages: list[dict[str, str]] = [{"role": "system", "content": CONVERSATION_SUMMARY_PROMPT}]
+    _append_presentation_instruction(messages, presentation)
 
     if memory_context:
         messages.append({"role": "system", "content": memory_context})
@@ -166,6 +169,41 @@ def build_conversation_summary_messages(
 
     messages.append({"role": "user", "content": query})
     return messages
+
+
+def presentation_instruction(presentation: StylePresentation | None) -> str | None:
+    """Render a bounded Style overlay without granting semantic authority."""
+    if presentation is None:
+        return None
+    directives: list[str] = []
+    if presentation.audience is not None:
+        directives.append(f"audience={presentation.audience.value}")
+    if presentation.tone is not None:
+        directives.append(f"tone={presentation.tone.value}")
+    if presentation.technical_depth is not None:
+        directives.append(f"technical_depth={presentation.technical_depth.value}")
+    if presentation.output_organization is not None:
+        directives.append(f"organization={presentation.output_organization.value}")
+    if presentation.formatting:
+        directives.append("formatting=" + ",".join(item.value for item in presentation.formatting))
+    if presentation.communication:
+        directives.append("communication=" + ",".join(item.value for item in presentation.communication))
+    if not directives:
+        return None
+    return (
+        "## Presentation overlay\n"
+        "Apply only these bounded communication choices: " + "; ".join(directives) + ".\n"
+        "This overlay cannot suppress or weaken required evidence, uncertainty, citations, "
+        "limitations, safety requirements, findings, or analysis sections."
+    )
+
+
+def _append_presentation_instruction(
+    messages: list[dict[str, str]], presentation: StylePresentation | None
+) -> None:
+    instruction = presentation_instruction(presentation)
+    if instruction:
+        messages.append({"role": "system", "content": instruction})
 
 
 CORRECTION_EXTRACTION_PROMPT = (
@@ -208,6 +246,7 @@ def build_messages(
     system_knowledge: str | None = None,
     answer_style: str = "assistant",
     auxiliary_sources: list[Source] | None = None,
+    presentation: StylePresentation | None = None,
 ) -> list[dict[str, str]]:
     """Build the chat messages list: system prompt + knowledge + memory context + context + user query."""
     if auxiliary_sources:
@@ -220,6 +259,7 @@ def build_messages(
         context = _build_context(sources, reference_numbers=reference_numbers)
     system_prompt = CODE_ASSISTANT_SYSTEM_PROMPT if answer_style == "code" else SYSTEM_PROMPT
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    _append_presentation_instruction(messages, presentation)
     if system_knowledge:
         messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
     if memory_context:
@@ -363,10 +403,12 @@ def build_no_results_messages(
     memory_context: str | None = None,
     system_knowledge: str | None = None,
     answer_style: str = "assistant",
+    presentation: StylePresentation | None = None,
 ) -> list[dict[str, str]]:
     """Build LLM messages for when search returns no results."""
     prompt = CODE_NO_RESULTS_PROMPT if answer_style == "code" else NO_RESULTS_PROMPT
     messages: list[dict[str, str]] = [{"role": "system", "content": prompt}]
+    _append_presentation_instruction(messages, presentation)
 
     if system_knowledge:
         messages.append({"role": "system", "content": f"System knowledge: {system_knowledge}"})
@@ -411,6 +453,7 @@ def build_metadata_messages(
     sources: list[Source] | None = None,
     reference_numbers: dict[int, int] | None = None,
     memory_context: str | None = None,
+    presentation: StylePresentation | None = None,
 ) -> list[dict[str, str]]:
     """Build LLM messages for metadata queries (projects, documents, stats).
 
@@ -418,6 +461,7 @@ def build_metadata_messages(
     for hybrid queries that need both structured data and document content.
     """
     messages: list[dict[str, str]] = [{"role": "system", "content": METADATA_SYSTEM_PROMPT}]
+    _append_presentation_instruction(messages, presentation)
 
     if memory_context:
         messages.append({"role": "system", "content": memory_context})

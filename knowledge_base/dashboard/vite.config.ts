@@ -21,6 +21,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path: string) => path.replace(/^\/auth/, "/api/v1/auth"),
       },
+      "/nexus-api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/nexus-api/, "/api/v1"),
+      },
     },
   },
   test: {
