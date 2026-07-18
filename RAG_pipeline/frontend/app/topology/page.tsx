@@ -25,6 +25,18 @@ import { GroupSummaryNode } from "@/components/graph/GroupSummaryNode";
 import { GraphLegend } from "@/components/graph/GraphLegend";
 import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { JobDetailPanel } from "@/components/graph/JobDetailPanel";
+import { JobGraphCanvas } from "@/components/graph/JobGraphCanvas";
+import { ComponentGraphCanvas } from "@/components/graph/ComponentGraphCanvas";
+import { TopologyBreadcrumb } from "@/components/graph/TopologyBreadcrumb";
+import { LineagePathBanner } from "@/components/graph/LineagePathBanner";
+import { useTopologyNavigation } from "@/hooks/useTopologyNavigation";
+import { useFieldLineage } from "@/hooks/useFieldLineage";
+import {
+  componentLineageHighlight,
+  jobLineageHighlight,
+  projectLineageHighlight,
+} from "@/lib/lineageHighlight";
+import type { FieldLineageQuery } from "@/types/lineage";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
 import { MobileBottomSheet } from "@/components/mobile/MobileBottomSheet";
 import { useViewport } from "@/hooks/useViewport";
@@ -116,6 +128,80 @@ function TopologyContent() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { fitView, getNodes } = useReactFlow();
   const { isMobile } = useViewport();
+
+  // Drill-down navigation stack (Project > Job > ...). Level 0/1 (this
+  // page's canvas) stays mounted-but-hidden while a job level is open so
+  // ascending restores the prior viewport, expand state, and layout.
+  const {
+    stack: navStack,
+    current: navCurrent,
+    depth: navDepth,
+    descendToJob,
+    descendToComponent,
+    ascend,
+    jumpTo,
+    reset: resetNavigation,
+  } = useTopologyNavigation();
+  const currentJobName = navCurrent.kind === "job" ? navCurrent.jobName : null;
+  const currentComponent = navCurrent.kind === "component" ? navCurrent : null;
+  const atProjectLevel = navDepth === 1;
+
+  // S5 field lineage ("heritage mode") - a single selection lives here so it
+  // survives ascending/descending between drill-down levels (each level's
+  // canvas remounts fresh on every descent, see the level-2/3 `key` props
+  // below). null until the user clicks a column handle in a level-3
+  // TableNode; toggled off by clicking the same column again or the path
+  // banner's close button.
+  const [lineageQuery, setLineageQuery] = useState<FieldLineageQuery | null>(null);
+  const {
+    data: lineageResponse,
+    isLoading: lineageLoading,
+    error: lineageError,
+  } = useFieldLineage(selectedProject, lineageQuery);
+
+  const handleColumnLineageClick = useCallback(
+    (jobName: string, componentName: string, table: string, column: string) => {
+      setLineageQuery((prev) =>
+        prev &&
+        prev.jobName === jobName &&
+        prev.component === componentName &&
+        prev.table === table &&
+        prev.column === column
+          ? null
+          : { jobName, table, column, component: componentName, direction: "both", maxDepth: 10 },
+      );
+    },
+    [],
+  );
+
+  const handleClearLineage = useCallback(() => {
+    setLineageQuery(null);
+  }, []);
+
+  // Level-1 highlight: the single job this response is scoped to (no
+  // cross-job stitching yet server-side - see lib/lineageHighlight.ts).
+  const projectLineageIds = useMemo(
+    () => (lineageResponse ? projectLineageHighlight(lineageResponse) : null),
+    [lineageResponse],
+  );
+  // Level-2 highlight: components touched by intra-job, cross-component
+  // hops, scoped to whichever job's canvas is currently mounted.
+  const jobLineageIds = useMemo(
+    () =>
+      lineageResponse && currentJobName
+        ? jobLineageHighlight(lineageResponse, currentJobName)
+        : null,
+    [lineageResponse, currentJobName],
+  );
+  // Level-3 highlight: tables/columns/edges within the currently open
+  // component.
+  const componentLineage = useMemo(
+    () =>
+      lineageResponse && currentComponent
+        ? componentLineageHighlight(lineageResponse, currentComponent.componentName)
+        : null,
+    [lineageResponse, currentComponent],
+  );
 
   // Write to both local and global state when user picks a project
   const setSelectedProject = useCallback((id: string) => {
@@ -234,9 +320,11 @@ function TopologyContent() {
     setLoading(true);
     setError(null);
     setSelectedJob(null);
+    resetNavigation();
     setHiddenGroups(new Set());
     setSearchQuery("");
     setHoveredNodeId(null);
+    setLineageQuery(null);
     // Force the lightweight starting view on every project switch:
     //   compact nodes + collapsed (group-summary) mode.
     // Never default to the full expanded graph — it blows up memory on
@@ -264,7 +352,19 @@ function TopologyContent() {
         setFlowResult(null);
       })
       .finally(() => setLoading(false));
-  }, [selectedProject]);
+  }, [selectedProject, resetNavigation]);
+
+  // Escape ascends one drill-down level (breadcrumb click does the same).
+  useEffect(() => {
+    if (navDepth <= 1) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        ascend();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [navDepth, ascend]);
 
   // Apply layout when visible nodes/edges, direction, or compact mode changes
   useEffect(() => {
@@ -543,6 +643,33 @@ function TopologyContent() {
     );
   }, [hoveredNodeId, searchMatchIds, adjacencyMap, setNodes, setEdges]);
 
+  // Apply the S5 level-1 lineage overlay: dim every job node except the one
+  // the active trace is scoped to. Deliberately scoped to `job:` node ids
+  // only (never group/connection/background nodes) and declared after the
+  // search/hover effects above so it always applies last and wins for job
+  // nodes specifically, without fighting either mechanism for the rest of
+  // the canvas. Runs on both activation and clearing (projectLineageIds
+  // going non-null -> null), mirroring the reset branch already used by the
+  // search/hover effects.
+  const prevProjectLineageRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (projectLineageIds === prevProjectLineageRef.current) return;
+    prevProjectLineageRef.current = projectLineageIds;
+
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (!n.id.startsWith("job:")) return n;
+        if (projectLineageIds === null) {
+          if (n.data.dimmed === false && n.data.highlighted === false) return n;
+          return { ...n, data: { ...n.data, dimmed: false, highlighted: false } };
+        }
+        const isMatch = projectLineageIds.has(n.id);
+        if (n.data.dimmed === !isMatch && n.data.highlighted === isMatch) return n;
+        return { ...n, data: { ...n.data, dimmed: !isMatch, highlighted: isMatch } };
+      }),
+    );
+  }, [projectLineageIds, setNodes]);
+
   // Callbacks
   const handleToggleDirection = useCallback(() => {
     setDirection((d) => (d === "TB" ? "LR" : "TB"));
@@ -585,6 +712,18 @@ function TopologyContent() {
       });
     }
   }, [getNodes]);
+
+  // Double-click on a job node descends into its level-2 component graph.
+  // Single-click behavior (detail panel, group expand/collapse) is unchanged.
+  const handleNodeDoubleClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      if (node.id.startsWith("job:")) {
+        setSelectedJob(null);
+        descendToJob(node.id.slice(4));
+      }
+    },
+    [descendToJob],
+  );
 
   const handleClosePanel = useCallback(() => {
     setSelectedJob(null);
@@ -763,10 +902,20 @@ function TopologyContent() {
           </select>
           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
         </div>
+        {navDepth > 1 && (
+          <TopologyBreadcrumb
+            projectLabel={
+              projects.find((p) => p.id === selectedProject)?.display_name ||
+              selectedProject
+            }
+            stack={navStack}
+            onNavigate={jumpTo}
+          />
+        )}
       </div>
 
-      {/* Toolbar */}
-      {flowResult && (
+      {/* Toolbar (level 0/1 only) */}
+      {flowResult && atProjectLevel && (
         <GraphToolbar
           direction={direction}
           showConnections={showConnections}
@@ -793,6 +942,9 @@ function TopologyContent() {
 
       {/* Graph area */}
       <div className="flex-1 relative min-h-[500px]">
+        {/* Level 0/1 canvas: kept mounted (hidden) during drill-down so
+            ascending restores the prior viewport and expand state. */}
+        <div className={atProjectLevel ? "absolute inset-0" : "absolute inset-0 hidden"}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -830,6 +982,7 @@ function TopologyContent() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
           onNodeMouseEnter={handleNodeMouseEnter}
           onNodeMouseLeave={handleNodeMouseLeave}
           nodeTypes={nodeTypes}
@@ -839,6 +992,7 @@ function TopologyContent() {
           panOnDrag
           zoomOnPinch
           panActivationKeyCode={null}
+          onlyRenderVisibleElements
           proOptions={{ hideAttribution: true }}
           className="bg-background"
         >
@@ -882,6 +1036,46 @@ function TopologyContent() {
             metadata={graphData?.job_metadata?.[selectedJob]}
           />
         )}
+        </div>
+
+        {/* Level 2 canvas: a fresh React Flow instance per descent. The key
+            forces a remount (new layout + animated fitView) for every level,
+            including tRunJob portal hops between sibling jobs. */}
+        {!atProjectLevel && currentJobName && selectedProject && (
+          <JobGraphCanvas
+            key={`${navDepth}:${currentJobName}`}
+            projectId={selectedProject}
+            jobName={currentJobName}
+            onOpenJob={descendToJob}
+            onOpenComponent={descendToComponent}
+            lineageComponentIds={jobLineageIds}
+          />
+        )}
+
+        {/* Level 3 canvas: one component's table graph (tMap) - or, on the
+            documented 404 fallback, the inspector rendered in this same
+            slot. Also remounts fresh per descent. */}
+        {!atProjectLevel && currentComponent && selectedProject && (
+          <ComponentGraphCanvas
+            key={`${navDepth}:${currentComponent.jobName}:${currentComponent.componentName}`}
+            projectId={selectedProject}
+            jobName={currentComponent.jobName}
+            componentName={currentComponent.componentName}
+            onAscend={ascend}
+            lineageQuery={lineageQuery}
+            lineageHighlight={componentLineage}
+            onColumnLineageClick={handleColumnLineageClick}
+          />
+        )}
+
+        {/* Field-lineage path banner (S5): floats above whichever level is
+            visible, since the highlight it summarizes can span levels 1-3. */}
+        <LineagePathBanner
+          response={lineageResponse ?? null}
+          isLoading={lineageLoading}
+          error={lineageError}
+          onClear={handleClearLineage}
+        />
       </div>
     </div>
   );

@@ -247,6 +247,77 @@ function getNodeDimensions(node: Node, compact: boolean): { width: number; heigh
   };
 }
 
+// ── De-flattening oversized ranks ────────────────────────────────────
+//
+// dagre only creates a new rank when an edge forces one. A large set of
+// nodes with few or no edges between them (e.g. a group of 70+ jobs that
+// rarely call each other directly) all land on the SAME rank, and dagre
+// spreads them along the perpendicular axis with no limit - the result is
+// one endless line ("barcode"), not a genuine layout problem so much as an
+// absent one. This wraps any rank above `MAX_NODES_PER_FLAT_RANK` into a
+// grid instead, preserving whatever order dagre/barycenter did assign.
+// `clusterOf` (compound layouts only) keeps wrapping scoped within a
+// node's own group cluster, never merging two groups' members together.
+
+export const MAX_NODES_PER_FLAT_RANK = 12;
+
+export function deflattenOversizedRanks(
+  nodes: Node[],
+  direction: "TB" | "LR",
+  compact: boolean,
+  nodesep: number,
+  ranksep: number,
+  clusterOf?: Map<string, string>,
+): Node[] {
+  const rankAxis: "x" | "y" = direction === "TB" ? "y" : "x";
+  const orderAxis: "x" | "y" = direction === "TB" ? "x" : "y";
+
+  const buckets = new Map<string, Node[]>();
+  for (const n of nodes) {
+    const rankCoord = Math.round(n.position[rankAxis]);
+    const cluster = clusterOf?.get(n.id) ?? "";
+    const key = `${cluster}:${rankCoord}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(n);
+  }
+
+  const result: Node[] = [];
+  for (const members of buckets.values()) {
+    if (members.length <= MAX_NODES_PER_FLAT_RANK) {
+      result.push(...members);
+      continue;
+    }
+
+    // Preserve dagre's chosen order along the perpendicular axis.
+    const sorted = [...members].sort((a, b) => a.position[orderAxis] - b.position[orderAxis]);
+    const rankBase = sorted[0].position[rankAxis];
+    const orderBase = sorted[0].position[orderAxis];
+
+    let maxW = 0;
+    let maxH = 0;
+    for (const n of sorted) {
+      const { width, height } = getNodeDimensions(n, compact);
+      maxW = Math.max(maxW, width);
+      maxH = Math.max(maxH, height);
+    }
+    const along = direction === "TB" ? maxW + nodesep : maxH + nodesep;
+    const across = direction === "TB" ? maxH + ranksep : maxW + ranksep;
+
+    sorted.forEach((n, idx) => {
+      const row = Math.floor(idx / MAX_NODES_PER_FLAT_RANK);
+      const col = idx % MAX_NODES_PER_FLAT_RANK;
+      const orderPos = orderBase + col * along;
+      const rankPos = rankBase + row * across;
+      result.push({
+        ...n,
+        position: direction === "TB" ? { x: orderPos, y: rankPos } : { x: rankPos, y: orderPos },
+      });
+    });
+  }
+
+  return result;
+}
+
 export function applyDagreLayout(
   nodes: Node[],
   edges: Edge[],
@@ -273,7 +344,7 @@ export function applyDagreLayout(
 
   dagre.layout(g);
 
-  return nodes.map((node) => {
+  const positioned = nodes.map((node) => {
     const pos = g.node(node.id);
     const { width, height } = getNodeDimensions(node, compact);
     return {
@@ -281,6 +352,8 @@ export function applyDagreLayout(
       position: { x: pos.x - width / 2, y: pos.y - height / 2 },
     };
   });
+
+  return deflattenOversizedRanks(positioned, direction, compact, nodesep, ranksep);
 }
 
 export function computeGroupBoundingBoxes(
@@ -694,11 +767,21 @@ export function localExpandLayout(
     g.setEdge(edge.source, edge.target);
   }
   dagre.layout(g);
-  const laid = newNodes.map((node) => {
+  const rawLaid = newNodes.map((node) => {
     const pos = g.node(node.id);
     const { width, height } = getNodeDimensions(node, compact);
     return { ...node, position: { x: pos.x - width / 2, y: pos.y - height / 2 } };
   });
+  // A group with many loosely-connected members (e.g. 70+ jobs that rarely
+  // call each other) all land on dagre's rank 0 with no limit on how far
+  // they spread - wrap any oversized rank into a grid before centering.
+  const laid = deflattenOversizedRanks(
+    rawLaid,
+    direction,
+    compact,
+    compact ? 16 : 24,
+    compact ? 24 : 36,
+  );
 
   // Compute centroid of the dagre result
   let cx = 0;
@@ -772,7 +855,7 @@ export function applyCompoundDagreLayout(
 
   dagre.layout(g);
 
-  return nodes.map((node) => {
+  const positioned = nodes.map((node) => {
     const pos = g.node(node.id);
     const { width, height } = getNodeDimensions(node, compact);
     return {
@@ -780,4 +863,6 @@ export function applyCompoundDagreLayout(
       position: { x: pos.x - width / 2, y: pos.y - height / 2 },
     };
   });
+
+  return deflattenOversizedRanks(positioned, direction, compact, nodesep, ranksep, groupMembership);
 }

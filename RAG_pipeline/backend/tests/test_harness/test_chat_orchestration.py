@@ -6,32 +6,26 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from src.db.models import Conversation, ConversationMessage, HarnessConversationContinuationRow, User
+from src.db.models import Conversation, ConversationMessage, HarnessConversationContinuationRow, QueryUsage, User
 from src.api.routes.conversations import get_conversation
+from src.generation.llm_client import _record_usage, reset_turn_usage
+from src.generation.usage import UsageStats
 from src.harness.chat import (
     HarnessPlannerDecision,
     _recompose_persisted_evidence,
-    _resolve_documentation_pack_id,
-    _scope_safe_fallback_decision,
+    _resolve_documentation_pack_selection,
     _with_turn_plan,
     detect_harness_chat_intent,
     plan_model_harness_chat_turn,
     resume_documentation_update_workflow,
-    plan_harness_chat_turn,
     run_harness_chat_turn,
     run_harness_chat_turn_stream,
-)
-from src.harness.resolution import (
-    ConversationalFocus,
-    EntityReference,
-    EntityType,
-    WorkflowKind,
 )
 from src.harness.models import (
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENTATION_GENERATION_CAPABILITY,
-    DOCUMENTATION_PACK_CREATE_CAPABILITY,
+    DOCUMENTATION_PACK_LIST_CAPABILITY,
     EXTERNAL_CONNECTOR_READ_CAPABILITY,
     CapabilityDefinition,
     HarnessProviderType,
@@ -39,6 +33,7 @@ from src.harness.models import (
     LOG_SEARCH_EVIDENCE_CAPABILITY,
     OPERATIONAL_INVESTIGATION_CAPABILITY,
     PROJECT_ONBOARDING_CAPABILITY,
+    PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY,
     RUNTIME_EVIDENCE_CAPABILITY,
     EvidenceItem,
     EvidenceQueryResult,
@@ -46,8 +41,9 @@ from src.harness.models import (
     WorkflowRunCreate,
 )
 from src.harness.providers.mcp_docs import McpDocumentationProvider
+from src.harness.packs.draft_service import PackDraftService
 from src.harness.repository import HarnessWorkflowRepository
-from src.harness.registry import CapabilityRegistry
+from src.harness.registry import CapabilityRegistry, base_capability_registry
 from src.harness.planner import (
     EvidencePolicy,
     ModelPlannerDecision,
@@ -68,6 +64,59 @@ async def _seed_conversation(db_session):
     db_session.add(conversation)
     await db_session.flush()
     return user, conversation
+
+
+def _security_pack_artifact() -> dict:
+    return {
+        "purpose": "Assess code-level security vulnerabilities and prioritize remediation.",
+        "analyses": [
+            {
+                "id": "vulnerabilities",
+                "label": "Vulnerabilities",
+                "purpose": "Identify and prioritize code-level vulnerabilities.",
+            }
+        ],
+        "evidence_requirements": [
+            {"id": "source", "label": "Source evidence", "required": True, "weight": 100}
+        ],
+        "output_documents": [
+            {
+                "id": "security-report",
+                "title": "Security Vulnerability Report",
+                "sections": [{"id": "findings", "heading": "Findings", "order": 1}],
+            }
+        ],
+        "audience": {
+            "label": "Engineering leadership",
+            "roles": ["engineering leaders"],
+            "decision_needs": ["fund remediation"],
+            "render": {
+                "seniority": "director",
+                "domain_familiarity": "working",
+                "decision_horizon": "near_term",
+                "detail_level": "standard",
+            },
+        },
+    }
+
+
+async def _save_security_pack(db_session, user_id: int):
+    service = PackDraftService(db_session, base_capability_registry())
+    draft = await service.create_draft(
+        owner_user_id=user_id,
+        name="Security Vulnerability Scanning Pack",
+    )
+    draft = await service.mutate(
+        draft_id=draft.id,
+        owner_user_id=user_id,
+        expected_revision=draft.revision,
+        patch=_security_pack_artifact(),
+    )
+    return await service.save(
+        draft_id=draft.id,
+        owner_user_id=user_id,
+        expected_revision=draft.revision,
+    )
 
 
 def test_fully_scoped_runtime_plan_persists_time_without_missing_slots() -> None:
@@ -134,7 +183,8 @@ def _provider(status_code: int = 200, json_body: dict | None = None) -> McpDocum
     )
 
 
-async def test_docs_pack_name_resolves_to_reusable_pack_id() -> None:
+async def test_docs_pack_name_resolves_to_reusable_pack_id(db_session) -> None:
+    user, _ = await _seed_conversation(db_session)
     provider = McpDocumentationProvider(
         base_url="http://mcp.internal/mcp",
         transport=httpx.MockTransport(
@@ -146,6 +196,8 @@ async def test_docs_pack_name_resolves_to_reusable_pack_id() -> None:
                         "manifest_name": "Operations Handbook",
                         "version": "1.0.0",
                         "description": "Operations documentation",
+                        "certification_status": "certified",
+                        "mutable": False,
                     }
                 ],
             )
@@ -154,14 +206,45 @@ async def test_docs_pack_name_resolves_to_reusable_pack_id() -> None:
         ),
     )
 
-    pack_id = await _resolve_documentation_pack_id(
+    selection = await _resolve_documentation_pack_selection(
         arguments={},
         query='Generate docs for customer_orders using pack "Operations Handbook"',
+        db=db_session,
+        user_id=user.id,
         provider=provider,
         access_token=None,
     )
 
-    assert pack_id == 17
+    assert selection is not None
+    assert selection.plugin_pack_id == 17
+    assert selection.private_version_ids == ()
+
+
+async def test_private_docs_pack_resolves_from_same_catalog_when_organization_catalog_is_empty(
+    db_session,
+) -> None:
+    user, _ = await _seed_conversation(db_session)
+    saved = await _save_security_pack(db_session, user.id)
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[])),
+    )
+
+    selection = await _resolve_documentation_pack_selection(
+        arguments={},
+        query=(
+            "Generate docs for project-a using the "
+            'Security Vulnerability Scanning Pack (v1.0.0)"'
+        ),
+        db=db_session,
+        user_id=user.id,
+        provider=provider,
+        access_token=None,
+    )
+
+    assert selection is not None
+    assert selection.plugin_pack_id is None
+    assert selection.private_version_ids == (saved.id,)
 
 
 def _doc_update_provider(seen: dict[str, object] | None = None) -> McpDocumentationProvider:
@@ -225,27 +308,7 @@ def test_detect_harness_chat_intent_is_conservative() -> None:
     assert detect_harness_chat_intent("Summarize the generated documentation") is None
 
 
-def test_fallback_preserves_focused_operational_scope() -> None:
-    fallback = _scope_safe_fallback_decision(
-        query="Check the same project over the last 30 days instead.",
-        fallback=plan_harness_chat_turn(
-            "Check the same project over the last 30 days instead."
-        ),
-        focus=ConversationalFocus(
-            project=EntityReference(
-                entity_type=EntityType.PROJECT,
-                stable_id="reingest-drill",
-                canonical_name="reingest-drill",
-            ),
-            workflow_kind=WorkflowKind.RUNTIME_HEALTH,
-        ),
-    )
-
-    assert fallback.mode == "operational_investigation"
-    assert fallback.arguments == {"project_id": "reingest-drill"}
-
-
-async def test_malformed_planner_output_preserves_explicit_runtime_source(
+async def test_malformed_planner_output_never_routes_by_keywords(
     db_session, monkeypatch
 ) -> None:
     _, conversation = await _seed_conversation(db_session)
@@ -267,25 +330,27 @@ async def test_malformed_planner_output_preserves_explicit_runtime_source(
         access_token=None,
     )
 
-    assert decision.mode == "runtime_answer"
-    assert decision.capability_id == LOG_SEARCH_EVIDENCE_CAPABILITY.id
+    assert decision.mode == "planner_unavailable"
+    assert decision.action == "answer_direct"
+    assert decision.capability_id is None
+    assert decision.decision_source == "model_fallback"
     assert decision.fallback_reason == "schema_validation"
     assert decision.turn_plan is not None
-    assert decision.turn_plan.allows("runtime_evidence")
+    assert not decision.turn_plan.allows("runtime_evidence")
     assert not decision.turn_plan.allows("indexed_documentation")
 
 
 @pytest.mark.parametrize(
-    ("query", "expected_mode"),
+    "query",
     [
-        ("Explain the runtime configuration according to the documentation.", "document_answer"),
-        ("What does the execution job do?", "rag"),
-        ("What is running right now?", "runtime_answer"),
-        ("According to the runtime logs, which workflows failed?", "runtime_answer"),
+        "Explain the runtime configuration according to the documentation.",
+        "What does the execution job do?",
+        "What is running right now?",
+        "According to the runtime logs, which workflows failed?",
     ],
 )
 async def test_planner_failure_resolves_evidence_source_not_domain_nouns(
-    db_session, monkeypatch, query: str, expected_mode: str
+    db_session, monkeypatch, query: str
 ) -> None:
     _, conversation = await _seed_conversation(db_session)
 
@@ -306,14 +371,12 @@ async def test_planner_failure_resolves_evidence_source_not_domain_nouns(
         access_token=None,
     )
 
-    assert decision.mode == expected_mode
+    assert decision.mode == "planner_unavailable"
+    assert decision.action == "answer_direct"
+    assert decision.capability_id is None
     assert decision.turn_plan is not None
-    if expected_mode == "runtime_answer":
-        assert decision.turn_plan.allows("runtime_evidence")
-        assert not decision.turn_plan.allows("indexed_documentation")
-    else:
-        assert decision.turn_plan.allows("indexed_documentation")
-        assert not decision.turn_plan.allows("runtime_evidence")
+    assert not decision.turn_plan.allows("runtime_evidence")
+    assert not decision.turn_plan.allows("indexed_documentation")
 
 
 async def test_planner_failure_follow_up_keeps_prior_runtime_evidence_focus(
@@ -362,9 +425,9 @@ async def test_planner_failure_follow_up_keeps_prior_runtime_evidence_focus(
         access_token=None,
     )
 
-    assert decision.mode == "runtime_answer"
+    assert decision.mode == "planner_unavailable"
     assert decision.turn_plan is not None
-    assert decision.turn_plan.allows("runtime_evidence")
+    assert not decision.turn_plan.allows("runtime_evidence")
     assert not decision.turn_plan.allows("indexed_documentation")
 
 
@@ -388,9 +451,9 @@ async def test_planner_failure_respects_docs_only_constraint(db_session, monkeyp
         access_token=None,
     )
 
-    assert decision.mode == "document_answer"
+    assert decision.mode == "planner_unavailable"
     assert decision.turn_plan is not None
-    assert decision.turn_plan.allows("indexed_documentation")
+    assert not decision.turn_plan.allows("indexed_documentation")
     assert not decision.turn_plan.allows("runtime_evidence")
 
 
@@ -416,21 +479,37 @@ async def test_planner_failure_for_ordinary_question_falls_back_to_document_rag(
         access_token=None,
     )
 
-    assert decision.mode == "rag"
+    assert decision.mode == "planner_unavailable"
     assert decision.turn_plan is not None
-    assert decision.turn_plan.allows("indexed_documentation")
+    assert not decision.turn_plan.allows("indexed_documentation")
     assert not decision.turn_plan.allows("runtime_evidence")
 
 
-async def test_zip_onboarding_routes_to_the_onboarding_workflow(db_session) -> None:
+async def test_zip_onboarding_routes_from_model_tool_selection(db_session, monkeypatch) -> None:
     user, conversation = await _seed_conversation(db_session)
+
+    async def fake_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(
+                action=PlannerAction.EXECUTE,
+                confidence=0.9,
+                tool_calls=[
+                    PlannedToolCall(
+                        capability_id=PROJECT_ONBOARDING_CAPABILITY.id,
+                        arguments={"project_id": "acceptance_zip", "source_type": "zip"},
+                    )
+                ],
+            )
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", fake_plan)
 
     decision = await plan_model_harness_chat_turn(
         query="Create acceptance_zip from a ZIP file instead of GitHub.",
         conversation=conversation,
         db=db_session,
         project_ids=["project-a"],
-        user_permissions=set(),
+        user_permissions={"manage_projects"},
         access_token=None,
     )
 
@@ -440,7 +519,7 @@ async def test_zip_onboarding_routes_to_the_onboarding_workflow(db_session) -> N
     assert decision.capability_id == PROJECT_ONBOARDING_CAPABILITY.id
 
 
-async def test_pack_creation_clarification_keeps_pack_management_task(
+async def test_pack_creation_cannot_reactivate_the_retired_chat_capability(
     db_session, monkeypatch
 ) -> None:
     user, conversation = await _seed_conversation(db_session)
@@ -465,41 +544,30 @@ async def test_pack_creation_clarification_keeps_pack_management_task(
     )
 
     assert decision.action == "ask_clarification"
-    assert decision.mode == "create_documentation_pack"
-    assert decision.capability_id == DOCUMENTATION_PACK_CREATE_CAPABILITY.id
+    assert decision.mode == "model_clarification"
+    assert decision.capability_id is None
     assert decision.direct_answer == (
         "Who will read this Pack, and which documents should it contain?"
     )
     assert decision.turn_plan is not None
-    assert decision.turn_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
-    assert decision.turn_plan.execution_mode is TurnExecutionMode.CLARIFICATION
-
-    await run_harness_chat_turn(
-        conversation=conversation,
-        query="/pack create",
-        db=db_session,
-        user_id=user.id,
-        project_ids=["project-a"],
-        planner_decision=decision,
-    )
-    follow_up = await plan_model_harness_chat_turn(
-        query="It is for operations teams and should cover schedules and recovery.",
-        conversation=conversation,
-        db=db_session,
-        project_ids=["project-a"],
-        user_permissions={"manage_projects"},
-        access_token=None,
-    )
-
-    assert follow_up.mode == "create_documentation_pack"
-    assert follow_up.turn_plan is not None
-    assert follow_up.turn_plan.task_type is TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+    assert decision.turn_plan.task_type is not TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
 
 
-async def test_unavailable_named_connector_cannot_be_answered_as_if_searched(
-    db_session,
+async def test_model_answer_is_not_overridden_by_connector_keywords(
+    db_session, monkeypatch
 ) -> None:
     _, conversation = await _seed_conversation(db_session)
+
+    async def fake_plan(**_kwargs):
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(
+                action=PlannerAction.ANSWER,
+                confidence=0.9,
+                answer="Slack is not available in this request scope.",
+            )
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", fake_plan)
 
     decision = await plan_model_harness_chat_turn(
         query="Search Slack for messages about the reingest-drill database timeout.",
@@ -510,9 +578,141 @@ async def test_unavailable_named_connector_cannot_be_answered_as_if_searched(
         access_token=None,
     )
 
-    assert decision.mode == "operational_investigation"
-    assert decision.action == "call_capability"
-    assert decision.decision_source == "capability_guard"
+    assert decision.mode == "model_answer"
+    assert decision.action == "answer_direct"
+    assert decision.direct_answer == "Slack is not available in this request scope."
+    assert decision.decision_source == "model"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "which project is currently having documents made",
+        "is there documentation being made as we speak?",
+        "is there any project being scanned now or anything?",
+        "which accessible project is onboarding right now?",
+    ],
+)
+async def test_conversation_163_paraphrases_use_cross_project_workflow_status(
+    db_session, monkeypatch, query: str
+) -> None:
+    _, conversation = await _seed_conversation(db_session)
+
+    async def fake_plan(**kwargs):
+        capability = next(
+            tool
+            for tool in kwargs["manifest"].tools
+            if tool.id == PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id
+        )
+        assert any("across projects" in value for value in capability.use_when)
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(
+                action=PlannerAction.EXECUTE,
+                confidence=0.96,
+                tool_calls=[
+                    PlannedToolCall(
+                        capability_id=PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id,
+                        arguments={},
+                    )
+                ],
+            )
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", fake_plan)
+    decision = await plan_model_harness_chat_turn(
+        query=query,
+        conversation=conversation,
+        db=db_session,
+        project_ids=["project-a", "project-b"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    assert decision.mode == "project_workflow_status"
+    assert decision.capability_id == PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id
+    assert decision.turn_plan is not None
+    assert decision.turn_plan.task_type is TurnTaskType.PROJECT_WORKFLOW_STATUS
+    assert "time_window" not in decision.turn_plan.missing_slots
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_cross_project_workflow_status_executes_without_time_window(
+    db_session, stream: bool
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/mcp/projects":
+            return httpx.Response(
+                200,
+                json={
+                    "projects": [
+                        {
+                            "id": "project-a",
+                            "display_name": "Project A",
+                            "status": "ready",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/mcp/generate-runs/project-a":
+            return httpx.Response(
+                200,
+                json={
+                    "runs": [
+                        {"id": 17, "project_id": "project-a", "status": "running"}
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(handler),
+    )
+    decision = _with_turn_plan(
+        HarnessPlannerDecision(
+            action="call_capability",
+            mode="project_workflow_status",
+            capability_id=PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id,
+            arguments={},
+            decision_source="model",
+        ),
+        query="which project is currently having documents made",
+        project_ids=["project-a"],
+    )
+
+    if stream:
+        events = [
+            event
+            async for event in run_harness_chat_turn_stream(
+                conversation=conversation,
+                query="which project is currently having documents made",
+                db=db_session,
+                user_id=user.id,
+                project_ids=["project-a"],
+                provider=provider,
+                planner_decision=decision,
+            )
+        ]
+        answer = " ".join(
+            json.loads(data) for event_type, data in events if event_type == "token"
+        )
+    else:
+        response = await run_harness_chat_turn(
+            conversation=conversation,
+            query="which project is currently having documents made",
+            db=db_session,
+            user_id=user.id,
+            project_ids=["project-a"],
+            provider=provider,
+            planner_decision=decision,
+        )
+        answer = response.content
+
+    assert "Project A" in answer
+    assert "documentation generation: running" in answer
+    assert "time window" not in answer.casefold()
 
 
 async def test_conversation_74_docs_inventory_plan_denies_runtime(db_session, monkeypatch) -> None:
@@ -612,16 +812,16 @@ async def test_conversation_81_migration_followup_stays_document_scoped(
         access_token=None,
     )
 
-    assert decision.action == "use_rag"
-    assert decision.mode == "document_answer"
+    assert decision.action == "ask_clarification"
+    assert decision.mode == "model_clarification"
     assert decision.turn_plan is not None
-    assert decision.turn_plan.output_contract == "migration_proposal"
-    assert decision.turn_plan.objective == "Help me migrate alitalend to Azure Data Factory."
-    assert decision.turn_plan.continuation["state"] == "continued"
+    assert decision.turn_plan.output_contract == "typed_clarification"
+    assert decision.turn_plan.objective == "option 1 and 2"
+    assert decision.turn_plan.continuation["state"] == "awaiting_user_input"
     assert "runtime_evidence" in decision.turn_plan.evidence_policy.denied
 
 
-async def test_recomposition_guard_overrides_model_continue_without_new_evidence(
+async def test_continue_without_active_continuation_is_not_keyword_rerouted(
     db_session, monkeypatch
 ) -> None:
     _, conversation = await _seed_conversation(db_session)
@@ -667,13 +867,13 @@ async def test_recomposition_guard_overrides_model_continue_without_new_evidence
         access_token=None,
     )
 
-    assert decision.action == "use_rag"
-    assert decision.mode == "document_answer"
-    assert decision.matched_rule == "evidence_recomposition"
+    assert decision.action == "ask_clarification"
+    assert decision.mode == "continue"
+    assert decision.matched_rule is None
     assert decision.turn_plan is not None
-    assert decision.turn_plan.objective == prior_plan.objective
-    assert decision.turn_plan.output_contract == "component_inventory"
-    assert decision.turn_plan.continuation["state"] == "continued"
+    assert decision.turn_plan.objective == "Give me better output"
+    assert decision.turn_plan.output_contract == "typed_clarification"
+    assert decision.turn_plan.continuation["state"] == "awaiting_user_input"
     assert "runtime_evidence" in decision.turn_plan.evidence_policy.denied
 
 
@@ -726,15 +926,15 @@ async def test_runtime_show_results_reuses_prior_run_and_policy(
     )
     await db_session.flush()
 
-    async def latest_run(*_args, **_kwargs):
-        return run.id
-
     async def fake_plan(**_kwargs):
         return PlannerTurnResult(
-            decision=ModelPlannerDecision(action=PlannerAction.CONTINUE, confidence=0.8)
+            decision=ModelPlannerDecision(
+                action=PlannerAction.ANSWER,
+                confidence=0.8,
+                answer="Here are the prior results.",
+            )
         )
 
-    monkeypatch.setattr("src.harness.chat._latest_evidence_run_id", latest_run)
     monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", fake_plan)
     decision = await plan_model_harness_chat_turn(
         query="show me the results then?",
@@ -745,12 +945,12 @@ async def test_runtime_show_results_reuses_prior_run_and_policy(
         access_token=None,
     )
 
-    assert decision.mode == "evidence_recomposition"
-    assert decision.arguments["recompose_from_run_id"] == run.id
+    assert decision.mode == "model_answer"
+    assert decision.direct_answer == "Here are the prior results."
     assert decision.turn_plan is not None
-    assert decision.turn_plan.task_type is TurnTaskType.RUNTIME_ANSWER
-    assert decision.turn_plan.evidence_policy.allowed == ["runtime_evidence"]
-    assert decision.turn_plan.objective == prior_plan.objective
+    assert decision.turn_plan.task_type is TurnTaskType.DIRECT_ANSWER
+    assert decision.turn_plan.evidence_policy.allowed == []
+    assert decision.turn_plan.objective == "show me the results then?"
     assert (
         await _recompose_persisted_evidence(db_session, run.id, prior_plan)
         == "Prior runtime result"
@@ -769,7 +969,7 @@ async def test_runtime_ranking_executes_runtime_evidence_before_synthesis(
                 confidence=0.9,
                 tool_calls=[
                     PlannedToolCall(
-                        capability_id=OPERATIONAL_INVESTIGATION_CAPABILITY.id,
+                        capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
                         arguments={"question": "which jobs fail most", "project_id": "alitalend"},
                     )
                 ],
@@ -823,6 +1023,52 @@ async def test_model_clarification_state_is_typed_and_durable(db_session) -> Non
         )
     ).scalars().all()
     assert messages[0].turn_plan == messages[1].turn_plan == response.turn_plan
+
+
+async def test_pack_catalog_question_uses_catalog_capability_not_application_modules(
+    db_session,
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json=[{
+                    "id": 7,
+                    "name": "volkerwessels-reverse-engineering",
+                    "manifest_name": "VolkerWessels Reverse Engineering",
+                    "version": "2.0.0",
+                    "description": "Organization reverse-engineering documentation.",
+                    "certification_status": "certified",
+                    "mutable": False,
+                }],
+            )
+        ),
+    )
+    response = await run_harness_chat_turn(
+        conversation=conversation,
+        query="Which Packs are available to use?",
+        db=db_session,
+        user_id=user.id,
+        project_ids=None,
+        provider=provider,
+        planner_decision=HarnessPlannerDecision(
+            action="call_capability",
+            mode="documentation_pack_catalog",
+            capability_id=DOCUMENTATION_PACK_LIST_CAPABILITY.id,
+            arguments={"scope": "all"},
+            confidence=1,
+            decision_source="model",
+        ),
+    )
+
+    assert "VolkerWessels Reverse Engineering" in response.content
+    assert "You do not have any saved personal Packs yet" in response.content
+    assert "nexus.data-integration" not in response.content
+    assert response.turn_plan is not None
+    assert response.turn_plan["task_type"] == "documentation_pack_management"
 
 
 async def test_harness_chat_turn_triggers_docs_generation_and_persists_receipt(db_session) -> None:
@@ -880,6 +1126,69 @@ async def test_harness_chat_turn_triggers_docs_generation_and_persists_receipt(d
     assert messages[0].turn_plan["task_type"] == "document_generation"
     assert messages[0].turn_plan["execution_mode"] == "workflow"
     assert messages[1].turn_plan == messages[0].turn_plan
+
+
+async def test_chat_generation_uses_named_private_pack_without_organization_pack(
+    db_session,
+) -> None:
+    user, conversation = await _seed_conversation(db_session)
+    saved = await _save_security_pack(db_session, user.id)
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/mcp/generate":
+            seen["payload"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "status": "generation_triggered",
+                    "message": "Documentation generation started",
+                },
+            )
+        if request.method == "GET" and request.url.path == "/mcp/plugins":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    provider = McpDocumentationProvider(
+        base_url="http://mcp.internal/mcp",
+        transport=httpx.MockTransport(handler),
+    )
+    response = await run_harness_chat_turn(
+        conversation=conversation,
+        query=(
+            "Generate documentation for project-a using the "
+            "Security Vulnerability Scanning Pack"
+        ),
+        db=db_session,
+        user_id=user.id,
+        project_ids=["project-a"],
+        access_token="jwt-token",
+        provider=provider,
+        planner_decision=HarnessPlannerDecision(
+            action="call_capability",
+            mode="generate_docs",
+            capability_id=DOCUMENTATION_GENERATION_CAPABILITY.id,
+            arguments={
+                "project_id": "project-a",
+                "documentation_pack": "Security Vulnerability Scanning Pack",
+            },
+            confidence=1,
+            decision_source="model",
+        ),
+    )
+
+    payload = seen["payload"]
+    assert isinstance(payload, dict)
+    assert "plugin_pack_id" not in payload
+    assert len(payload["nexus_private_analysis_packs"]) == 1
+    assert payload["nexus_private_pack_receipts"][0]["version_id"] == saved.id
+    assert "Documentation generation started" in response.content
+
+    run = await HarnessWorkflowRepository(db_session).get_run(
+        ["project-a"], response.workflow_run_id
+    )
+    receipts = run.runtime_metadata["pack_governance"]["private_analysis_pack_receipts"]
+    assert [item["version_id"] for item in receipts] == [saved.id]
 
 
 async def test_harness_chat_stream_emits_activity_and_done(db_session) -> None:
@@ -1581,7 +1890,7 @@ async def test_provider_failure_marks_workflow_failed(db_session) -> None:
     assert "secret" not in (runs[0].error_message or "")
 
 
-async def test_runtime_continuation_resolves_slots_before_model_planning(db_session, monkeypatch) -> None:
+async def test_runtime_continuation_is_planner_visible_before_slot_resolution(db_session, monkeypatch) -> None:
     user, conversation = await _seed_conversation(db_session)
     plan = TurnPlan(
         objective="Show runtime results for ESB_PROD.",
@@ -1608,10 +1917,13 @@ async def test_runtime_continuation_resolves_slots_before_model_planning(db_sess
     ))
     await db_session.flush()
 
-    async def must_not_plan(**_kwargs):
-        raise AssertionError("active continuation must resolve before model planning")
+    async def continue_plan(**kwargs):
+        assert kwargs["active_continuation"]["objective"] == plan.objective
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.CONTINUE, confidence=0.9)
+        )
 
-    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", must_not_plan)
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", continue_plan)
     first = await plan_model_harness_chat_turn(
         query="cdc", conversation=conversation, db=db_session, project_ids=["cdc"],
         user_permissions=set(), access_token=None,
@@ -1682,8 +1994,11 @@ async def test_runtime_continuation_executes_persisted_objective_without_docs(
     await db_session.flush()
     captured: dict[str, object] = {}
 
-    async def must_not_plan(**_kwargs):
-        raise AssertionError("active continuation must resolve before model planning")
+    async def continue_plan(**kwargs):
+        assert kwargs["active_continuation"]["missing_slots"] == ["time_window"]
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.CONTINUE, confidence=0.9)
+        )
 
     async def runtime(**kwargs):
         captured.update(kwargs)
@@ -1708,7 +2023,7 @@ async def test_runtime_continuation_executes_persisted_objective_without_docs(
     monkeypatch.setattr("src.harness.chat.query_runtime_evidence", runtime)
     monkeypatch.setattr("src.harness.chat.search_document_evidence", docs_must_not_run)
     monkeypatch.setattr("src.harness.chat.list_generated_doc_evidence", docs_must_not_run)
-    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", must_not_plan)
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", continue_plan)
 
     async def persist_turn(query: str, decision: HarnessPlannerDecision) -> None:
         if stream:
@@ -1787,7 +2102,9 @@ async def test_runtime_continuation_executes_persisted_objective_without_docs(
     assert continuation.version == 5
 
 
-async def test_explicit_docs_switch_supersedes_runtime_continuation(db_session) -> None:
+async def test_conversation_163_correction_replaces_runtime_continuation(
+    db_session, monkeypatch
+) -> None:
     user, conversation = await _seed_conversation(db_session)
     plan = TurnPlan(
         objective="runtime", task_type=TurnTaskType.RUNTIME_ANSWER,
@@ -1800,16 +2117,44 @@ async def test_explicit_docs_switch_supersedes_runtime_continuation(db_session) 
     )
     db_session.add(row)
     await db_session.flush()
+    calls = 0
+
+    async def replace_then_status(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert kwargs["active_continuation"] is not None
+            return PlannerTurnResult(
+                decision=ModelPlannerDecision(action=PlannerAction.REPLACE, confidence=0.9)
+            )
+        assert kwargs["active_continuation"] is None
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(
+                action=PlannerAction.EXECUTE,
+                confidence=0.9,
+                tool_calls=[
+                    PlannedToolCall(
+                        capability_id=PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id,
+                        arguments={},
+                    )
+                ],
+            )
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", replace_then_status)
     decision = await plan_model_harness_chat_turn(
-        query="use docs instead", conversation=conversation, db=db_session, project_ids=["cdc"],
+        query="I'm not asking about logs. Which project is currently having documents made?",
+        conversation=conversation, db=db_session, project_ids=["cdc"],
         user_permissions=set(), access_token=None,
     )
     await db_session.refresh(row)
     assert row.status == "superseded"
-    assert decision.mode == "document_answer"
+    assert decision.mode == "project_workflow_status"
+    assert decision.turn_plan is not None
+    assert "time_window" not in decision.turn_plan.missing_slots
 
 
-async def test_new_runtime_objective_supersedes_unrelated_continuation(db_session) -> None:
+async def test_model_replace_replans_new_runtime_objective(db_session, monkeypatch) -> None:
     user, conversation = await _seed_conversation(db_session)
     plan = TurnPlan(
         objective="Which runtime engines are available?",
@@ -1835,6 +2180,29 @@ async def test_new_runtime_objective_supersedes_unrelated_continuation(db_sessio
     )
     db_session.add(row)
     await db_session.flush()
+    calls = 0
+
+    async def replace_then_runtime(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return PlannerTurnResult(
+                decision=ModelPlannerDecision(action=PlannerAction.REPLACE, confidence=0.9)
+            )
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(
+                action=PlannerAction.EXECUTE,
+                confidence=0.9,
+                tool_calls=[
+                    PlannedToolCall(
+                        capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
+                        arguments={"question": "Show ESB_PROD runtime status"},
+                    )
+                ],
+            )
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", replace_then_runtime)
 
     await plan_model_harness_chat_turn(
         query="For ESB_PROD, show recent executions, health, events, failures, and performance.",
@@ -1849,3 +2217,127 @@ async def test_new_runtime_objective_supersedes_unrelated_continuation(db_sessio
     await db_session.refresh(row)
     assert row.status == "superseded"
     assert row.version == 2
+
+
+async def test_model_cancel_escapes_pending_time_window(db_session, monkeypatch) -> None:
+    user, conversation = await _seed_conversation(db_session)
+    plan = TurnPlan(
+        objective="Show runtime logs.",
+        task_type=TurnTaskType.RUNTIME_ANSWER,
+        evidence_policy=EvidencePolicy(
+            allowed=["runtime_evidence"], required=["runtime_evidence"]
+        ),
+        execution_mode=TurnExecutionMode.EVIDENCE,
+        output_contract="runtime_answer",
+        confidence=1,
+        missing_slots=["time_window"],
+    )
+    row = HarnessConversationContinuationRow(
+        conversation_id=conversation.id,
+        owner_user_id=user.id,
+        status="active",
+        version=1,
+        envelope={
+            "continuation_id": "cancel-runtime",
+            "version": 1,
+            "status": "active",
+            "plan": plan.model_dump(mode="json"),
+            "slots": [
+                {"name": "time_window", "value": None, "required": True, "options": []}
+            ],
+            "missing_slots": ["time_window"],
+        },
+    )
+    db_session.add(row)
+    await db_session.flush()
+
+    async def cancel_plan(**kwargs):
+        assert kwargs["active_continuation"]["missing_slots"] == ["time_window"]
+        return PlannerTurnResult(
+            decision=ModelPlannerDecision(action=PlannerAction.CANCEL, confidence=0.99)
+        )
+
+    monkeypatch.setattr("src.harness.chat.plan_harness_turn_detailed", cancel_plan)
+    decision = await plan_model_harness_chat_turn(
+        query="stop, exit",
+        conversation=conversation,
+        db=db_session,
+        project_ids=["cdc"],
+        user_permissions=set(),
+        access_token=None,
+    )
+
+    await db_session.refresh(row)
+    assert row.status == "superseded"
+    assert decision.mode == "continuation_cancelled"
+    assert decision.action == "answer_direct"
+
+
+async def test_harness_turn_persists_recorded_usage(db_session) -> None:
+    """LLM usage accumulated during a harness turn lands in query_usage."""
+    user, conversation = await _seed_conversation(db_session)
+    reset_turn_usage()
+    # Simulate the model planner call the route makes before the turn runs.
+    _record_usage(
+        UsageStats(
+            provider="kimi", model="kimi-k2.5",
+            input_tokens=123, output_tokens=45, cost_usd=0.0006, latency_ms=800,
+        )
+    )
+    await run_harness_chat_turn(
+        conversation=conversation,
+        query="Which packs do I have?",
+        db=db_session,
+        user_id=user.id,
+        project_ids=None,
+        planner_decision=HarnessPlannerDecision(
+            action="answer_direct",
+            mode="capability_awareness",
+            confidence=0.9,
+            direct_answer="You have no packs yet.",
+            decision_source="model",
+        ),
+    )
+
+    rows = (
+        await db_session.execute(
+            select(QueryUsage).where(QueryUsage.conversation_id == conversation.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.interface == "conversation"
+    assert row.user_id == user.id
+    assert row.query_text == "Which packs do I have?"
+    assert row.model_name == "kimi-k2.5"
+    assert row.provider == "kimi"
+    assert row.input_tokens == 123
+    assert row.output_tokens == 45
+    assert row.cost_usd == pytest.approx(0.0006)
+
+
+async def test_harness_turn_without_llm_call_persists_no_usage(db_session) -> None:
+    """A turn answered deterministically (no LLM call) records nothing."""
+    user, conversation = await _seed_conversation(db_session)
+    reset_turn_usage()
+    await run_harness_chat_turn(
+        conversation=conversation,
+        query="What can you do?",
+        db=db_session,
+        user_id=user.id,
+        project_ids=None,
+        planner_decision=HarnessPlannerDecision(
+            action="answer_direct",
+            mode="capability_awareness",
+            confidence=0.9,
+            direct_answer="I can answer questions about your documentation.",
+            decision_source="rules",
+        ),
+    )
+
+    rows = (
+        await db_session.execute(
+            select(QueryUsage).where(QueryUsage.conversation_id == conversation.id)
+        )
+    ).scalars().all()
+    assert rows == []

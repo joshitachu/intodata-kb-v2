@@ -18,6 +18,9 @@ _SAFE_METADATA_KEYS = {
     "redaction_policy",
     "requires_approval",
     "requires_explicit_user_evidence",
+    "requires_explicit_intent",
+    "explicit_intent_terms",
+    "forbidden_intent_terms",
     "requires_named_target_doc",
 }
 
@@ -56,6 +59,9 @@ class RuntimeCapabilityTool(BaseModel):
     output_contracts: list[str] = Field(default_factory=list)
     activity_label: str
     requires_approval: bool = False
+    requires_explicit_intent: bool = False
+    explicit_intent_terms: list[str] = Field(default_factory=list)
+    forbidden_intent_terms: list[str] = Field(default_factory=list)
     redaction_policy: dict[str, Any] = Field(default_factory=dict)
     evidence_output: bool = False
     available: bool = True
@@ -152,6 +158,17 @@ def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
         output_contracts=list(capability.output_contracts),
         activity_label=str(safe_metadata.get("activity_label") or capability.label),
         requires_approval=bool(safe_metadata.get("requires_approval")),
+        requires_explicit_intent=bool(safe_metadata.get("requires_explicit_intent")),
+        explicit_intent_terms=[
+            str(value).casefold()
+            for value in (safe_metadata.get("explicit_intent_terms") or [])
+            if isinstance(value, str) and value.strip()
+        ],
+        forbidden_intent_terms=[
+            str(value).casefold()
+            for value in (safe_metadata.get("forbidden_intent_terms") or [])
+            if isinstance(value, str) and value.strip()
+        ],
         redaction_policy=dict(safe_metadata.get("redaction_policy") or {}),
         evidence_output=bool(
             safe_metadata.get("evidence_output")

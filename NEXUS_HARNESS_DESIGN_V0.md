@@ -377,6 +377,49 @@ For IntoData, the initial domain pack would likely include:
 - evidence rules for source, logs, runtime data, and generated docs
 - connector preferences for the configured Nexus environment
 
+## Pack Governance V1
+
+Pack Governance V1 is now the implemented boundary for governed generation. A
+compiled stack has three ordered layers:
+
+1. **Foundation/Core**: one mandatory, immutable, IntoData-certified base. It
+   owns the protected execution, evidence, policy, permission, safety, and
+   required-output invariants.
+2. **Functional/Analysis**: immutable, certified, organization-approved
+   modules. They are selectable only when allowed by organization policy and
+   may add domain analysis without weakening the Foundation.
+3. **Style/Presentation**: user- or project-owned editable overlays. They use
+   bounded enums for audience, tone, technical depth, organization, formatting,
+   and communication.
+
+Organization policy is mandatory. It names required certified Packs, allowed
+Functional modules, permitted Style values, minimum quality/evaluation
+thresholds, and protected invariants. Lower layers cannot replace higher-layer
+semantics. Style Packs are presentation-only: they are applied at Phase 3
+rendering and cannot change Phase 1 or Phase 2 analysis, evidence, findings,
+permissions, safety gates, or required sections.
+
+Compilation resolves the selected Packs, validates dependencies and policy,
+and emits a deterministic compiled stack/snapshot. Canonical content, policy,
+selection, presentation, and Pack identities are hashed with SHA-256. The
+snapshot hash is persisted with the activation and carried into execution
+receipts; the execution contract rejects a mismatched snapshot hash.
+
+Quality and evaluation scores determine whether an editable Style version is
+promotion-eligible. Eligibility is not promotion: actual promotion of
+semantic or certified content happens through Git and PR review. Trusted MCP
+sources must match configured provenance and refs; Git Packs pin a reviewed
+commit, require a clean checkout, and are checked for content digest changes
+before use. These checks close the source, digest, commit, and TOCTOU paths.
+
+The `/pack` workspace exposes the certified read-only library, organization
+policy, stack selection, activation snapshot, and Style editor. `/pack list`
+opens the workspace; `/pack create` opens the Style editor; `/pack use <Pack>
+for <project>` opens a project stack. Arbitrary semantic Pack creation, ZIP
+creation/import as a mutation path, and local Pack mutation are retired; Pack
+changes proceed through file/Git-backed review and PR certification. Existing
+documentation Pack selection remains available as a governed catalog concern.
+
 ## Entities
 
 An entity is the thing Nexus believes the user is talking about.
@@ -694,3 +737,18 @@ These are not blockers for the vision, but they must be answered before implemen
 - How are entity facts expired or revalidated?
 - How does the classifier estimate confidence?
 - What cost/token controls exist for long-running workflows?
+
+## Pack Draft Builder V3
+
+Private Analysis Packs are conversation-scoped drafts that can be created and
+saved without a project. Their V3 artifact is declarative and additive:
+purpose, analyses, evidence, ordered outputs, scoring, compatibility,
+capability references, and a custom audience profile. Raw audience wording is
+audit/display data; only bounded normalized render dimensions may reach model
+or MCP rendering boundaries.
+
+Certified Foundation and organization policy remain immutable. A private Pack
+cannot grant capabilities or weaken baseline analysis, evidence, findings,
+sections, permissions, safety, or quality gates. Project scope is required for
+compatibility, preview, sharing, activation, or execution. Activation records
+the exact private version/hash beside the governed stack receipt.

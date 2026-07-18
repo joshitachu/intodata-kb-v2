@@ -144,6 +144,12 @@ class PhasePolicy(BaseModel):
         return val.concurrency if isinstance(val, PhaseConfig) else None
 
 
+class PackCertification(BaseModel):
+    """Declared provenance for a Pack reviewed through its source repository."""
+
+    provenance: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
+
+
 class PluginPackManifest(BaseModel):
     name: str
     version: str
@@ -155,6 +161,7 @@ class PluginPackManifest(BaseModel):
     quality_gates: QualityGates | None = None
     steps: list[PluginStep]
     phases: PhasePolicy | None = None
+    certification: PackCertification | None = None
 
     @model_validator(mode="after")
     def _steps_not_empty(self) -> "PluginPackManifest":
