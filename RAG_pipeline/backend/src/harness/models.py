@@ -307,53 +307,6 @@ PROJECT_ONBOARDING_CAPABILITY = CapabilityDefinition(
 )
 
 
-DOCUMENTATION_PACK_CREATE_CAPABILITY = CapabilityDefinition(
-    id="mcp.docs.create_documentation_pack",
-    label="Create reusable documentation Pack",
-    provider_type=HarnessProviderType.DOCUMENTATION,
-    provider_id="mcp.docs",
-    action="create_documentation_pack",
-    input_schema={
-        "type": "object",
-        "required": ["name", "documents"],
-        "properties": {
-            "name": {"type": "string"},
-            "description": {"type": ["string", "null"]},
-            "documents": {
-                "type": "array",
-                "description": (
-                    "Documents in the Pack. Each item has name, optional sections, "
-                    "and optional writing instructions."
-                ),
-                "items": {
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": {"type": "string"},
-                        "sections": {"type": "array", "items": {"type": "string"}},
-                        "instructions": {"type": ["string", "null"]},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "additionalProperties": False,
-    },
-    output_type="documentation_pack_receipt",
-    risk_tier=HarnessRiskTier.WRITES_CONTENT,
-    required_permissions=["manage_projects"],
-    packs=["documentation"],
-    use_when=[
-        "The user explicitly asks to create and save a reusable documentation Pack.",
-    ],
-    do_not_use_when=[
-        "The user only wants to select an existing Pack for a project.",
-        "The user wants to generate documentation from an existing Pack.",
-    ],
-    task_types=["documentation_pack_creation"],
-    output_contracts=["documentation_pack_receipt"],
-)
-
 SOURCE_OPTIONS_CAPABILITY = CapabilityDefinition(
     id="mcp.projects.list_source_options",
     label="List project source options",
@@ -481,6 +434,7 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
             "project_id": {"type": "string"},
             "resume": {"type": "boolean"},
             "template_profile_id": {"type": ["string", "null"]},
+            "investigation_model": {"type": ["string", "null"]},
             "model": {"type": ["string", "null"]},
             "write_model": {"type": ["string", "null"]},
             "plugin_pack_id": {"type": ["integer", "null"], "minimum": 1},
@@ -496,9 +450,59 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
     required_permissions=["manage_projects"],
     packs=["documentation"],
     use_when=["The user asks to generate or regenerate documentation."],
-    do_not_use_when=["The user asks a question about existing documentation."],
+    do_not_use_when=[
+        "The user asks a question about existing documentation.",
+        "The user asks whether or how documentation generation or Packs can be used.",
+    ],
     task_types=["document_generation"],
     output_contracts=["workflow_receipt"],
+    metadata={
+        "requires_explicit_intent": True,
+        "explicit_intent_terms": [
+            "generate", "regenerate", "start", "run", "trigger", "create",
+            "build", "make", "publish",
+        ],
+    },
+)
+
+
+DOCUMENTATION_PACK_LIST_CAPABILITY = CapabilityDefinition(
+    id="nexus.docs.list_documentation_packs",
+    label="List available documentation Packs",
+    provider_type=HarnessProviderType.DOCUMENTATION,
+    provider_id="nexus.documentation-packs",
+    action="list_documentation_packs",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["all", "organization", "private"],
+                "description": "Which user-facing documentation Packs to list.",
+            }
+        },
+        "additionalProperties": False,
+    },
+    output_type="documentation_pack_catalog",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["documentation"],
+    use_when=[
+        "The user asks which documentation, Swap, Plugin, organization, or private Packs are available.",
+        "The user asks whether they own a private Pack.",
+    ],
+    do_not_use_when=[
+        "The user asks which tools or operational capabilities Nexus has.",
+        "The user asks to list generated documents for a project.",
+        "The user asks to generate, create, or publish project documentation.",
+    ],
+    task_types=["documentation_pack_management"],
+    output_contracts=["documentation_pack_catalog"],
+    metadata={
+        "forbidden_intent_terms": [
+            "generate", "regenerate", "start", "run", "trigger", "create",
+            "build", "make", "publish",
+        ],
+    },
 )
 
 DOCUMENTATION_GENERATION_STATUS_CAPABILITY = CapabilityDefinition(
@@ -515,10 +519,46 @@ DOCUMENTATION_GENERATION_STATUS_CAPABILITY = CapabilityDefinition(
     output_type="documentation_generation_status",
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
+    use_when=[
+        "The user asks for documentation generation status for one explicitly selected project."
+    ],
+    do_not_use_when=[
+        "The user asks which accessible project has any active onboarding, scan, or documentation workflow."
+    ],
     task_types=["documentation_generation_status"],
     metadata={
         "execution_surface": "existing_mcp_generation_run_ledger",
         "authoritative_for": "documentation_generation_status",
+    },
+)
+
+PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY = CapabilityDefinition(
+    id="mcp.projects.list_active_workflows",
+    label="List active project onboarding, scan, and documentation workflows",
+    provider_type=HarnessProviderType.SOURCE,
+    provider_id="mcp.projects",
+    action="list_active_project_workflows",
+    input_schema={
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+    output_type="active_project_workflows",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "onboarding", "documentation"],
+    use_when=[
+        "The user asks which accessible project is currently being onboarded, scanned, or having documentation generated.",
+        "The user asks for active project workflow status across projects without naming one project.",
+    ],
+    do_not_use_when=[
+        "The user asks for application runtime logs, job failures, or a time-bounded operational investigation.",
+        "The user asks for documentation generation status for one explicitly selected project.",
+    ],
+    task_types=["project_workflow_status"],
+    output_contracts=["active_project_workflows"],
+    metadata={
+        "execution_surface": "rbac_filtered_mcp_project_and_generation_ledgers",
+        "scope_authority": "server",
     },
 )
 

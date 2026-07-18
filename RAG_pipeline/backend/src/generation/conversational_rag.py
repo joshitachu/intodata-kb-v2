@@ -32,7 +32,7 @@ from src.generation.intent_classifier import (
     detect_runtime_keywords,
 )
 from src.generation.prompt_builder import build_conversation_summary_messages, presentation_instruction
-from src.generation.llm_client import generate_answer, generate_answer_stream, get_last_usage
+from src.generation.llm_client import generate_answer, generate_answer_stream, get_turn_usage
 from src.retrieval.embedder import get_last_embed_tokens
 from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import (
@@ -104,9 +104,15 @@ async def _project_presentation(
     """Resolve one persisted Style overlay once per RAG turn, never per token."""
     if project_ids is None or len(project_ids) != 1:
         return None
-    compiled = await ProjectPackService(
-        db, base_capability_registry()
-    ).resolve_governed_for_execution(project_ids[0], "documentation")
+    try:
+        compiled = await ProjectPackService(
+            db, base_capability_registry()
+        ).resolve_governed_for_execution(project_ids[0], "documentation.generate")
+    except Exception as exc:
+        # Presentation is optional. A missing/quarantined activation must not
+        # change existing RAG semantics or make ordinary document QA fail.
+        logger.warning("Unable to resolve optional project presentation: %s", exc)
+        return None
     return compiled.presentation if compiled is not None else None
 
 
@@ -1744,6 +1750,7 @@ async def run_conversational_rag(
     """
     start = time.perf_counter()
     scope = RequestScope.from_project_ids(project_ids)
+    presentation = await _project_presentation(db, scope.project_ids)
 
     ctx = await _prepare_rag_context(
         conversation, query, user_groups, qdrant, top_k, threshold,
@@ -1760,6 +1767,7 @@ async def run_conversational_rag(
         planned_output_contract=(
             _output_contract_by_turn_plan(turn_plan) if enforce_turn_plan else None
         ),
+        presentation=presentation,
     )
 
     runtime_progress: list = []
@@ -1769,7 +1777,7 @@ async def run_conversational_rag(
     # docs can be combined in one turn.
     if ctx.precomputed_answer is not None and not ctx.allow_runtime_tools:
         answer = ctx.precomputed_answer
-        usage = get_last_usage()
+        usage = get_turn_usage()
     else:
         loop_outcome = await run_runtime_tool_loop(
             ctx.llm_messages, images=images, project_scope=scope.project_scope, db=db,
@@ -1778,7 +1786,7 @@ async def run_conversational_rag(
         runtime_progress = loop_outcome.progress_events
         if loop_outcome.final_answer is not None:
             answer = loop_outcome.final_answer
-            usage = loop_outcome.usage or get_last_usage()
+            usage = loop_outcome.usage or get_turn_usage()
             if loop_outcome.used_runtime_data:
                 logger.info(
                     "Runtime tool loop answered conversation %s with %d step(s)",
@@ -1788,11 +1796,11 @@ async def run_conversational_rag(
             # No structured tool support: fall back to the prepared document answer,
             # but surface the degradation rather than dropping runtime silently.
             answer = f"{ctx.precomputed_answer}\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
-            usage = get_last_usage()
+            usage = get_turn_usage()
         else:
             generated = await generate_answer(ctx.llm_messages, images=images)
             answer = f"{generated}\n\n{_RUNTIME_UNAVAILABLE_NOTE}"
-            usage = get_last_usage()
+            usage = get_turn_usage()
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
@@ -1941,6 +1949,7 @@ async def run_conversational_rag_stream(
     """
     start = time.perf_counter()
     scope = RequestScope.from_project_ids(project_ids)
+    presentation = await _project_presentation(db, scope.project_ids)
 
     # Save user message before streaming starts
     user_msg = ConversationMessage(
@@ -1976,6 +1985,7 @@ async def run_conversational_rag_stream(
         planned_output_contract=(
             _output_contract_by_turn_plan(turn_plan) if enforce_turn_plan else None
         ),
+        presentation=presentation,
     )
 
     import json
@@ -2080,7 +2090,7 @@ async def run_conversational_rag_stream(
     latency_ms = int((time.perf_counter() - start) * 1000)
 
     # Emit usage event (token counts + cost)
-    usage = loop_usage or get_last_usage()
+    usage = loop_usage or get_turn_usage()
     usage_data = {
         "input_tokens": usage.input_tokens if usage else 0,
         "output_tokens": usage.output_tokens if usage else 0,

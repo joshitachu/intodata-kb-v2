@@ -81,6 +81,24 @@ describe("useStreamMessage", () => {
     ]);
   });
 
+  it("exposes a Pack workspace hint before the response finishes", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValueOnce(
+      sseResponse(
+        'event: workspace\ndata: {"workspace":"pack","status":"running"}\n\n' +
+          'event: token\ndata: "What should this Pack analyze?"\n\n' +
+          'event: done\ndata: {"message_id":7,"latency_ms":10}\n\n',
+      ),
+    );
+    const { result } = renderHook(() => useStreamMessage(4));
+
+    await act(async () => {
+      await result.current.sendMessage({ query: "Help me create a Pack" });
+    });
+
+    expect(result.current.streamState.workspace).toBe("pack");
+    expect(result.current.streamState.workspaceStatus).toBe("running");
+  });
+
   it("parses a typed final answer independently from streamed tokens", async () => {
     const answer = {
       output_contract: "runtime_ranking",

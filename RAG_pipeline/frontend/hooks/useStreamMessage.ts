@@ -35,6 +35,8 @@ export interface StreamState {
   pendingAction: HarnessPendingAction | null;
   runtimeTools: RuntimeToolProgress[];
   structuredAnswer: StructuredAnswer | null;
+  workspace: "pack" | null;
+  workspaceStatus: "running" | "ready" | null;
 }
 
 const INITIAL_STATE: StreamState = {
@@ -50,6 +52,8 @@ const INITIAL_STATE: StreamState = {
   pendingAction: null,
   runtimeTools: [],
   structuredAnswer: null,
+  workspace: null,
+  workspaceStatus: null,
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -89,6 +93,8 @@ export function useStreamMessage(conversationId: number | null) {
         pendingAction: null,
         runtimeTools: [],
         structuredAnswer: null,
+        workspace: null,
+        workspaceStatus: null,
       });
 
       try {
@@ -249,6 +255,20 @@ export function useStreamMessage(conversationId: number | null) {
               });
             } catch {
               // ignore parse error
+            }
+          } else if (eventType === "workspace") {
+            try {
+              const workspace = z.object({
+                workspace: z.literal("pack"),
+                status: z.enum(["running", "ready"]).optional().default("running"),
+              }).parse(JSON.parse(data));
+              setStreamState((prev) => ({
+                ...prev,
+                workspace: workspace.workspace,
+                workspaceStatus: workspace.status,
+              }));
+            } catch {
+              // Unknown workspace events are ignored for forward compatibility.
             }
           } else if (eventType === "final_answer") {
             try {
