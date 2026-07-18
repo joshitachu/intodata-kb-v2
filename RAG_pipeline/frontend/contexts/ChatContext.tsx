@@ -46,7 +46,7 @@ interface ChatContextValue {
   setSelectedProject: (project: string) => void;
 
   // Actions
-  createConversation: () => Promise<void>;
+  createConversation: () => Promise<number | null>;
   deleteConversation: (id: number) => Promise<void>;
   handleSendMessage: (request: ConversationMessageRequest) => Promise<void>;
   retryFailedMessage: () => Promise<void>;
@@ -159,9 +159,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const createConversation = useCallback(async () => {
     try {
       const newConversation = await createMutation.mutateAsync({});
+      justCreatedIdRef.current = newConversation.id;
       setActiveConversationId(newConversation.id);
+      return newConversation.id;
     } catch (error) {
       console.error("Failed to create conversation:", error);
+      return null;
     }
   }, [createMutation]);
 

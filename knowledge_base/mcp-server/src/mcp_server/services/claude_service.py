@@ -27,6 +27,7 @@ from mcp_server.services.generation_run_state import (
     GenerationLockError,
     LockHeartbeat,
     acquire_generation_lock,
+    persist_nexus_execution_receipt,
     refresh_generation_lock,
     release_generation_lock,
     write_run_manifest,
@@ -34,8 +35,11 @@ from mcp_server.services.generation_run_state import (
 from mcp_server.providers.custom.source_context import materialize_direct_redacted_source
 from mcp_server.services.log_manager import LogManager
 from mcp_server.services.plugin_runner import build_plugin_runner
+from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
+from mcp_server.services.nexus_execution_contract import build_nexus_execution_receipt
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.scanner_service import ScannerService
+from mcp_server.schemas import NexusPackSnapshot, NexusPresentation, NexusPrivateAnalysisPack
 
 logger = logging.getLogger(__name__)
 
@@ -979,6 +983,12 @@ Required sections:
         model: str | None = None,
         write_model: str | None = None,
         plugin_pack_id: int | None = None,
+        nexus_pack_ids: list[str] | None = None,
+        nexus_pack_snapshot: NexusPackSnapshot | None = None,
+        nexus_presentation: NexusPresentation | None = None,
+        nexus_audience_render: dict[str, str] | None = None,
+        nexus_private_pack_receipts: list | None = None,
+        nexus_private_analysis_packs: list[NexusPrivateAnalysisPack] | None = None,
         resume: bool = True,
         run_id: int | None = None,
         doc_generation_provider: str | None = None,
@@ -1062,6 +1072,33 @@ Required sections:
             d.mkdir(parents=True, exist_ok=True)
             d.chmod(0o777)
 
+        try:
+            nexus_execution_receipt = build_nexus_execution_receipt(
+                pack_ids=nexus_pack_ids or [],
+                snapshot=nexus_pack_snapshot,
+                presentation=nexus_presentation,
+                audience_render=nexus_audience_render,
+                private_pack_receipts=nexus_private_pack_receipts,
+                private_analysis_packs=nexus_private_analysis_packs,
+            )
+            persist_nexus_execution_receipt(staging_dir, nexus_execution_receipt)
+        except Exception as exc:
+            write_run_manifest(
+                staging_dir,
+                run_id=run_id,
+                project_id=project_id,
+                phase="startup",
+                status="failed",
+                extra={"error": str(exc)},
+            )
+            release_generation_lock(staging_dir, run_id=run_id)
+            return {
+                "success": False,
+                "error": str(exc),
+                "model_name": model or config.doc_generation_model,
+                "write_model_name": write_model or config.doc_generation_write_model,
+            }
+
         # Absolute paths for the prompt (subprocess cwd differs from config.project_root)
         staging_abs = str(staging_dir)
         logs_abs = str(output_dir / "logs")
@@ -1087,14 +1124,47 @@ Required sections:
                         select(PluginPack).where(PluginPack.id == effective_plugin_pack_id)
                     )
                 ).scalar_one_or_none()
-                if pack_row:
-                    plugin_pack_dir = Path(pack_row.path)
-                elif plugin_pack_id is not None:
-                    await log_manager.emit(
-                        project_id,
-                        f"Override plugin_pack_id={plugin_pack_id} not found; falling back to project default.",
-                        level="warning",
+                if pack_row is None:
+                    error = (
+                        "Selected Pack is no longer registered; governed generation requires "
+                        "a certified Git/PR Pack."
                     )
+                    write_run_manifest(
+                        staging_dir,
+                        run_id=run_id,
+                        project_id=project_id,
+                        phase="startup",
+                        status="failed",
+                        extra={"error": error},
+                    )
+                    release_generation_lock(staging_dir, run_id=run_id)
+                    return {
+                        "success": False,
+                        "error": error,
+                        "model_name": model or config.doc_generation_model,
+                        "write_model_name": write_model or config.doc_generation_write_model,
+                    }
+                try:
+                    await pack_governance.require_generation_authority(pack_row)
+                except PackGovernanceDenied as exc:
+                    # This is the TOCTOU check after the queued route check.
+                    error = str(exc)
+                    write_run_manifest(
+                        staging_dir,
+                        run_id=run_id,
+                        project_id=project_id,
+                        phase="startup",
+                        status="failed",
+                        extra={"error": error},
+                    )
+                    release_generation_lock(staging_dir, run_id=run_id)
+                    return {
+                        "success": False,
+                        "error": error,
+                        "model_name": model or config.doc_generation_model,
+                        "write_model_name": write_model or config.doc_generation_write_model,
+                    }
+                plugin_pack_dir = Path(pack_row.path)
 
         # Compute project metrics early (needed for preprocessing decisions)
         scanner = ScannerService()
@@ -1231,6 +1301,8 @@ Required sections:
             enterprise_mode=config.doc_generation_enterprise_mode_default if enterprise_mode is None else enterprise_mode,
             resume_state=resume_state,
             scoped_docs=scoped_docs,
+            nexus_presentation=nexus_presentation,
+            nexus_private_analysis_packs=tuple(nexus_private_analysis_packs or ()),
         )
 
         provider = get_provider(

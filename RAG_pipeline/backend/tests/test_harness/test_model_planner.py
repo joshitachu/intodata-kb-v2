@@ -123,6 +123,98 @@ async def test_planner_accepts_valid_manifest_tool_call() -> None:
     assert decision.tool_calls[0].arguments == {"project_id": "project-a"}
 
 
+async def test_planner_does_not_execute_explicit_intent_capability_for_usage_question() -> None:
+    calls = 0
+    manifest = _manifest()
+    manifest.tools[0].requires_explicit_intent = True
+    manifest.tools[0].explicit_intent_terms = ["generate", "start", "run"]
+
+    def fake(messages, runtime_tools):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ToolAwareLLMResponse(
+                provider="test",
+                tool_calls=[
+                    RuntimeToolCallRequest(
+                        call_id="call-1",
+                        tool_name=runtime_tools[0].name,
+                        arguments={"project_id": "project-a"},
+                    )
+                ],
+            )
+        return ToolAwareLLMResponse(
+            provider="test",
+            text=json.dumps(
+                {
+                    "action": "answer",
+                    "tool_calls": [],
+                    "confidence": 0.9,
+                    "answer": "Name a project and Pack when you want to start a run.",
+                    "clarification": None,
+                }
+            ),
+        )
+
+    decision = await plan_harness_turn(
+        user_message="How can I use those Packs?",
+        manifest=manifest,
+        planner=fake,
+    )
+
+    assert calls == 2
+    assert decision.action == PlannerAction.ANSWER
+    assert decision.tool_calls == []
+
+
+async def test_planner_rejects_catalog_for_explicit_generation_and_retries_generation() -> None:
+    calls = 0
+    manifest = _manifest()
+    generation = manifest.tools[0]
+    generation.requires_explicit_intent = True
+    generation.explicit_intent_terms = ["generate", "start", "run"]
+    catalog = RuntimeCapabilityTool(
+        id="docs.list_packs",
+        label="List documentation Packs",
+        action="list_packs",
+        provider_type="documentation_provider",
+        input_schema={"type": "object", "additionalProperties": False, "properties": {}},
+        output_type="pack_catalog",
+        risk_tier="read_only",
+        activity_label="List documentation Packs",
+        forbidden_intent_terms=["generate", "start", "run"],
+    )
+    manifest.tools.append(catalog)
+    manifest.total = 2
+
+    def fake(messages, runtime_tools):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        selected = runtime_tools[1] if calls == 1 else runtime_tools[0]
+        arguments = {} if calls == 1 else {"project_id": "project-a"}
+        return ToolAwareLLMResponse(
+            provider="test",
+            tool_calls=[
+                RuntimeToolCallRequest(
+                    call_id=f"call-{calls}",
+                    tool_name=selected.name,
+                    arguments=arguments,
+                )
+            ],
+        )
+
+    decision = await plan_harness_turn(
+        user_message="Generate documentation for project-a using the Security Pack.",
+        manifest=manifest,
+        project_options=[{"id": "project-a", "display_name": "Project A"}],
+        planner=fake,
+    )
+
+    assert calls == 2
+    assert decision.action == PlannerAction.EXECUTE
+    assert decision.tool_calls[0].capability_id == "docs.generate"
+
+
 async def test_planner_accepts_validated_text_encoded_tool_call() -> None:
     def fake(messages, runtime_tools):  # noqa: ANN001
         return ToolAwareLLMResponse(
@@ -316,6 +408,46 @@ async def test_planner_accepts_strict_non_tool_decision_and_limits_history() -> 
         "9",
         "Generate docs",
     ]
+
+
+async def test_planner_exposes_bounded_continuation_and_accepts_replace() -> None:
+    captured: dict[str, object] = {}
+
+    def fake(messages, _runtime_tools):  # noqa: ANN001
+        captured["system"] = messages[0]["content"]
+        return ToolAwareLLMResponse(
+            provider="test",
+            text=json.dumps(
+                {
+                    "action": "replace",
+                    "tool_calls": [],
+                    "confidence": 0.95,
+                    "answer": None,
+                    "clarification": None,
+                }
+            ),
+        )
+
+    decision = await plan_harness_turn(
+        user_message="I'm not asking about logs",
+        manifest=_manifest(),
+        active_continuation={
+            "continuation_id": "runtime-1",
+            "version": 2,
+            "objective": "Search runtime logs",
+            "task_type": "runtime_answer",
+            "missing_slots": ["time_window"],
+            "slots": [{"name": "time_window", "required": True, "options": []}],
+            "secret": "must-not-leak",
+        },
+        planner=fake,
+    )
+
+    assert decision.action is PlannerAction.REPLACE
+    system = str(captured["system"])
+    assert "active_continuation" in system
+    assert "time_window" in system
+    assert "must-not-leak" not in system
 
 
 async def test_planner_drops_empty_history_messages_rejected_by_providers() -> None:

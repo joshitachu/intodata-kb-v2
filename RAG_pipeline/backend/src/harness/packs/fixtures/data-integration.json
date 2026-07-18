@@ -59,6 +59,7 @@
         "mcp.projects.attach_uploaded_zip_source",
         "mcp.projects.trigger_scan",
         "mcp.projects.read_status",
+        "mcp.projects.list_active_workflows",
         "mcp.projects.publish_index"
       ],
       "entity_type_ids": ["integration.project"],

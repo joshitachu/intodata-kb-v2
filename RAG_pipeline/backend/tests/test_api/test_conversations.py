@@ -68,7 +68,15 @@ def mock_deps():
     app.dependency_overrides[get_qdrant] = lambda: mock_qdrant
     app.dependency_overrides[get_current_user] = lambda: user
 
-    yield {"db": mock_db, "qdrant": mock_qdrant, "user": user}
+    # Most route tests use a single canned execute() result for the conversation.
+    # Keep the independent Pack-draft lookup out of those legacy mocks; builder
+    # routing has dedicated tests with a real database/service.
+    with patch(
+        "src.api.routes.conversations.PackDraftService.active_for_conversation",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield {"db": mock_db, "qdrant": mock_qdrant, "user": user}
     app.dependency_overrides.clear()
 
 
@@ -341,6 +349,60 @@ class TestDeleteConversation:
 
 
 class TestSendMessage:
+    async def test_workflow_status_intent_uses_harness_public_route(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=163, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        response = MagicMock()
+        response.id = 9
+        response.role = "assistant"
+        response.content = "Active project workflows: project-a is generating documentation."
+        response.sources = None
+        response.latency_ms = 10
+        response.status = "completed"
+        response.error_message = None
+        response.primary_source_layer = None
+        response.fallback_used = False
+        response.doc_gap = False
+        response.workflow_run_id = None
+        response.harness_activities = []
+        response.pending_action = None
+        response.created_at = datetime.datetime(2026, 7, 18, tzinfo=datetime.timezone.utc)
+        decision = HarnessPlannerDecision(
+            action="call_capability",
+            mode="project_workflow_status",
+            capability_id="mcp.projects.list_active_workflows",
+            arguments={},
+            decision_source="model",
+        )
+
+        with patch(
+            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=decision,
+        ), patch(
+            "src.api.routes.conversations.run_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=response,
+        ) as harness, patch(
+            "src.api.routes.conversations.run_conversational_rag",
+            new_callable=AsyncMock,
+        ) as rag:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                api_response = await client.post(
+                    "/api/v1/conversations/163/messages",
+                    json={"query": "which project is currently having documents made"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert api_response.status_code == 200
+        harness.assert_awaited_once()
+        rag.assert_not_awaited()
+
     async def test_slash_command_is_resolved_before_the_normal_planner(self, mock_deps):
         mock_db = mock_deps["db"]
         conv = _mock_conversation(id=1, user_id=1)
@@ -412,6 +474,10 @@ class TestSendMessage:
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(
+            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=HarnessPlannerDecision(action="use_rag", mode="rag"),
+        ), patch(
             "src.api.routes.conversations.run_conversational_rag",
             new_callable=AsyncMock,
             return_value=mock_response,
@@ -489,6 +555,10 @@ class TestSendMessage:
         mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
         with patch(
+            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=HarnessPlannerDecision(action="use_rag", mode="rag"),
+        ), patch(
             "src.api.routes.conversations.run_conversational_rag",
             new_callable=AsyncMock,
             return_value=mock_response,
@@ -509,6 +579,37 @@ class TestSendMessage:
 
 
 class TestSendMessageStream:
+    async def test_pack_builder_stream_emits_workspace_hint_before_builder_turn(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=1, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        builder_response = SimpleNamespace(content="What analysis goal should this Pack serve?", id=17)
+        with patch(
+            "src.api.routes.conversations._run_pack_builder_turn",
+            new_callable=AsyncMock,
+            return_value=builder_response,
+        ) as builder_turn:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/conversations/1/messages/stream",
+                    json={"query": "I want to create a pack"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert resp.status_code == 200
+        events = [
+            line.removeprefix("event: ")
+            for line in resp.text.splitlines()
+            if line.startswith("event: ")
+        ]
+        assert events == ["workspace", "token", "done"]
+        assert 'data: {"workspace": "pack", "status": "running"}' in resp.text
+        builder_turn.assert_awaited_once()
+
     async def test_stream_failure_persists_failed_assistant_message(self, mock_deps):
         mock_db = mock_deps["db"]
         mock_db.add = MagicMock()
@@ -529,6 +630,10 @@ class TestSendMessageStream:
             yield  # noqa: unreachable - keeps this an async generator
 
         with patch(
+            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=HarnessPlannerDecision(action="use_rag", mode="rag"),
+        ), patch(
             "src.api.routes.conversations.run_conversational_rag_stream",
             side_effect=failing_stream,
         ):
@@ -574,6 +679,10 @@ class TestSendMessageStream:
             yield ("done", '{"message_id": 99, "latency_ms": 120}')
 
         with patch(
+            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            new_callable=AsyncMock,
+            return_value=HarnessPlannerDecision(action="use_rag", mode="rag"),
+        ), patch(
             "src.api.routes.conversations.run_conversational_rag_stream",
             side_effect=fake_stream,
         ):
@@ -628,6 +737,18 @@ async def test_stream_docs_generation_runs_through_langgraph_and_persists_runtim
         transport=httpx.MockTransport(handler),
     )
     monkeypatch.setattr("src.harness.chat.McpDocumentationProvider", lambda: provider)
+    monkeypatch.setattr(
+        "src.api.routes.conversations.plan_model_harness_chat_turn",
+        AsyncMock(
+            return_value=HarnessPlannerDecision(
+                action="call_capability",
+                mode="generate_docs",
+                capability_id="mcp.docs.generate_project_documentation",
+                arguments={"project_id": "project-a"},
+                decision_source="model",
+            )
+        ),
+    )
 
     current_user = SimpleNamespace(
         id=user.id,
