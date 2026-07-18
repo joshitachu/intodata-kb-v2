@@ -325,6 +325,25 @@ export const PluginPackBranchDiscoverySchema = z.object({
   branches: z.array(PluginPackBranchSchema),
 });
 
+const NexusPackCatalogItemSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  version: z.string(),
+  description: z.string().nullable().optional(),
+});
+
+const NexusPersonalPackSchema = NexusPackCatalogItemSchema.extend({
+  output_documents: z.array(z.string()),
+});
+
+export const NexusPackWorkspaceSchema = z.object({
+  project_id: z.string(),
+  organization_packs: z.array(NexusPackCatalogItemSchema),
+  personal_packs: z.array(NexusPersonalPackSchema),
+  selected_organization_pack_id: z.number().nullable(),
+  selected_private_version_ids: z.array(z.number()),
+});
+
 export const WebhookStatusSchema = z.object({
   project_id: z.string(),
   webhook_status: z.string(),
