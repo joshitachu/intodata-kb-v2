@@ -1,0 +1,2031 @@
+{
+  "name": "Maximo2AssetCheck_SendLocation",
+  "path": "Maximo2AssetCheck/Maximo2AssetCheck_SendLocation_1.4.item",
+  "purpose": "",
+  "author": "",
+  "version": "1.4",
+  "creation_date": "2019-11-29T07:12:45.447+0100",
+  "modification_date": "2025-05-27T13:29:37.296+0200",
+  "components": [
+    {
+      "unique_name": "tFixedFlowInput_1",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJavaRow_1",
+      "component_type": "tJavaRow",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CODE",
+          "value": "//Code generated according to input schema and output schema\r\noutput_row.Body = input_row.Body;\r\n",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "//import java.util.List;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_1",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJava_1",
+      "component_type": "tJava",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CODE",
+          "value": "String foo = \"bar\";\n\nString datetime= TalendDate.formatDate(\"yyyyMMdd_HHmmss\",TalendDate.getCurrentDate());\n UUID uuid = UUID.randomUUID();\n  String DateTime = datetime+\"_\"+uuid.toString();\nSystem.out.println(DateTime);\nglobalMap.put(\"FileName\", DateTime);",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "import java.util.UUID;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_2",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFileOutputDelimited_1",
+      "component_type": "tFileOutputDelimited",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USESTREAM",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "STREAMNAME",
+          "value": "outputStream",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.Temp+(String)globalMap.get(\"FileName\")+\".xml\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "OS_LINE_SEPARATOR_AS_ROW_SEPARATOR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CSVROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "OPENED_LIST"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "APPEND",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "INCLUDEHEADER",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "COMPRESS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ADVANCED_SEPARATOR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "THOUSANDS_SEPARATOR",
+          "value": "\",\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DECIMAL_SEPARATOR",
+          "value": "\".\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CSV_OPTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ESCAPE_CHAR",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TEXT_ENCLOSURE",
+          "value": "\"\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CREATE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SPLIT_EVERY",
+          "value": "1000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FLUSHONROW",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FLUSHONROW_NUM",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ROW_MODE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "DELETE_EMPTYFILE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FILE_EXIST_EXCEPTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SCHEMA_OPT_NUM",
+          "value": "90",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_3",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBufferOutput_1",
+      "component_type": "tBufferOutput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMSSqlConnection_1",
+      "component_type": "tMSSqlConnection",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PROPERTY:PROPERTY_TYPE",
+          "value": "REPOSITORY",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTY:REPOSITORY_PROPERTY_TYPE",
+          "value": "_M4I9sPBFEeOwluABMJAUrQ",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "DRIVER",
+          "value": "MSSQL_PROP",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "HOST",
+          "value": "context.connection_logDB_Host",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TYPE",
+          "value": "MSSQL",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PORT",
+          "value": "context.connection_logDB_Port",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SCHEMA_DB",
+          "value": "context.connection_logDB_Schema",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DBNAME",
+          "value": "context.connection_logDB_Database",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USER",
+          "value": "context.connection_logDB_Username",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PASS",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "context.connection_logDB_AdditionalParameters",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SHARED_CONNECTION",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NOTE",
+          "value": "This option only applies when deploying and running in the Talend Runtime",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_DATASOURCE_ALIAS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATASOURCE_ALIAS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVE_DIR_AUTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "AUTO_COMMIT",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SHARE_IDENTITY_SETTING",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "LogDbConnection",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": "LogConnection"
+    },
+    {
+      "unique_name": "tMSSqlInput_1",
+      "component_type": "tMSSqlInput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_EXISTING_CONNECTION",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION",
+          "value": "tMSSqlConnection_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "HOST",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DRIVER",
+          "value": "JTDS",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TYPE",
+          "value": "MSSQL",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PORT",
+          "value": "\"1433\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DB_SCHEMA",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DBNAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PASS",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"Processes\"",
+          "field_type": "DBTABLE"
+        },
+        {
+          "name": "QUERYSTORE",
+          "value": "\"\"",
+          "field_type": "QUERYSTORE_TYPE"
+        },
+        {
+          "name": "QUERYSTORE:QUERYSTORE_TYPE",
+          "value": "BUILT_IN",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "GUESS_SCHEMA"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"SELECT ProcessID  from Processes with(Nolock) where ProcessCode='\"+context.ProcessCode+\"' and DateDeleted is  null\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "NOTE",
+          "value": "This option only applies when deploying and running in the Talend Runtime",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_DATASOURCE_ALIAS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATASOURCE_ALIAS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "MAPPING",
+          "value": "id_MSSQL",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "\"noDatetimeStringSync=true\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVE_DIR_AUTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "TRIM_ALL_COLUMN",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_QUERY_TIMEOUT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY_TIMEOUT_IN_SECONDS",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "GetProcessId",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_2",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "SetProcessId",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJava_2",
+      "component_type": "tJava",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CODE",
+          "value": "System.out.println(\"Decoded started\");\nString header = context.Authorization;\n\nheader = header.substring(6); // Remove 'Basic' from header\n\nbyte[] decodedBytes = java.util.Base64.getDecoder().decode(header.getBytes(java.nio.charset.StandardCharsets.UTF_8));\nString decodedString = new String(decodedBytes, java.nio.charset.StandardCharsets.UTF_8);\nSystem.out.println(\"Decoded string: \" + decodedString);\n\nString username = \"\";\nString password = \"\";\n\nint colonIndex = decodedString.lastIndexOf(\":\");\nif (colonIndex != -1) {\n    username = decodedString.substring(0, colonIndex);\n    password = decodedString.substring(colonIndex + 1);\n} else {\n    System.err.println(\"No colon (':') character found in the decoded string.\");\n}\n\nSystem.out.println(\"Username: \" + username);\nSystem.out.println(\"Password: \" + password);\n\nglobalMap.put(\"username\", username);\nglobalMap.put(\"password\", password);\n",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "import java.util.Base64;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMSSqlInput_2",
+      "component_type": "tMSSqlInput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_EXISTING_CONNECTION",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION",
+          "value": "tMSSqlConnection_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "HOST",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DRIVER",
+          "value": "JTDS",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "TYPE",
+          "value": "MSSQL",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PORT",
+          "value": "\"1433\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DB_SCHEMA",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DBNAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PASS",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"APIUsers\"",
+          "field_type": "DBTABLE"
+        },
+        {
+          "name": "QUERYSTORE",
+          "value": "\"\"",
+          "field_type": "QUERYSTORE_TYPE"
+        },
+        {
+          "name": "QUERYSTORE:QUERYSTORE_TYPE",
+          "value": "BUILT_IN",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "GUESS_SCHEMA",
+          "value": "\"\"",
+          "field_type": "GUESS_SCHEMA"
+        },
+        {
+          "name": "QUERY",
+          "value": "\"select Guid,Password, Salt from APIUSERS with (nolock) where UserName = '\"+(String)globalMap.get(\"username\")+\"' and datedeleted is null\"",
+          "field_type": "MEMO_SQL"
+        },
+        {
+          "name": "NOTE",
+          "value": "This option only applies when deploying and running in the Talend Runtime",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_DATASOURCE_ALIAS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATASOURCE_ALIAS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "MAPPING",
+          "value": "id_MSSQL",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "\"noDatetimeStringSync=true\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVE_DIR_AUTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "TRIM_ALL_COLUMN",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SET_QUERY_TIMEOUT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY_TIMEOUT_IN_SECONDS",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "GetPassword",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tJavaRow_2",
+      "component_type": "tJavaRow",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CODE",
+          "value": "//Code generated according to input schema and output schema\r\n\n//Setting context variables\nString SaltKey = input_row.Salt == null ? \"\" : input_row.Salt;\n\nif(SaltKey != \"\")\n{\n\t output_row.Password = input_row.Password;\n\n\t//System.out.println(context.SaltKey);\n\t//System.out.println(context.HashPassword);\n\n\t//Encoding user password and salt key with AES encryption\n\tString strToEncode = SaltKey + (String)globalMap.get(\"password\") + SaltKey;\n\t//String AES_encoded_String = AES_Encryption.encrypt(strToEncode,context.AES_Key);\n\tbyte[] encodedBytes = Base64.getEncoder().encode(strToEncode.getBytes()); \n\t//System.out.println(\"encodedBytes \" + new String(encodedBytes));\n\tString AES_encoded_String =  new String(encodedBytes);\n\t\n\t//output_row.EncodedString = AES_encoded_String;\n\tglobalMap.put(\"EncodedString\",AES_encoded_String);\n\t//output_row.Guid = input_row.Guid;\n\tSystem.out.println(\"String: \"+ AES_encoded_String);\n\tSystem.out.println(output_row.Password);\n}\n\n\n\r\n",
+          "field_type": "MEMO_JAVA"
+        },
+        {
+          "name": "IMPORT",
+          "value": "//import java.util.List;\nimport java.util.Base64;",
+          "field_type": "MEMO_IMPORT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_7",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_5",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "NOk Response",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tBufferOutput_3",
+      "component_type": "tBufferOutput",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFileCopy_1",
+      "component_type": "tFileCopy",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FILENAME",
+          "value": "context.Temp+(String)globalMap.get(\"FileName\")+\".xml\"",
+          "field_type": "FILE"
+        },
+        {
+          "name": "ENABLE_COPY_DIRECTORY",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SOURCE_DERECTORY",
+          "value": "\"Z:/WorkSpace/Maximo2AssestChecks/trunk\"",
+          "field_type": "DIRECTORY"
+        },
+        {
+          "name": "DESTINATION",
+          "value": "context.LocationData",
+          "field_type": "DIRECTORY"
+        },
+        {
+          "name": "RENAME",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DESTINATION_RENAME",
+          "value": "\"NewName.temp\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "REMOVE_FILE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "REPLACE_FILE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CREATE_DIRECTORY",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FAILON",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "FORCE_COPY_DELETE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "PRESERVE_LAST_MODIFIED_TIME",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tStatCatcher_1",
+      "component_type": "tStatCatcher",
+      "params": [
+        {
+          "name": "LABEL",
+          "value": "LogCatcher",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMap_1",
+      "component_type": "tMap",
+      "params": [
+        {
+          "name": "LINK_STYLE",
+          "value": "AUTO",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "PREVIEW",
+          "value": "_Wu97cBJxEeqOprop6NoC8Q-tMap_1-PREVIEW.bmp",
+          "field_type": "IMAGE"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LKUP_PARALLELIZE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LEVENSHTEIN",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "JACCARD",
+          "value": "0",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENABLE_AUTO_CONVERT_TYPE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ROWS_BUFFER_SIZE",
+          "value": "2000000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CHANGE_HASH_AND_EQUALS_FOR_BIGDECIMAL",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "LABEL",
+          "value": "GeneralLogMap",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_4",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tFixedFlowInput_6",
+      "component_type": "tFixedFlowInput",
+      "params": [
+        {
+          "name": "NB_ROWS",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_SINGLEMODE",
+          "value": "true",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INTABLE",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "USE_INLINECONTENT",
+          "value": "false",
+          "field_type": "RADIO"
+        },
+        {
+          "name": "ROWSEPARATOR",
+          "value": "\"\\n\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "FIELDSEPARATOR",
+          "value": "\";\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "Log",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tMSSqlOutput_1",
+      "component_type": "tMSSqlOutput",
+      "params": [
+        {
+          "name": "USE_EXISTING_CONNECTION",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION",
+          "value": "tMSSqlConnection_1",
+          "field_type": "COMPONENT_LIST"
+        },
+        {
+          "name": "DRIVER",
+          "value": "JTDS",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "HOST",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PORT",
+          "value": "\"1433\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DB_SCHEMA",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DBNAME",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "TYPE",
+          "value": "MSSQL",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USER",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "PASS",
+          "value": "[REDACTED]",
+          "field_type": "PASSWORD"
+        },
+        {
+          "name": "TABLE",
+          "value": "\"LogInfo\"",
+          "field_type": "DBTABLE"
+        },
+        {
+          "name": "TABLE_ACTION",
+          "value": "NONE",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "IDENTITY_INSERT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATA_ACTION",
+          "value": "INSERT",
+          "field_type": "CLOSED_LIST"
+        },
+        {
+          "name": "NOTE",
+          "value": "NOTE: batch size must be less than or equal to total number of parameter markers divided by number of columns",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_IDENTITY_FIELD",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "IDENTITY_FIELD",
+          "value": "ProcessId",
+          "field_type": "COLUMN_LIST"
+        },
+        {
+          "name": "START_VALUE",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "STEP",
+          "value": "1",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "NOTE",
+          "value": "This option only applies when deploying and running in the Talend Runtime",
+          "field_type": "LABEL"
+        },
+        {
+          "name": "SPECIFY_DATASOURCE_ALIAS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "DATASOURCE_ALIAS",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "DIE_ON_ERROR",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "MAPPING",
+          "value": "id_MSSQL",
+          "field_type": "MAPPING_TYPE"
+        },
+        {
+          "name": "PROPERTIES",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ACTIVE_DIR_AUTH",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_ALTERNATE_SCHEMA",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ALTERNATE_SCHEMA",
+          "value": "\"\"",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "ENCODING",
+          "value": "\"ISO-8859-15\"",
+          "field_type": "ENCODING_TYPE"
+        },
+        {
+          "name": "ENCODING:ENCODING_TYPE",
+          "value": "ISO-8859-15",
+          "field_type": "TECHNICAL"
+        },
+        {
+          "name": "COMMIT_EVERY",
+          "value": "10000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "USE_FIELD_OPTIONS",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "IGNORE_DATE_OUTOF_RANGE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "ENABLE_DEBUG_MODE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "SUPPORT_NULL_WHERE",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "USE_BATCH_SIZE",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "BATCH_SIZE",
+          "value": "10000",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "SET_QUERY_TIMEOUT",
+          "value": "false",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "QUERY_TIMEOUT_IN_SECONDS",
+          "value": "30",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "LABEL",
+          "value": "UpdateLogInfo",
+          "field_type": "TEXT"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    },
+    {
+      "unique_name": "tSetGlobalVar_6",
+      "component_type": "tSetGlobalVar",
+      "params": [
+        {
+          "name": "TSTATCATCHER_STATS",
+          "value": "true",
+          "field_type": "CHECK"
+        },
+        {
+          "name": "CONNECTION_FORMAT",
+          "value": "row",
+          "field_type": "TEXT"
+        }
+      ],
+      "incoming_connections": [],
+      "outgoing_connections": [],
+      "metadata_connection_ref": ""
+    }
+  ],
+  "connections": [
+    {
+      "name": "row1",
+      "source": "tFixedFlowInput_1",
+      "target": "tJavaRow_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row2",
+      "source": "tJavaRow_1",
+      "target": "tSetGlobalVar_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk1",
+      "source": "tSetGlobalVar_1",
+      "target": "tJava_1",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "OnComponentOk2",
+      "source": "tJava_1",
+      "target": "tFixedFlowInput_2",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row3",
+      "source": "tFixedFlowInput_2",
+      "target": "tFileOutputDelimited_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk3",
+      "source": "tFileOutputDelimited_1",
+      "target": "tSetGlobalVar_6",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row4",
+      "source": "tFixedFlowInput_3",
+      "target": "tBufferOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnSubjobOk1",
+      "source": "tMSSqlConnection_1",
+      "target": "tMSSqlInput_1",
+      "connector_name": "SUBJOB_OK",
+      "line_style": 1
+    },
+    {
+      "name": "row5",
+      "source": "tMSSqlInput_1",
+      "target": "tSetGlobalVar_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk5",
+      "source": "tSetGlobalVar_2",
+      "target": "tJava_2",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "OnSubjobOk2",
+      "source": "tJava_2",
+      "target": "tMSSqlInput_2",
+      "connector_name": "SUBJOB_OK",
+      "line_style": 1
+    },
+    {
+      "name": "row7",
+      "source": "tMSSqlInput_2",
+      "target": "tJavaRow_2",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "row6",
+      "source": "tJavaRow_2",
+      "target": "tSetGlobalVar_7",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "If4",
+      "source": "tSetGlobalVar_7",
+      "target": "tFixedFlowInput_1",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "If3",
+      "source": "tSetGlobalVar_7",
+      "target": "tFixedFlowInput_5",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "row8",
+      "source": "tFixedFlowInput_5",
+      "target": "tBufferOutput_3",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnComponentOk6",
+      "source": "tFileCopy_1",
+      "target": "tFixedFlowInput_3",
+      "connector_name": "COMPONENT_OK",
+      "line_style": 3
+    },
+    {
+      "name": "row17",
+      "source": "tStatCatcher_1",
+      "target": "tMap_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "logVariables",
+      "source": "tMap_1",
+      "target": "tSetGlobalVar_4",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "If5",
+      "source": "tSetGlobalVar_4",
+      "target": "tFixedFlowInput_6",
+      "connector_name": "RUN_IF",
+      "line_style": 6
+    },
+    {
+      "name": "row18",
+      "source": "tFixedFlowInput_6",
+      "target": "tMSSqlOutput_1",
+      "connector_name": "FLOW",
+      "line_style": 0
+    },
+    {
+      "name": "OnSubjobOk3",
+      "source": "tSetGlobalVar_6",
+      "target": "tFileCopy_1",
+      "connector_name": "SUBJOB_OK",
+      "line_style": 1
+    }
+  ],
+  "context_groups": [
+    {
+      "name": "inline",
+      "variables": [
+        {
+          "name": "Failed",
+          "type": "id_String",
+          "values": {
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
+            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
+            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
+            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Failed\\\\"
+          }
+        },
+        {
+          "name": "Input",
+          "type": "id_String",
+          "values": {
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
+            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
+            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
+            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Input\\\\"
+          }
+        },
+        {
+          "name": "LocationData",
+          "type": "id_String",
+          "values": {
+            "DEV": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
+            "TST": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
+            "ACC": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
+            "PROD": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/",
+            "Default": "//[HOSTNAME]/Integratie_Shares$/Interfaces/Maximo2AssetCheck/LocationData/Process/LocationData/"
+          }
+        },
+        {
+          "name": "Proccessed",
+          "type": "id_String",
+          "values": {
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Processed\\\\"
+          }
+        },
+        {
+          "name": "Receving",
+          "type": "id_String",
+          "values": {
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Process\\\\Receving\\\\"
+          }
+        },
+        {
+          "name": "Temp",
+          "type": "id_String",
+          "values": {
+            "DEV": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
+            "TST": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
+            "ACC": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
+            "PROD": "D:\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\",
+            "Default": "C:\\\\Talend-test\\\\Talend\\\\Maximo2AssetCheck\\\\LocationData\\\\Temp\\\\"
+          }
+        },
+        {
+          "name": "AES_Key",
+          "type": "id_String",
+          "values": {
+            "DEV": "VISE2AC",
+            "TST": "VISE2AC",
+            "ACC": "VISE2AC",
+            "PROD": "VISE2AC",
+            "Default": "VISE2AC"
+          }
+        },
+        {
+          "name": "AuthenticationExpiryHour",
+          "type": "id_Integer",
+          "values": {
+            "DEV": "24",
+            "TST": "24",
+            "ACC": "24",
+            "PROD": "24",
+            "Default": "24"
+          }
+        },
+        {
+          "name": "AuthenticationKey",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "Authorization",
+          "type": "id_String",
+          "values": {
+            "DEV": "[REDACTED]",
+            "TST": "[REDACTED]",
+            "ACC": "[REDACTED]",
+            "PROD": "[REDACTED]",
+            "Default": "[REDACTED]"
+          }
+        },
+        {
+          "name": "Body",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "Filename",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "GlobalFilename",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "Guid",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "isLogDbAccessible",
+          "type": "id_Boolean",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "MaximoPassword",
+          "type": "id_String",
+          "values": {
+            "DEV": "\"46+iAcv5wcZ7tJZdhK3%gmR=sn\"",
+            "TST": "\"46+iAcv5wcZ7tJZdhK3%gmR=sn\"",
+            "ACC": "\"46+iAcv5wcZ7tJZdhK3%gmR=sn\"",
+            "PROD": "\"46+iAcv5wcZ7tJZdhK3%gmR=sn\"",
+            "Default": "\"46+iAcv5wcZ7tJZdhK3%gmR=sn\""
+          }
+        },
+        {
+          "name": "MaximoUser",
+          "type": "id_String",
+          "values": {
+            "DEV": "\"ISN-SA-MA-P-TALEND\"",
+            "TST": "\"ISN-SA-MA-P-TALEND\"",
+            "ACC": "\"ISN-SA-MA-P-TALEND\"",
+            "PROD": "\"ISN-SA-MA-P-TALEND\"",
+            "Default": "\"ISN-SA-MA-P-TALEND\""
+          }
+        },
+        {
+          "name": "ProcessCode",
+          "type": "id_String",
+          "values": {
+            "DEV": "mx2assetcheck",
+            "TST": "mx2assetcheck",
+            "ACC": "mx2assetcheck",
+            "PROD": "mx2assetcheck",
+            "Default": "mx2assetcheck"
+          }
+        },
+        {
+          "name": "ProcessId",
+          "type": "id_Integer",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "RuntimeReference",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "ServiceRequestURL",
+          "type": "id_String",
+          "values": {
+            "DEV": "\"[URL_REDACTED]",
+            "TST": "\"[URL_REDACTED]",
+            "ACC": "\"[URL_REDACTED]",
+            "PROD": "\"[URL_REDACTED]",
+            "Default": "\"[URL_REDACTED]"
+          }
+        },
+        {
+          "name": "WorkOrderupdateURL",
+          "type": "id_String",
+          "values": {
+            "DEV": "\"[URL_REDACTED]",
+            "TST": "\"[URL_REDACTED]",
+            "ACC": "\"[URL_REDACTED]",
+            "PROD": "\"[URL_REDACTED]",
+            "Default": "\"[URL_REDACTED]"
+          }
+        },
+        {
+          "name": "connection_logDB_AdditionalParameters",
+          "type": "id_String",
+          "values": {
+            "DEV": "ssl=require",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": ""
+          }
+        },
+        {
+          "name": "connection_logDB_Database",
+          "type": "id_String",
+          "values": {
+            "DEV": "GEN_TalendHelper_DEV",
+            "TST": "GEN_TalendHelper_TEST",
+            "ACC": "GEN_TalendHelper_ACC",
+            "PROD": "GEN_TalendHelper",
+            "Default": "DEV_ftpmessagehandler"
+          }
+        },
+        {
+          "name": "connection_logDB_Host",
+          "type": "id_String",
+          "values": {
+            "DEV": "[HOSTNAME]",
+            "TST": "[HOSTNAME]",
+            "ACC": "[HOSTNAME]",
+            "PROD": "[HOSTNAME]",
+            "Default": "localhost"
+          }
+        },
+        {
+          "name": "connection_logDB_Password",
+          "type": "id_Password",
+          "values": {
+            "DEV": "[PASSWORD_REDACTED]",
+            "TST": "[PASSWORD_REDACTED]",
+            "ACC": "[PASSWORD_REDACTED]",
+            "PROD": "[PASSWORD_REDACTED]",
+            "Default": "[PASSWORD_REDACTED]"
+          }
+        },
+        {
+          "name": "connection_logDB_Port",
+          "type": "id_String",
+          "values": {
+            "DEV": "1433",
+            "TST": "1433",
+            "ACC": "1433",
+            "PROD": "1433",
+            "Default": "14381"
+          }
+        },
+        {
+          "name": "connection_logDB_Schema",
+          "type": "id_String",
+          "values": {
+            "DEV": "",
+            "TST": "",
+            "ACC": "",
+            "PROD": "",
+            "Default": "talendesb"
+          }
+        },
+        {
+          "name": "connection_logDB_Username",
+          "type": "id_String",
+          "values": {
+            "DEV": "GEN-SA-TA-O-Talend",
+            "TST": "GEN_T_Talend_SA",
+            "ACC": "GEN_A_Talend_SA",
+            "PROD": "GEN_P_Talend_SA",
+            "Default": "SA"
+          }
+        }
+      ]
+    }
+  ],
+  "tmap_data": [
+    {
+      "input_tables": [
+        "row17"
+      ],
+      "output_tables": [
+        "logVariables"
+      ],
+      "entries": [
+        {
+          "table_name": "logVariables",
+          "column_name": "Message",
+          "expression": "Var.Message"
+        },
+        {
+          "table_name": "logVariables",
+          "column_name": "Description",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)? \r\n\t\t((String)globalMap.get(\"tFileOutputDelimited_1_FILE_NAME\"))\r\n\t: \"tFileCopy_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileCopy_1_DESTINATION_FILEPATH\"))\r\n\t: null\r\n:\r\n\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileOutputDelimited_1_ERROR_MESSAGE\"))\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileCopy_1_ERROR_MESSAGE\"))\r\n\t:\r\n\t\tnull\r\n:\r\nnull"
+        },
+        {
+          "table_name": "logVariables",
+          "column_name": "Severity",
+          "expression": "Var.Severity"
+        },
+        {
+          "table_name": "logVariables",
+          "column_name": "LogCode",
+          "expression": "Var.LogCode"
+        },
+        {
+          "table_name": "logVariables",
+          "column_name": "Values",
+          "expression": "Var.Values"
+        }
+      ],
+      "var_entries": [
+        {
+          "table_name": "Var",
+          "column_name": "Message",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"SendLocation process initiated\"\r\n\t:\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Extracting UserName and Password\"\r\n\r\n\t:\"tSetGlobalVar_7\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Extracting Salt, Password From APIUsers table\" \r\n\t:\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Copying Location XML File to Temp Folder\"\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin) ?\r\n\t\t\"Copying location XML file in LocationData Folder\"\r\n\t:\"tFixedFlowInput_3\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"200 Ok Response Send\"\r\n\t:((\"tFixedFlowInput_5\".equalsIgnoreCase(row17.origin)))?\r\n\t\t\"401 UnAuthorized Response Sent\"\r\n:null\t\t\r\n\t\r\n\t\r\n:\r\n\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while Matching TokenId with Authentication key\"\r\n\r\n\t:\"tMSSqlInput_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while Extracting Authenticating Key From APIUsers table\" \r\n\t:\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while generating Location XML File\"\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin) ?\r\n\t\t\"Error occured while Copying Location XML from Temp Folder\"\r\n\t:\r\nnull\r\n:\r\nnull"
+        },
+        {
+          "table_name": "Var",
+          "column_name": "Severity",
+          "expression": "\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"E\"\r\n\t:\"I\""
+        },
+        {
+          "table_name": "Var",
+          "column_name": "LogCode",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"START\"\r\n\t: \r\n\t\"tFixedFlowInput_5\".equalsIgnoreCase(row17.origin)||\"tFIxedFlowInput_3\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"STOP\" \r\n\t:\r\n\t\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"DURATION\"\r\n\t:\r\n\t\tnull\r\n:\r\nnull"
+        },
+        {
+          "table_name": "Var",
+          "column_name": "Values",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_6\".equalsIgnoreCase(row17.origin)? \r\n\t\tLong.toString(((Long)globalMap.get(\"EndTime\"))-((Long)globalMap.get(\"StartTime\")))\r\n\t:\r\n\t\t\"\"\r\n:\r\n\"\""
+        }
+      ]
+    }
+  ],
+  "trunjob_refs": [],
+  "raw_routines": [
+    "DataOperation",
+    "Mathematical",
+    "Numeric",
+    "Relational",
+    "StringHandling",
+    "TalendDataGenerator",
+    "TalendDate",
+    "TalendString",
+    "DQTechnical",
+    "DataMasking",
+    "DataQualityDependencies",
+    "DataQuality",
+    "DqStringHandling",
+    "SQLike",
+    "TalendStringUtil"
+  ],
+  "group": "Maximo2AssetCheck",
+  "subgroup": "",
+  "active": true,
+  "is_esb_route": false,
+  "esb_component_types": []
+}

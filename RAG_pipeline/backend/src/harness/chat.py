@@ -21,7 +21,9 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import Conversation, ConversationMessage, HarnessConversationContinuationRow
+from src.db.models import Conversation, ConversationMessage, HarnessConversationContinuationRow, QueryUsage
+from src.generation.llm_client import get_turn_usage
+from src.generation.usage import UsageStats
 from src.harness import HarnessWorkflowRepository, HarnessWorkflowService, default_capability_registry
 from src.harness.evidence import (
     evidence_refs,
@@ -54,7 +56,6 @@ from src.harness.connectors.capabilities import build_request_capability_registr
 from src.harness.evidence_policy import (
     ALL_EVIDENCE_SOURCES,
     EvidenceSource,
-    resolve_evidence_source_constraint,
     resolve_capability_turn_semantics,
 )
 from src.harness.manifest import (
@@ -67,6 +68,7 @@ from src.harness.models import (
     ActivityEventStatus,
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
+    DOCUMENTATION_PACK_LIST_CAPABILITY,
     DOCUMENT_LIST_CAPABILITY,
     DOCUMENT_SEARCH_CAPABILITY,
     DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY,
@@ -75,6 +77,7 @@ from src.harness.models import (
     EvidenceItem,
     OPERATIONAL_INVESTIGATION_CAPABILITY,
     PROJECT_ONBOARDING_CAPABILITY,
+    PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY,
     RUNTIME_EVIDENCE_CAPABILITY,
     WorkflowRun,
     WorkflowRunStatus,
@@ -104,9 +107,10 @@ from src.harness.providers.mcp_docs import (
     McpProjectInfo,
 )
 from src.harness.providers.mcp_projects import McpProjectsProvider
-from src.harness.packs.project_service import ProjectPackService
+from src.harness.packs.project_service import PackServiceError, ProjectPackService
+from src.harness.packs.draft_service import PackDraftService
 from src.harness.packs.runtime import compile_governed_pack_registry
-from src.harness.registry import base_capability_registry
+from src.harness.registry import CapabilityRegistry, base_capability_registry
 from src.harness.resolution import (
     ConversationalFocus,
     EntityCandidate,
@@ -193,6 +197,7 @@ _DOC_UPDATE_CAPABILITY_ID = DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY.id
 _INVESTIGATION_CAPABILITY_ID = OPERATIONAL_INVESTIGATION_CAPABILITY.id
 _CONNECTOR_CAPABILITY_ID = EXTERNAL_CONNECTOR_READ_CAPABILITY.id
 _PENDING_PROJECT_SCOPE_ID = "__pending_project_scope__"
+_DOCUMENTATION_PACK_WORKFLOW_KEY = "documentation.generate"
 
 _INVESTIGATION_RE = re.compile(
     r"\b(investigate|diagnose|root cause|why)\b.{0,120}\b("
@@ -254,14 +259,24 @@ class ProjectOption:
 
 
 @dataclass(frozen=True)
+class DocumentationPackSelection:
+    """One exact user-facing documentation Pack selected for a workflow run."""
+
+    name: str
+    version: str
+    plugin_pack_id: int | None = None
+    private_version_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class HarnessPlannerDecision:
     """Structured planner decision for chat harness routing.
 
     ``decision_source``/``fallback_reason``/``matched_rule`` record WHY this
     route was chosen so every turn is reconstructable from logs and activity:
-    ``model`` (model planned it), ``regex_fallback`` (model could not plan,
-    deterministic rule routed it), or ``regex`` (deterministic planner called
-    directly, e.g. legacy call sites and tests).
+    ``model`` (model planned it), ``model_fallback`` (the model did not produce
+    a safe executable decision), or ``regex`` (the legacy deterministic planner
+    was called directly by a compatibility-only internal caller or test).
     """
 
     action: str
@@ -279,6 +294,7 @@ class HarnessPlannerDecision:
     planner_note: str | None = None
     planner_latency_ms: int = 0
     turn_plan: TurnPlan | None = None
+    governed_registry: CapabilityRegistry | None = None
 
 
 _PLANNER_ANSWER_DIRECT = "answer_direct"
@@ -304,11 +320,11 @@ def detect_harness_chat_intent(query: str) -> HarnessChatIntent | None:
 
 
 def plan_harness_chat_turn(query: str) -> HarnessPlannerDecision:
-    """Plan whether the harness should answer, clarify, call a tool, or use RAG.
+    """Compatibility-only deterministic planner for direct internal callers.
 
-    This is a deterministic planner boundary for the first capability-aware
-    slice. It produces the same strict shape expected from a future model-backed
-    planner, while keeping backend validation in control.
+    Public conversation routes use :func:`plan_model_harness_chat_turn`. This
+    legacy surface remains temporarily for callers that have not yet been
+    migrated and must not be used as a model-planner fallback.
     """
     stripped = query.strip()
     if not stripped:
@@ -425,21 +441,10 @@ async def plan_model_harness_chat_turn(
     user_permissions: set[str] | None,
     access_token: str | None,
     provider: McpDocumentationProvider | None = None,
+    _replacement_depth: int = 0,
 ) -> HarnessPlannerDecision:
     """Use the selected model and runtime-safe manifest as the primary router."""
     continuation = await _active_continuation(db, conversation)
-    if continuation is not None:
-        resumed = await _resume_continuation_decision(
-            continuation=continuation,
-            query=query,
-            conversation=conversation,
-            db=db,
-            project_ids=project_ids,
-            access_token=access_token,
-            provider=provider,
-        )
-        if resumed is not None:
-            return _record_planner_decision(resumed)
     docs_provider = provider or McpDocumentationProvider()
     project_options = await _load_project_options(
         project_ids=project_ids,
@@ -452,18 +457,20 @@ async def plan_model_harness_chat_turn(
     # Resolve once at the planner boundary when the turn has one project scope.
     # The compiler excludes Style from the manifest, capability, and evidence path.
     if project_ids is not None and len(project_ids) == 1:
-        compiled = await ProjectPackService(
-            db, registry
-        ).resolve_governed_for_execution(project_ids[0], "documentation")
+        pack_service = ProjectPackService(db, registry)
+        compiled = await pack_service.resolve_governed_for_execution(
+            project_ids[0], _DOCUMENTATION_PACK_WORKFLOW_KEY
+        )
         if compiled is not None:
-            registry = compile_governed_pack_registry(registry, compiled)
-    unavailable_requested_connectors = _unavailable_requested_connector_labels(
-        query, registry.list(enabled_only=True)
-    )
+            private_packs = await pack_service.resolve_private_analysis_for_execution(
+                project_ids[0], _DOCUMENTATION_PACK_WORKFLOW_KEY
+            )
+            registry = compile_governed_pack_registry(
+                registry, compiled, tuple(item.provider_payload() for item in private_packs)
+            )
     pending_summary = await _pending_workflow_summary(db, conversation)
     focus = await _conversation_focus(db, conversation)
     conversation_history = await _planner_conversation_history(db, conversation)
-    prior_plan = await _latest_persisted_turn_plan(db, conversation)
     manifest = build_runtime_capability_manifest(
         registry,
         scope=ManifestScope(permissions=user_permissions),
@@ -473,11 +480,89 @@ async def plan_model_harness_chat_turn(
         manifest=manifest,
         project_options=project_options,
         pending_workflow_summary=pending_summary,
+        active_continuation=_continuation_planner_context(continuation),
         conversation_history=conversation_history,
     )
     model_decision = result.decision
     decision: HarnessPlannerDecision | None = None
-    if result.decision_source == "model":
+    if continuation is not None and result.decision_source == "model":
+        if model_decision.action == PlannerAction.CONTINUE:
+            resumed = await _resume_continuation_decision(
+                continuation=continuation,
+                query=query,
+                conversation=conversation,
+                db=db,
+                project_ids=project_ids,
+                access_token=access_token,
+                provider=docs_provider,
+            )
+            if resumed is None:
+                resumed = HarnessPlannerDecision(
+                    action=_PLANNER_ASK_CLARIFICATION,
+                    mode="continuation_clarification",
+                    confidence=model_decision.confidence,
+                    user_visible_reason="The pending request needs a valid continuation value.",
+                    direct_answer="I couldn't apply that to the pending request. Please answer the requested detail, cancel it, or state the new request.",
+                )
+            resumed = replace(
+                resumed,
+                decision_source="model",
+                planner_note=result.note,
+                planner_latency_ms=result.latency_ms,
+            )
+            if resumed.turn_plan is None:
+                resumed = _with_turn_plan(
+                    resumed,
+                    query=query,
+                    project_ids=project_ids,
+                )
+            if project_ids is not None and len(project_ids) == 1:
+                resumed = replace(resumed, governed_registry=registry)
+            return _record_planner_decision(resumed)
+        if model_decision.action == PlannerAction.CANCEL:
+            await _supersede_continuation(db, continuation)
+            decision = HarnessPlannerDecision(
+                action=_PLANNER_ANSWER_DIRECT,
+                mode="continuation_cancelled",
+                confidence=model_decision.confidence,
+                user_visible_reason="The user cancelled the pending request.",
+                direct_answer="Cancelled the pending request. What would you like to do instead?",
+            )
+        elif model_decision.action == PlannerAction.REPLACE:
+            await _supersede_continuation(db, continuation)
+            if _replacement_depth < 1:
+                return await plan_model_harness_chat_turn(
+                    query=query,
+                    conversation=conversation,
+                    db=db,
+                    project_ids=project_ids,
+                    user_permissions=user_permissions,
+                    access_token=access_token,
+                    provider=docs_provider,
+                    _replacement_depth=_replacement_depth + 1,
+                )
+            decision = HarnessPlannerDecision(
+                action=_PLANNER_ANSWER_DIRECT,
+                mode="planner_unavailable",
+                confidence=0.0,
+                user_visible_reason="The replacement request could not be planned safely.",
+                direct_answer="I cancelled the pending request, but couldn't safely plan the replacement. Please try the new request again.",
+            )
+        else:
+            decision = HarnessPlannerDecision(
+                action=_PLANNER_ASK_CLARIFICATION,
+                mode="continuation_control_required",
+                confidence=model_decision.confidence,
+                user_visible_reason="The active continuation must be resolved before another action.",
+                direct_answer="Do you want to continue the pending request, cancel it, or replace it with this new request?",
+            )
+        decision = replace(
+            decision,
+            decision_source="model",
+            planner_note=result.note,
+            planner_latency_ms=result.latency_ms,
+        )
+    if decision is None and result.decision_source == "model":
         if model_decision.action == PlannerAction.EXECUTE:
             first = model_decision.tool_calls[0]
             selected_capability = next(
@@ -507,29 +592,13 @@ async def plan_model_harness_chat_turn(
                     ),
                 )
         elif model_decision.action == PlannerAction.CLARIFY:
-            deterministic = plan_harness_chat_turn(query)
-            if deterministic.mode == "generate_docs":
-                decision = replace(
-                    deterministic,
-                    confidence=model_decision.confidence,
-                    user_visible_reason=(
-                        "Documentation generation needs a project scope."
-                        if deterministic.mode == "generate_docs"
-                        else "Documentation generation needs a project scope."
-                    ),
-                    direct_answer=(
-                        model_decision.clarification
-                        or deterministic.direct_answer
-                    ),
-                )
-            else:
-                decision = HarnessPlannerDecision(
-                    action=_PLANNER_ASK_CLARIFICATION,
-                    mode="model_clarification",
-                    confidence=model_decision.confidence,
-                    user_visible_reason=model_decision.clarification or "I need one detail before continuing.",
-                    direct_answer=model_decision.clarification,
-                )
+            decision = HarnessPlannerDecision(
+                action=_PLANNER_ASK_CLARIFICATION,
+                mode="model_clarification",
+                confidence=model_decision.confidence,
+                user_visible_reason=model_decision.clarification or "I need one detail before continuing.",
+                direct_answer=model_decision.clarification,
+            )
         elif model_decision.action == PlannerAction.ANSWER and model_decision.answer:
             decision = HarnessPlannerDecision(
                 action=_PLANNER_ANSWER_DIRECT,
@@ -538,7 +607,11 @@ async def plan_model_harness_chat_turn(
                 user_visible_reason="Nexus answered without running a workflow.",
                 direct_answer=model_decision.answer,
             )
-        elif model_decision.action in {PlannerAction.CONTINUE, PlannerAction.CANCEL}:
+        elif model_decision.action in {
+            PlannerAction.CONTINUE,
+            PlannerAction.CANCEL,
+            PlannerAction.REPLACE,
+        }:
             decision = HarnessPlannerDecision(
                 action=_PLANNER_ASK_CLARIFICATION,
                 mode=model_decision.action.value,
@@ -555,116 +628,16 @@ async def plan_model_harness_chat_turn(
             )
 
     if decision is None:
-        # Compatibility only: preserve known safe flows when the configured
-        # model cannot plan. Unknown requests return to ordinary RAG.
-        fallback = _evidence_policy_fallback_decision(
-            query=query,
-            capabilities=manifest.tools,
-            prior_plan=prior_plan,
-            focus=focus,
-        ) or _scope_safe_fallback_decision(
-            query=query,
-            fallback=plan_harness_chat_turn(query),
-            focus=focus,
-        )
-        decision = replace(
-            fallback,
-            decision_source="regex_fallback",
+        decision = HarnessPlannerDecision(
+            action=_PLANNER_ANSWER_DIRECT,
+            mode="planner_unavailable",
+            confidence=0.0,
+            user_visible_reason="The model planner did not produce a safe validated decision.",
+            direct_answer="I couldn't safely determine the right action for that request. Please try again or rephrase it.",
+            decision_source="model_fallback",
             fallback_reason=result.fallback_reason or "unmappable_decision",
             planner_note=result.note,
             planner_latency_ms=result.latency_ms,
-        )
-    if _explicit_document_switch(query) or _is_document_only_request(query) or _is_migration_discovery(query, conversation_history):
-        migration_discovery = _is_migration_discovery(query, conversation_history)
-        decision = HarnessPlannerDecision(
-            action=_PLANNER_USE_RAG,
-            mode="document_answer",
-            confidence=max(decision.confidence, 0.9),
-            user_visible_reason="The request requires project documentation, not runtime evidence.",
-            decision_source="evidence_policy_guard",
-            fallback_reason=decision.fallback_reason,
-            planner_note=decision.planner_note,
-            planner_latency_ms=decision.planner_latency_ms,
-            matched_rule="document_evidence_only",
-            arguments=(
-                {"output_contract": "migration_proposal"}
-                if migration_discovery
-                else decision.arguments
-            ),
-        )
-    elif _is_runtime_aggregation(query):
-        decision = HarnessPlannerDecision(
-            action=_PLANNER_CALL_CAPABILITY,
-            mode="runtime_answer",
-            capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-            arguments={"question": query},
-            confidence=max(decision.confidence, 0.9),
-            user_visible_reason="The request is a runtime evidence question, not an incident diagnosis.",
-            decision_source="evidence_policy_guard",
-            fallback_reason=decision.fallback_reason,
-            planner_note=decision.planner_note,
-            planner_latency_ms=decision.planner_latency_ms,
-            matched_rule="runtime_aggregation",
-        )
-    if _is_recomposition_request(query) and prior_plan is not None:
-        if prior_plan.task_type in {
-            TurnTaskType.DOCUMENT_ANSWER,
-            TurnTaskType.RUNTIME_ANSWER,
-        }:
-            runtime = prior_plan.task_type is TurnTaskType.RUNTIME_ANSWER
-            prior_run_id = (
-                await _latest_evidence_run_id(db, conversation) if runtime else None
-            )
-            decision = HarnessPlannerDecision(
-                action=_PLANNER_CALL_CAPABILITY if runtime else _PLANNER_USE_RAG,
-                mode="evidence_recomposition" if runtime else "document_answer",
-                capability_id=RUNTIME_EVIDENCE_CAPABILITY.id if runtime else None,
-                arguments={
-                    "output_contract": prior_plan.output_contract,
-                    **(
-                        {"recompose_from_run_id": prior_run_id}
-                        if prior_run_id is not None
-                        else {}
-                    ),
-                },
-                confidence=max(decision.confidence, 0.95),
-                user_visible_reason="Reformatting the prior answer without collecting new evidence.",
-                decision_source="continuation_guard",
-                planner_note=decision.planner_note,
-                planner_latency_ms=decision.planner_latency_ms,
-                matched_rule="evidence_recomposition",
-                turn_plan=(
-                    prior_plan.model_copy(
-                        update={
-                            "continuation": {
-                                **prior_plan.continuation,
-                                "state": "recomposed",
-                                "request": query.strip()[:500],
-                            },
-                            "decision_source": "continuation_guard",
-                        }
-                    )
-                    if runtime and prior_run_id is not None
-                    else None
-                ),
-            )
-    if (
-        unavailable_requested_connectors
-        and re.search(r"\b(search|check|find|read|show|messages?|logs?|investigate)\b", query, re.IGNORECASE)
-        and decision.mode not in {"operational_investigation", "evidence_investigation"}
-    ):
-        decision = HarnessPlannerDecision(
-            action=_PLANNER_CALL_CAPABILITY,
-            mode="operational_investigation",
-            capability_id=_INVESTIGATION_CAPABILITY_ID,
-            arguments={},
-            confidence=max(decision.confidence, 0.8),
-            user_visible_reason="The requested connector is unavailable, so Nexus will ground the answer in available evidence and disclose the gap.",
-            decision_source="capability_guard",
-            fallback_reason=decision.fallback_reason,
-            planner_note=decision.planner_note,
-            planner_latency_ms=decision.planner_latency_ms,
-            matched_rule="unavailable_requested_connector",
         )
     if decision.mode == "runtime_answer":
         runtime_scope, unauthorized = _runtime_scope_selection(
@@ -696,8 +669,11 @@ async def plan_model_harness_chat_turn(
         decision,
         query=query,
         project_ids=project_ids,
-        prior_plan=prior_plan,
     )
+    # Carry the already-resolved immutable compilation into the executable
+    # path. It is never sourced from model arguments and is not persisted.
+    if project_ids is not None and len(project_ids) == 1:
+        decision = replace(decision, governed_registry=registry)
     return _record_planner_decision(decision)
 
 
@@ -719,8 +695,50 @@ async def _active_continuation(
     return row if isinstance(row, HarnessConversationContinuationRow) else None
 
 
-def _explicit_document_switch(query: str) -> bool:
-    return bool(re.search(r"\b(?:use|using|from)\s+(?:the\s+)?(?:docs?|documentation|rag)\b", query, re.I))
+def _continuation_planner_context(
+    continuation: HarnessConversationContinuationRow | None,
+) -> dict[str, Any] | None:
+    """Expose only the pending objective and slot contract to the model planner."""
+
+    if continuation is None:
+        return None
+    try:
+        envelope = ContinuationEnvelope.model_validate(continuation.envelope)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "continuation_id": envelope.continuation_id,
+        "version": envelope.version,
+        "objective": envelope.plan.objective,
+        "task_type": envelope.plan.task_type.value,
+        "missing_slots": list(envelope.missing_slots),
+        "slots": [
+            {
+                "name": slot.name,
+                "required": slot.required,
+                "options": list(slot.options),
+            }
+            for slot in envelope.slots
+            if slot.required and slot.value is None
+        ],
+    }
+
+
+async def _supersede_continuation(
+    db: AsyncSession,
+    continuation: HarnessConversationContinuationRow,
+) -> None:
+    """Cancel or replace an active continuation with optimistic version safety."""
+
+    await db.execute(
+        update(HarnessConversationContinuationRow)
+        .where(
+            HarnessConversationContinuationRow.id == continuation.id,
+            HarnessConversationContinuationRow.version == continuation.version,
+            HarnessConversationContinuationRow.status == "active",
+        )
+        .values(status="superseded", version=continuation.version + 1)
+    )
 
 
 async def _resume_continuation_decision(
@@ -733,38 +751,13 @@ async def _resume_continuation_decision(
     access_token: str | None,
     provider: McpDocumentationProvider | None,
 ) -> HarnessPlannerDecision | None:
-    """Resolve a slot/reformat reply without granting the model a new lane."""
+    """Resolve a genuine slot reply after the model chose ``continue``."""
     try:
         envelope = ContinuationEnvelope.model_validate(continuation.envelope)
     except (TypeError, ValueError):
         return None
-    if _explicit_document_switch(query):
-        await db.execute(
-            update(HarnessConversationContinuationRow)
-            .where(
-                HarnessConversationContinuationRow.id == continuation.id,
-                HarnessConversationContinuationRow.version == continuation.version,
-            )
-            .values(status="superseded", version=continuation.version + 1)
-        )
-        return None
     plan = envelope.plan
-    # A new substantive request can supersede a continuation, but slot-only and
-    # referential turns must never be independently replanned.
     normalized = re.sub(r"\s+", " ", query.strip().casefold())
-    if (
-        len(normalized) > 180
-        or _is_new_runtime_objective(query)
-    ) and not _is_recomposition_request(query):
-        await db.execute(
-            update(HarnessConversationContinuationRow)
-            .where(
-                HarnessConversationContinuationRow.id == continuation.id,
-                HarnessConversationContinuationRow.version == continuation.version,
-            )
-            .values(status="superseded", version=continuation.version + 1)
-        )
-        return None
     slots = {slot.name: slot.model_copy() for slot in envelope.slots}
     pending_before = [
         name for name, slot in slots.items() if slot.required and slot.value is None
@@ -811,19 +804,6 @@ async def _resume_continuation_decision(
             "continuation": {**plan.continuation, "state": "awaiting_user_input" if missing else "ready", "continuation_id": envelope.continuation_id, "version": envelope.version},
         }
     )
-    if _is_recomposition_request(query) or re.fullmatch(r"show me the results then\??", normalized):
-        run_id = await _latest_evidence_run_id(db, conversation)
-        if run_id is not None:
-            return HarnessPlannerDecision(
-                action=_PLANNER_CALL_CAPABILITY,
-                mode="evidence_recomposition",
-                arguments={"recompose_from_run_id": run_id},
-                confidence=1.0,
-                user_visible_reason="Recomposing persisted evidence without a new execution.",
-                decision_source="continuation_guard",
-                matched_rule="persisted_evidence_recomposition",
-                turn_plan=updated_plan,
-            )
     if missing:
         if slot_clarification is not None:
             prompt = f"{slot_clarification} What time window should I use?"
@@ -889,35 +869,6 @@ async def _latest_evidence_run_id(db: AsyncSession, conversation: Conversation) 
     return None
 
 
-def _is_document_only_request(query: str) -> bool:
-    normalized = query.casefold()
-    return bool(
-        re.search(r"\b(use|using|from|according to)\b.{0,40}\b(documentation|docs?|rag)\b", normalized)
-        and re.search(r"\b(don'?t|do not|without|no)\b.{0,30}\b(runtime|logs?|syncs?|live)\b", normalized)
-    )
-
-
-def _is_new_runtime_objective(query: str) -> bool:
-    """Recognize a fresh operational request while a prior turn awaits slots."""
-    normalized = query.casefold()
-    return bool(
-        re.search(r"\b(for|on)\s+[a-z][a-z0-9_-]*\b", normalized)
-        and re.search(
-            r"\b(executions?|health|events?|failures?|performance|runtime|logs?)\b",
-            normalized,
-        )
-    )
-
-
-def _is_migration_discovery(
-    query: str, conversation_history: list[dict[str, str]]
-) -> bool:
-    context = " ".join(
-        [*(item["content"] for item in conversation_history[-6:]), query]
-    ).casefold()
-    return bool(re.search(r"\b(migrat\w*|azure data factory|\badf\b)\b", context))
-
-
 async def _planner_conversation_history(
     db: AsyncSession, conversation: Conversation
 ) -> list[dict[str, str]]:
@@ -941,155 +892,6 @@ async def _planner_conversation_history(
         for message in messages
         if message.role in {"user", "assistant"}
     ]
-
-
-def _is_runtime_aggregation(query: str) -> bool:
-    normalized = query.casefold()
-    return bool(
-        re.search(r"\b(runtime|logs?|executions?|runs?|engines?|sources?)\b", normalized)
-        and re.search(r"\b(which|list|rank|count|most|least|how many|frequency)\b", normalized)
-        and not re.search(r"\b(why|root cause|diagnose|investigate)\b", normalized)
-    )
-
-
-def _is_recomposition_request(query: str) -> bool:
-    normalized = re.sub(r"\s+", " ", query.strip().casefold())
-    if re.search(
-        r"\b(latest|current|now|again|refresh|recheck|new evidence|new logs?)\b",
-        normalized,
-    ):
-        return False
-    return bool(
-        re.search(
-            r"\b(give me better output|format (?:it|that)|reformat|make (?:it|that) "
-            r"clearer|summarize that|show (?:me )?(?:the )?results(?: then)?|"
-            r"show (?:it|that) as (?:a )?(?:table|list))\b",
-            normalized,
-        )
-    )
-
-
-def _scope_safe_fallback_decision(
-    *,
-    query: str,
-    fallback: HarnessPlannerDecision,
-    focus: ConversationalFocus,
-) -> HarnessPlannerDecision:
-    """Keep malformed model output from broadening a focused follow-up to global RAG."""
-    project = focus.project.stable_id if focus.project else None
-    if not project or fallback.action != _PLANNER_USE_RAG:
-        return fallback
-    normalized = re.sub(r"\s+", " ", query.strip().casefold())
-    continuation = bool(
-        re.search(
-            r"\b(same|again|instead|previous(?:ly)?|that|it|check again|still|now)\b",
-            normalized,
-        )
-    )
-    if not continuation:
-        return fallback
-    if focus.workflow_kind is WorkflowKind.DOCUMENTATION_GENERATION:
-        return HarnessPlannerDecision(
-            action=_PLANNER_CALL_CAPABILITY,
-            mode="documentation_generation_status",
-            capability_id=_DOC_STATUS_CAPABILITY_ID,
-            arguments={"project_id": project},
-            confidence=0.6,
-            user_visible_reason="Continuing the focused documentation workflow.",
-            matched_rule="focused_documentation_fallback",
-        )
-    if focus.workflow_kind in {WorkflowKind.RUNTIME_HEALTH, WorkflowKind.SCAN}:
-        return HarnessPlannerDecision(
-            action=_PLANNER_CALL_CAPABILITY,
-            mode="operational_investigation",
-            capability_id=_INVESTIGATION_CAPABILITY_ID,
-            arguments={"project_id": project},
-            confidence=0.6,
-            user_visible_reason="Continuing the focused operational investigation.",
-            matched_rule="focused_operational_fallback",
-        )
-    return fallback
-
-
-def _evidence_policy_fallback_decision(
-    *,
-    query: str,
-    capabilities: list[Any],
-    prior_plan: TurnPlan | None,
-    focus: ConversationalFocus,
-) -> HarnessPlannerDecision | None:
-    """Recover evidence turns without letting planner failure widen their policy.
-
-    This is a degradation policy, not another router: it selects an already
-    declared capability only for an explicit evidence-source request or a
-    source focus persisted by the prior TurnPlan.
-    """
-
-    requested = set(resolve_evidence_source_constraint(query).required)
-    if {
-        EvidenceSource.INDEXED_DOCUMENTATION,
-        EvidenceSource.GENERATED_DOCUMENTATION,
-    }.intersection(requested):
-        return HarnessPlannerDecision(
-            action=_PLANNER_USE_RAG,
-            mode="document_answer",
-            confidence=0.6,
-            user_visible_reason="Preserving the requested documentation evidence source while the planner is unavailable.",
-            matched_rule="evidence_policy_fallback",
-        )
-    if not requested and prior_plan is not None:
-        requested = set(prior_plan.evidence_policy.allowed) - set(
-            prior_plan.evidence_policy.denied
-        )
-    if not requested:
-        return None
-
-    candidates = [
-        capability
-        for capability in capabilities
-        if requested.intersection(set(capability.evidence_sources))
-        and resolve_capability_turn_semantics(capability) is not None
-    ]
-    if not candidates:
-        return None
-    prefer_log_search = bool(
-        re.search(r"\b(?:logs?|exceptions?|stack\s*trace)\b", query, re.I)
-    )
-    candidates.sort(
-        key=lambda capability: (
-            0
-            if prefer_log_search
-            and capability.id == LOG_SEARCH_EVIDENCE_CAPABILITY.id
-            else 1
-            if resolve_capability_turn_semantics(capability).mode == "runtime_answer"
-            else 2,
-            capability.id,
-        )
-    )
-    capability = candidates[0]
-    semantics = resolve_capability_turn_semantics(capability)
-    assert semantics is not None
-    arguments: dict[str, Any] = {"question": query}
-    if semantics.mode == "runtime_answer":
-        scope = prior_plan.resolved_scope if prior_plan is not None else {}
-        runtime_scope = scope.get("runtime_scope") if isinstance(scope, dict) else None
-        if isinstance(runtime_scope, dict):
-            project_ids = runtime_scope.get("project_ids")
-            if isinstance(project_ids, list) and len(project_ids) == 1:
-                arguments["project_id"] = project_ids[0]
-            elif isinstance(project_ids, list) and len(project_ids) > 1:
-                arguments["project_ids"] = project_ids
-        if "project_id" not in arguments and "project_ids" not in arguments and focus.project:
-            arguments["project_id"] = focus.project.stable_id
-    return HarnessPlannerDecision(
-        action=semantics.action,
-        mode=semantics.mode,
-        capability_id=capability.id,
-        arguments=arguments,
-        confidence=0.6,
-        user_visible_reason="Preserving the requested evidence source while the planner is unavailable.",
-        matched_rule="evidence_policy_fallback",
-    )
 
 
 def _record_planner_decision(decision: HarnessPlannerDecision) -> HarnessPlannerDecision:
@@ -1190,7 +992,6 @@ def _with_turn_plan(
     *,
     query: str,
     project_ids: list[str] | None,
-    prior_plan: TurnPlan | None = None,
 ) -> HarnessPlannerDecision:
     """Attach the validated routing authority used by both API entry points."""
     if decision.turn_plan is not None:
@@ -1256,6 +1057,12 @@ def _with_turn_plan(
         output_contract = "workflow_receipt"
         allowed = set()
         preferred = []
+    elif decision.mode == "documentation_pack_catalog":
+        task_type = TurnTaskType.DOCUMENTATION_PACK_MANAGEMENT
+        execution_mode = TurnExecutionMode.WORKFLOW
+        output_contract = "documentation_pack_catalog"
+        allowed = set()
+        preferred = []
     elif decision.mode == "update_docs_from_evidence":
         task_type = TurnTaskType.DOCUMENT_UPDATE
         execution_mode = TurnExecutionMode.WORKFLOW
@@ -1266,6 +1073,12 @@ def _with_turn_plan(
         task_type = TurnTaskType.PROJECT_ONBOARDING
         execution_mode = TurnExecutionMode.WORKFLOW
         output_contract = "onboarding_workflow_receipt"
+        allowed = set()
+        preferred = []
+    elif decision.mode == "project_workflow_status":
+        task_type = TurnTaskType.PROJECT_WORKFLOW_STATUS
+        execution_mode = TurnExecutionMode.WORKFLOW
+        output_contract = "active_project_workflows"
         allowed = set()
         preferred = []
     elif decision.mode == "connector_inventory":
@@ -1363,79 +1176,7 @@ def _with_turn_plan(
         capability_ids=capability_ids,
         decision_source=decision.decision_source,
     )
-    if prior_plan is not None and _is_objective_continuation(query, plan, prior_plan):
-        plan = plan.model_copy(
-            update={
-                "objective": prior_plan.objective,
-                "output_contract": prior_plan.output_contract,
-                "continuation": {
-                    **plan.continuation,
-                    "state": "continued",
-                    "request": query.strip()[:500],
-                },
-            }
-        )
     return replace(decision, turn_plan=plan)
-
-
-async def _latest_persisted_turn_plan(
-    db: AsyncSession, conversation: Conversation
-) -> TurnPlan | None:
-    messages = list(conversation.__dict__.get("messages") or [])
-    messages.sort(key=lambda message: message.id or 0)
-    for message in reversed(messages):
-        if not isinstance(message.turn_plan, dict):
-            continue
-        try:
-            return TurnPlan.model_validate(message.turn_plan)
-        except (TypeError, ValueError):
-            continue
-    # Relationship collections can be populated without their latest rows
-    # after a flush. Always fall through to the persisted record before
-    # abandoning a conversation's evidence focus.
-    messages = list(
-        (
-            await db.execute(
-                select(ConversationMessage)
-                .where(
-                    ConversationMessage.conversation_id == conversation.id,
-                    ConversationMessage.deleted_at.is_(None),
-                    ConversationMessage.turn_plan.is_not(None),
-                )
-                .order_by(ConversationMessage.id.desc())
-                .limit(4)
-            )
-        ).scalars()
-    )
-    messages.sort(key=lambda message: message.id or 0)
-    for message in reversed(messages):
-        if not isinstance(message.turn_plan, dict):
-            continue
-        try:
-            return TurnPlan.model_validate(message.turn_plan)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
-def _is_objective_continuation(query: str, plan: TurnPlan, prior: TurnPlan) -> bool:
-    if plan.task_type is not prior.task_type:
-        return False
-    current_project = plan.resolved_scope.get("project_id")
-    prior_project = prior.resolved_scope.get("project_id")
-    if current_project and prior_project and current_project != prior_project:
-        return False
-    normalized = re.sub(r"\s+", " ", query.strip().casefold())
-    if len(normalized) > 160:
-        return False
-    return bool(
-        re.search(
-            r"^(?:option\s+\d|both\b|(?:yes|no|okay|ok)\b|continue\b|"
-            r"give me better output\b|(?:re)?format\b|make (?:it|that)\b|"
-            r"show (?:it|that)\b|summarize (?:it|that)\b)",
-            normalized,
-        )
-    )
 
 
 def _evidence_output_contract(query: str, *, runtime: bool) -> str:
@@ -1688,47 +1429,119 @@ def _match_project_in_query(query: str, project_options: list[ProjectOption]) ->
 
 def _documentation_pack_name_from_query(query: str) -> str | None:
     quoted = re.search(
-        r"\busing\s+(?:the\s+)?(?:documentation\s+)?pack\s+[\"']([^\"']+)[\"']",
+        r"\busing\s+(?:the\s+)?(?:documentation\s+)?pack\s*:?\s*[\"']([^\"']+)[\"']",
         query,
         re.IGNORECASE,
     )
     if quoted:
         return quoted.group(1).strip()
     unquoted = re.search(
-        r"\busing\s+(?:the\s+)?(?:documentation\s+)?pack\s+(.+?)\s*$",
+        r"\busing\s+(?:the\s+)?(?:documentation\s+)?pack\s*:?\s*(.+?)\s*$",
         query,
         re.IGNORECASE,
     )
-    return unquoted.group(1).strip(" .") if unquoted else None
+    if unquoted:
+        return unquoted.group(1).strip(" .\"'")
+    named = re.search(
+        r"\busing\s+(?:the\s+)?(.+?\bpack(?:\s*\(\s*v?[0-9]+\.[0-9]+\.[0-9]+"
+        r"(?:[-+][A-Za-z0-9.-]+)?\s*\))?)\s*[\"']?\s*$",
+        query,
+        re.IGNORECASE,
+    )
+    return named.group(1).strip(" .\"'") if named else None
 
 
-async def _resolve_documentation_pack_id(
+def _normalized_documentation_pack_name(value: str) -> tuple[str, str | None]:
+    cleaned = value.strip(" .\"'")
+    version_match = re.search(
+        r"\s*\(\s*v?([0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?)\s*\)\s*$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    version = version_match.group(1) if version_match else None
+    if version_match:
+        cleaned = cleaned[:version_match.start()].rstrip()
+    return re.sub(r"[\s_-]+", " ", cleaned).casefold(), version
+
+
+async def _resolve_documentation_pack_selection(
     *,
     arguments: dict[str, Any],
     query: str,
+    db: AsyncSession,
+    user_id: int,
     provider: McpDocumentationProvider,
     access_token: str | None,
-) -> int | None:
+) -> DocumentationPackSelection | None:
     explicit_id = arguments.get("plugin_pack_id")
-    if isinstance(explicit_id, int) and not isinstance(explicit_id, bool) and explicit_id > 0:
-        return explicit_id
     raw_name = (
         arguments.get("documentation_pack")
         or arguments.get("pack_name")
         or _documentation_pack_name_from_query(query)
     )
-    if not isinstance(raw_name, str) or not raw_name.strip():
+    has_explicit_id = (
+        isinstance(explicit_id, int) and not isinstance(explicit_id, bool) and explicit_id > 0
+    )
+    if not has_explicit_id and (not isinstance(raw_name, str) or not raw_name.strip()):
         return None
-    requested = re.sub(r"[\s_-]+", " ", raw_name.strip()).casefold()
+    if has_explicit_id:
+        packs = await provider.list_documentation_packs(access_token=access_token)
+        if any(pack.id == explicit_id for pack in packs):
+            pack = next(pack for pack in packs if pack.id == explicit_id)
+            return DocumentationPackSelection(
+                name=pack.name,
+                version=pack.version,
+                plugin_pack_id=pack.id,
+            )
+        raise McpDocumentationProviderError(
+            "The selected documentation Pack is unavailable or not certified for generation."
+        )
+    assert isinstance(raw_name, str)
+    requested, requested_version = _normalized_documentation_pack_name(raw_name)
+
+    private_versions = await PackDraftService(
+        db, base_capability_registry()
+    ).list_versions(user_id)
+    latest_private: dict[str, Any] = {}
+    for version in private_versions:
+        latest_private.setdefault(version.pack_id, version)
+    private_matches = [
+        version
+        for version in (private_versions if requested_version else latest_private.values())
+        if _normalized_documentation_pack_name(version.name)[0] == requested
+        and (requested_version is None or version.version == requested_version)
+    ]
+    if len(private_matches) == 1:
+        version = private_matches[0]
+        return DocumentationPackSelection(
+            name=version.name,
+            version=version.version,
+            private_version_ids=(version.id,),
+        )
+    if len(private_matches) > 1:
+        raise McpDocumentationProviderError(
+            f"More than one private documentation Pack matches `{raw_name.strip()}`. Include its version."
+        )
+
     packs = await provider.list_documentation_packs(access_token=access_token)
-    matches = [
+    organization_matches = [
         pack
         for pack in packs
-        if re.sub(r"[\s_-]+", " ", pack.name.strip()).casefold() == requested
+        if _normalized_documentation_pack_name(pack.name)[0] == requested
+        and (requested_version is None or pack.version == requested_version)
     ]
-    if len(matches) == 1:
-        return matches[0].id
-    available = ", ".join(f"`{pack.name}`" for pack in packs[:8]) or "none"
+    if len(organization_matches) == 1:
+        pack = organization_matches[0]
+        return DocumentationPackSelection(
+            name=pack.name,
+            version=pack.version,
+            plugin_pack_id=pack.id,
+        )
+    available_items = [
+        *(f"`{version.name}` (v{version.version}, private)" for version in latest_private.values()),
+        *(f"`{pack.name}` (v{pack.version}, organization)" for pack in packs),
+    ]
+    available = ", ".join(available_items[:8]) or "none"
     raise McpDocumentationProviderError(
         f"Documentation Pack `{raw_name.strip()}` was not found. Available Packs: {available}."
     )
@@ -1903,6 +1716,21 @@ async def run_harness_chat_turn(
             workflow_run_id=workflow_run_id,
         )
 
+    if decision.mode == "project_workflow_status":
+        answer, _ = await _execute_active_project_workflows(
+            user_id=user_id,
+            conversation_id=conversation.id,
+            project_scope=project_ids,
+            access_token=access_token,
+            provider=docs_provider,
+        )
+        return await _persist_assistant_message(
+            conversation=conversation,
+            db=db,
+            answer=answer,
+            latency_ms=_latency_ms(start),
+        )
+
     if decision.mode == "documentation_generation_status":
         workflow_run_id = None
         if project_id is None:
@@ -1929,6 +1757,22 @@ async def run_harness_chat_turn(
             answer=answer,
             latency_ms=_latency_ms(start),
             workflow_run_id=workflow_run_id,
+        )
+
+    if decision.mode == "documentation_pack_catalog":
+        answer, _ = await _execute_documentation_pack_catalog(
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            decision=decision,
+            provider=docs_provider,
+            user_permissions=user_permissions,
+        )
+        return await _persist_assistant_message(
+            conversation=conversation,
+            db=db,
+            answer=answer,
+            latency_ms=_latency_ms(start),
         )
 
     if decision.mode == "connector_evidence":
@@ -2224,6 +2068,27 @@ async def run_harness_chat_turn_stream(
                         }
                     ),
                 )
+    elif decision.mode == "project_workflow_status":
+        answer, workflow_count = await _execute_active_project_workflows(
+            user_id=user_id,
+            conversation_id=conversation.id,
+            project_scope=project_ids,
+            access_token=access_token,
+            provider=docs_provider,
+        )
+        yield (
+            "harness_activity",
+            json.dumps(
+                _adhoc_activity(
+                    event_type="project_workflows.status_read",
+                    label="Checked active project workflows",
+                    status="completed",
+                    summary=f"Found {workflow_count} active project workflow(s).",
+                    capability_id=PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id,
+                    safe_details={"workflow_count": workflow_count},
+                )
+            ),
+        )
     elif decision.mode == "documentation_generation_status":
         if project_id is None:
             answer = _project_scope_clarification(
@@ -2249,6 +2114,28 @@ async def run_harness_chat_turn_stream(
             workflow_run_id = status_run.id
             for activity in activities:
                 yield ("harness_activity", json.dumps(_activity_payload(activity)))
+    elif decision.mode == "documentation_pack_catalog":
+        answer, pack_count = await _execute_documentation_pack_catalog(
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            decision=decision,
+            provider=docs_provider,
+            user_permissions=user_permissions,
+        )
+        yield (
+            "harness_activity",
+            json.dumps(
+                _adhoc_activity(
+                    event_type="documentation_packs.catalog_read",
+                    label="Checked documentation Packs",
+                    status="completed",
+                    summary=f"Found {pack_count} available documentation Pack(s).",
+                    capability_id=DOCUMENTATION_PACK_LIST_CAPABILITY.id,
+                    safe_details={"pack_count": pack_count},
+                )
+            ),
+        )
     elif decision.mode == "connector_evidence":
         connector_run, answer, activities = await _execute_model_selected_connector(
             conversation=conversation,
@@ -2420,8 +2307,163 @@ async def run_harness_chat_turn_stream(
     )
     if assistant_msg.structured_answer is not None:
         yield ("final_answer", json.dumps(assistant_msg.structured_answer))
-    yield ("usage", json.dumps(_empty_usage(assistant_msg.latency_ms or 0)))
+    yield ("usage", json.dumps(_usage_payload(get_turn_usage(), assistant_msg.latency_ms or 0)))
     yield ("done", json.dumps({"message_id": assistant_msg.id, "latency_ms": assistant_msg.latency_ms or 0}))
+
+
+async def _execute_documentation_pack_catalog(
+    *,
+    db: AsyncSession,
+    user_id: int,
+    access_token: str | None,
+    decision: HarnessPlannerDecision,
+    provider: McpDocumentationProvider,
+    user_permissions: set[str] | None,
+) -> tuple[str, int]:
+    """Read the two user-facing layers of the Documentation Pack catalog."""
+
+    requested_scope = str((decision.arguments or {}).get("scope") or "all")
+
+    async def catalog_handler(arguments, _context):  # noqa: ANN001
+        scope = str(arguments.get("scope") or "all")
+        items: list[dict[str, Any]] = []
+        if scope in {"all", "organization"}:
+            for pack in await provider.list_documentation_packs(access_token=access_token):
+                items.append(
+                    {
+                        "id": f"organization:{pack.id}",
+                        "kind": "organization",
+                        "name": pack.name,
+                        "version": pack.version,
+                        "description": pack.description,
+                        "plugin_pack_id": pack.id,
+                    }
+                )
+        if scope in {"all", "private"}:
+            versions = await PackDraftService(db, base_capability_registry()).list_versions(user_id)
+            latest_by_pack: dict[str, Any] = {}
+            for version in versions:
+                latest_by_pack.setdefault(version.pack_id, version)
+            for version in latest_by_pack.values():
+                items.append(
+                    {
+                        "id": f"private:{version.id}",
+                        "kind": "private",
+                        "name": version.name,
+                        "version": version.version,
+                        "description": version.artifact.purpose,
+                        "private_version_id": version.id,
+                        "adds": [document.title for document in version.artifact.output_documents],
+                    }
+                )
+        return items
+
+    executor = HarnessCapabilityExecutor(
+        base_capability_registry(),
+        docs_provider=provider,
+        evidence_handlers={DOCUMENTATION_PACK_LIST_CAPABILITY.id: catalog_handler},
+    )
+    observation = await executor.execute(
+        CapabilityExecutionRequest(
+            capability_id=DOCUMENTATION_PACK_LIST_CAPABILITY.id,
+            arguments={"scope": requested_scope},
+        ),
+        CapabilityExecutionContext(
+            user_id=user_id,
+            permissions=user_permissions,
+            access_token=access_token,
+        ),
+    )
+    if not observation.succeeded:
+        return observation.error_message or "I could not load the documentation Pack catalog.", 0
+
+    raw_items = observation.data.get("items")
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    organization = [item for item in items if item.get("kind") == "organization"]
+    private = [item for item in items if item.get("kind") == "private"]
+    lines = ["## Available Documentation Packs", ""]
+    if requested_scope in {"all", "organization"}:
+        lines.append("### Organization Packs")
+        if organization:
+            for item in organization:
+                detail = f" - {item['description']}" if item.get("description") else ""
+                lines.append(f"- **{item['name']}** (v{item['version']}){detail}")
+        else:
+            lines.append("No certified organization Packs are currently available.")
+        lines.append("")
+    if requested_scope in {"all", "private"}:
+        lines.append("### My Packs")
+        if private:
+            for item in private:
+                additions = item.get("adds") or []
+                suffix = f" Adds: {', '.join(str(value) for value in additions)}." if additions else ""
+                lines.append(f"- **{item['name']}** (v{item['version']}) - {item['description']}{suffix}")
+        else:
+            lines.append("You do not have any saved personal Packs yet.")
+        lines.append("")
+    lines.append(
+        "Organization Packs provide the protected documentation baseline. "
+        "My Packs add analysis, documents, or presentation choices without replacing that baseline."
+    )
+    return "\n".join(lines).strip(), len(items)
+
+
+async def _execute_active_project_workflows(
+    *,
+    user_id: int,
+    conversation_id: int,
+    project_scope: list[str] | None,
+    access_token: str | None,
+    provider: McpDocumentationProvider,
+) -> tuple[str, int]:
+    """Read cross-project workflow state without accepting model-owned scope."""
+
+    executor = HarnessCapabilityExecutor(
+        default_capability_registry(),
+        docs_provider=provider,
+    )
+    observation = await executor.execute(
+        CapabilityExecutionRequest(
+            capability_id=PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id,
+            arguments={},
+        ),
+        CapabilityExecutionContext(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            project_scope=project_scope,
+            access_token=access_token,
+        ),
+    )
+    if not observation.succeeded:
+        return (
+            observation.error_message
+            or "I could not check active project workflows right now.",
+            0,
+        )
+    raw_workflows = observation.data.get("workflows")
+    workflows = raw_workflows if isinstance(raw_workflows, list) else []
+    if not workflows:
+        return (
+            "No accessible project is currently onboarding, scanning, or generating documentation.",
+            0,
+        )
+    lines = ["Active project workflows:", ""]
+    for item in workflows:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "unknown")
+        display_name = str(item.get("display_name") or project_id)
+        states: list[str] = []
+        project_status = str(item.get("project_status") or "").replace("_", " ")
+        generation_status = str(item.get("generation_status") or "").replace("_", " ")
+        if project_status and project_status not in {"ready", "completed", "unknown"}:
+            states.append(f"project workflow: {project_status}")
+        if generation_status:
+            states.append(f"documentation generation: {generation_status}")
+        detail = "; ".join(states) or "active"
+        label = f"{display_name} (`{project_id}`)" if display_name != project_id else f"`{project_id}`"
+        lines.append(f"- {label}: {detail}")
+    return "\n".join(lines), len(workflows)
 
 
 async def _execute_documentation_generation_status(
@@ -2437,7 +2479,7 @@ async def _execute_documentation_generation_status(
     provider: McpDocumentationProvider | None,
 ) -> tuple[WorkflowRun, str, list[ActivityEvent]]:
     """Read MCP's run ledger and reconcile Nexus's matching workflow receipt."""
-    registry = await _project_execution_registry(db, project_id, "documentation")
+    registry = await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
         conversation_id=conversation.id,
@@ -2653,7 +2695,36 @@ async def _trigger_documentation_generation(
     decision: HarnessPlannerDecision | None = None,
     user_permissions: set[str] | None = None,
 ) -> tuple[WorkflowRun, McpDocumentationGenerationResult | None, str | None, list[ActivityEvent]]:
-    registry = await _project_execution_registry(db, project_id, "documentation")
+    provider = provider or McpDocumentationProvider()
+    registry = (
+        decision.governed_registry
+        if decision is not None and decision.governed_registry is not None
+        else await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
+    )
+    pack_selection: DocumentationPackSelection | None = None
+    pack_resolution_error: str | None = None
+    try:
+        pack_selection = await _resolve_documentation_pack_selection(
+            arguments=dict(decision.arguments or {}) if decision is not None else {},
+            query=query,
+            db=db,
+            user_id=user_id,
+            provider=provider,
+            access_token=access_token,
+        )
+        if pack_selection is not None and pack_selection.private_version_ids:
+            registry = await _project_execution_registry(
+                db,
+                project_id,
+                _DOCUMENTATION_PACK_WORKFLOW_KEY,
+                private_version_ids=pack_selection.private_version_ids,
+                owner_user_id=user_id,
+            )
+    except (McpDocumentationProviderError, PackServiceError) as exc:
+        pack_resolution_error = (
+            exc.safe_message if isinstance(exc, McpDocumentationProviderError) else str(exc)
+        )
+
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
         conversation_id=conversation.id,
@@ -2689,37 +2760,34 @@ async def _trigger_documentation_generation(
         summary=f"Using project `{project_id}`.",
         safe_details={"project_id": project_id},
     ))
-    provider = provider or McpDocumentationProvider()
-    try:
-        plugin_pack_id = await _resolve_documentation_pack_id(
-            arguments=dict(decision.arguments or {}) if decision is not None else {},
-            query=query,
-            provider=provider,
-            access_token=access_token,
-        )
-    except McpDocumentationProviderError as exc:
+    if pack_resolution_error is not None:
         failed = await HarnessWorkflowRepository(db).update_run(
             [project_id],
             run.id,
             WorkflowRunUpdate(
                 status=WorkflowRunStatus.FAILED,
-                error_message=exc.safe_message,
+                error_message=pack_resolution_error,
                 current_node="resolve_documentation_pack",
                 finished_at=datetime.datetime.now(datetime.UTC),
             ),
             owner_user_id=user_id,
         )
-        return failed, None, exc.safe_message, activities
+        return failed, None, pack_resolution_error, activities
     runtime_arguments: dict[str, Any] = {"project_id": project_id, "resume": True}
-    if plugin_pack_id is not None:
-        runtime_arguments["plugin_pack_id"] = plugin_pack_id
+    if pack_selection is not None:
+        if pack_selection.plugin_pack_id is not None:
+            runtime_arguments["plugin_pack_id"] = pack_selection.plugin_pack_id
         activities.append(await service.record_activity(
             run,
             event_type="scope.documentation_pack",
             label="Resolved documentation Pack",
             status=ActivityEventStatus.SUCCEEDED,
-            summary="Using the requested reusable documentation Pack for this run.",
-            safe_details={"plugin_pack_id": plugin_pack_id},
+            summary=f"Using `{pack_selection.name}` v{pack_selection.version} for this run.",
+            safe_details={
+                "pack_name": pack_selection.name,
+                "pack_version": pack_selection.version,
+                "pack_kind": "private" if pack_selection.private_version_ids else "organization",
+            },
         ))
     runtime_result = await default_langgraph_runtime_provider().run_turn(
         RuntimeTurnRequest(
@@ -2838,7 +2906,7 @@ async def _trigger_documentation_generation(
         runtime_thread_id=runtime_result.thread_id,
         runtime_run_id=runtime_result.runtime_run_id,
         current_node=runtime_result.current_node,
-        artifact_receipts=observation.artifact_links,
+        artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
         runtime_metadata=runtime_result.runtime_metadata,
     )
     return run, result, None, activities
@@ -2858,7 +2926,7 @@ async def resume_documentation_generation_workflow(
     """Continue one owner-authorized docs workflow after project clarification."""
     if project_scope is not None and project_id not in project_scope:
         raise ValueError("Project access required")
-    registry = await _project_execution_registry(db, project_id, "documentation")
+    registry = await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
     docs_provider = provider or McpDocumentationProvider()
     executor = HarnessCapabilityExecutor(registry, docs_provider=docs_provider)
     context = CapabilityExecutionContext(
@@ -2930,7 +2998,7 @@ async def resume_documentation_generation_workflow(
                 runtime_thread_id=runtime_result.thread_id,
                 runtime_run_id=runtime_result.runtime_run_id,
                 current_node=runtime_result.current_node,
-                artifact_receipts=observation.artifact_links,
+                artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
                 runtime_metadata=runtime_result.runtime_metadata,
             ),
             owner_user_id=user_id,
@@ -3858,11 +3926,15 @@ async def _execute_project_onboarding(
         # any workflow runs; the executor subsequently sees only the pin.
         await ProjectPackService(db, base_capability_registry()).activate(
             project_id=project_id,
-            workflow_key="documentation",
+            workflow_key=_DOCUMENTATION_PACK_WORKFLOW_KEY,
             active_pack_ids=selected_pack_ids,
             user_id=user_id,
         )
-    registry = await _project_execution_registry(db, project_id, "onboarding")
+    registry = (
+        decision.governed_registry
+        if not selected_pack_ids and decision.governed_registry is not None
+        else await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
+    )
     service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
     run = await service.start_run(
         conversation_id=conversation.id,
@@ -3873,25 +3945,38 @@ async def _execute_project_onboarding(
         input_summary=_input_summary(query),
     )
     try:
-        plugin_pack_id = await _resolve_documentation_pack_id(
+        pack_selection = await _resolve_documentation_pack_selection(
             arguments=arguments,
             query=query,
+            db=db,
+            user_id=user_id,
             provider=docs_provider,
             access_token=access_token,
         )
-    except McpDocumentationProviderError as exc:
+        plugin_pack_id = pack_selection.plugin_pack_id if pack_selection is not None else None
+        if pack_selection is not None and pack_selection.private_version_ids:
+            registry = await _project_execution_registry(
+                db,
+                project_id,
+                _DOCUMENTATION_PACK_WORKFLOW_KEY,
+                private_version_ids=pack_selection.private_version_ids,
+                owner_user_id=user_id,
+            )
+            service = HarnessWorkflowService(HarnessWorkflowRepository(db), registry)
+    except (McpDocumentationProviderError, PackServiceError) as exc:
+        message = exc.safe_message if isinstance(exc, McpDocumentationProviderError) else str(exc)
         updated = await HarnessWorkflowRepository(db).update_run(
             list(project_scope or []),
             run.id,
             WorkflowRunUpdate(
                 status=WorkflowRunStatus.FAILED,
-                error_message=exc.safe_message,
+                error_message=message,
                 current_node="resolve_documentation_pack",
                 finished_at=datetime.datetime.now(datetime.UTC),
             ),
             owner_user_id=user_id,
         )
-        return updated, exc.safe_message, []
+        return updated, message, []
     request = OnboardingRequest(
         workflow_run_id=run.id,
         project_id=project_id,
@@ -4030,7 +4115,7 @@ async def _execute_project_onboarding(
             status=WorkflowRunStatus.TRIGGERED,
             output_summary="Project onboarding started.",
             artifact_links=result.artifact_links,
-            artifact_receipts=result.artifact_links,
+            artifact_receipts=_with_pack_governance_receipt(run, result.artifact_links),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=result.thread_id,
             current_node=result.current_node,
@@ -4079,11 +4164,11 @@ async def resume_project_onboarding_workflow(
     if selected_pack_ids:
         await ProjectPackService(db, base_capability_registry()).activate(
             project_id=project_id,
-            workflow_key="documentation",
+            workflow_key=_DOCUMENTATION_PACK_WORKFLOW_KEY,
             active_pack_ids=selected_pack_ids,
             user_id=user_id,
         )
-    registry = await _project_execution_registry(db, project_id, "onboarding")
+    registry = await _project_execution_registry(db, project_id, _DOCUMENTATION_PACK_WORKFLOW_KEY)
     from src.harness.models import (
         ATTACH_GIT_SOURCE_CAPABILITY,
         ATTACH_ZIP_SOURCE_CAPABILITY,
@@ -4237,7 +4322,9 @@ async def resume_project_onboarding_workflow(
             output_summary="Project onboarding resumed." if status == WorkflowRunStatus.TRIGGERED else None,
             error_message=error,
             artifact_links=result.artifact_links,
-            artifact_receipts=[*result.artifact_links, *source_receipts],
+            artifact_receipts=_with_pack_governance_receipt(
+                run, [*result.artifact_links, *source_receipts]
+            ),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=result.thread_id,
             current_node=result.current_node,
@@ -4543,7 +4630,7 @@ async def _execute_doc_update_from_evidence(
             status=WorkflowRunStatus.SUCCEEDED,
             output_summary=observation.summary,
             artifact_links=observation.artifact_links,
-            artifact_receipts=observation.artifact_links,
+            artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=runtime_result.thread_id,
             current_node=runtime_result.current_node,
@@ -4680,7 +4767,7 @@ async def resume_documentation_update_workflow(
             status=WorkflowRunStatus.SUCCEEDED,
             output_summary=observation.summary,
             artifact_links=observation.artifact_links,
-            artifact_receipts=observation.artifact_links,
+            artifact_receipts=_with_pack_governance_receipt(run, observation.artifact_links),
             runtime_provider_id="langgraph.nexus",
             runtime_thread_id=runtime_result.thread_id,
             current_node=runtime_result.current_node,
@@ -4703,9 +4790,9 @@ async def _persist_assistant_message(
     latency_ms: int,
     workflow_run_id: int | None = None,
 ) -> MessageResponse:
-    turn_plan = (
+    last_user_row = (
         await db.execute(
-            select(ConversationMessage.turn_plan)
+            select(ConversationMessage.turn_plan, ConversationMessage.content)
             .where(
                 ConversationMessage.conversation_id == conversation.id,
                 ConversationMessage.role == "user",
@@ -4714,7 +4801,9 @@ async def _persist_assistant_message(
             .order_by(ConversationMessage.id.desc())
             .limit(1)
         )
-    ).scalar_one_or_none()
+    ).one_or_none()
+    turn_plan = last_user_row[0] if last_user_row is not None else None
+    query_text = last_user_row[1] if last_user_row is not None else None
     structured_answer = await _workflow_structured_answer(
         db=db,
         workflow_run_id=workflow_run_id,
@@ -4732,6 +4821,30 @@ async def _persist_assistant_message(
         structured_answer=structured_answer,
     )
     db.add(assistant_msg)
+
+    # Persist token usage accumulated across this turn's LLM calls (planner,
+    # runtime loop, synthesis). Turns answered without any LLM call record nothing.
+    usage = get_turn_usage()
+    if usage is not None:
+        try:
+            db.add(
+                QueryUsage(
+                    user_id=conversation.user_id,
+                    interface="conversation",
+                    query_text=query_text[:500] if query_text else None,
+                    model_name=usage.model,
+                    provider=usage.provider,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cost_usd=usage.cost_usd,
+                    latency_ms=latency_ms,
+                    llm_ms=usage.latency_ms,
+                    conversation_id=conversation.id,
+                )
+            )
+        except Exception as db_err:
+            logger.warning("Failed to persist harness chat usage: %s", db_err)
+
     await db.flush()
     return MessageResponse(
         id=assistant_msg.id,
@@ -4972,14 +5085,38 @@ async def _project_execution_registry(
     db: AsyncSession,
     project_id: str,
     workflow_key: str,
+    *,
+    private_version_ids: tuple[int, ...] | None = None,
+    owner_user_id: int | None = None,
 ):
     base = base_capability_registry()
-    compiled = await ProjectPackService(db, base).resolve_governed_for_execution(
-        project_id, workflow_key
-    )
+    pack_service = ProjectPackService(db, base)
+    compiled = await pack_service.resolve_governed_for_execution(project_id, workflow_key)
+    if compiled is None and private_version_ids is not None:
+        if owner_user_id is None:
+            raise PackServiceError("Private Analysis Pack selection has no owner context")
+        await pack_service.activate(
+            project_id=project_id,
+            workflow_key=workflow_key,
+            user_id=owner_user_id,
+        )
+        compiled = await pack_service.resolve_governed_for_execution(project_id, workflow_key)
     if compiled is None:
         return default_capability_registry()
-    return compile_governed_pack_registry(base, compiled)
+    if private_version_ids is None:
+        private_packs = await pack_service.resolve_private_analysis_for_execution(
+            project_id, workflow_key
+        )
+    else:
+        if owner_user_id is None:
+            raise PackServiceError("Private Analysis Pack selection has no owner context")
+        private_packs = await pack_service.resolve_private_analysis_versions_for_execution(
+            private_version_ids,
+            owner_user_id=owner_user_id,
+        )
+    return compile_governed_pack_registry(
+        base, compiled, tuple(item.provider_payload() for item in private_packs)
+    )
 
 
 def _artifact_links(result: McpDocumentationGenerationResult) -> list[dict[str, Any]]:
@@ -4987,6 +5124,16 @@ def _artifact_links(result: McpDocumentationGenerationResult) -> list[dict[str, 
         {"label": "Generation Status", "url": result.status_path, "kind": "status"},
         {"label": "Project Documentation", "url": result.docs_path, "kind": "documentation"},
     ]
+
+
+def _with_pack_governance_receipt(
+    run: WorkflowRun, receipts: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    result = list(receipts or [])
+    receipt = run.runtime_metadata.get("pack_governance")
+    if isinstance(receipt, dict) and not any(item.get("kind") == "pack_governance" for item in result):
+        result.append({"kind": "pack_governance", **receipt})
+    return result
 
 
 def _success_answer(
@@ -5193,7 +5340,6 @@ def _capability_fallback_answer() -> str:
 def _capability_label(decision: HarnessPlannerDecision) -> str:
     labels = {
         "generate_docs": "generate documentation",
-        "create_documentation_pack": "create a reusable documentation Pack",
         "update_docs_from_evidence": "update documentation",
         "operational_investigation": "run an operational investigation",
         "connector_inventory": "read connector metadata",
@@ -5434,6 +5580,19 @@ def _safe_details(details: dict[str, Any] | None) -> dict[str, Any]:
         else:
             safe[key] = str(value)
     return safe
+
+
+def _usage_payload(usage: UsageStats | None, latency_ms: int) -> dict[str, Any]:
+    if usage is None:
+        return _empty_usage(latency_ms)
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "model": usage.model,
+        "provider": usage.provider,
+        "cost_usd": usage.cost_usd,
+        "latency_ms": latency_ms,
+    }
 
 
 def _empty_usage(latency_ms: int) -> dict[str, Any]:

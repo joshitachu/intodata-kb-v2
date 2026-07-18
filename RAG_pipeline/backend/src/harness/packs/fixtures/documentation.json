@@ -1,9 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "nexus.documentation",
   "name": "Documentation",
   "version": "1.0.0",
   "pack_type": "documentation",
+  "governance": {
+    "phase": "foundation",
+    "owner": "intodata",
+    "authority": "intodata_certified",
+    "scope": "global",
+    "mutability": "immutable",
+    "trust": "certified",
+    "quality": {"quality_score": 0.95, "evaluation_score": 0.95}
+  },
   "includes": [],
   "documentation_provider_ref": "mcp.docs.default",
   "vocabulary": [
@@ -23,17 +32,6 @@
   ],
   "workflows": [
     {
-      "id": "documentation.manage-packs",
-      "label": "Manage documentation Packs",
-      "description": "Create reusable documentation definitions for projects and generation runs.",
-      "capability_ids": [
-        "mcp.docs.create_documentation_pack"
-      ],
-      "entity_type_ids": ["documentation.document"],
-      "connector_requirement_ids": [],
-      "artifact_template_ids": []
-    },
-    {
       "id": "documentation.generate",
       "label": "Generate documentation",
       "description": "Generate a scoped documentation set for a project.",
@@ -41,6 +39,7 @@
         "mcp.docs.generate_project_documentation",
         "mcp.docs.get_generation_status",
         "mcp.docs.list_project_docs",
+        "nexus.docs.list_documentation_packs",
         "rag.docs.search_evidence"
       ],
       "entity_type_ids": ["documentation.document"],

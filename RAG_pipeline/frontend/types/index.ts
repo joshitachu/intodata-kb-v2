@@ -596,52 +596,113 @@ export const HarnessCancelRequestSchema = z.object({
 
 export type HarnessResumeRequest = z.infer<typeof HarnessResumeRequestSchema>;
 
-// --- Harness Packs ---
+// --- Governed Harness Packs ---
 
-export const HarnessPackViewSchema = z.object({
+export const GovernedPackPhaseSchema = z.enum(["foundation", "functional", "style"]);
+export const GovernancePackSchema = z.object({
   id: z.string(),
   name: z.string(),
   version: z.string(),
-  pack_type: z.enum(["documentation", "domain"]),
+  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  pack_type: z.enum(["documentation", "domain", "style"]),
+  phase: GovernedPackPhaseSchema,
+  authority: z.string(),
+  trust: z.string(),
+  mutability: z.string(),
+  scope: z.string(),
+  owner: z.string(),
+  quality_score: z.number().min(0).max(1).nullable(),
+  evaluation_score: z.number().min(0).max(1).nullable(),
   includes: z.array(z.string()),
   workflow_labels: z.array(z.string()),
   workflow_descriptions: z.array(z.string()),
   entity_labels: z.array(z.string()),
+  domains: z.array(z.string()).optional(),
+  default_domains: z.array(z.string()).optional(),
   documentation_provider_ref: z.string().nullable(),
-  content_hash: z.string().regex(/^[a-f0-9]{64}$/),
-});
-export type HarnessPackView = z.infer<typeof HarnessPackViewSchema>;
+  blocked_override_rules: z.array(z.string()),
+}).transform(({ domains, default_domains, ...pack }) => ({
+  ...pack,
+  domains: domains ?? default_domains ?? [],
+}));
+export type GovernancePack = z.infer<typeof GovernancePackSchema>;
 
-export const HarnessPackSnapshotSchema = z.object({
+export const GovernancePolicySchema = z.object({
+  id: z.string(),
+  required_certified_pack_ids: z.array(z.string()),
+  allowed_functional_pack_ids: z.array(z.string()),
+  permitted_style: z.object({
+    permitted_fields: z.array(z.string()),
+    allowed_audiences: z.array(z.string()),
+    allowed_tones: z.array(z.string()),
+    allowed_technical_depths: z.array(z.string()),
+    allowed_output_organizations: z.array(z.string()),
+    allowed_formatting: z.array(z.string()),
+    allowed_communication: z.array(z.string()),
+  }),
+  minimum_quality: z.object({ quality_score: z.number(), evaluation_score: z.number() }),
+  protected_invariants: z.array(z.string()),
+});
+export type GovernancePolicy = z.infer<typeof GovernancePolicySchema>;
+
+export const StylePresentationSchema = z.object({
+  audience: z.enum(["executive", "business", "engineering", "operations"]).nullable().optional(),
+  tone: z.enum(["neutral", "concise", "explanatory"]).nullable().optional(),
+  technical_depth: z.enum(["summary", "standard", "deep"]).nullable().optional(),
+  output_organization: z.enum(["direct_answer", "sectioned", "incident_report"]).nullable().optional(),
+  formatting: z.array(z.enum(["markdown", "bulleted_lists", "tables", "code_blocks"])),
+  communication: z.array(z.enum(["qualify_uncertainty", "action_oriented", "include_sources"])),
+});
+export type StylePresentation = z.infer<typeof StylePresentationSchema>;
+
+export const StylePackRequestSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_.-]{6,79}$/),
+  name: z.string().trim().min(1).max(120),
+  version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/),
+  presentation: StylePresentationSchema,
+});
+export type StylePackRequest = z.infer<typeof StylePackRequestSchema>;
+
+export const StylePackSchema = z.object({
+  pack: GovernancePackSchema,
+  presentation: StylePresentationSchema,
+  project_id: z.string().nullable(),
+  owner_user_id: z.number().int(),
+  quality_score: z.number().min(0).max(1).nullable(),
+  evaluation_score: z.number().min(0).max(1).nullable(),
+  evaluation_metadata: z.record(z.unknown()).nullable(),
+  review_status: z.string(),
+  promotion_eligible: z.boolean(),
+});
+export type StylePack = z.infer<typeof StylePackSchema>;
+
+export const GovernedPackSnapshotSchema = z.object({
   active_pack_ids: z.array(z.string()),
   resolved_packs: z.array(z.object({
     id: z.string(), version: z.string(), content_hash: z.string().regex(/^[a-f0-9]{64}$/),
   })),
   snapshot_hash: z.string().regex(/^[a-f0-9]{64}$/),
 });
-export type HarnessPackSnapshot = z.infer<typeof HarnessPackSnapshotSchema>;
+export type GovernedPackSnapshot = z.infer<typeof GovernedPackSnapshotSchema>;
 
-export const HarnessPackCatalogSchema = z.object({
-  packs: z.array(HarnessPackViewSchema),
-  active: HarnessPackSnapshotSchema,
-  total: z.number(),
+export const GovernedPackSelectionSchema = z.object({
+  foundation_pack_ids: z.array(z.string()),
+  functional_pack_ids: z.array(z.string()),
+  style_pack_ids: z.array(z.string()),
 });
-export type HarnessPackCatalog = z.infer<typeof HarnessPackCatalogSchema>;
+export type GovernedPackSelection = z.infer<typeof GovernedPackSelectionSchema>;
 
-export const HarnessPackRecommendationSchema = z.object({
-  pack_id: z.string(),
-  confidence: z.number().min(0).max(1),
-  reasons: z.array(z.string()).min(1),
-});
-export type HarnessPackRecommendation = z.infer<typeof HarnessPackRecommendationSchema>;
-
-export const HarnessPackActivationSchema = z.object({
+export const GovernedPackActivationSchema = z.object({
   project_id: z.string(),
   workflow_key: z.string(),
   active_pack_ids: z.array(z.string()),
-  snapshot: HarnessPackSnapshotSchema,
+  selection: GovernedPackSelectionSchema,
+  snapshot: GovernedPackSnapshotSchema,
+  compiled_snapshot: z.record(z.unknown()),
+  presentation: StylePresentationSchema.nullable(),
+  packs: z.array(GovernancePackSchema).default([]),
 });
-export type HarnessPackActivation = z.infer<typeof HarnessPackActivationSchema>;
+export type GovernedPackActivation = z.infer<typeof GovernedPackActivationSchema>;
 
 export const DocumentationPackSchema = z.object({
   id: z.number().int().positive(),
@@ -800,3 +861,54 @@ export type {
   RuntimeAlertReadyMetadata,
   IncidentSimilarResponse,
 } from "./runtime";
+
+// --- Topology level-2 drill-down (S1 contract; schemas in ./jobGraph) ---
+
+export {
+  ComponentRoleSchema,
+  JobGraphNodeSchema,
+  JobGraphEdgeSchema,
+  TmapTablesSchema,
+  JobGraphResponseSchema,
+} from "./jobGraph";
+export type {
+  ComponentRole,
+  ParamValue,
+  JobGraphNode,
+  JobGraphEdge,
+  TmapTables,
+  JobGraphResponse,
+} from "./jobGraph";
+
+// --- Topology level-3 drill-down (S2 contract; schemas in ./componentGraph) ---
+
+export {
+  ComponentGraphTableSchema,
+  ComponentGraphEdgeSchema,
+  ComponentGraphResponseSchema,
+  ComponentGraphFallbackSchema,
+  RESOLVED_CONFIDENCE_VALUES,
+} from "./componentGraph";
+export type {
+  ComponentGraphTable,
+  ComponentGraphEdge,
+  ComponentGraphResponse,
+  ComponentGraphFallback,
+} from "./componentGraph";
+
+// --- Job detail (existing endpoint; schemas in ./jobDetail) ---
+
+export {
+  ComponentParamSchema,
+  ScanComponentSchema,
+  JobScanDataSchema,
+  JobDocSectionSchema,
+  JobDetailResponseSchema,
+} from "./jobDetail";
+export type {
+  ComponentParam,
+  ScanComponent,
+  JobScanData,
+  JobDocSection,
+  JobDetailResponse,
+} from "./jobDetail";
