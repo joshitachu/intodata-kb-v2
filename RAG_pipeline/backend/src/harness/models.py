@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.harness.evidence_policy import EvidenceSource
+from src.harness.evidence_contracts import EvidenceSource
 
 
 class HarnessProviderType(str, Enum):
@@ -26,6 +26,7 @@ class HarnessProviderType(str, Enum):
 
 class HarnessRiskTier(str, Enum):
     READ_ONLY = "read_only"
+    REVERSIBLE_WRITE = "reversible_write"
     TRIGGERS_WORKFLOW = "triggers_workflow"
     WRITES_CONTENT = "writes_content"
     EXTERNAL_SIDE_EFFECT = "external_side_effect"
@@ -89,7 +90,6 @@ class CapabilityDefinition(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     do_not_use_when: list[str] = Field(default_factory=list)
     task_types: list[str] = Field(default_factory=list)
-    planning_task_type: str | None = None
     evidence_sources: list[EvidenceSource] = Field(default_factory=list)
     output_contracts: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -171,6 +171,29 @@ class WorkflowRun(BaseModel):
     cancelled_at: datetime | None = None
     cancelled_by_user_id: int | None = None
     cancellation_reason: str | None = None
+    children: list["WorkflowChildReceipt"] = Field(default_factory=list)
+
+
+class WorkflowChildReceipt(BaseModel):
+    id: int
+    workflow_run_id: int
+    provider_id: str
+    child_kind: str
+    external_run_id: str
+    project_id: str | None = None
+    status: str
+    provider_status: str
+    version: int
+    provider_started_at: datetime | None = None
+    provider_finished_at: datetime | None = None
+    provider_timestamp: datetime | None = None
+    last_observed_at: datetime
+    last_observation_source: str
+    error_message: str | None = None
+    cancellation_state: str = "none"
+    cancellation_requested_at: datetime | None = None
+    cancellation_provider_status: str | None = None
+    cancellation_recorded_at: datetime | None = None
 
 
 class WorkflowInterruptCreate(BaseModel):
@@ -273,6 +296,224 @@ class EvidenceQueryResult(BaseModel):
     answer_draft: str | None = Field(default=None, max_length=12_000)
 
 
+_PACK_DRAFT_PATCH_PROPERTY = {
+    "type": "object",
+    "description": (
+        "Declarative Analysis Pack fields only. Prompts, tools, permissions, code, "
+        "commands, and executable workflow fields are rejected by the server."
+    ),
+}
+
+
+PACK_DRAFT_CREATE_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.create",
+    label="Create a private Analysis Pack draft",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.packs",
+    action="create_pack_draft",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": ["string", "null"], "maxLength": 160},
+            "artifact_patch": _PACK_DRAFT_PATCH_PROPERTY,
+        },
+        "additionalProperties": False,
+    },
+    output_type="pack_draft",
+    risk_tier=HarnessRiskTier.REVERSIBLE_WRITE,
+    packs=["core"],
+    task_types=["pack_draft"],
+    use_when=["The user wants to begin a new private Analysis Pack draft."],
+    do_not_use_when=[
+        "The user only asks whether Pack creation is available or how it works, without asking to start.",
+        "The user asks to list, compare, or inspect existing Packs.",
+    ],
+    metadata={
+        "bounded_loop_only": True,
+        "requires_turn_claim": True,
+        "agent_control_plane": True,
+    },
+)
+
+
+PACK_DRAFT_READ_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.read",
+    label="Read a private Analysis Pack draft",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.packs",
+    action="read_pack_draft",
+    input_schema={
+        "type": "object",
+        "required": ["draft_id"],
+        "properties": {"draft_id": {"type": "integer", "minimum": 1}},
+        "additionalProperties": False,
+    },
+    output_type="pack_draft",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core"],
+    task_types=["pack_draft"],
+    use_when=["The user returns to or asks about an exact active Pack draft."],
+    metadata={"bounded_loop_only": True, "agent_control_plane": True},
+)
+
+
+PACK_DRAFT_MUTATE_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.mutate",
+    label="Apply a structured change to a private Analysis Pack draft",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.packs",
+    action="mutate_pack_draft",
+    input_schema={
+        "type": "object",
+        "required": ["draft_id", "expected_revision", "artifact_patch"],
+        "properties": {
+            "draft_id": {"type": "integer", "minimum": 1},
+            "expected_revision": {"type": "integer", "minimum": 1},
+            "name": {"type": ["string", "null"], "maxLength": 160},
+            "artifact_patch": _PACK_DRAFT_PATCH_PROPERTY,
+        },
+        "additionalProperties": False,
+    },
+    output_type="pack_draft",
+    risk_tier=HarnessRiskTier.REVERSIBLE_WRITE,
+    packs=["core"],
+    task_types=["pack_draft"],
+    use_when=["The user supplies details or corrections for an active Pack draft."],
+    metadata={
+        "bounded_loop_only": True,
+        "requires_turn_claim": True,
+        "agent_control_plane": True,
+    },
+)
+
+
+PACK_DRAFT_VALIDATE_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.validate",
+    label="Validate a private Analysis Pack draft",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.packs",
+    action="validate_pack_draft",
+    input_schema={
+        "type": "object",
+        "required": ["draft_id", "expected_revision"],
+        "properties": {
+            "draft_id": {"type": "integer", "minimum": 1},
+            "expected_revision": {"type": "integer", "minimum": 1},
+        },
+        "additionalProperties": False,
+    },
+    output_type="pack_draft_validation",
+    risk_tier=HarnessRiskTier.REVERSIBLE_WRITE,
+    packs=["core"],
+    task_types=["pack_draft"],
+    use_when=["The user wants to check whether an exact Pack draft can be saved."],
+    metadata={
+        "bounded_loop_only": True,
+        "requires_turn_claim": True,
+        "agent_control_plane": True,
+    },
+)
+
+
+PACK_DRAFT_SAVE_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.save",
+    label="Save an immutable private Analysis Pack version",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.packs",
+    action="save_pack_draft",
+    input_schema={
+        "type": "object",
+        "required": ["draft_id", "expected_revision"],
+        "properties": {
+            "draft_id": {"type": "integer", "minimum": 1},
+            "expected_revision": {"type": "integer", "minimum": 1},
+            "pack_id": {"type": ["string", "null"], "maxLength": 80},
+        },
+        "additionalProperties": False,
+    },
+    output_type="private_pack_version",
+    risk_tier=HarnessRiskTier.WRITES_CONTENT,
+    packs=["core"],
+    task_types=["pack_draft"],
+    use_when=["The user explicitly asks to save the current valid Pack draft."],
+    metadata={
+        "bounded_loop_only": True,
+        "requires_turn_claim": True,
+        "requires_explicit_approval": True,
+        "requires_approval": True,
+        "agent_control_plane": True,
+    },
+)
+
+
+PACK_DRAFT_ABANDON_CAPABILITY = CapabilityDefinition(
+    id="nexus.packs.drafts.abandon",
+    label="Abandon a private Analysis Pack draft",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.packs",
+    action="abandon_pack_draft",
+    input_schema={
+        "type": "object",
+        "required": ["draft_id", "expected_revision"],
+        "properties": {
+            "draft_id": {"type": "integer", "minimum": 1},
+            "expected_revision": {"type": "integer", "minimum": 1},
+        },
+        "additionalProperties": False,
+    },
+    output_type="pack_draft",
+    risk_tier=HarnessRiskTier.WRITES_CONTENT,
+    packs=["core"],
+    task_types=["pack_draft"],
+    use_when=["The user explicitly asks to abandon an exact Pack draft."],
+    metadata={
+        "bounded_loop_only": True,
+        "requires_turn_claim": True,
+        "requires_explicit_approval": True,
+        "requires_approval": True,
+        "agent_control_plane": True,
+    },
+)
+
+
+ONBOARDING_RESUME_CAPABILITY = CapabilityDefinition(
+    id="nexus.workflow.resume_onboarding",
+    label="Provide corrected input to an interrupted onboarding workflow",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.harness",
+    action="resume_onboarding",
+    input_schema={
+        "type": "object",
+        "required": ["workflow_run_id", "expected_version", "inputs"],
+        "properties": {
+            "workflow_run_id": {"type": "integer", "minimum": 1},
+            "expected_version": {"type": "integer", "minimum": 1},
+            "inputs": {
+                "type": "object",
+                "properties": {
+                    "source_type": {"type": "string", "enum": ["git", "zip"]},
+                    "repo_url": {"type": "string"},
+                    "upload_receipt": {"type": "string"},
+                    "platform": {
+                        "type": "string",
+                        "enum": list(SUPPORTED_PROJECT_PLATFORMS),
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        "additionalProperties": False,
+    },
+    output_type="onboarding_workflow_receipt",
+    risk_tier=HarnessRiskTier.TRIGGERS_WORKFLOW,
+    required_permissions=["manage_projects"],
+    packs=["onboarding"],
+    task_types=["project_onboarding"],
+    use_when=["The user supplies or corrects requested input for an exact onboarding task."],
+    metadata={"bounded_loop_only": True, "requires_turn_claim": True},
+)
+
+
 PROJECT_ONBOARDING_CAPABILITY = CapabilityDefinition(
     id="nexus.workflow.onboard_project",
     label="Create a project and onboard its source",
@@ -295,6 +536,7 @@ PROJECT_ONBOARDING_CAPABILITY = CapabilityDefinition(
                 "description": "Scanner platform of the codebase, not the code host.",
             },
             "installation_id": {"type": ["integer", "null"]},
+            "upload_receipt": {"type": ["string", "null"], "minLength": 32},
             "documentation_pack": {"type": ["string", "null"]},
             "plugin_pack_id": {"type": ["integer", "null"], "minimum": 1},
         },
@@ -304,55 +546,9 @@ PROJECT_ONBOARDING_CAPABILITY = CapabilityDefinition(
     required_permissions=["manage_projects"],
     packs=["onboarding"],
     task_types=["project_onboarding"],
+    metadata={"requires_turn_claim": True},
 )
 
-
-DOCUMENTATION_PACK_CREATE_CAPABILITY = CapabilityDefinition(
-    id="mcp.docs.create_documentation_pack",
-    label="Create reusable documentation Pack",
-    provider_type=HarnessProviderType.DOCUMENTATION,
-    provider_id="mcp.docs",
-    action="create_documentation_pack",
-    input_schema={
-        "type": "object",
-        "required": ["name", "documents"],
-        "properties": {
-            "name": {"type": "string"},
-            "description": {"type": ["string", "null"]},
-            "documents": {
-                "type": "array",
-                "description": (
-                    "Documents in the Pack. Each item has name, optional sections, "
-                    "and optional writing instructions."
-                ),
-                "items": {
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": {"type": "string"},
-                        "sections": {"type": "array", "items": {"type": "string"}},
-                        "instructions": {"type": ["string", "null"]},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "additionalProperties": False,
-    },
-    output_type="documentation_pack_receipt",
-    risk_tier=HarnessRiskTier.WRITES_CONTENT,
-    required_permissions=["manage_projects"],
-    packs=["documentation"],
-    use_when=[
-        "The user explicitly asks to create and save a reusable documentation Pack.",
-    ],
-    do_not_use_when=[
-        "The user only wants to select an existing Pack for a project.",
-        "The user wants to generate documentation from an existing Pack.",
-    ],
-    task_types=["documentation_pack_creation"],
-    output_contracts=["documentation_pack_receipt"],
-)
 
 SOURCE_OPTIONS_CAPABILITY = CapabilityDefinition(
     id="mcp.projects.list_source_options",
@@ -481,6 +677,7 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
             "project_id": {"type": "string"},
             "resume": {"type": "boolean"},
             "template_profile_id": {"type": ["string", "null"]},
+            "investigation_model": {"type": ["string", "null"]},
             "model": {"type": ["string", "null"]},
             "write_model": {"type": ["string", "null"]},
             "plugin_pack_id": {"type": ["integer", "null"], "minimum": 1},
@@ -496,9 +693,49 @@ DOCUMENTATION_GENERATION_CAPABILITY = CapabilityDefinition(
     required_permissions=["manage_projects"],
     packs=["documentation"],
     use_when=["The user asks to generate or regenerate documentation."],
-    do_not_use_when=["The user asks a question about existing documentation."],
+    do_not_use_when=[
+        "The user asks a question about existing documentation.",
+        "The user asks whether or how documentation generation or Packs can be used.",
+    ],
     task_types=["document_generation"],
     output_contracts=["workflow_receipt"],
+    metadata={},
+)
+
+
+DOCUMENTATION_PACK_LIST_CAPABILITY = CapabilityDefinition(
+    id="nexus.docs.list_documentation_packs",
+    label="List available documentation Packs",
+    provider_type=HarnessProviderType.DOCUMENTATION,
+    provider_id="nexus.documentation-packs",
+    action="list_documentation_packs",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["all", "organization", "private"],
+                "description": "Which user-facing documentation Packs to list.",
+            }
+        },
+        "additionalProperties": False,
+    },
+    output_type="documentation_pack_catalog",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["documentation"],
+    use_when=[
+        "The user asks which documentation, Swap, Plugin, organization, or private Packs are available.",
+        "The user asks whether they own a private Pack.",
+    ],
+    do_not_use_when=[
+        "The user asks which tools or operational capabilities Nexus has.",
+        "The user asks to list generated documents for a project.",
+        "The user asks to generate, create, or publish project documentation.",
+        "The user asks whether they can create a Pack or asks to begin a new private Pack draft.",
+    ],
+    task_types=["documentation_pack_management"],
+    output_contracts=["documentation_pack_catalog"],
+    metadata={},
 )
 
 DOCUMENTATION_GENERATION_STATUS_CAPABILITY = CapabilityDefinition(
@@ -515,10 +752,78 @@ DOCUMENTATION_GENERATION_STATUS_CAPABILITY = CapabilityDefinition(
     output_type="documentation_generation_status",
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "documentation"],
+    use_when=[
+        "The user asks for documentation generation status for one explicitly selected project."
+    ],
+    do_not_use_when=[
+        "The user asks which accessible project has any active onboarding, scan, or documentation workflow."
+    ],
     task_types=["documentation_generation_status"],
     metadata={
         "execution_surface": "existing_mcp_generation_run_ledger",
         "authoritative_for": "documentation_generation_status",
+    },
+)
+
+WORKFLOW_CANCELLATION_CAPABILITY = CapabilityDefinition(
+    id="nexus.workflows.cancel",
+    label="Cancel an active workflow",
+    provider_type=HarnessProviderType.WORKFLOW,
+    provider_id="nexus.workflow-ledger",
+    action="cancel_workflow",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "workflow_reference": {
+                "type": ["string", "null"],
+                "description": "Authorized project or workflow reference; null means current/latest.",
+            }
+        },
+        "additionalProperties": False,
+    },
+    output_type="workflow_cancellation_outcome",
+    risk_tier=HarnessRiskTier.EXTERNAL_SIDE_EFFECT,
+    packs=["core", "documentation", "onboarding"],
+    use_when=[
+        "The user explicitly asks to cancel or stop a current workflow.",
+    ],
+    do_not_use_when=[
+        "The user only asks for workflow status or describes a historical cancellation.",
+    ],
+    task_types=["workflow_cancellation"],
+    output_contracts=["workflow_cancellation_outcome"],
+    metadata={
+        "execution_surface": "owner_scoped_workflow_resolution_and_provider_cancellation",
+    },
+)
+
+PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY = CapabilityDefinition(
+    id="mcp.projects.list_active_workflows",
+    label="List active project onboarding, scan, and documentation workflows",
+    provider_type=HarnessProviderType.SOURCE,
+    provider_id="mcp.projects",
+    action="list_active_project_workflows",
+    input_schema={
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+    output_type="active_project_workflows",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "onboarding", "documentation"],
+    use_when=[
+        "The user asks which accessible project is currently being onboarded, scanned, or having documentation generated.",
+        "The user asks for active project workflow status across projects without naming one project.",
+    ],
+    do_not_use_when=[
+        "The user asks for application runtime logs, job failures, or a time-bounded operational investigation.",
+        "The user asks for documentation generation status for one explicitly selected project.",
+    ],
+    task_types=["project_workflow_status"],
+    output_contracts=["active_project_workflows"],
+    metadata={
+        "execution_surface": "rbac_filtered_mcp_project_and_generation_ledgers",
+        "scope_authority": "server",
     },
 )
 
@@ -536,6 +841,7 @@ DOCUMENT_SEARCH_CAPABILITY = CapabilityDefinition(
             "project_id": {"type": ["string", "null"]},
             "top_k": {"type": "integer", "minimum": 1, "maximum": 50},
         },
+        "additionalProperties": False,
     },
     output_type="evidence_items",
     risk_tier=HarnessRiskTier.READ_ONLY,
@@ -548,6 +854,42 @@ DOCUMENT_SEARCH_CAPABILITY = CapabilityDefinition(
     metadata={"execution_surface": "existing_rag_retrieval"},
 )
 
+DOCUMENT_READ_CAPABILITY = CapabilityDefinition(
+    id="rag.docs.read_document",
+    label="Read relevant passages from an indexed document",
+    provider_type=HarnessProviderType.RETRIEVAL,
+    provider_id="rag.vector_db",
+    action="read_document_passages",
+    input_schema={
+        "type": "object",
+        "required": ["query", "project_id", "document_id"],
+        "properties": {
+            "query": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 255},
+            "document_id": {"type": "integer", "minimum": 1},
+            "max_chunks": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
+        "additionalProperties": False,
+    },
+    output_type="evidence_items",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "documentation"],
+    use_when=[
+        "A prior search or document list identified a document and the answer needs its relevant passages."
+    ],
+    do_not_use_when=[
+        "No authorized project and document identity is available; search or list documents first."
+    ],
+    task_types=["document_answer"],
+    evidence_sources=["indexed_documentation"],
+    output_contracts=["grounded_answer"],
+    metadata={
+        "execution_surface": "existing_rag_retrieval",
+        "evidence_output": True,
+        "bounded_loop_only": True,
+    },
+)
+
 DOCUMENT_LIST_CAPABILITY = CapabilityDefinition(
     id="mcp.docs.list_project_docs",
     label="List generated project documentation",
@@ -558,6 +900,7 @@ DOCUMENT_LIST_CAPABILITY = CapabilityDefinition(
         "type": "object",
         "required": ["project_id"],
         "properties": {"project_id": {"type": "string"}},
+        "additionalProperties": False,
     },
     output_type="evidence_items",
     risk_tier=HarnessRiskTier.READ_ONLY,
@@ -570,34 +913,125 @@ DOCUMENT_LIST_CAPABILITY = CapabilityDefinition(
     metadata={"execution_surface": "existing_mcp_docs_api"},
 )
 
-RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
-    id="runtime.tools.query_evidence",
-    label="Query runtime evidence",
-    provider_type=HarnessProviderType.RUNTIME,
-    provider_id="runtime.tool_loop",
-    action="query_runtime_evidence",
+METADATA_QUERY_CAPABILITY = CapabilityDefinition(
+    id="nexus.metadata.query",
+    label="Query authorized project and document metadata",
+    provider_type=HarnessProviderType.RETRIEVAL,
+    provider_id="nexus.metadata",
+    action="query_metadata",
     input_schema={
         "type": "object",
-        "required": ["question"],
+        "required": ["query_type"],
         "properties": {
-            "question": {"type": "string"},
+            "query_type": {
+                "type": "string",
+                "enum": [
+                    "project_list",
+                    "project_detail",
+                    "document_stats",
+                    "document_list",
+                    "system_overview",
+                    "my_profile",
+                ],
+            },
+            "project_id": {"type": ["string", "null"], "maxLength": 255},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+        "additionalProperties": False,
+    },
+    output_type="metadata_evidence",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "documentation"],
+    use_when=[
+        "The user asks which authorized projects or documents exist, their counts, or structural project details."
+    ],
+    do_not_use_when=[
+        "The request needs document content, live runtime evidence, or a state-changing action."
+    ],
+    task_types=["metadata_answer"],
+    evidence_sources=["indexed_documentation"],
+    output_contracts=["grounded_answer", "inventory"],
+    metadata={
+        "execution_surface": "existing_metadata_retriever",
+        "evidence_output": True,
+        "bounded_loop_only": True,
+    },
+)
+
+CONVERSATION_SUMMARY_FACTS_CAPABILITY = CapabilityDefinition(
+    id="nexus.conversations.read_summary_facts",
+    label="Read bounded facts from this conversation",
+    provider_type=HarnessProviderType.RETRIEVAL,
+    provider_id="nexus.conversation_state",
+    action="read_conversation_summary_facts",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "max_messages": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
+        "additionalProperties": False,
+    },
+    output_type="conversation_facts",
+    risk_tier=HarnessRiskTier.READ_ONLY,
+    packs=["core", "documentation"],
+    use_when=["The user asks to recap or summarize the current authorized conversation."],
+    do_not_use_when=["The user asks to summarize a project document or another conversation."],
+    task_types=["conversation_summary"],
+    output_contracts=["grounded_answer"],
+    metadata={
+        "execution_surface": "bounded_authorized_conversation_history",
+        "bounded_loop_only": True,
+    },
+)
+
+STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY = CapabilityDefinition(
+    id="runtime.stored.query_evidence",
+    label="Read structured runtime evidence",
+    provider_type=HarnessProviderType.RUNTIME,
+    provider_id="runtime.stored",
+    action="query_structured_runtime_evidence",
+    input_schema={
+        "type": "object",
+        "required": ["operation"],
+        "properties": {
+            "operation": {
+                "type": "string",
+                "enum": [
+                    "list_executions",
+                    "detect_failures",
+                    "list_runtime_health",
+                    "list_runtime_sync_status",
+                    "list_runtime_sources",
+                ],
+            },
             "project_id": {"type": ["string", "null"]},
-            "project_ids": {"type": ["array", "null"], "items": {"type": "string"}},
             "source_key": {"type": ["string", "null"]},
+            "job_name": {"type": ["string", "null"]},
+            "state": {
+                "type": ["string", "null"],
+                "enum": ["success", "failed", "running", "unknown", None],
+            },
             "since": {"type": ["string", "null"], "format": "date-time"},
             "until": {"type": ["string", "null"], "format": "date-time"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         },
+        "additionalProperties": False,
     },
     output_type="evidence_items",
     risk_tier=HarnessRiskTier.READ_ONLY,
     packs=["core", "operations"],
-    use_when=["The user explicitly asks about current or time-bounded runtime state, executions, or logs."],
-    do_not_use_when=["The user asks what jobs or components do according to documentation."],
+    use_when=[
+        "The user asks for scoped runtime executions, failures, health, sync status, or source inventory."
+    ],
+    do_not_use_when=["The user asks about documented design rather than observed runtime state."],
     task_types=["runtime_answer", "operational_investigation"],
-    planning_task_type="runtime_answer",
     evidence_sources=["runtime_evidence"],
     output_contracts=["runtime_answer", "runtime_ranking", "incident_report"],
-    metadata={"execution_surface": "existing_runtime_tool_loop"},
+    metadata={
+        "execution_surface": "deterministic_stored_runtime_provider",
+        "evidence_output": True,
+        "bounded_loop_only": True,
+    },
 )
 
 LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
@@ -632,7 +1066,6 @@ LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
         "The question is only about documentation or runtime inventory without log content.",
     ],
     task_types=["runtime_answer", "operational_investigation"],
-    planning_task_type="runtime_answer",
     evidence_sources=[EvidenceSource.RUNTIME_EVIDENCE],
     output_contracts=["runtime_answer", "incident_report"],
     metadata={
@@ -646,6 +1079,52 @@ LOG_SEARCH_EVIDENCE_CAPABILITY = CapabilityDefinition(
         },
     },
 )
+
+DOCUMENT_UPDATE_PROPOSAL_CAPABILITY = CapabilityDefinition(
+    id="nexus.workflow.propose_documentation_update",
+    label="Propose an evidence-backed documentation update",
+    provider_type=HarnessProviderType.DOCUMENTATION,
+    provider_id="nexus.workflow",
+    action="propose_documentation_update",
+    input_schema={
+        "type": "object",
+        "required": ["project_id", "target_doc", "evidence_refs", "evidence_text"],
+        "properties": {
+            "project_id": {"type": "string", "minLength": 1, "maxLength": 255},
+            "target_doc": {"type": "string", "minLength": 1, "maxLength": 500},
+            "evidence_refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 50,
+            },
+            "evidence_text": {"type": "string", "minLength": 1, "maxLength": 12000},
+            "section": {"type": ["string", "null"], "maxLength": 500},
+        },
+        "additionalProperties": False,
+    },
+    output_type="documentation_update_proposal",
+    risk_tier=HarnessRiskTier.TRIGGERS_WORKFLOW,
+    health=CapabilityHealth.AVAILABLE,
+    packs=["documentation"],
+    use_when=[
+        "The user wants a named project document updated from explicit evidence.",
+        "A documentation change must be proposed for user approval before publishing.",
+    ],
+    do_not_use_when=[
+        "The user only wants to read, search, or generate documentation.",
+        "The target document or supporting evidence is not known yet.",
+    ],
+    task_types=["document_update"],
+    metadata={
+        "execution_surface": "registered_conversation_task",
+        "bounded_loop_only": True,
+        "requires_turn_claim": True,
+        "requires_explicit_user_evidence": True,
+        "requires_named_target_doc": True,
+        "activity_label": "Prepare documentation update approval",
+    },
+)
+
 
 DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY = CapabilityDefinition(
     id="mcp.docs.update_from_evidence",
@@ -673,6 +1152,7 @@ DOCUMENT_UPDATE_FROM_EVIDENCE_CAPABILITY = CapabilityDefinition(
     task_types=["document_update"],
     metadata={
         "execution_surface": "mcp_evidence_doc_update",
+        "runtime_hidden": True,
         "requires_explicit_user_evidence": True,
         "requires_named_target_doc": True,
         "note": "Append-only update to a named markdown doc from explicit user-provided evidence.",
@@ -700,63 +1180,8 @@ DOCUMENT_REVERT_EVIDENCE_UPDATE_CAPABILITY = CapabilityDefinition(
     risk_tier=HarnessRiskTier.WRITES_CONTENT,
     packs=["documentation"],
     task_types=["document_update"],
-    metadata={"execution_surface": "mcp_evidence_doc_revert"},
-)
-
-EXTERNAL_CONNECTOR_READ_CAPABILITY = CapabilityDefinition(
-    id="external.connector.read_evidence",
-    label="Read evidence from an external connector",
-    provider_type=HarnessProviderType.SOURCE,
-    provider_id="external.connector_registry",
-    action="read_external_evidence",
-    input_schema={
-        "type": "object",
-        "required": ["connector_id", "query"],
-        "properties": {
-            "connector_id": {"type": "string"},
-            "query": {"type": "string"},
-            "project_id": {"type": ["string", "null"]},
-        },
-    },
-    output_type="evidence_items",
-    risk_tier=HarnessRiskTier.READ_ONLY,
-    health=CapabilityHealth.AVAILABLE,
-    packs=["connectors"],
-    task_types=["connector_evidence"],
-    evidence_sources=[EvidenceSource.CONNECTOR_EVIDENCE],
     metadata={
-        "execution_surface": "existing_runtime_source_registry",
-        "auth_required": True,
-    },
-)
-
-OPERATIONAL_INVESTIGATION_CAPABILITY = CapabilityDefinition(
-    id="nexus.workflow.operational_investigation",
-    label="Investigate operational issue",
-    provider_type=HarnessProviderType.WORKFLOW,
-    provider_id="nexus.harness",
-    action="operational_investigation",
-    input_schema={
-        "type": "object",
-        "required": ["question", "project_id"],
-        "properties": {
-            "question": {"type": "string"},
-            "project_id": {"type": "string"},
-        },
-    },
-    output_type="investigation_answer",
-    risk_tier=HarnessRiskTier.READ_ONLY,
-    packs=["core", "operations", "documentation"],
-    use_when=["The user describes a failure or symptom and asks for cause or diagnosis."],
-    do_not_use_when=["The user asks for descriptive documentation, inventory, or migration planning."],
-    task_types=["operational_investigation"],
-    evidence_sources=["indexed_documentation", "generated_documentation", "runtime_evidence", "connector_evidence"],
-    output_contracts=["incident_report"],
-    metadata={
-        "uses_capabilities": [
-            DOCUMENT_SEARCH_CAPABILITY.id,
-            DOCUMENT_LIST_CAPABILITY.id,
-            RUNTIME_EVIDENCE_CAPABILITY.id,
-        ]
+        "execution_surface": "mcp_evidence_doc_revert",
+        "runtime_hidden": True,
     },
 )

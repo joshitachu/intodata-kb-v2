@@ -1,18 +1,19 @@
 import {
-  HarnessPackActivationSchema,
-  HarnessPackCatalogSchema,
-  HarnessPackRecommendationSchema,
+  GovernedPackActivationSchema,
+  GovernancePackSchema,
+  GovernancePolicySchema,
   DocumentationPackCatalogSchema,
-  DocumentationPackSchema,
   DocumentationPackSelectionSchema,
-  CreateDocumentationPackRequestSchema,
-  type CreateDocumentationPackRequest,
+  StylePackRequestSchema,
+  StylePackSchema,
   type DocumentationPackSelection,
-  type DocumentationPack,
   type DocumentationPackCatalog,
-  type HarnessPackActivation,
-  type HarnessPackCatalog,
-  type HarnessPackRecommendation,
+  type GovernedPackActivation,
+  type GovernedPackSelection,
+  type GovernancePack,
+  type GovernancePolicy,
+  type StylePack,
+  type StylePackRequest,
 } from "@/types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -24,39 +25,66 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export async function fetchPackCatalog(projectId: string, workflowKey = "default"): Promise<HarnessPackCatalog> {
-  const query = new URLSearchParams({ project_id: projectId, workflow_key: workflowKey });
-  return HarnessPackCatalogSchema.parse(await request(`/api/harness/packs?${query.toString()}`));
+export async function fetchGovernancePolicy(): Promise<GovernancePolicy> {
+  return GovernancePolicySchema.parse(await request("/api/harness/packs/policy"));
 }
 
-export async function fetchPackRecommendations(projectId: string): Promise<HarnessPackRecommendation[]> {
-  const response = await request<{ recommendations: HarnessPackRecommendation[] }>(
-    `/api/harness/packs/projects/${encodeURIComponent(projectId)}/recommendations`,
-  );
-  return response.recommendations.map((item) => HarnessPackRecommendationSchema.parse(item));
+export async function fetchCertifiedPackLibrary(): Promise<GovernancePack[]> {
+  const response = await request<{ packs: GovernancePack[] }>("/api/harness/packs/library");
+  return response.packs.map((item) => GovernancePackSchema.parse(item));
 }
 
-export async function savePackActivation(
+export async function fetchPrivateStylePacks(): Promise<StylePack[]> {
+  return StylePackSchema.array().parse(await request("/api/harness/packs/styles/private"));
+}
+
+export async function fetchProjectStylePacks(projectId: string): Promise<StylePack[]> {
+  return StylePackSchema.array().parse(await request(`/api/harness/packs/projects/${encodeURIComponent(projectId)}/styles`));
+}
+
+export async function createPrivateStylePack(payload: StylePackRequest): Promise<StylePack> {
+  return StylePackSchema.parse(await request("/api/harness/packs/styles/private", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(StylePackRequestSchema.parse(payload)),
+  }));
+}
+
+export async function savePrivateStylePackVersion(packId: string, payload: StylePackRequest): Promise<StylePack> {
+  return StylePackSchema.parse(await request(`/api/harness/packs/styles/private/${encodeURIComponent(packId)}/versions`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(StylePackRequestSchema.parse(payload)),
+  }));
+}
+
+export async function createProjectStylePack(projectId: string, payload: StylePackRequest): Promise<StylePack> {
+  return StylePackSchema.parse(await request(`/api/harness/packs/projects/${encodeURIComponent(projectId)}/styles`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(StylePackRequestSchema.parse(payload)),
+  }));
+}
+
+export async function saveProjectStylePackVersion(projectId: string, packId: string, payload: StylePackRequest): Promise<StylePack> {
+  return StylePackSchema.parse(await request(`/api/harness/packs/projects/${encodeURIComponent(projectId)}/styles/${encodeURIComponent(packId)}/versions`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(StylePackRequestSchema.parse(payload)),
+  }));
+}
+
+export async function fetchGovernedPackActivation(
   projectId: string,
   workflowKey: string,
-  activePackIds: string[],
-): Promise<HarnessPackActivation> {
-  return HarnessPackActivationSchema.parse(await request(
+): Promise<GovernedPackActivation | null> {
+  const response = await fetch(`/api/harness/packs/projects/${encodeURIComponent(projectId)}/activations/${encodeURIComponent(workflowKey)}`, { credentials: "include" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "Pack activation could not be loaded");
+  return payload === null ? null : GovernedPackActivationSchema.parse(payload);
+}
+
+export async function saveGovernedPackActivation(
+  projectId: string,
+  workflowKey: string,
+  selection: GovernedPackSelection,
+): Promise<GovernedPackActivation> {
+  return GovernedPackActivationSchema.parse(await request(
     `/api/harness/packs/projects/${encodeURIComponent(projectId)}/activations/${encodeURIComponent(workflowKey)}`,
-    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active_pack_ids: activePackIds }) },
+    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(selection) },
   ));
-}
-
-export async function createCustomPack(projectId: string, manifest: unknown): Promise<unknown> {
-  return request(`/api/harness/packs/projects/${encodeURIComponent(projectId)}/custom`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ manifest }),
-  });
-}
-
-export async function saveCustomPackVersion(projectId: string, packId: string, manifest: unknown): Promise<unknown> {
-  return request(`/api/harness/packs/projects/${encodeURIComponent(projectId)}/custom/${encodeURIComponent(packId)}/versions`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ manifest }),
-  });
 }
 
 export async function fetchDocumentationPackSelection(projectId: string): Promise<DocumentationPackSelection> {
@@ -81,20 +109,6 @@ export async function saveDocumentationPackSelection(
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ plugin_pack_id: pluginPackId }),
-    },
-  ));
-}
-
-export async function createDocumentationPack(
-  draft: CreateDocumentationPackRequest,
-): Promise<DocumentationPack> {
-  const payload = CreateDocumentationPackRequestSchema.parse(draft);
-  return DocumentationPackSchema.parse(await request(
-    "/api/harness/packs/documentation-packs",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
     },
   ));
 }

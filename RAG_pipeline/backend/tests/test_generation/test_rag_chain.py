@@ -2,7 +2,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.generation.intent_classifier import Action, QueryAnalysis, QueryType
 from src.generation.rag_chain import run_rag_query
 from src.schemas import DocumentSource, QueryRequest, Source
 
@@ -103,14 +102,7 @@ async def test_rag_query_greeting_goes_through_search(mock_qdrant, mock_db):
     """Greetings now go through search (returns 0 results) then to no-results LLM fallback."""
     request = QueryRequest(query="hello")
 
-    search_analysis = QueryAnalysis(
-        action=Action.SEARCH,
-        query_type=QueryType.QA,
-        cleaned_query="hello",
-    )
-
     with (
-        patch("src.generation.rag_chain.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
         patch("src.generation.rag_chain.search_similar", new_callable=AsyncMock) as mock_search,
         patch("src.generation.rag_chain.generate_answer", new_callable=AsyncMock) as mock_gen,
     ):
@@ -138,29 +130,14 @@ async def test_rag_query_greeting_goes_through_search(mock_qdrant, mock_db):
     assert response.answer == "Hello! How can I help you find information today?"
 
 
-async def test_rag_query_template_intent_retrieves_template_context(mock_qdrant, mock_db):
+async def test_rag_query_does_not_keyword_select_template_context(mock_qdrant, mock_db):
     request = QueryRequest(query="Create a report outline using the template")
 
-    search_analysis = QueryAnalysis(
-        action=Action.SEARCH,
-        query_type=QueryType.QA,
-        cleaned_query="Create a report outline using the template",
-    )
-    template_source = Source(
-        document_id=9,
-        filename="report-template.docx",
-        chunk_index=0,
-        score=0.8,
-        text="Template sections: Summary, Evidence, Risks.",
-        document_role="template",
-    )
-
     with (
-        patch("src.generation.rag_chain.analyze_query_async", new_callable=AsyncMock, return_value=search_analysis),
         patch("src.generation.rag_chain.search_similar", new_callable=AsyncMock) as mock_search,
         patch("src.generation.rag_chain.generate_answer", new_callable=AsyncMock) as mock_gen,
     ):
-        mock_search.side_effect = [[], [], [template_source]]
+        mock_search.side_effect = [[], []]
         mock_gen.return_value = "Use this outline structure."
 
         response = await run_rag_query(
@@ -171,7 +148,9 @@ async def test_rag_query_template_intent_retrieves_template_context(mock_qdrant,
             db=mock_db,
         )
 
-    assert mock_search.await_count == 3
-    assert mock_search.await_args_list[2].kwargs["document_roles"] == ["template"]
-    assert len(response.sources) == 1
-    assert response.sources[0].document_role == "template"
+    assert mock_search.await_count == 2
+    assert all(
+        call.kwargs["document_roles"] != ["template"]
+        for call in mock_search.await_args_list
+    )
+    assert response.sources == []
