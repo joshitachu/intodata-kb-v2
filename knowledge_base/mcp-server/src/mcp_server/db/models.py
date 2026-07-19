@@ -237,6 +237,14 @@ class PluginPack(Base):
     repo_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     auto_update: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Governance metadata is intentionally separate from mutable manifest data.
+    # ``content_sha256`` pins the exact installed tree that was certified.
+    origin: Mapped[str] = mapped_column(String(32), default="legacy", nullable=False)
+    certification_status: Mapped[str] = mapped_column(
+        String(32), default="legacy_untrusted", nullable=False
+    )
+    certification_provenance: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class InstanceSetting(Base):

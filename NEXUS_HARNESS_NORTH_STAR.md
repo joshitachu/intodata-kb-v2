@@ -1,6 +1,6 @@
 # Nexus Harness North Star
 
-Last updated: 2026-07-11
+Last updated: 2026-07-16
 
 This file records what Nexus must ultimately become BEYOND the current 16-slice
 plan (`.plans/03_slices.md`). Completing all 16 slices delivers the V0 target of
@@ -14,12 +14,40 @@ goals can now be promoted into concrete slices.
 
 ## Current Position (for orientation)
 
-- Done: Slices 0-5 (rails: manifest, guarded executor, receipts spine,
-  LangGraph runtime boundary, docs generation through the graph).
-- Next: Slice 6 (resume/interrupts), then an explicit model-backed planner
-  slice (shadow mode), then Slices 7-16.
-- Felt agency arrives across Slice 6 -> planner -> 9 -> 10; Slice 11 is the
-  demo proof.
+- Implemented in the current branch: the Pack Governance V1 boundary, including
+  the three-layer immutable/certified/editable model, organization policy,
+  deterministic compiled snapshots, bounded Style presentation, `/pack` UI and
+  slash behavior, and trusted Pack integrity checks.
+- The harness remains beyond this milestone: model-backed planning, richer
+  interrupt/resume semantics, live connectors, entity facts, proactive
+  behavior, a second domain, and production hardening remain open.
+- Pack Governance V1 does not complete the 16-slice plan or the North Star
+  goals below.
+
+## Pack Governance V1 Boundary
+
+Foundation/Core is one mandatory immutable IntoData-certified layer. It carries
+the protected invariants for policy, permissions, safety, evidence, findings,
+and required sections. Functional/Analysis Packs are immutable certified
+modules selectable only under organization policy. Style/Presentation Packs are
+user- or project-editable bounded enum overlays.
+
+The server compiles and persists a deterministic stack snapshot with canonical
+SHA-256 Pack, policy, selection, and presentation hashes. The snapshot is part
+of the execution receipt and is rejected if its digest no longer matches.
+Style is applied only in Phase 3 presentation and never changes Phase 1/2,
+evidence, findings, permissions, safety, or required sections.
+
+Quality and evaluation scoring can mark a Style version promotion-eligible,
+but does not promote it. Certified semantic changes are promoted through
+Git/PR review. MCP Pack use requires configured trusted provenance, matching
+digest, reviewed commit, clean checkout, and re-checks that prevent source
+changes between trust evaluation and execution.
+
+The `/pack` surface supports browsing, governed stack selection, and bounded
+Style editing. `/pack list`, `/pack create`, and `/pack use <Pack> for
+<project>` are supported. Arbitrary semantic Pack creation, ZIP/local mutation,
+and direct local edits are retired.
 
 ## Goal 1 - Live External Connectors
 
@@ -122,8 +150,9 @@ cost visible.
 - Nexus does not modify application code, deploy code, or change infrastructure.
 - Nexus does not mutate external business systems.
 - Documentation writes stay versioned, evidence-backed, reversible.
-- No regex routing as the primary planner - deterministic routing may only
-  ever be a fallback.
+- No regex, keyword, mode, or deterministic fallback routing for chat intent.
+  Determinism remains only for policy, schemas, scope, workflow transitions,
+  budgets, and evidence provenance.
 - No merging of all UI surfaces before the harness model is proven.
 
 ## Review Cadence

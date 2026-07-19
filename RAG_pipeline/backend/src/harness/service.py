@@ -52,6 +52,11 @@ class HarnessWorkflowService:
     ) -> WorkflowRun:
         capability = self._capability_registry.require_available(capability_id)
         pack_snapshot = capability.metadata.get("nexus_pack_snapshot")
+        pack_governance = _pack_governance_receipt(
+            pack_snapshot,
+            capability.metadata.get("nexus_pack_presentation"),
+            capability.metadata.get("nexus_private_analysis_packs"),
+        )
         return await self._repository.create_run(
             WorkflowRunCreate(
                 conversation_id=conversation_id,
@@ -62,11 +67,10 @@ class HarnessWorkflowService:
                 provider_id=capability.provider_id,
                 status=WorkflowRunStatus.RUNNING,
                 input_summary=input_summary,
-                runtime_metadata=(
-                    {"pack_snapshot": pack_snapshot}
-                    if isinstance(pack_snapshot, dict)
-                    else {}
-                ),
+                runtime_metadata={
+                    **({"pack_snapshot": pack_snapshot} if isinstance(pack_snapshot, dict) else {}),
+                    **({"pack_governance": pack_governance} if pack_governance else {}),
+                },
             )
         )
 
@@ -93,11 +97,11 @@ class HarnessWorkflowService:
                 provider_id=run.provider_id,
                 capability_id=run.capability_id,
                 summary=_bounded(summary, _MAX_ACTIVITY_STATUS_SUMMARY),
-                safe_details=safe_details or {},
+                safe_details=_with_pack_governance(safe_details or {}, run.runtime_metadata),
                 runtime_node=_bounded(runtime_node, _MAX_RUNTIME_NODE),
                 tool_call_id=_bounded(tool_call_id, _MAX_TOOL_CALL_ID),
                 evidence_refs=evidence_refs or [],
-                artifact_receipts=artifact_receipts or [],
+                artifact_receipts=_with_pack_receipt(artifact_receipts, run.runtime_metadata),
             )
         )
 
@@ -125,8 +129,8 @@ class HarnessWorkflowService:
                 runtime_thread_id=runtime_thread_id,
                 runtime_run_id=runtime_run_id,
                 current_node=current_node,
-                artifact_receipts=artifact_receipts,
-                runtime_metadata=runtime_metadata,
+                artifact_receipts=_with_pack_receipt(artifact_receipts, run.runtime_metadata),
+                runtime_metadata=_merge_runtime_metadata(run.runtime_metadata, runtime_metadata),
             ),
         )
 
@@ -160,7 +164,7 @@ class HarnessWorkflowService:
                 runtime_run_id=runtime_run_id,
                 current_node=current_node,
                 resume_token=resume_token,
-                runtime_metadata=runtime_metadata,
+                runtime_metadata=_merge_runtime_metadata(run.runtime_metadata, runtime_metadata),
             ),
         )
         if interrupt_type is not None:
@@ -194,7 +198,7 @@ class HarnessWorkflowService:
         expected_version: int,
         response: str,
     ) -> WorkflowRun:
-        run = await self._repository.get_run([], run_id, owner_user_id=owner_user_id)
+        run = await self._repository.get_run(None, run_id, owner_user_id=owner_user_id)
         if run.user_id != owner_user_id or run.status != WorkflowRunStatus.INTERRUPTED:
             from src.harness import HarnessRunNotFoundError
 
@@ -210,11 +214,11 @@ class HarnessWorkflowService:
         metadata = dict(run.runtime_metadata)
         metadata["continuation"] = {"state": "pending", "interrupt_id": interrupt_id}
         return await self._repository.update_run(
-            [],
+            None,
             run_id,
             WorkflowRunUpdate(
                 status=WorkflowRunStatus.PENDING,
-                runtime_metadata=metadata,
+                runtime_metadata=_merge_runtime_metadata(run.runtime_metadata, metadata),
             ),
             expected_version=expected_version,
             owner_user_id=owner_user_id,
@@ -228,7 +232,7 @@ class HarnessWorkflowService:
         expected_version: int,
         reason: str | None,
     ) -> WorkflowRun:
-        run = await self._repository.get_run([], run_id, owner_user_id=owner_user_id)
+        run = await self._repository.get_run(None, run_id, owner_user_id=owner_user_id)
         if run.user_id != owner_user_id or run.status not in {
             WorkflowRunStatus.PENDING,
             WorkflowRunStatus.RUNNING,
@@ -239,7 +243,7 @@ class HarnessWorkflowService:
             raise HarnessRunNotFoundError(f"Unknown workflow_run_id: {run_id}")
         now = datetime.datetime.now(datetime.UTC)
         updated = await self._repository.update_run(
-            [],
+            None,
             run_id,
             WorkflowRunUpdate(
                 status=WorkflowRunStatus.CANCELLED,
@@ -268,6 +272,7 @@ class HarnessWorkflowService:
                 status=WorkflowRunStatus.SUCCEEDED,
                 output_summary=output_summary,
                 artifact_links=artifact_links,
+                artifact_receipts=_with_pack_receipt(None, run.runtime_metadata),
                 finished_at=datetime.datetime.now(datetime.UTC),
             ),
         )
@@ -293,7 +298,7 @@ class HarnessWorkflowService:
                 runtime_thread_id=runtime_thread_id,
                 runtime_run_id=runtime_run_id,
                 current_node=current_node,
-                runtime_metadata=runtime_metadata,
+                runtime_metadata=_merge_runtime_metadata(run.runtime_metadata, runtime_metadata),
                 finished_at=datetime.datetime.now(datetime.UTC),
             ),
         )
@@ -320,7 +325,7 @@ class HarnessWorkflowService:
                 runtime_thread_id=runtime_thread_id,
                 runtime_run_id=runtime_run_id,
                 current_node=current_node,
-                runtime_metadata=runtime_metadata,
+                runtime_metadata=_merge_runtime_metadata(run.runtime_metadata, runtime_metadata),
             ),
         )
 
@@ -338,3 +343,59 @@ def _bounded(value: str | None, limit: int) -> str | None:
     if value is None:
         return None
     return " ".join(str(value).strip().split())[:limit]
+
+
+def _pack_governance_receipt(
+    snapshot: Any,
+    presentation: Any,
+    private_analysis_packs: Any = None,
+) -> dict[str, Any] | None:
+    """Extract immutable governed provenance from compiled capability metadata."""
+    if not isinstance(snapshot, dict) or "policy_id" not in snapshot:
+        return None
+    private_receipts = [
+        item["receipt"]
+        for item in (private_analysis_packs if isinstance(private_analysis_packs, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("receipt"), dict)
+    ]
+    return {
+        "policy_id": snapshot.get("policy_id"),
+        "policy_hash": snapshot.get("policy_hash"),
+        "compiled_snapshot_hash": snapshot.get("snapshot_hash"),
+        "foundation_pack_id": snapshot.get("foundation_pack_id"),
+        "functional_pack_ids": list(snapshot.get("functional_pack_ids") or []),
+        "style_pack_ids": list(snapshot.get("style_pack_ids") or []),
+        "packs": list(snapshot.get("resolved_packs") or []),
+        "presentation": presentation if isinstance(presentation, dict) else None,
+        "private_analysis_pack_receipts": private_receipts,
+    }
+
+
+def _merge_runtime_metadata(
+    current: dict[str, Any], update: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Preserve the immutable Pack receipt across every workflow transition."""
+    merged = dict(current)
+    if update:
+        merged.update(update)
+    if "pack_governance" in current:
+        merged["pack_governance"] = current["pack_governance"]
+    if "pack_snapshot" in current:
+        merged["pack_snapshot"] = current["pack_snapshot"]
+    return merged
+
+
+def _with_pack_governance(details: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    receipt = metadata.get("pack_governance")
+    return {**details, **({"pack_governance": receipt} if isinstance(receipt, dict) else {})}
+
+
+def _with_pack_receipt(
+    receipts: list[dict[str, Any]] | None,
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    result = list(receipts or [])
+    receipt = metadata.get("pack_governance")
+    if isinstance(receipt, dict) and not any(item.get("kind") == "pack_governance" for item in result):
+        result.append({"kind": "pack_governance", **receipt})
+    return result

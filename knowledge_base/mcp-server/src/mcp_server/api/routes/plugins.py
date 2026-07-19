@@ -6,11 +6,11 @@ GET    /mcp/plugins/starter.zip                 - download local starter skeleto
 POST   /mcp/plugins/discover                    - discover valid pack branches
 POST   /mcp/plugins/branch-files                - list editable files in a branch
 POST   /mcp/plugins/branch-file                 - preview one branch file
-POST   /mcp/plugins/upload                      - upload a zip and register the pack
-POST   /mcp/plugins                             - register a pack path or Git branch
-POST   /mcp/documentation-packs                 - create a reusable documentation pack
-PATCH  /mcp/plugins/{id}                        - update auto_update flag or pull
-DELETE /mcp/plugins/{id}                        - delete pack registration
+POST   /mcp/plugins/upload                      - retired (ZIP provenance is not certifiable)
+POST   /mcp/plugins                             - register a configured Git Pack source
+POST   /mcp/documentation-packs                 - retired (use Git/PR)
+PATCH  /mcp/plugins/{id}                        - pull a certified Git Pack only
+DELETE /mcp/plugins/{id}                        - retired (Git/PR lifecycle)
 GET    /mcp/plugins/{id}/files                  - list editable files in pack
 GET    /mcp/plugins/{id}/files/{file_path}      - read a file
 PUT    /mcp/plugins/{id}/files/{file_path}      - write a file
@@ -30,10 +30,9 @@ from pathlib import Path
 from stat import S_IFLNK, S_IFMT
 from urllib.parse import urlparse
 
-import yaml
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from mcp_server.config import config
 from mcp_server.db.models import PluginPack, Project
@@ -45,6 +44,10 @@ from mcp_server.services.git_remote_service import (
     strip_url_credentials,
 )
 from mcp_server.services.plugin_schema import PluginPackManifest, load_plugin_manifest
+from mcp_server.services.pack_governance import (
+    PackGovernanceDenied,
+    pack_governance,
+)
 from mcp_server.api.permissions import require_pack_management, require_project_management
 
 logger = logging.getLogger(__name__)
@@ -62,12 +65,16 @@ class PluginPackOut(BaseModel):
     name: str
     manifest_name: str | None = None
     version: str
-    path: str
     description: str | None
     repo_url: str | None
     repo_branch: str | None = None
     last_commit_sha: str | None
     auto_update: bool
+    origin: str
+    certification_status: str
+    certification_provenance: str | None = None
+    mutable: bool
+    blocked_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -185,6 +192,42 @@ def _documentation_pack_slug(name: str) -> str:
     if not slug:
         raise HTTPException(status_code=422, detail="Pack name must contain letters or numbers.")
     return slug[:100]
+
+
+async def _plugin_pack_out(pack: PluginPack) -> PluginPackOut:
+    """Return catalog data without exposing local installation paths."""
+    decision = await pack_governance.evaluate(pack)
+    return PluginPackOut(
+        id=pack.id,
+        name=pack.name,
+        manifest_name=pack.manifest_name,
+        version=pack.version,
+        description=pack.description,
+        repo_url=strip_url_credentials(pack.repo_url) if pack.repo_url else None,
+        repo_branch=pack.repo_branch,
+        last_commit_sha=pack.last_commit_sha,
+        auto_update=pack.auto_update,
+        origin=decision.origin,
+        certification_status=(
+            "certified"
+            if decision.certified
+            else ("untrusted" if pack.certification_status == "certified" else pack.certification_status)
+        ),
+        certification_provenance=decision.provenance or pack.certification_provenance,
+        mutable=decision.mutable,
+        blocked_reason=decision.blocked_reason,
+    )
+
+
+def _governance_conflict(exc: PackGovernanceDenied) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+def _retired_mutation() -> HTTPException:
+    return HTTPException(
+        status_code=410,
+        detail="API Pack creation/import is retired. Submit Pack changes through a configured Git repository and PR.",
+    )
 
 
 def _normalized_document_definition(
@@ -361,7 +404,10 @@ async def _discover_github_pack_branches(repo_url: str) -> list[PluginPackBranch
                     f"refs/remotes/origin/{branch}:plugin.yaml",
                 )
                 manifest = _manifest_from_yaml_text(manifest_text)
+                source = pack_governance.require_configured_git_source(repo_url, branch)
             except Exception:
+                continue
+            if manifest.certification is None or manifest.certification.provenance != source.provenance:
                 continue
             branches.append(
                 PluginPackBranchOut(
@@ -443,10 +489,15 @@ async def download_starter_pack():
 
 
 @router.post("/plugins/discover", response_model=DiscoverPackBranchesOut)
-async def discover_plugin_branches(body: DiscoverPackBranchesRequest):
+async def discover_plugin_branches(body: DiscoverPackBranchesRequest, request: Request):
+    await require_pack_management(request)
     repo_url = (body.repo_url or config.swap_pack_starter_repo_url).strip()
     if not repo_url:
         raise HTTPException(status_code=422, detail="repo_url is required.")
+    try:
+        pack_governance.require_configured_git_repository(repo_url)
+    except PackGovernanceDenied as exc:
+        raise _governance_conflict(exc)
 
     branches = await _discover_github_pack_branches(repo_url)
     async with async_session_factory() as db:
@@ -466,28 +517,60 @@ async def discover_plugin_branches(body: DiscoverPackBranchesRequest):
 
 
 @router.post("/plugins/branch-files", response_model=list[str])
-async def list_plugin_branch_files(body: PreviewPackBranchFilesRequest):
+async def list_plugin_branch_files(body: PreviewPackBranchFilesRequest, request: Request):
+    await require_pack_management(request)
+    try:
+        pack_governance.require_configured_git_source(body.repo_url, body.repo_branch)
+    except PackGovernanceDenied as exc:
+        raise _governance_conflict(exc)
     with tempfile.TemporaryDirectory() as tmp_dir:
-        pack_dir, _sha = await _clone_pack_branch_to(
+        pack_dir, sha = await _clone_pack_branch_to(
             body.repo_url,
             body.repo_branch,
             Path(tmp_dir) / "pack",
         )
         try:
-            load_plugin_manifest(pack_dir)
+            manifest = load_plugin_manifest(pack_dir)
+            await pack_governance.certify_new_git_pack(
+                repo_url=body.repo_url,
+                repo_branch=body.repo_branch,
+                pack_dir=pack_dir,
+                commit_sha=sha,
+                manifest=manifest,
+            )
+        except PackGovernanceDenied as exc:
+            raise _governance_conflict(exc)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=f"Invalid plugin pack: {exc}")
         return _list_editable_pack_files(pack_dir)
 
 
 @router.post("/plugins/branch-file", response_model=FileContentOut)
-async def read_plugin_branch_file(body: PreviewPackBranchFileRequest):
+async def read_plugin_branch_file(body: PreviewPackBranchFileRequest, request: Request):
+    await require_pack_management(request)
+    try:
+        pack_governance.require_configured_git_source(body.repo_url, body.repo_branch)
+    except PackGovernanceDenied as exc:
+        raise _governance_conflict(exc)
     with tempfile.TemporaryDirectory() as tmp_dir:
-        pack_dir, _sha = await _clone_pack_branch_to(
+        pack_dir, sha = await _clone_pack_branch_to(
             body.repo_url,
             body.repo_branch,
             Path(tmp_dir) / "pack",
         )
+        try:
+            manifest = load_plugin_manifest(pack_dir)
+            await pack_governance.certify_new_git_pack(
+                repo_url=body.repo_url,
+                repo_branch=body.repo_branch,
+                pack_dir=pack_dir,
+                commit_sha=sha,
+                manifest=manifest,
+            )
+        except PackGovernanceDenied as exc:
+            raise _governance_conflict(exc)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid plugin pack: {exc}")
         target = _resolve_pack_file(str(pack_dir), body.file_path)
         if not target.exists():
             raise HTTPException(status_code=404, detail=f"File not found: {body.file_path}")
@@ -508,191 +591,54 @@ async def read_plugin_branch_file(body: PreviewPackBranchFileRequest):
     status_code=201,
 )
 async def create_documentation_pack(
-    body: CreateDocumentationPackRequest,
     request: Request,
 ):
-    """Create a reusable local IntoDoc documentation Pack."""
+    """Retired: Foundation/Functional Packs are certified through Git/PR."""
     await require_pack_management(request)
-    slug = _documentation_pack_slug(body.name)
-    pack_root = config.data_dir / "plugin_packs"
-    destination = pack_root / slug
-    if destination.exists():
-        raise HTTPException(status_code=409, detail="A documentation Pack with this name already exists.")
-
-    documents: list[dict[str, object]] = []
-    prompts: dict[str, str] = {}
-    seen_names: set[str] = set()
-    for requested_document in body.documents:
-        definition, instructions = _normalized_document_definition(requested_document)
-        document_name = str(definition["name"])
-        if document_name in seen_names:
-            raise HTTPException(status_code=422, detail=f"Duplicate document name: {document_name}")
-        seen_names.add(document_name)
-        documents.append(definition)
-        if instructions:
-            prompts[document_name] = instructions
-
-    manifest = {
-        "name": body.name.strip(),
-        "version": "1.0.0",
-        "description": (body.description or "").strip(),
-        "docs": documents,
-        "steps": [{"id": "generate-docs", "type": "harness"}],
-    }
-
-    pack_root.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix=f".{slug}-", dir=pack_root))
-    try:
-        (temporary / "plugin.yaml").write_text(
-            yaml.safe_dump(manifest, sort_keys=False, allow_unicode=False),
-            encoding="utf-8",
-        )
-        for document_name, instructions in prompts.items():
-            prompt_path = temporary / "prompts" / "docs" / f"{document_name}.md"
-            prompt_path.parent.mkdir(parents=True, exist_ok=True)
-            prompt_path.write_text(instructions.rstrip() + "\n", encoding="utf-8")
-        validated = load_plugin_manifest(temporary)
-        temporary.replace(destination)
-    except HTTPException:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    except Exception as exc:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise HTTPException(status_code=422, detail=f"Invalid documentation Pack: {exc}") from exc
-
-    try:
-        async with async_session_factory() as db:
-            existing = (
-                await db.execute(select(PluginPack).where(PluginPack.name == validated.name))
-            ).scalar_one_or_none()
-            if existing is not None:
-                raise HTTPException(status_code=409, detail="A documentation Pack with this name already exists.")
-            pack = PluginPack(
-                name=validated.name,
-                manifest_name=validated.name,
-                version=validated.version,
-                path=str(destination),
-                description=validated.description or None,
-                repo_url=None,
-                repo_branch=None,
-                last_commit_sha=None,
-                auto_update=False,
-            )
-            db.add(pack)
-            await db.commit()
-            await db.refresh(pack)
-            return PluginPackOut.model_validate(pack)
-    except HTTPException:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise
-    except Exception:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise
+    raise _retired_mutation()
 
 
 @router.post("/plugins/upload", response_model=PluginPackOut, status_code=201)
-async def upload_plugin(file: UploadFile = File(...)):
-    """Accept a .zip upload, validate it, extract it, and register the pack."""
-    if not (file.filename or "").lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only .zip files are accepted.")
-
-    data = await file.read()
-    if len(data) > _ZIP_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="Zip file exceeds 10 MB limit.")
-
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Not a valid zip file.")
-
-    _validate_zip_members(zf)
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        zf.extractall(tmp_dir)
-
-        tmp_path = Path(tmp_dir)
-        top_level = list(tmp_path.iterdir())
-        extract_dir = top_level[0] if len(top_level) == 1 and top_level[0].is_dir() else tmp_path
-
-        try:
-            manifest = load_plugin_manifest(extract_dir)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid plugin pack: {exc}")
-
-        dest = config.data_dir / "plugin_packs" / manifest.name
-        if dest.exists():
-            shutil.rmtree(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(extract_dir, dest)
-
-    async with async_session_factory() as db:
-        existing = (
-            await db.execute(select(PluginPack).where(PluginPack.name == manifest.name))
-        ).scalar_one_or_none()
-        if existing:
-            existing.manifest_name = manifest.name
-            existing.version = manifest.version
-            existing.path = str(dest)
-            existing.description = manifest.description or None
-            existing.repo_url = None
-            existing.repo_branch = None
-            existing.last_commit_sha = None
-            await db.commit()
-            await db.refresh(existing)
-            return PluginPackOut.model_validate(existing)
-
-        pack = PluginPack(
-            name=manifest.name,
-            manifest_name=manifest.name,
-            version=manifest.version,
-            path=str(dest),
-            description=manifest.description or None,
-            repo_url=None,
-            repo_branch=None,
-            last_commit_sha=None,
-            auto_update=False,
-        )
-        db.add(pack)
-        await db.commit()
-        await db.refresh(pack)
-        return PluginPackOut.model_validate(pack)
+async def upload_plugin(request: Request):
+    """Retired: ZIP imports cannot establish governed Pack provenance."""
+    await require_pack_management(request)
+    raise _retired_mutation()
 
 
 @router.get("/plugins", response_model=list[PluginPackOut])
 async def list_plugins():
     async with async_session_factory() as db:
         rows = (await db.execute(select(PluginPack).order_by(PluginPack.name))).scalars().all()
-        return [PluginPackOut.model_validate(r) for r in rows]
+        return [await _plugin_pack_out(r) for r in rows]
 
 
 @router.post("/plugins", response_model=PluginPackOut, status_code=201)
-async def register_plugin(body: RegisterPackRequest):
-    if not body.path and not body.repo_url:
-        raise HTTPException(status_code=422, detail="Provide either 'path' or 'repo_url'.")
+async def register_plugin(body: RegisterPackRequest, request: Request):
+    await require_pack_management(request)
+    if body.path:
+        raise HTTPException(status_code=403, detail="Local Pack registration is prohibited. Submit Pack changes through Git/PR.")
+    if not body.repo_url:
+        raise HTTPException(status_code=422, detail="A configured trusted Git repository is required.")
 
     repo_url: str | None = None
     repo_branch: str | None = None
     last_commit_sha: str | None = None
 
-    if body.repo_url:
-        repo_url = strip_url_credentials(body.repo_url.strip()) or body.repo_url.strip()
-        repo_branch = (body.repo_branch or "main").strip() or "main"
-        async with async_session_factory() as db:
-            packs = (
-                await db.execute(select(PluginPack).where(PluginPack.repo_url.isnot(None)))
-            ).scalars().all()
-            existing = _registered_pack_for_branch(packs, repo_url, repo_branch)
-            if existing:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Branch '{repo_branch}' is already registered "
-                        f"as pack id={existing.id}."
-                    ),
-                )
+    repo_url = strip_url_credentials(body.repo_url.strip()) or body.repo_url.strip()
+    repo_branch = (body.repo_branch or "main").strip() or "main"
+    try:
+        pack_governance.require_configured_git_source(repo_url, repo_branch)
+    except PackGovernanceDenied as exc:
+        raise _governance_conflict(exc)
+    async with async_session_factory() as db:
+        packs = (await db.execute(select(PluginPack).where(PluginPack.repo_url.isnot(None)))).scalars().all()
+        existing = _registered_pack_for_branch(packs, repo_url, repo_branch)
+        if existing:
+            raise HTTPException(status_code=409, detail=f"Branch '{repo_branch}' is already registered as pack id={existing.id}.")
+    try:
         pack_dir, last_commit_sha = await _clone_pack(repo_url, repo_branch)
-    else:
-        pack_dir = Path(body.path)  # type: ignore[arg-type]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not clone trusted Pack source: {exc}") from exc
 
     if not pack_dir.exists():
         raise HTTPException(status_code=404, detail=f"Pack directory not found: {pack_dir}")
@@ -701,6 +647,18 @@ async def register_plugin(body: RegisterPackRequest):
         manifest = load_plugin_manifest(pack_dir)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid plugin pack: {exc}")
+
+    try:
+        decision = await pack_governance.certify_new_git_pack(
+            repo_url=repo_url,
+            repo_branch=repo_branch,
+            pack_dir=pack_dir,
+            commit_sha=last_commit_sha,
+            manifest=manifest,
+        )
+    except PackGovernanceDenied as exc:
+        shutil.rmtree(pack_dir, ignore_errors=True)
+        raise _governance_conflict(exc)
 
     registry_name = _pack_registry_name(repo_url, repo_branch, manifest.name)
 
@@ -726,21 +684,31 @@ async def register_plugin(body: RegisterPackRequest):
             repo_branch=repo_branch,
             last_commit_sha=last_commit_sha,
             auto_update=bool(repo_url),
+            origin=decision.origin,
+            certification_status="certified",
+            certification_provenance=decision.provenance,
+            content_sha256=decision.content_sha256,
         )
         db.add(pack)
         await db.commit()
         await db.refresh(pack)
-        return PluginPackOut.model_validate(pack)
+        return await _plugin_pack_out(pack)
 
 
 @router.patch("/plugins/{pack_id}", response_model=PluginPackOut)
-async def update_plugin(pack_id: int, body: PatchPackRequest):
+async def update_plugin(pack_id: int, body: PatchPackRequest, request: Request):
+    await require_pack_management(request)
     async with async_session_factory() as db:
         pack = (
             await db.execute(select(PluginPack).where(PluginPack.id == pack_id))
         ).scalar_one_or_none()
         if not pack:
             raise HTTPException(status_code=404, detail="Plugin pack not found.")
+
+        try:
+            await pack_governance.require_generation_authority(pack)
+        except PackGovernanceDenied as exc:
+            raise _governance_conflict(exc)
 
         if body.auto_update is not None:
             pack.auto_update = body.auto_update
@@ -758,31 +726,31 @@ async def update_plugin(pack_id: int, body: PatchPackRequest):
                 pack.manifest_name = manifest.name
                 pack.version = manifest.version
                 pack.description = manifest.description or None
+                decision = await pack_governance.certify_new_git_pack(
+                    repo_url=pack.repo_url,
+                    repo_branch=pack.repo_branch or "main",
+                    pack_dir=Path(pack.path),
+                    commit_sha=new_sha,
+                    manifest=manifest,
+                )
+                pack.origin = decision.origin
+                pack.certification_status = "certified"
+                pack.certification_provenance = decision.provenance
+                pack.content_sha256 = decision.content_sha256
             except Exception as exc:
+                if isinstance(exc, PackGovernanceDenied):
+                    raise _governance_conflict(exc) from exc
                 raise HTTPException(status_code=500, detail=f"git pull failed: {exc}")
 
         await db.commit()
         await db.refresh(pack)
-        return PluginPackOut.model_validate(pack)
+        return await _plugin_pack_out(pack)
 
 
 @router.delete("/plugins/{pack_id}", status_code=204)
-async def delete_plugin(pack_id: int):
-    """Unassign pack from all projects and remove DB registration. Files stay on disk."""
-    async with async_session_factory() as db:
-        pack = (
-            await db.execute(select(PluginPack).where(PluginPack.id == pack_id))
-        ).scalar_one_or_none()
-        if not pack:
-            raise HTTPException(status_code=404, detail="Plugin pack not found.")
-
-        await db.execute(
-            update(Project)
-            .where(Project.plugin_pack_id == pack_id)
-            .values(plugin_pack_id=None)
-        )
-        await db.delete(pack)
-        await db.commit()
+async def delete_plugin(pack_id: int, request: Request):
+    await require_pack_management(request)
+    raise HTTPException(status_code=410, detail="Pack deregistration is retired. Manage certified Pack lifecycle through Git/PR deployment.")
 
 
 @router.get("/plugins/{pack_id}/files", response_model=list[str])
@@ -819,13 +787,18 @@ async def read_plugin_file(pack_id: int, file_path: str):
 
 
 @router.put("/plugins/{pack_id}/files/{file_path:path}", response_model=FileContentOut)
-async def save_plugin_file(pack_id: int, file_path: str, body: SaveFileRequest):
+async def save_plugin_file(pack_id: int, file_path: str, body: SaveFileRequest, request: Request):
+    await require_pack_management(request)
     async with async_session_factory() as db:
         pack = (
             await db.execute(select(PluginPack).where(PluginPack.id == pack_id))
         ).scalar_one_or_none()
     if not pack:
         raise HTTPException(status_code=404, detail="Plugin pack not found.")
+
+    decision = await pack_governance.evaluate(pack)
+    if decision.certified:
+        raise HTTPException(status_code=403, detail="Certified Pack content is immutable in Nexus. Submit changes through Git/PR.")
 
     target = _resolve_pack_file(pack.path, file_path)
 
@@ -847,6 +820,15 @@ async def save_plugin_file(pack_id: int, file_path: str, body: SaveFileRequest):
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body.content, encoding="utf-8")
+
+    async with async_session_factory() as db:
+        pack_row = (await db.execute(select(PluginPack).where(PluginPack.id == pack_id))).scalar_one_or_none()
+        if pack_row:
+            pack_row.origin = "edited"
+            pack_row.certification_status = "untrusted"
+            pack_row.certification_provenance = None
+            pack_row.content_sha256 = None
+            await db.commit()
 
     if target.name == "plugin.yaml":
         async with async_session_factory() as db:
@@ -882,6 +864,10 @@ async def assign_plugin_to_project(project_id: str, body: AssignPluginRequest, r
             ).scalar_one_or_none()
             if not pack:
                 raise HTTPException(status_code=404, detail="Plugin pack not found.")
+            try:
+                await pack_governance.require_generation_authority(pack)
+            except PackGovernanceDenied as exc:
+                raise _governance_conflict(exc)
 
         project.plugin_pack_id = body.plugin_pack_id
         await db.commit()

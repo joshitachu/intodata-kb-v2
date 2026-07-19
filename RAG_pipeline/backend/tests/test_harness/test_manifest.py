@@ -8,11 +8,11 @@ from src.harness.models import (
     HarnessProviderType,
     HarnessRiskTier,
 )
-from src.harness.registry import CapabilityRegistry
+from src.harness.registry import CapabilityCatalog
 
 
 def test_runtime_manifest_hides_provider_metadata_and_raw_config() -> None:
-    registry = CapabilityRegistry([
+    registry = CapabilityCatalog([
         CapabilityDefinition(
             id="connector.secret.search",
             label="Search external system",
@@ -47,7 +47,7 @@ def test_runtime_manifest_hides_provider_metadata_and_raw_config() -> None:
 
 
 def test_runtime_manifest_filters_unavailable_pack_and_permission_mismatch() -> None:
-    registry = CapabilityRegistry([
+    registry = CapabilityCatalog([
         CapabilityDefinition(
             id="docs.generate",
             label="Generate docs",

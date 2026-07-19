@@ -158,24 +158,21 @@ Slack: 6 related messages found
 
 The UI should show what Nexus did, what systems it touched, and what evidence it used. It should not expose hidden model reasoning, raw internal prompts, or every low-level API payload.
 
-## Internal Modes
+## One Agent Loop
 
-Nexus should have internal modes even if users do not manually select them.
+Nexus has one conversation agent, not internal routing modes. For every turn it
+reads Conversation State and Workflow Ledger projections, sees the scoped
+Capability Manifest, and chooses exactly one boundary action: answer, clarify,
+or call one capability. A typed observation is returned to the same loop.
 
-Initial modes:
+Search, metadata, runtime evidence, documentation generation, Pack drafting,
+project onboarding, cancellation, and status are capabilities. RAG is a
+retrieval capability rather than a separate chatbot pipeline.
 
-- `answer`
-- `investigate`
-- `generate_docs`
-- `update_docs`
-- `publish_docs`
-- `compare_docs_to_runtime`
-- `onboard_project`
-- `maintenance`
-
-The intent classifier should choose a mode based on the user message, current scope, available capabilities, and confidence.
-
-This should not become regex routing or a fixed pipeline. The classifier gates clarification and workflow selection, not a hardcoded sequence like "scanner, then topology, then RAG."
+The model decides what to do. The registry describes what is possible. Policy
+decides what is allowed. The Workflow Ledger records what happened. Keywords,
+regexes, modes, capability-ID switches, and frontend guesses never select a
+chat execution path.
 
 ## Scope And Clarification
 
@@ -376,6 +373,49 @@ For IntoData, the initial domain pack would likely include:
 - operational investigation workflows
 - evidence rules for source, logs, runtime data, and generated docs
 - connector preferences for the configured Nexus environment
+
+## Pack Governance V1
+
+Pack Governance V1 is now the implemented boundary for governed generation. A
+compiled stack has three ordered layers:
+
+1. **Foundation/Core**: one mandatory, immutable, IntoData-certified base. It
+   owns the protected execution, evidence, policy, permission, safety, and
+   required-output invariants.
+2. **Functional/Analysis**: immutable, certified, organization-approved
+   modules. They are selectable only when allowed by organization policy and
+   may add domain analysis without weakening the Foundation.
+3. **Style/Presentation**: user- or project-owned editable overlays. They use
+   bounded enums for audience, tone, technical depth, organization, formatting,
+   and communication.
+
+Organization policy is mandatory. It names required certified Packs, allowed
+Functional modules, permitted Style values, minimum quality/evaluation
+thresholds, and protected invariants. Lower layers cannot replace higher-layer
+semantics. Style Packs are presentation-only: they are applied at Phase 3
+rendering and cannot change Phase 1 or Phase 2 analysis, evidence, findings,
+permissions, safety gates, or required sections.
+
+Compilation resolves the selected Packs, validates dependencies and policy,
+and emits a deterministic compiled stack/snapshot. Canonical content, policy,
+selection, presentation, and Pack identities are hashed with SHA-256. The
+snapshot hash is persisted with the activation and carried into execution
+receipts; the execution contract rejects a mismatched snapshot hash.
+
+Quality and evaluation scores determine whether an editable Style version is
+promotion-eligible. Eligibility is not promotion: actual promotion of
+semantic or certified content happens through Git and PR review. Trusted MCP
+sources must match configured provenance and refs; Git Packs pin a reviewed
+commit, require a clean checkout, and are checked for content digest changes
+before use. These checks close the source, digest, commit, and TOCTOU paths.
+
+The `/pack` workspace exposes the certified read-only library, organization
+policy, stack selection, activation snapshot, and Style editor. `/pack list`
+opens the workspace; `/pack create` opens the Style editor; `/pack use <Pack>
+for <project>` opens a project stack. Arbitrary semantic Pack creation, ZIP
+creation/import as a mutation path, and local Pack mutation are retired; Pack
+changes proceed through file/Git-backed review and PR certification. Existing
+documentation Pack selection remains available as a governed catalog concern.
 
 ## Entities
 
@@ -694,3 +734,18 @@ These are not blockers for the vision, but they must be answered before implemen
 - How are entity facts expired or revalidated?
 - How does the classifier estimate confidence?
 - What cost/token controls exist for long-running workflows?
+
+## Pack Draft Builder V3
+
+Private Analysis Packs are conversation-scoped drafts that can be created and
+saved without a project. Their V3 artifact is declarative and additive:
+purpose, analyses, evidence, ordered outputs, scoring, compatibility,
+capability references, and a custom audience profile. Raw audience wording is
+audit/display data; only bounded normalized render dimensions may reach model
+or MCP rendering boundaries.
+
+Certified Foundation and organization policy remain immutable. A private Pack
+cannot grant capabilities or weaken baseline analysis, evidence, findings,
+sections, permissions, safety, or quality gates. Project scope is required for
+compatibility, preview, sharing, activation, or execution. Activation records
+the exact private version/hash beside the governed stack receipt.
