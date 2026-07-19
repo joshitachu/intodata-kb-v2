@@ -21,16 +21,6 @@ async def build_request_capability_registry(
 ) -> CapabilityRegistry:
     registry = default_capability_registry()
     providers = default_connector_provider_registry()
-    connector_base = next(
-        (
-            capability
-            for capability in registry.list(enabled_only=False)
-            if capability.id == "external.connector.read_evidence"
-        ),
-        None,
-    )
-    if connector_base is None:
-        return registry
     rows = await repository.list_eligible_bindings(project_ids)
     for binding in rows:
         instance = binding.connector_instance
@@ -41,7 +31,7 @@ async def build_request_capability_registry(
             continue
         runtime_id = connector_runtime_capability_id(instance.id, binding.capability_id)
         registry.register(
-            CapabilityDefinition(
+            capability := CapabilityDefinition(
                 id=runtime_id,
                 label=f"{configured.label}: {instance.name}",
                 provider_type=HarnessProviderType.SOURCE,
@@ -54,16 +44,24 @@ async def build_request_capability_registry(
                 task_types=["connector_evidence"],
                 evidence_sources=[EvidenceSource.CONNECTOR_EVIDENCE],
                 metadata={
-                    **connector_base.metadata,
+                    "execution_surface": "request_bound_connector",
+                    "auth_required": True,
                     "connector_instance_id": instance.id,
                     "connector_capability_id": binding.capability_id,
                     "connector_domain_required": bool(binding.domains),
                     "activity_label": configured.activity_label,
                     "evidence_output": True,
                 },
-            )
+            ),
+            _bound_connector_handler(capability),
         )
     return registry
+
+
+def _bound_connector_handler(capability: CapabilityDefinition):  # noqa: ANN202
+    from src.harness.capability_handlers import BoundConnectorEvidenceHandler
+
+    return BoundConnectorEvidenceHandler(capability)
 
 
 def connector_runtime_capability_id(instance_id: int, capability_id: str) -> str:

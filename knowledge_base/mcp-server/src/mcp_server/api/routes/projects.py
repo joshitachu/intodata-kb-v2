@@ -15,6 +15,7 @@ import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,11 @@ from mcp_server.api.permissions import require_project_access
 from mcp_server.config import config
 from mcp_server.repositories.doc_rag_hash_repository import DocRagHashRepository
 from mcp_server.db.session import async_session_factory
-from mcp_server.db.models import GenerateRun, Project
+from mcp_server.db.models import GenerateRun, PluginPack, Project
 from mcp_server.schemas import (
     AddRepoRequest,
     AssessmentGenerateResponse,
+    ComponentGraphResponse,
     DeepDiveProject,
     DeepDiveProjectsResponse,
     DeepDiveRequest,
@@ -62,9 +64,15 @@ from mcp_server.schemas import (
     GraphConnectionInfo,
     JobDetailResponse,
     JobDocSection,
+    JobGraphResponse,
     JobScanMetadata,
+    LineageFieldResponse,
     LogFileListResponse,
     LogFileResponse,
+    NexusPackSnapshot,
+    NexusPrivateAnalysisPack,
+    NexusPrivatePackReceipt,
+    NexusPresentation,
     PdfGenerateResponse,
     ProjectGraphResponse,
     ProjectListResponse,
@@ -93,6 +101,7 @@ from mcp_server.services.evidence_doc_update import EvidenceDocUpdateError, Evid
 from mcp_server.services.evidence_doc_revert import EvidenceDocRevertService
 from mcp_server.services.reingestion_gate import GateOutcome
 from mcp_server.services.claude_service import DocGenerationCoordinator
+from mcp_server.services.pack_governance import PackGovernanceDenied, pack_governance
 from mcp_server.services.deep_dive_service import DeepDiveService
 from mcp_server.services.auto_doc_update import AutoDocUpdateService
 from mcp_server.services.git_remote_service import (
@@ -106,7 +115,17 @@ from mcp_server.services.git_remote_service import (
     run_git,
     strip_url_credentials,
 )
+from mcp_server.services.component_graph_service import (
+    build_component_graph,
+    component_exists,
+    is_tmap_component,
+)
 from mcp_server.services.git_reingestion import run_git_reingestion
+from mcp_server.services.component_description_service import (
+    parse_component_descriptions,
+)
+from mcp_server.services.job_graph_service import build_job_graph
+from mcp_server.services.lineage_service import LineageDataUnavailableError, build_field_lineage
 from mcp_server.services.pack_loader import PackLoader
 from mcp_server.services.project_registry import ProjectRegistry
 from mcp_server.services.project_paths import repair_project_repo_path
@@ -787,6 +806,21 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
                 status_code=409,
                 detail=f"Generation is already running for project {req.project_id!r}.",
             )
+        effective_pack_id = (
+            req.plugin_pack_id
+            if req.plugin_pack_id is not None
+            else project.plugin_pack_id
+        )
+        if effective_pack_id is not None:
+            pack = (
+                await db.execute(select(PluginPack).where(PluginPack.id == effective_pack_id))
+            ).scalar_one_or_none()
+            if not pack:
+                raise HTTPException(status_code=409, detail="Selected Pack is no longer registered. Select a certified Pack through Git/PR.")
+            try:
+                await pack_governance.require_generation_authority(pack)
+            except PackGovernanceDenied as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         await registry.update_status(req.project_id, "generating")
         run = await registry.create_generate_run(req.project_id, triggered_by="api")
         await db.commit()
@@ -799,6 +833,15 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
         model=req.model,
         write_model=req.write_model,
         plugin_pack_id=req.plugin_pack_id,
+        nexus_pack_ids=req.nexus_pack_ids,
+        nexus_pack_snapshot=req.nexus_pack_snapshot,
+        nexus_presentation=req.nexus_presentation,
+        nexus_audience_render=(
+            req.nexus_audience_render.model_dump(mode="json", exclude_none=True)
+            if req.nexus_audience_render is not None else None
+        ),
+        nexus_private_pack_receipts=req.nexus_private_pack_receipts,
+        nexus_private_analysis_packs=req.nexus_private_analysis_packs,
         resume=req.resume,
         run_id_for_lock=run_id,
         doc_generation_provider=project.doc_generation_provider,
@@ -808,6 +851,7 @@ async def generate_docs(req: GenerateRequest, request: Request, background_tasks
     return StatusResponse(
         status="generation_triggered",
         message=f"Doc generation started for {req.project_id}",
+        run_id=run_id,
     )
 
 
@@ -1522,6 +1566,12 @@ async def _run_generate_background(
     model: str | None = None,
     write_model: str | None = None,
     plugin_pack_id: int | None = None,
+    nexus_pack_ids: list[str] | None = None,
+    nexus_pack_snapshot: NexusPackSnapshot | None = None,
+    nexus_presentation: NexusPresentation | None = None,
+    nexus_audience_render: dict[str, str] | None = None,
+    nexus_private_pack_receipts: list[NexusPrivatePackReceipt] | None = None,
+    nexus_private_analysis_packs: list[NexusPrivateAnalysisPack] | None = None,
     resume: bool = True,
     run_id_for_lock: int | None = None,
     doc_generation_provider: str | None = None,
@@ -1555,6 +1605,12 @@ async def _run_generate_background(
         result = await claude.generate_docs(
             project_id, investigation_model=investigation_model, model=model,
             write_model=write_model, plugin_pack_id=plugin_pack_id,
+            nexus_pack_ids=nexus_pack_ids,
+            nexus_pack_snapshot=nexus_pack_snapshot,
+            nexus_presentation=nexus_presentation,
+            nexus_audience_render=nexus_audience_render,
+            nexus_private_pack_receipts=nexus_private_pack_receipts,
+            nexus_private_analysis_packs=nexus_private_analysis_packs,
             resume=resume, run_id=run_id_for_lock or run_id,
             doc_generation_provider=doc_generation_provider,
             instruction_pack_dir=instruction_pack_dir,
@@ -3193,12 +3249,14 @@ async def get_project_graph(project_id: str, request: Request):
     )
 
 
-@router.get("/projects/{project_id}/jobs/{job_name}/detail", response_model=JobDetailResponse)
-async def get_job_detail(project_id: str, job_name: str, request: Request):
-    """Return full scan data and relevant doc sections for a specific job."""
-    await require_project_access(request, project_id)
+def _load_job_scan(project_id: str, job_name: str) -> tuple[str, dict, Path]:
+    """Resolve a job's group and load its per-job scan JSON.
 
-    # Sanitize job_name
+    Shared loader for the job detail and job graph endpoints. Raises 400 for
+    unsafe job names, 404 when the project has no scan or the job is not in
+    the manifest. Returns (group, scan_data, job_path); scan_data is empty
+    when the per-job file is missing or unreadable.
+    """
     if "/" in job_name or "\\" in job_name or ".." in job_name:
         raise HTTPException(status_code=400, detail="Invalid job name")
 
@@ -3214,14 +3272,22 @@ async def get_job_detail(project_id: str, job_name: str, request: Request):
     if not group:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_name}")
 
-    # Read job JSON
     job_path = scan_dir / "jobs" / group / f"{job_name}.json"
     scan_data: dict = {}
     if job_path.exists():
         try:
             scan_data = json.loads(job_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Unreadable job scan file %s: %s", job_path, exc)
+    return group, scan_data, job_path
+
+
+@router.get("/projects/{project_id}/jobs/{job_name}/detail", response_model=JobDetailResponse)
+async def get_job_detail(project_id: str, job_name: str, request: Request):
+    """Return full scan data and relevant doc sections for a specific job."""
+    await require_project_access(request, project_id)
+
+    group, scan_data, job_path = _load_job_scan(project_id, job_name)
 
     # Find doc sections whose heading matches this job exactly
     doc_sections = _extract_job_doc_sections(project_id, job_name)
@@ -3264,6 +3330,106 @@ async def get_job_detail(project_id: str, job_name: str, request: Request):
         summary=summary,
         direction=direction,
     )
+
+
+@router.get("/projects/{project_id}/jobs/{job_name}/graph", response_model=JobGraphResponse)
+async def get_job_graph(project_id: str, job_name: str, request: Request):
+    """Return the Level-2 component graph for one job (topology drill-down).
+
+    Nodes are the job's components; edges come from the job's connections
+    array with control-flow triggers flagged apart from data-flow rows.
+    """
+    await require_project_access(request, project_id)
+
+    group, scan_data, _job_path = _load_job_scan(project_id, job_name)
+    if not scan_data:
+        raise HTTPException(status_code=404, detail=f"No scan data for job: {job_name}")
+
+    # Read per-component descriptions from the already-generated, already
+    # credential-filtered inventory doc (no LLM call). Empty map when no docs
+    # exist -> every node's description defaults to "" (anti-fabrication).
+    descriptions = parse_component_descriptions(project_id, job_name)
+
+    return build_job_graph(
+        project_id=project_id,
+        job_name=job_name,
+        group=group,
+        job_data=scan_data,
+        descriptions=descriptions,
+    )
+
+
+@router.get(
+    "/projects/{project_id}/jobs/{job_name}/components/{unique_name}/graph",
+    response_model=ComponentGraphResponse,
+)
+async def get_component_graph(
+    project_id: str, job_name: str, unique_name: str, request: Request
+):
+    """Return the Level-3 tMap column/table graph for one component.
+
+    Only tMap has captured intra-component structure today (raw mapping
+    expressions only -- reference resolution lands in slice S4). Every other
+    component type -- and any tMap without a positionally-matched tmap_data
+    entry -- returns 404 with a ``{"fallback": "inspector"}`` detail so the
+    UI opens the structured inspector panel instead of a fabricated graph.
+    """
+    await require_project_access(request, project_id)
+
+    _group, scan_data, _job_path = _load_job_scan(project_id, job_name)
+    if not scan_data:
+        raise HTTPException(status_code=404, detail=f"No scan data for job: {job_name}")
+
+    if not component_exists(scan_data, unique_name):
+        raise HTTPException(status_code=404, detail=f"Component not found: {unique_name}")
+
+    if not is_tmap_component(scan_data, unique_name):
+        raise HTTPException(status_code=404, detail={"fallback": "inspector"})
+
+    graph = build_component_graph(
+        project_id=project_id,
+        job_name=job_name,
+        component_unique_name=unique_name,
+        job_data=scan_data,
+    )
+    if graph is None:
+        raise HTTPException(status_code=404, detail={"fallback": "inspector"})
+
+    return graph
+
+
+@router.get("/projects/{project_id}/lineage/field", response_model=LineageFieldResponse)
+async def get_field_lineage(
+    project_id: str,
+    request: Request,
+    job: str = Query(..., min_length=1, description="Job name the field belongs to"),
+    table: str = Query(..., min_length=1, description="Row/table name (tMap input or output row)"),
+    column: str = Query(..., min_length=1, description="Column name within the table"),
+    component: str = Query("", description="Optional component unique_name to disambiguate the start field"),
+    direction: Literal["up", "down", "both"] = Query("both", description="Traversal direction"),
+    max_depth: int = Query(10, ge=1, le=50, description="Maximum BFS hop count from the start field"),
+):
+    """Return the upstream/downstream field-lineage path for one column.
+
+    BFS over `scan/lineage.json` (the deterministic S4 tMap tokenizer pass),
+    cycle-safe and depth-capped. Lineage does not cross job boundaries yet
+    (S5), so the response is always scoped to the given `job`.
+    """
+    await require_project_access(request, project_id)
+
+    try:
+        return build_field_lineage(
+            project_id,
+            config.intodoc_output_dir,
+            job_name=job,
+            table=table,
+            column=column,
+            component=component,
+            direction=direction,
+            max_depth=max_depth,
+        )
+    except LineageDataUnavailableError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # --- AI Summaries ---

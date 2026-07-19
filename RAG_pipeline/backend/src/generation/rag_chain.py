@@ -9,22 +9,16 @@ from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import QueryLog
-from src.document_roles import AUXILIARY_DOCUMENT_ROLES, TEMPLATE_DOCUMENT_ROLES, has_template_intent
-from src.generation.conversational_rag import _build_memory_context
-from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
+from src.document_roles import AUXILIARY_DOCUMENT_ROLES
+from src.memory.context import build_memory_context
 from src.generation.llm_client import generate_answer, get_last_usage
 from src.retrieval.embedder import get_last_embed_tokens
-from src.generation.map_reduce import resolve_document_id, run_map_reduce
 from src.generation.prompt_builder import (
     build_messages,
-    build_metadata_messages,
     build_no_results_messages,
     should_use_code_assistant,
 )
-from src.retrieval.metadata_retriever import (
-    fetch_metadata,
-    get_system_knowledge_summary,
-)
+from src.retrieval.metadata_retriever import get_system_knowledge_summary
 from src.config import settings
 from src.memory.hindsight_client import (
     ensure_corrections_bank,
@@ -47,17 +41,6 @@ from src.schemas import DocumentSource, QueryRequest, QueryResponse, Source
 logger = logging.getLogger(__name__)
 
 
-async def _fetch_metadata(
-    db: AsyncSession,
-    intent: MetadataIntent | None,
-    project_ids: list[str] | None,
-    project_filter: str | None,
-    user_id: int | None = None,
-) -> "MetadataContext":
-    """Dispatch to the appropriate metadata retriever based on intent."""
-    return await fetch_metadata(db, intent, project_ids, project_filter, user_id=user_id)
-
-
 async def _recall_memories(
     uid: str,
     query: str,
@@ -76,7 +59,7 @@ async def _recall_memories(
             recall_quality_insights(query),
             recall_corrections(query),
         )
-        memory_context = _build_memory_context(user_memories, quality_insights, corrections)
+        memory_context = build_memory_context(user_memories, quality_insights, corrections)
         if memory_context:
             logger.info(
                 "Injecting %d user memories + %d quality insights + %d corrections",
@@ -90,7 +73,7 @@ async def _recall_memories(
 
 
 async def _execute_search(
-    analysis,
+    query: str,
     user_groups: list[str],
     qdrant: AsyncQdrantClient,
     top_k: int,
@@ -99,8 +82,7 @@ async def _execute_search(
     project_ids: list[str] | None,
     document_roles: list[str] | None = None,
 ) -> list[Source]:
-    """Select and run the search strategy based on feature flags."""
-    query = analysis.cleaned_query
+    """Run the operator-configured document search implementation."""
     if settings.query_expansion_enabled:
         return await search_multi_query(
             client=qdrant, query=query, user_groups=user_groups,
@@ -131,7 +113,7 @@ async def _execute_search(
 
 
 async def _execute_role_aware_search(
-    analysis,
+    query: str,
     request: QueryRequest,
     user_groups: list[str],
     qdrant: AsyncQdrantClient,
@@ -139,7 +121,7 @@ async def _execute_role_aware_search(
 ) -> tuple[list[Source], list[Source]]:
     """Run source-first retrieval plus bounded auxiliary/template context."""
     source_sources = await _execute_search(
-        analysis,
+        query,
         user_groups,
         qdrant,
         request.top_k,
@@ -149,7 +131,7 @@ async def _execute_role_aware_search(
         document_roles=["source"],
     )
     auxiliary_sources = await _execute_search(
-        analysis,
+        query,
         user_groups,
         qdrant,
         max(1, min(4, request.top_k)),
@@ -158,19 +140,6 @@ async def _execute_role_aware_search(
         project_ids,
         document_roles=list(AUXILIARY_DOCUMENT_ROLES),
     )
-    if has_template_intent(request.query):
-        auxiliary_sources.extend(
-            await _execute_search(
-                analysis,
-                user_groups,
-                qdrant,
-                max(1, min(2, request.top_k)),
-                request.threshold,
-                request.document_ids,
-                project_ids,
-                document_roles=list(TEMPLATE_DOCUMENT_ROLES),
-            )
-        )
     return source_sources, auxiliary_sources
 
 
@@ -244,18 +213,12 @@ async def run_rag_query(
     db: AsyncSession,
     project_ids: list[str] | None = None,
 ) -> QueryResponse:
-    """Full RAG pipeline: classify → (search → build prompt) → generate → log."""
+    """Run the explicit RBAC-scoped document retrieval/generation API."""
     start = time.perf_counter()
     uid = str(user_id)
 
     memory_context, answer_style = await _recall_memories(uid, request.query, project_ids)
 
-    analysis = await analyze_query_async(request.query)
-    logger.info(
-        f"Query: {request.query[:80]!r} | Action: {analysis.action.value} "
-        f"| Type: {analysis.query_type.value} | Cleaned: {analysis.cleaned_query[:80]!r}"
-    )
-    sources: list[Source] = []
     document_sources: list[DocumentSource] = []
 
     system_knowledge: str | None = None
@@ -265,112 +228,39 @@ async def run_rag_query(
         except Exception as e:
             logger.warning("Failed to fetch system knowledge: %s", e)
 
-    if analysis.action == Action.METADATA:
-        logger.info("Metadata query: intent=%s, project=%s",
-                    analysis.metadata_intent, analysis.extracted_project)
-        metadata = await _fetch_metadata(
-            db, analysis.metadata_intent, project_ids, analysis.extracted_project,
-            user_id=user_id,
+    sources, auxiliary_sources = await _execute_role_aware_search(
+        request.query, request, user_groups, qdrant, project_ids,
+    )
+
+    if sources or auxiliary_sources:
+        logger.info("Document search returned %d source chunks", len(sources))
+        enc = tiktoken.get_encoding("cl100k_base")
+        total_context_tokens = sum(len(enc.encode(source.text)) for source in sources)
+        logger.info(
+            "Document query retrieved %d chunks and ~%d context tokens",
+            len(sources),
+            total_context_tokens,
         )
-
-        hybrid_sources: list[Source] = []
-        if analysis.metadata_intent == MetadataIntent.HYBRID:
-            hybrid_sources = await search_similar(
-                client=qdrant, query=analysis.cleaned_query, user_groups=user_groups,
-                top_k=request.top_k, threshold=request.threshold, project_ids=project_ids,
-            )
-
-        if hybrid_sources:
-            document_sources = merge_sources_by_document(hybrid_sources)
-            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_metadata_messages(
-                request.query, metadata.text,
-                sources=hybrid_sources, reference_numbers=ref_map,
-                memory_context=memory_context,
-            )
-        else:
-            document_sources = []
-            messages = build_metadata_messages(
-                request.query, metadata.text, memory_context=memory_context,
-            )
-
-        answer = await generate_answer(messages)
-
-    elif analysis.action == Action.RESPOND:
-        logger.info("Skipping search (respond action)")
+        document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
+        ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+        messages = build_messages(
+            request.query,
+            sources,
+            reference_numbers=ref_map,
+            memory_context=memory_context,
+            system_knowledge=system_knowledge,
+            answer_style=answer_style,
+            auxiliary_sources=auxiliary_sources,
+        )
+    else:
+        logger.info("No document results passed the configured threshold")
         messages = build_no_results_messages(
             request.query,
             memory_context=memory_context,
             system_knowledge=system_knowledge,
             answer_style=answer_style,
         )
-        answer = await generate_answer(messages)
-
-    elif analysis.query_type == QueryType.SUMMARY:
-        logger.info("Summary query detected — resolving document")
-        resolved = await resolve_document_id(
-            qdrant,
-            analysis.cleaned_query,
-            user_groups,
-            project_ids=project_ids,
-        )
-        if resolved:
-            doc_id, filename = resolved
-            answer, doc_source = await run_map_reduce(qdrant, doc_id, filename, user_groups)
-            document_sources = [doc_source]
-        else:
-            logger.info("Could not resolve document for summary — falling back to no-results")
-            messages = build_no_results_messages(
-                request.query,
-                memory_context=memory_context,
-                system_knowledge=system_knowledge,
-                answer_style=answer_style,
-            )
-            answer = await generate_answer(messages)
-
-    else:
-        sources, auxiliary_sources = await _execute_role_aware_search(
-            analysis, request, user_groups, qdrant, project_ids,
-        )
-
-        if sources or auxiliary_sources:
-            logger.info(f"Search returned {len(sources)} sources, building prompt")
-            logger.info("--- Retrieved Chunks ---")
-            for i, s in enumerate(sources, 1):
-                logger.info(f"  #{i} [{s.filename}] score={s.score:.4f}")
-
-            logger.info("--- LLM Input Preview ---")
-            for i, s in enumerate(sources, 1):
-                preview = s.text[:100].replace("\n", " ")
-                logger.info(f"  Chunk {i}: {preview!r}...")
-
-            enc = tiktoken.get_encoding("cl100k_base")
-            total_context_tokens = sum(len(enc.encode(s.text)) for s in sources)
-            logger.info(
-                f"Logic trace: Retrieved {len(sources)} chunks; "
-                f"Threshold {request.threshold} met; Sending ~{total_context_tokens} context tokens to LLM"
-            )
-
-            document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
-            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_messages(
-                request.query, sources,
-                reference_numbers=ref_map,
-                memory_context=memory_context,
-                system_knowledge=system_knowledge,
-                answer_style=answer_style,
-                auxiliary_sources=auxiliary_sources,
-            )
-            answer = await generate_answer(messages)
-        else:
-            logger.info("No results passed threshold — using no-results fallback")
-            messages = build_no_results_messages(
-                request.query,
-                memory_context=memory_context,
-                system_knowledge=system_knowledge,
-                answer_style=answer_style,
-            )
-            answer = await generate_answer(messages)
+    answer = await generate_answer(messages)
 
     latency_ms = int((time.perf_counter() - start) * 1000)
 
@@ -384,8 +274,8 @@ async def run_rag_query(
         answer=answer,
         document_sources=document_sources,
         latency_ms=latency_ms,
-        action=analysis.action.value,
-        query_type=analysis.query_type.value,
+        action="document_search",
+        query_type="document_answer",
         project_ids=project_ids,
     )
 

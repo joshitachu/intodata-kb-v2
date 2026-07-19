@@ -19,12 +19,20 @@ class GenerationLockError(RuntimeError):
     """Raised when docs_staging is owned by another active generation."""
 
 
+class GenerationReceiptError(RuntimeError):
+    """Raised when a resumed run attempts to replace immutable receipt data."""
+
+
 def lock_path(staging_dir: Path) -> Path:
     return staging_dir / ".generation.lock"
 
 
 def manifest_path(staging_dir: Path) -> Path:
     return staging_dir / "_run_manifest.json"
+
+
+def nexus_receipt_path(staging_dir: Path) -> Path:
+    return staging_dir / "_audit" / "nexus_pack_execution_receipt.json"
 
 
 def read_json_file(path: Path) -> dict[str, Any] | None:
@@ -112,6 +120,28 @@ def write_run_manifest(
     })
     current.setdefault("created_at", time.time())
     manifest_path(staging_dir).write_text(json.dumps(current, indent=2), encoding="utf-8")
+
+
+def persist_nexus_execution_receipt(
+    staging_dir: Path,
+    receipt: dict[str, object],
+) -> None:
+    """Persist the exact governed stack contract once in manifest and audit receipt."""
+    current = read_json_file(manifest_path(staging_dir)) or {}
+    existing_manifest_receipt = current.get("nexus_execution_contract")
+    if existing_manifest_receipt is not None and existing_manifest_receipt != receipt:
+        raise GenerationReceiptError("Nexus execution contract cannot change during a resumed run")
+    current["nexus_execution_contract"] = receipt
+
+    receipt_path = nexus_receipt_path(staging_dir)
+    existing_file_receipt = read_json_file(receipt_path)
+    if existing_file_receipt is not None and existing_file_receipt != receipt:
+        raise GenerationReceiptError("Nexus execution receipt cannot be replaced during a resumed run")
+
+    manifest_path(staging_dir).write_text(json.dumps(current, indent=2), encoding="utf-8")
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    if existing_file_receipt is None:
+        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
 
 def record_manifest_chunks(
