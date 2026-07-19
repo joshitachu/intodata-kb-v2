@@ -8,8 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.harness.models import CapabilityDefinition, CapabilityHealth
-from src.harness.evidence_policy import validate_capability_turn_semantics
-from src.harness.registry import CapabilityRegistry
+from src.harness.registry import CapabilityCatalog
 
 
 _SAFE_METADATA_KEYS = {
@@ -29,6 +28,7 @@ class ManifestScope(BaseModel):
     permissions: set[str] | None = None
     packs: set[str] | None = None
     include_unavailable: bool = False
+    include_bounded_loop_only: bool = False
 
 
 class RuntimeCapabilityTool(BaseModel):
@@ -51,7 +51,6 @@ class RuntimeCapabilityTool(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     do_not_use_when: list[str] = Field(default_factory=list)
     task_types: list[str] = Field(default_factory=list)
-    planning_task_type: str | None = None
     evidence_sources: list[str] = Field(default_factory=list)
     output_contracts: list[str] = Field(default_factory=list)
     activity_label: str
@@ -72,7 +71,7 @@ class RuntimeCapabilityManifest(BaseModel):
 
 
 def build_runtime_capability_manifest(
-    registry: CapabilityRegistry,
+    registry: CapabilityCatalog,
     *,
     scope: ManifestScope | None = None,
 ) -> RuntimeCapabilityManifest:
@@ -112,6 +111,11 @@ def user_facing_capability_lines(tools: Iterable[RuntimeCapabilityTool]) -> list
 
 
 def _is_visible_to_runtime(capability: CapabilityDefinition, scope: ManifestScope) -> bool:
+    if (
+        capability.metadata.get("bounded_loop_only") is True
+        and not scope.include_bounded_loop_only
+    ):
+        return False
     if capability.metadata.get("runtime_hidden") is True:
         return False
     if not scope.include_unavailable:
@@ -127,8 +131,9 @@ def _is_visible_to_runtime(capability: CapabilityDefinition, scope: ManifestScop
     return True
 
 
-def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
-    validate_capability_turn_semantics(capability)
+def _to_runtime_tool(
+    capability: CapabilityDefinition,
+) -> RuntimeCapabilityTool:
     safe_metadata = {
         key: value
         for key, value in capability.metadata.items()
@@ -147,7 +152,6 @@ def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
         use_when=list(capability.use_when),
         do_not_use_when=list(capability.do_not_use_when),
         task_types=list(capability.task_types),
-        planning_task_type=capability.planning_task_type,
         evidence_sources=list(capability.evidence_sources),
         output_contracts=list(capability.output_contracts),
         activity_label=str(safe_metadata.get("activity_label") or capability.label),

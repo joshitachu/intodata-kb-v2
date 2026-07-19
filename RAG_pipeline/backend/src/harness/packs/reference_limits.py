@@ -1,0 +1,5 @@
+"""Shared limits for persisted and execution-time Pack references."""
+
+MAX_REFERENCE_ATTACHMENTS = 20
+MAX_REFERENCE_EXTRACTED_TEXT_CHARS = 12_000
+MAX_REFERENCE_AGGREGATE_EXTRACTED_TEXT_CHARS = 32_000

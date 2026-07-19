@@ -30,14 +30,19 @@ ALLOWED_REFERENCES = PackReferenceSets(
     capability_ids=frozenset(
         {
             "mcp.docs.generate_project_documentation",
-            "mcp.docs.create_documentation_pack",
             "mcp.docs.get_generation_status",
             "mcp.docs.list_project_docs",
+            "nexus.docs.list_documentation_packs",
+            "nexus.workflows.cancel",
             "rag.docs.search_evidence",
+            "rag.docs.read_document",
+            "nexus.metadata.query",
+            "nexus.conversations.read_summary_facts",
             "mcp.docs.update_from_evidence",
             "mcp.docs.revert_evidence_update",
             "nexus.workflow.operational_investigation",
             "runtime.tools.query_evidence",
+            "runtime.stored.query_evidence",
             "runtime.logs.search_evidence",
             "external.connector.read_evidence",
             "nexus.workflow.onboard_project",
@@ -47,6 +52,7 @@ ALLOWED_REFERENCES = PackReferenceSets(
             "mcp.projects.attach_uploaded_zip_source",
             "mcp.projects.trigger_scan",
             "mcp.projects.read_status",
+            "mcp.projects.list_active_workflows",
             "mcp.projects.publish_index",
         }
     ),

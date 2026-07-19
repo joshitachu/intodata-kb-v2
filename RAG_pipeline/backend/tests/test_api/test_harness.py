@@ -12,13 +12,19 @@ from src.db.models import Conversation, ProjectAssignment, User
 from src.harness import HarnessWorkflowRepository
 from src.harness.models import (
     DOCUMENTATION_GENERATION_CAPABILITY,
+    DOCUMENTATION_PACK_LIST_CAPABILITY,
     WorkflowInterruptCreate,
     WorkflowInterruptType,
     WorkflowRunCreate,
     WorkflowRunStatus,
+    WorkflowRunUpdate,
 )
 
 CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
+
+
+async def _async_result(value):
+    return value
 
 
 async def test_list_harness_capabilities(db_session) -> None:
@@ -43,6 +49,7 @@ async def test_list_harness_capabilities(db_session) -> None:
     body = response.json()
     capability_ids = {item["id"] for item in body["capabilities"]}
     assert DOCUMENTATION_GENERATION_CAPABILITY.id in capability_ids
+    assert DOCUMENTATION_PACK_LIST_CAPABILITY.id in capability_ids
 
 
 async def test_runtime_manifest_exposes_filtered_safe_tools(db_session) -> None:
@@ -79,6 +86,7 @@ async def test_runtime_manifest_exposes_filtered_safe_tools(db_session) -> None:
         item["label"] == "Investigate integration failure"
         for item in body["application_context"]["workflows"]
     )
+    assert "packs" not in body["application_context"]
 
 
 async def test_pack_catalog_exposes_safe_views_and_active_snapshot(db_session) -> None:
@@ -108,7 +116,7 @@ async def test_pack_catalog_exposes_safe_views_and_active_snapshot(db_session) -
     assert all("policy_hints" not in item for item in body["packs"])
 
 
-async def test_project_pack_api_creates_and_activates_data_only_custom_pack(db_session) -> None:
+async def test_project_pack_api_rejects_legacy_custom_pack_mutation(db_session) -> None:
     user = User(username="project-pack-admin", email="project-pack-admin@example.com", is_superadmin=True)
     db_session.add(user)
     await db_session.flush()
@@ -132,20 +140,11 @@ async def test_project_pack_api_creates_and_activates_data_only_custom_pack(db_s
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             created = await client.post("/api/v1/harness/packs/projects/project-packs/custom", json={"manifest": manifest}, headers=CSRF_HEADERS)
-            selected = await client.put(
-                "/api/v1/harness/packs/projects/project-packs/activations/documentation.generate",
-                json={"active_pack_ids": ["custom.api-pack"]},
-                headers=CSRF_HEADERS,
-            )
-            recommendations = await client.get("/api/v1/harness/packs/projects/project-packs/recommendations")
     finally:
         app.dependency_overrides.clear()
 
-    assert created.status_code == 201
-    assert selected.status_code == 200
-    assert selected.json()["snapshot"]["active_pack_ids"] == ["custom.api-pack"]
-    assert recommendations.status_code == 200
-    assert recommendations.json()["recommendations"][0]["reasons"]
+    assert created.status_code == 410
+    assert "legacy" in created.json()["detail"].lower()
 
 
 async def test_project_members_can_browse_pack_recommendations_but_cannot_change_packs(db_session) -> None:
@@ -191,6 +190,8 @@ async def test_documentation_pack_api_returns_safe_mcp_metadata_and_requires_pro
                     name="Talend migration",
                     version="2.1.0",
                     description="Migration-specific documentation instructions.",
+                    certification_status="certified",
+                    mutable=False,
                 )
             ]
 
@@ -238,7 +239,16 @@ async def test_documentation_pack_api_sets_the_mcp_project_default(db_session, m
 
     class FakeDocumentationProvider:
         async def list_documentation_packs(self, *, access_token=None):
-            return [harness_packs_mod.McpDocumentationPack(id=7, name="Talend migration", version="2.1.0", description=None)]
+            return [
+                harness_packs_mod.McpDocumentationPack(
+                    id=7,
+                    name="Talend migration",
+                    version="2.1.0",
+                    description=None,
+                    certification_status="certified",
+                    mutable=False,
+                )
+            ]
 
         async def set_project_documentation_pack(self, **kwargs):
             calls.update(kwargs)
@@ -264,35 +274,181 @@ async def test_documentation_pack_api_sets_the_mcp_project_default(db_session, m
     assert calls["plugin_pack_id"] == 7
 
 
-async def test_documentation_pack_api_creates_and_selects_an_intodoc_pack(db_session, monkeypatch) -> None:
+async def test_documentation_pack_workspace_combines_organization_and_personal_packs(
+    db_session, monkeypatch
+) -> None:
     from src.api.routes import harness_packs as harness_packs_mod
 
-    user = User(username="documentation-pack-creator", email="documentation-pack-creator@example.com", is_superadmin=True)
+    user = User(
+        username="documentation-workspace-admin",
+        email="documentation-workspace-admin@example.com",
+        is_superadmin=True,
+    )
     db_session.add(user)
     await db_session.flush()
-    calls: dict[str, object] = {}
 
     class FakeDocumentationProvider:
-        async def create_documentation_pack(self, **kwargs):
-            calls.update(kwargs)
-            return harness_packs_mod.McpDocumentationPack(
-                id=12,
-                name="Operations Handbook",
-                version="1.0.0",
-                description="Operations docs",
-            )
-
         async def list_documentation_packs(self, *, access_token=None):
             return [
                 harness_packs_mod.McpDocumentationPack(
-                    id=12,
-                    name="Operations Handbook",
-                    version="1.0.0",
-                    description="Operations docs",
+                    id=7,
+                    name="VolkerWessels Reverse Engineering",
+                    version="2.1.0",
+                    description="Organization documentation baseline.",
+                    certification_status="certified",
+                    mutable=False,
                 )
             ]
 
+        async def get_project_documentation_pack_id(self, **_kwargs):
+            return 7
+
+    personal = SimpleNamespace(
+        id=12,
+        name="Security Investment Case",
+        version="1.0.0",
+        artifact=SimpleNamespace(
+            purpose="Add code security analysis and a management brief.",
+            output_documents=[SimpleNamespace(title="Security Findings"), SimpleNamespace(title="Investment Brief")],
+        ),
+    )
     monkeypatch.setattr(harness_packs_mod, "McpDocumentationProvider", FakeDocumentationProvider)
+    monkeypatch.setattr(
+        harness_packs_mod,
+        "_latest_personal_pack_versions",
+        lambda *_args, **_kwargs: _async_result([personal]),
+    )
+    monkeypatch.setattr(
+        harness_packs_mod,
+        "_current_private_version_ids",
+        lambda *_args, **_kwargs: _async_result([12]),
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/harness/packs/projects/reingest-drill/workspace"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "project_id": "reingest-drill",
+        "organization_packs": [{
+            "id": 7,
+            "name": "VolkerWessels Reverse Engineering",
+            "version": "2.1.0",
+            "description": "Organization documentation baseline.",
+        }],
+        "personal_packs": [{
+            "id": 12,
+            "name": "Security Investment Case",
+            "version": "1.0.0",
+            "description": "Add code security analysis and a management brief.",
+            "output_documents": ["Security Findings", "Investment Brief"],
+        }],
+        "selected_organization_pack_id": 7,
+        "selected_private_version_ids": [12],
+    }
+
+
+async def test_workspace_generation_sends_selected_personal_pack_to_intodoc(
+    db_session, monkeypatch
+) -> None:
+    from src.api.routes import harness_packs as harness_packs_mod
+    from src.harness.packs.draft_service import PackDraftService
+    from src.harness.providers.mcp_docs import McpDocumentationGenerationResult
+    from src.harness.registry import base_capability_registry
+
+    user = User(
+        username="workspace-generation-admin",
+        email="workspace-generation-admin@example.com",
+        is_superadmin=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    conversation = Conversation(user_id=user.id, title="Pack builder")
+    db_session.add(conversation)
+    await db_session.flush()
+    service = PackDraftService(db_session, base_capability_registry())
+    draft = await service.create_draft(
+        conversation_id=conversation.id,
+        owner_user_id=user.id,
+        name="Security Investment Case",
+    )
+    draft = await service.mutate(
+        draft_id=draft.id,
+        owner_user_id=user.id,
+        expected_revision=draft.revision,
+        patch={
+            "schema_version": 3,
+            "purpose": "Add a security investment case.",
+            "analyses": [{"id": "security", "label": "Security", "purpose": "Find code risks."}],
+            "evidence_requirements": [{"id": "code", "label": "Source code", "required": True, "weight": 100}],
+            "output_documents": [{"id": "brief", "title": "Security Investment Brief", "sections": [{"id": "summary", "heading": "Summary", "order": 1}]}],
+            "audience": {"label": "Engineering management", "render": {"detail_level": "brief"}},
+        },
+    )
+    version = await service.save(
+        draft_id=draft.id,
+        owner_user_id=user.id,
+        expected_revision=draft.revision,
+    )
+    captured: dict[str, object] = {}
+
+    class FakeDocumentationProvider:
+        async def list_documentation_packs(self, *, access_token=None):
+            return [harness_packs_mod.McpDocumentationPack(
+                id=7, name="VolkerWessels Reverse Engineering", version="2.1.0",
+                description=None, certification_status="certified", mutable=False,
+            )]
+
+        async def set_project_documentation_pack(self, **kwargs):
+            return kwargs["plugin_pack_id"]
+
+        async def trigger_generation(self, **kwargs):
+            captured.update(kwargs)
+            return McpDocumentationGenerationResult(
+                project_id="reingest-drill",
+                status="generation_triggered",
+                message="Documentation generation started",
+                status_path="/status",
+                docs_path="/docs",
+            )
+
+    monkeypatch.setattr(harness_packs_mod, "McpDocumentationProvider", FakeDocumentationProvider)
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/harness/packs/projects/reingest-drill/generate",
+                json={
+                    "organization_pack_id": 7,
+                    "private_version_ids": [version.id],
+                    "resume": True,
+                },
+                headers=CSRF_HEADERS,
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "generating"
+    assert captured["plugin_pack_id"] == 7
+    private_payload = captured["nexus_private_analysis_packs"]
+    assert private_payload[0]["receipt"]["version_id"] == version.id
+    assert private_payload[0]["artifact"]["output_documents"][0]["title"] == "Security Investment Brief"
+
+
+async def test_documentation_pack_api_retires_free_form_creation(db_session) -> None:
+    user = User(username="documentation-pack-creator", email="documentation-pack-creator@example.com", is_superadmin=True)
+    db_session.add(user)
+    await db_session.flush()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_user] = lambda: user
     try:
@@ -316,12 +472,8 @@ async def test_documentation_pack_api_creates_and_selects_an_intodoc_pack(db_ses
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 201
-    assert response.json()["id"] == 12
-    assert calls["name"] == "Operations Handbook"
-    documents = calls["documents"]
-    assert isinstance(documents, list)
-    assert documents[0].name == "RUNBOOK"
+    assert response.status_code == 410
+    assert "file/git" in response.json()["detail"].lower()
 
 
 async def test_list_harness_connectors_reuses_runtime_source_registry(db_session) -> None:
@@ -374,6 +526,24 @@ async def test_list_and_get_harness_workflow_receipt(db_session) -> None:
             input_summary="Generate docs",
         )
     )
+    child = await repo.bind_child_receipt(
+        ["project-a"],
+        workflow_run_id=run.id,
+        provider_id="mcp.docs",
+        child_kind="documentation_generation",
+        external_run_id=81,
+        project_id="project-a",
+        provider_status="completed",
+        owner_user_id=user.id,
+    )
+    run = await repo.update_run(
+        ["project-a"],
+        run.id,
+        WorkflowRunUpdate(
+            status=WorkflowRunStatus.SUCCEEDED,
+            finished_at=datetime.datetime.now(datetime.UTC),
+        ),
+    )
 
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_user] = lambda: user
@@ -387,10 +557,12 @@ async def test_list_and_get_harness_workflow_receipt(db_session) -> None:
 
     assert list_response.status_code == 200
     assert list_response.json()["runs"][0]["id"] == run.id
+    assert list_response.json()["runs"][0]["children"][0]["id"] == child.id
     assert detail_response.status_code == 200
     detail = detail_response.json()
     assert detail["run"]["id"] == run.id
     assert "runtime_provider_id" in detail["run"]
+    assert detail["run"]["children"] == list_response.json()["runs"][0]["children"]
 
 
 async def test_owner_can_view_resume_once_and_cancel_interrupted_workflow(db_session) -> None:
