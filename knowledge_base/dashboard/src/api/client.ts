@@ -17,6 +17,7 @@ import {
   PluginPackFilesSchema,
   PluginPackListSchema,
   PluginPackSchema,
+  NexusPackWorkspaceSchema,
   ProjectListResponseSchema,
   ProjectSchema,
   ProjectUsageSchema,
@@ -36,6 +37,19 @@ function parseResponse<T>(schema: ZodType<T>, data: unknown): T {
   return schema.parse(data);
 }
 
+// The backend's CSRFMiddleware uses the double-submit cookie pattern: the
+// non-httpOnly `csrf_token` cookie set at login must be echoed back in the
+// X-CSRF-Token header on every state-changing request.
+export function getCsrfToken(): string | undefined {
+  const raw = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/)?.[1];
+  return raw ? decodeURIComponent(raw) : undefined;
+}
+
+export function csrfHeaders(): Record<string, string> {
+  const token = getCsrfToken();
+  return token ? { "X-CSRF-Token": token } : {};
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -46,8 +60,8 @@ async function request<T>(
   const res = await fetch(path, {
     ...options,
     headers: isFormData
-      ? { ...(options.headers as Record<string, string>) }
-      : { "Content-Type": "application/json", ...(options.headers as Record<string, string>) },
+      ? { ...csrfHeaders(), ...(options.headers as Record<string, string>) }
+      : { "Content-Type": "application/json", ...csrfHeaders(), ...(options.headers as Record<string, string>) },
     credentials: "include",
   });
 
@@ -237,6 +251,30 @@ export const api = {
       PluginPackBranchDiscoverySchema
     ),
 
+  getPackWorkspace: (projectId: string) =>
+    request<import("../types").NexusPackWorkspace>(
+      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/workspace`,
+      {},
+      NexusPackWorkspaceSchema,
+    ),
+
+  updatePackWorkspace: (
+    projectId: string,
+    organizationPackId: number | null,
+    privateVersionIds: number[],
+  ) =>
+    request<import("../types").NexusPackWorkspace>(
+      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/workspace`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          organization_pack_id: organizationPackId,
+          private_version_ids: privateVersionIds,
+        }),
+      },
+      NexusPackWorkspaceSchema,
+    ),
+
   assignPluginPack: (projectId: string, pluginPackId: number | null) =>
     request<{ project_id: string; plugin_pack_id: number | null }>(
       `/mcp/projects/${projectId}/plugin`,
@@ -391,17 +429,23 @@ export const api = {
     investigationModel?: string | null,
     model?: string | null,
     writeModel?: string | null,
-    pluginPackId?: number | null,
+    organizationPackId: number | null = null,
+    privateVersionIds: number[] = [],
   ) =>
-    request<import("../types").StatusResponse>("/mcp/generate", {
-      method: "POST",
-      body: JSON.stringify({
-        project_id: projectId,
-        resume,
-        investigation_model: investigationModel ?? null,
-        model: model ?? null,
-        write_model: writeModel ?? null,
-        plugin_pack_id: pluginPackId ?? null,
-      }),
-    }, StatusResponseSchema),
+    request<import("../types").StatusResponse>(
+      `/nexus-api/harness/packs/projects/${encodeURIComponent(projectId)}/generate`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: projectId,
+          resume,
+          investigation_model: investigationModel ?? null,
+          model: model ?? null,
+          write_model: writeModel ?? null,
+          organization_pack_id: organizationPackId,
+          private_version_ids: privateVersionIds,
+        }),
+      },
+      StatusResponseSchema,
+    ),
 };

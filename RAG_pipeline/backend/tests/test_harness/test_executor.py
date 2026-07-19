@@ -12,8 +12,8 @@ from src.harness.executor import (
 from src.harness.models import (
     DOCUMENTATION_GENERATION_CAPABILITY,
     DOCUMENTATION_GENERATION_STATUS_CAPABILITY,
-    DOCUMENTATION_PACK_CREATE_CAPABILITY,
-    RUNTIME_EVIDENCE_CAPABILITY,
+    PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY,
+    STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY,
     EvidenceQueryResult,
 )
 from src.harness.providers.mcp_docs import McpDocumentationProvider
@@ -64,57 +64,18 @@ async def test_executor_triggers_docs_generation_through_provider() -> None:
     assert payload["plugin_pack_id"] == 7
 
 
-async def test_executor_creates_reusable_documentation_pack() -> None:
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["payload"] = json.loads(request.read())
-        return httpx.Response(
-            201,
-            json={
-                "id": 12,
-                "name": "Operations Pack",
-                "version": "1.0.0",
-                "description": "Operational documentation",
-                "document_count": 1,
-                "enabled": True,
-            },
-        )
-
-    executor = HarnessCapabilityExecutor(
-        default_capability_registry(),
-        docs_provider=McpDocumentationProvider(
-            base_url="http://mcp.internal/mcp",
-            transport=httpx.MockTransport(handler),
-        ),
-    )
+async def test_executor_rejects_retired_reusable_documentation_pack_creation() -> None:
+    executor = HarnessCapabilityExecutor(default_capability_registry())
     observation = await executor.execute(
         CapabilityExecutionRequest(
-            capability_id=DOCUMENTATION_PACK_CREATE_CAPABILITY.id,
-            arguments={
-                "name": "Operations Pack",
-                "description": "Operational documentation",
-                "documents": [
-                    {
-                        "name": "OPERATIONS",
-                        "sections": ["Schedules", "Recovery"],
-                        "instructions": "Explain how the system runs",
-                    }
-                ],
-            },
+            capability_id="mcp.docs.create_documentation_pack",
+            arguments={"name": "Operations Pack", "documents": []},
         ),
-        CapabilityExecutionContext(
-            user_id=1,
-            permissions={"manage_projects"},
-            approvals={DOCUMENTATION_PACK_CREATE_CAPABILITY.id},
-        ),
+        CapabilityExecutionContext(user_id=1, permissions={"manage_projects"}),
     )
 
-    assert observation.status == "succeeded"
-    assert observation.data["plugin_pack_id"] == 12
-    assert seen["path"] == "/mcp/documentation-packs"
-    assert seen["payload"]["name"] == "Operations Pack"
+    assert observation.status == "denied"
+    assert "Unknown capability" in (observation.error_message or "")
 
 
 async def test_executor_reads_structured_generation_status() -> None:
@@ -158,22 +119,62 @@ async def test_executor_reads_structured_generation_status() -> None:
     assert observation.data["client_ready"] is False
 
 
+async def test_executor_lists_active_workflows_with_server_owned_scope() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/mcp/projects":
+            return httpx.Response(
+                200,
+                json={
+                    "projects": [
+                        {"id": "allowed", "display_name": "Allowed", "status": "scanning"},
+                        {"id": "other", "display_name": "Other", "status": "scanning"},
+                    ]
+                },
+            )
+        if request.url.path == "/mcp/generate-runs/allowed":
+            return httpx.Response(200, json={"runs": []})
+        raise AssertionError(f"scope leak: {request.url.path}")
+
+    executor = HarnessCapabilityExecutor(
+        default_capability_registry(),
+        docs_provider=McpDocumentationProvider(
+            base_url="http://mcp.internal/mcp",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    observation = await executor.execute(
+        CapabilityExecutionRequest(
+            capability_id=PROJECT_ACTIVE_WORKFLOW_STATUS_CAPABILITY.id,
+            arguments={},
+        ),
+        CapabilityExecutionContext(user_id=1, project_scope=["allowed"]),
+    )
+
+    assert observation.status == "succeeded"
+    assert observation.data["workflows"][0]["project_id"] == "allowed"
+    assert observation.safe_details == {"workflow_count": 1}
+
+
 async def test_executor_preserves_failed_evidence_handler_status() -> None:
     async def failed_handler(_arguments, _context):
         return EvidenceQueryResult(
-            capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
+            capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
             status="failed",
             error_message="Runtime provider unavailable",
         )
 
     executor = HarnessCapabilityExecutor(
         default_capability_registry(),
-        evidence_handlers={RUNTIME_EVIDENCE_CAPABILITY.id: failed_handler},
+        evidence_handlers={STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id: failed_handler},
     )
     observation = await executor.execute(
         CapabilityExecutionRequest(
-            capability_id=RUNTIME_EVIDENCE_CAPABILITY.id,
-            arguments={"question": "Show current state", "project_id": "project-a"},
+            capability_id=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id,
+            arguments={
+                "operation": "list_runtime_sources",
+                "project_id": "project-a",
+            },
         ),
         CapabilityExecutionContext(user_id=1, project_scope=["project-a"]),
     )
