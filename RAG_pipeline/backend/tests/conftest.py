@@ -43,11 +43,11 @@ async def db_session(engine) -> AsyncSession:
 
 @pytest.fixture(autouse=True)
 def isolated_harness_runtime(monkeypatch):
-    """Keep chat tests on a checkpointer isolated from the configured DB."""
+    """Keep workflow tests on checkpointers isolated from the configured DB."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from src.harness import chat
     from src.harness import runtime
+    from src.harness import workflow_resume
     from src.harness.workflows.onboarding import ProjectOnboardingWorkflow
 
     onboarding_checkpointer = InMemorySaver()
@@ -58,7 +58,7 @@ def isolated_harness_runtime(monkeypatch):
         runtime.LangGraphRuntimeProvider(),
     )
     monkeypatch.setattr(
-        chat,
+        workflow_resume,
         "default_project_onboarding_workflow",
         lambda: ProjectOnboardingWorkflow(checkpointer=onboarding_checkpointer),
     )

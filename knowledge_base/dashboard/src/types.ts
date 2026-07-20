@@ -69,6 +69,25 @@ export interface PluginPackBranchDiscovery {
   branches: PluginPackBranch[];
 }
 
+export interface NexusPackCatalogItem {
+  id: number;
+  name: string;
+  version: string;
+  description?: string | null;
+}
+
+export interface NexusPersonalPack extends NexusPackCatalogItem {
+  output_documents: string[];
+}
+
+export interface NexusPackWorkspace {
+  project_id: string;
+  organization_packs: NexusPackCatalogItem[];
+  personal_packs: NexusPersonalPack[];
+  selected_organization_pack_id: number | null;
+  selected_private_version_ids: number[];
+}
+
 export interface PluginPackFileContent {
   path: string;
   content: string;

@@ -21,7 +21,11 @@ class CapabilityExecutionDeniedError(Exception):
     """Raised when a capability execution request violates Nexus policy."""
 
 
-from src.harness.registry import CapabilityRegistry, default_capability_registry  # noqa: E402
+from src.harness.registry import (  # noqa: E402
+    CapabilityCatalog,
+    CapabilityRegistry,
+    default_capability_registry,
+)
 from src.harness.repository import HarnessWorkflowRepository  # noqa: E402
 from src.harness.service import HarnessWorkflowService  # noqa: E402
 from src.harness.executor import HarnessCapabilityExecutor  # noqa: E402
@@ -29,6 +33,7 @@ from src.harness.manifest import build_runtime_capability_manifest  # noqa: E402
 
 __all__ = [
     "CapabilityDisabledError",
+    "CapabilityCatalog",
     "CapabilityExecutionDeniedError",
     "CapabilityRegistry",
     "HarnessRunNotFoundError",

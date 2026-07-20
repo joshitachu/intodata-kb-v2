@@ -1,6 +1,12 @@
 import dagre from "@dagrejs/dagre";
 import type { Node, Edge } from "@xyflow/react";
 
+// Project-level edges use smooth/curved routing so overlapping near-straight
+// runs fan out into readable arcs. Scoped to this module ONLY — the level-2
+// job view (jobGraphTransform.ts / applyJobGraphLayout) is deliberately left
+// on its own routing and must not be touched.
+const PROJECT_EDGE_TYPE = "smoothstep";
+
 // 8-color palette for group categories
 const GROUP_COLORS = [
   { bg: "#dbeafe", border: "#3b82f6", text: "#1e40af" }, // blue
@@ -74,6 +80,27 @@ export interface GroupBoundingBox {
   y: number;
   width: number;
   height: number;
+}
+
+/**
+ * Project-level connection-visibility filter. When connections are hidden we
+ * drop every connection node AND every edge that touches one, so the layout
+ * reflows to jobs + job->job calls (+ collapsed group summaries) with no
+ * dangling edges. Endpoint-based rather than edgeType-based so it stays correct
+ * for any current or future edge that points at a connection node.
+ */
+export function applyConnectionVisibility(
+  nodes: Node[],
+  edges: Edge[],
+  showConnections: boolean,
+): { nodes: Node[]; edges: Edge[] } {
+  if (showConnections) return { nodes, edges };
+  return {
+    nodes: nodes.filter((n) => !n.id.startsWith("conn:")),
+    edges: edges.filter(
+      (e) => !e.source.startsWith("conn:") && !e.target.startsWith("conn:"),
+    ),
+  };
 }
 
 export function manifestToFlow(
@@ -185,7 +212,7 @@ export function manifestToFlow(
         id: `calls:${caller}:${callee}`,
         source: `job:${caller}`,
         target: `job:${callee}`,
-        type: "default",
+        type: PROJECT_EDGE_TYPE,
         animated: true,
         style: { stroke: "#3b82f6", strokeWidth: 1.5 },
         markerEnd: { type: "arrowclosed" as const, color: "#3b82f6", width: 16, height: 16 },
@@ -199,7 +226,7 @@ export function manifestToFlow(
         id: `uses:${job}:${conn}`,
         source: `job:${job}`,
         target: `conn:${conn}`,
-        type: "default",
+        type: PROJECT_EDGE_TYPE,
         style: { stroke: "#a855f7", strokeWidth: 1, strokeDasharray: "6 3" },
         markerEnd: { type: "arrowclosed" as const, color: "#a855f7", width: 14, height: 14 },
         data: { edgeType: "uses" },
@@ -231,11 +258,14 @@ export const JOB_NODE_HEIGHT_COMPACT = 36;
 export const CONN_NODE_WIDTH_COMPACT = 120;
 export const CONN_NODE_HEIGHT_COMPACT = 32;
 
-function getNodeDimensions(node: Node, compact: boolean): { width: number; height: number } {
-  if (node.id.startsWith("group:")) {
+// Node footprint keyed off the id prefix alone (group:/conn:/job:). Kept
+// id-based so callers that only hold a node id (e.g. the removed-node "hole"
+// in localExpandLayout below) can size a node without a full Node object.
+export function getDimensionsForId(id: string, compact: boolean): { width: number; height: number } {
+  if (id.startsWith("group:")) {
     return { width: GROUP_SUMMARY_NODE_WIDTH, height: GROUP_SUMMARY_NODE_HEIGHT };
   }
-  if (node.id.startsWith("conn:")) {
+  if (id.startsWith("conn:")) {
     return {
       width: compact ? CONN_NODE_WIDTH_COMPACT : CONN_NODE_WIDTH,
       height: compact ? CONN_NODE_HEIGHT_COMPACT : CONN_NODE_HEIGHT,
@@ -247,16 +277,94 @@ function getNodeDimensions(node: Node, compact: boolean): { width: number; heigh
   };
 }
 
+function getNodeDimensions(node: Node, compact: boolean): { width: number; height: number } {
+  return getDimensionsForId(node.id, compact);
+}
+
+// ── De-flattening oversized ranks ────────────────────────────────────
+//
+// dagre only creates a new rank when an edge forces one. A large set of
+// nodes with few or no edges between them (e.g. a group of 70+ jobs that
+// rarely call each other directly) all land on the SAME rank, and dagre
+// spreads them along the perpendicular axis with no limit - the result is
+// one endless line ("barcode"), not a genuine layout problem so much as an
+// absent one. This wraps any rank above `MAX_NODES_PER_FLAT_RANK` into a
+// grid instead, preserving whatever order dagre/barycenter did assign.
+// `clusterOf` (compound layouts only) keeps wrapping scoped within a
+// node's own group cluster, never merging two groups' members together.
+
+export const MAX_NODES_PER_FLAT_RANK = 12;
+
+export function deflattenOversizedRanks(
+  nodes: Node[],
+  direction: "TB" | "LR",
+  compact: boolean,
+  nodesep: number,
+  ranksep: number,
+  clusterOf?: Map<string, string>,
+): Node[] {
+  const rankAxis: "x" | "y" = direction === "TB" ? "y" : "x";
+  const orderAxis: "x" | "y" = direction === "TB" ? "x" : "y";
+
+  const buckets = new Map<string, Node[]>();
+  for (const n of nodes) {
+    const rankCoord = Math.round(n.position[rankAxis]);
+    const cluster = clusterOf?.get(n.id) ?? "";
+    const key = `${cluster}:${rankCoord}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key)!.push(n);
+  }
+
+  const result: Node[] = [];
+  for (const members of buckets.values()) {
+    if (members.length <= MAX_NODES_PER_FLAT_RANK) {
+      result.push(...members);
+      continue;
+    }
+
+    // Preserve dagre's chosen order along the perpendicular axis.
+    const sorted = [...members].sort((a, b) => a.position[orderAxis] - b.position[orderAxis]);
+    const rankBase = sorted[0].position[rankAxis];
+    const orderBase = sorted[0].position[orderAxis];
+
+    let maxW = 0;
+    let maxH = 0;
+    for (const n of sorted) {
+      const { width, height } = getNodeDimensions(n, compact);
+      maxW = Math.max(maxW, width);
+      maxH = Math.max(maxH, height);
+    }
+    const along = direction === "TB" ? maxW + nodesep : maxH + nodesep;
+    const across = direction === "TB" ? maxH + ranksep : maxW + ranksep;
+
+    sorted.forEach((n, idx) => {
+      const row = Math.floor(idx / MAX_NODES_PER_FLAT_RANK);
+      const col = idx % MAX_NODES_PER_FLAT_RANK;
+      const orderPos = orderBase + col * along;
+      const rankPos = rankBase + row * across;
+      result.push({
+        ...n,
+        position: direction === "TB" ? { x: orderPos, y: rankPos } : { x: rankPos, y: orderPos },
+      });
+    });
+  }
+
+  return result;
+}
+
 export function applyDagreLayout(
   nodes: Node[],
   edges: Edge[],
   direction: "TB" | "LR" = "TB",
   compact = false,
 ): Node[] {
-  // Detect if overview mode (has group summary nodes) — use wider spacing
+  // Detect if overview mode (has group summary nodes) — use wider spacing.
+  // Rank separation is intentionally generous: smoothstep edges arc between
+  // ranks, so extra room between ranks trades vertical space for far fewer
+  // edge crossings and overlaps (the project-level "spaghetti fan" fix).
   const hasGroupNodes = nodes.some((n) => n.id.startsWith("group:"));
-  const nodesep = hasGroupNodes ? 80 : (compact ? 30 : 60);
-  const ranksep = hasGroupNodes ? 100 : (compact ? 40 : 80);
+  const nodesep = hasGroupNodes ? 90 : (compact ? 40 : 70);
+  const ranksep = hasGroupNodes ? 150 : (compact ? 80 : 130);
 
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -273,7 +381,7 @@ export function applyDagreLayout(
 
   dagre.layout(g);
 
-  return nodes.map((node) => {
+  const positioned = nodes.map((node) => {
     const pos = g.node(node.id);
     const { width, height } = getNodeDimensions(node, compact);
     return {
@@ -281,6 +389,8 @@ export function applyDagreLayout(
       position: { x: pos.x - width / 2, y: pos.y - height / 2 },
     };
   });
+
+  return deflattenOversizedRanks(positioned, direction, compact, nodesep, ranksep);
 }
 
 export function computeGroupBoundingBoxes(
@@ -414,6 +524,9 @@ export function manifestToCollapsedFlow(
 
   // Track which connections are actually referenced
   const referencedConns = new Set<string>();
+  // Dedup the aggregated group->system edges: at most one per (group, conn)
+  // pair regardless of how many jobs in a collapsed group use the connection.
+  const emittedGroupUses = new Set<string>();
 
   // ── Create nodes per group ───────────────────────────────────────
   for (const [group, jobs] of groupJobMap) {
@@ -494,7 +607,7 @@ export function manifestToCollapsedFlow(
           id: `calls:${caller}:${callee}`,
           source: `job:${caller}`,
           target: `job:${callee}`,
-          type: "default",
+          type: PROJECT_EDGE_TYPE,
           animated: true,
           style: { stroke: "#3b82f6", strokeWidth: 1.5 },
           markerEnd: { type: "arrowclosed" as const, color: "#3b82f6", width: 16, height: 16 },
@@ -514,7 +627,7 @@ export function manifestToCollapsedFlow(
             id: edgeKey,
             source: sourceId,
             target: targetId,
-            type: "default",
+            type: PROJECT_EDGE_TYPE,
             animated: true,
             style: { stroke: "#3b82f6", strokeWidth: 1.5 },
             markerEnd: { type: "arrowclosed" as const, color: "#3b82f6", width: 16, height: 16 },
@@ -535,7 +648,7 @@ export function manifestToCollapsedFlow(
       id: `agg:${key}`,
       source,
       target,
-      type: "default",
+      type: PROJECT_EDGE_TYPE,
       animated: true,
       label: count > 1 ? String(count) : undefined,
       labelStyle: { fill: "#1e40af", fontWeight: 700, fontSize: 11 },
@@ -549,6 +662,18 @@ export function manifestToCollapsedFlow(
   }
 
   // ── Connection edges ─────────────────────────────────────────────
+  //
+  // Expanded group  -> one edge PER JOB per connection (`uses:{job}:{conn}`):
+  //   the detail view wants to see exactly which job talks to which system.
+  // Collapsed group -> ONE aggregated edge per (group, connection) pair
+  //   (`grp-uses:{group}:{conn}`): a connection "belongs" to a group when ANY
+  //   job in that group uses it. This is the overview's clean answer to "what
+  //   does this group talk to?" instead of every job fanning its own dashed
+  //   line to the shared connection nodes (the old spaghetti). Mixed state
+  //   works because the decision is made per job by its own group: a connection
+  //   used by both an expanded and a collapsed group receives the expanded
+  //   group's per-job edge AND the collapsed group's aggregated edge, while the
+  //   single conn node is emitted once below.
   for (const [job, conns] of Object.entries(manifest.job_connections_used || {})) {
     const jobGroup = jobGroupLookup.get(job) || "Ungrouped";
     const jobExpanded = expanded.has(jobGroup);
@@ -560,23 +685,24 @@ export function manifestToCollapsedFlow(
           id: `uses:${job}:${conn}`,
           source: `job:${job}`,
           target: `conn:${conn}`,
-          type: "default",
+          type: PROJECT_EDGE_TYPE,
           style: { stroke: "#a855f7", strokeWidth: 1, strokeDasharray: "6 3" },
           markerEnd: { type: "arrowclosed" as const, color: "#a855f7", width: 14, height: 14 },
           data: { edgeType: "uses" },
         });
       } else {
-        const edgeId = `uses-group:${jobGroup}:${conn}`;
-        if (!edges.some((e) => e.id === edgeId)) {
+        const edgeId = `grp-uses:${jobGroup}:${conn}`;
+        if (!emittedGroupUses.has(edgeId)) {
+          emittedGroupUses.add(edgeId);
           referencedConns.add(conn);
           edges.push({
             id: edgeId,
             source: `group:${jobGroup}`,
             target: `conn:${conn}`,
-            type: "default",
+            type: PROJECT_EDGE_TYPE,
             style: { stroke: "#a855f7", strokeWidth: 1, strokeDasharray: "6 3" },
             markerEnd: { type: "arrowclosed" as const, color: "#a855f7", width: 14, height: 14 },
-            data: { edgeType: "uses" },
+            data: { edgeType: "group-uses" },
           });
         }
       }
@@ -631,6 +757,76 @@ export interface ExpandAnchor {
   groupPosition: { x: number; y: number };
 }
 
+interface AABB {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** Axis-aligned bounding box of a set of laid-out nodes (position + footprint). */
+function nodesAABB(nodes: Node[], compact: boolean): AABB | null {
+  if (nodes.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const n of nodes) {
+    const { width, height } = getNodeDimensions(n, compact);
+    minX = Math.min(minX, n.position.x);
+    minY = Math.min(minY, n.position.y);
+    maxX = Math.max(maxX, n.position.x + width);
+    maxY = Math.max(maxY, n.position.y + height);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Reserve space for a newly-placed cluster during a partial (in-place) relayout.
+ *
+ * A partial expand/collapse places the incoming nodes but leaves every surviving
+ * node at its saved position. When the incoming cluster is LARGER than the
+ * footprint it replaced (the classic case: a group summary card, ~240x110,
+ * expands into a wide row of job nodes), the cluster overruns its neighbours and
+ * renders on top of sibling collapsed cards / connection nodes.
+ *
+ * This pushes every surviving node radially outward from the cluster centre by
+ * exactly the amount the new cluster overflows the `hole` (the box the removed
+ * node[s] used to occupy), on whichever axis it overflowed. Correctness:
+ *   - dagre produced a non-overlapping layout, so every surviving node was
+ *     disjoint from the hole -> separated on at least one axis.
+ *   - a node separated on X (fully left/right of the hole) has its centre on
+ *     that side of the cluster centre, so the X-shift moves it clear; likewise
+ *     for Y. Whichever axis it was separated on, that shift clears it.
+ *   - survivors on the same side translate by the same vector (relative layout
+ *     preserved); survivors on opposite sides only diverge. No new overlaps.
+ * A no-op when the cluster fits inside the hole (e.g. every collapse).
+ */
+function makeRoomForCluster(
+  existing: Node[],
+  cluster: AABB,
+  hole: AABB,
+  compact: boolean,
+): Node[] {
+  const left = Math.max(0, hole.minX - cluster.minX);
+  const right = Math.max(0, cluster.maxX - hole.maxX);
+  const top = Math.max(0, hole.minY - cluster.minY);
+  const bottom = Math.max(0, cluster.maxY - hole.maxY);
+  if (left === 0 && right === 0 && top === 0 && bottom === 0) return existing;
+
+  const cx = (cluster.minX + cluster.maxX) / 2;
+  const cy = (cluster.minY + cluster.maxY) / 2;
+
+  return existing.map((n) => {
+    const { width, height } = getNodeDimensions(n, compact);
+    const nodeCx = n.position.x + width / 2;
+    const nodeCy = n.position.y + height / 2;
+    const dx = nodeCx <= cx ? -left : right;
+    const dy = nodeCy <= cy ? -top : bottom;
+    return { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } };
+  });
+}
+
 /**
  * Partial layout: positions existing nodes at their saved positions
  * and runs a mini dagre for new nodes anchored at the group's position.
@@ -665,6 +861,25 @@ export function localExpandLayout(
     return existingPositioned;
   }
 
+  // The "hole" the vanished node[s] left behind. Surviving nodes are pushed out
+  // only when the incoming cluster overflows this box (see makeRoomForCluster).
+  const currentIds = new Set(nodes.map((n) => n.id));
+  const removedIds = [...savedPositions.keys()].filter((id) => !currentIds.has(id));
+  let hole: AABB | null = null;
+  for (const id of removedIds) {
+    const pos = savedPositions.get(id)!;
+    const { width, height } = getDimensionsForId(id, compact);
+    const box = { minX: pos.x, minY: pos.y, maxX: pos.x + width, maxY: pos.y + height };
+    hole = hole
+      ? {
+          minX: Math.min(hole.minX, box.minX),
+          minY: Math.min(hole.minY, box.minY),
+          maxX: Math.max(hole.maxX, box.maxX),
+          maxY: Math.max(hole.maxY, box.maxY),
+        }
+      : box;
+  }
+
   // For collapse (typically 1 new summary node): place directly at anchor
   if (anchor.action === "collapse") {
     const collapsePositioned = newNodes.map((node) => ({
@@ -674,7 +889,12 @@ export function localExpandLayout(
         y: groupPosition.y,
       },
     }));
-    return [...existingPositioned, ...collapsePositioned];
+    const cluster = nodesAABB(collapsePositioned, compact);
+    const roomed =
+      hole && cluster
+        ? makeRoomForCluster(existingPositioned, cluster, hole, compact)
+        : existingPositioned;
+    return [...roomed, ...collapsePositioned];
   }
 
   // For expand: run mini dagre on new nodes with tight spacing
@@ -683,9 +903,13 @@ export function localExpandLayout(
     (e) => newNodeIds.has(e.source) && newNodeIds.has(e.target),
   );
 
+  // Wider rank separation than before so a freshly-expanded group's members
+  // spread out with curved edges instead of stacking into overlapping lines.
+  const expandNodesep = compact ? 20 : 32;
+  const expandRanksep = compact ? 44 : 64;
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: direction, nodesep: compact ? 16 : 24, ranksep: compact ? 24 : 36 });
+  g.setGraph({ rankdir: direction, nodesep: expandNodesep, ranksep: expandRanksep });
   for (const node of newNodes) {
     const { width, height } = getNodeDimensions(node, compact);
     g.setNode(node.id, { width, height });
@@ -694,11 +918,21 @@ export function localExpandLayout(
     g.setEdge(edge.source, edge.target);
   }
   dagre.layout(g);
-  const laid = newNodes.map((node) => {
+  const rawLaid = newNodes.map((node) => {
     const pos = g.node(node.id);
     const { width, height } = getNodeDimensions(node, compact);
     return { ...node, position: { x: pos.x - width / 2, y: pos.y - height / 2 } };
   });
+  // A group with many loosely-connected members (e.g. 70+ jobs that rarely
+  // call each other) all land on dagre's rank 0 with no limit on how far
+  // they spread - wrap any oversized rank into a grid before centering.
+  const laid = deflattenOversizedRanks(
+    rawLaid,
+    direction,
+    compact,
+    expandNodesep,
+    expandRanksep,
+  );
 
   // Compute centroid of the dagre result
   let cx = 0;
@@ -721,7 +955,16 @@ export function localExpandLayout(
     },
   }));
 
-  return [...existingPositioned, ...newPositioned];
+  // Push surviving siblings out of the way of the freshly-expanded cluster so a
+  // wide job row never renders on top of a sibling collapsed card or the shared
+  // connection nodes (the mixed-state overlap bug).
+  const cluster = nodesAABB(newPositioned, compact);
+  const roomed =
+    hole && cluster
+      ? makeRoomForCluster(existingPositioned, cluster, hole, compact)
+      : existingPositioned;
+
+  return [...roomed, ...newPositioned];
 }
 
 /**
@@ -735,9 +978,11 @@ export function applyCompoundDagreLayout(
   compact: boolean = false,
   groupMembership: Map<string, string> = new Map(), // nodeId → groupId
 ): Node[] {
+  // Generous rank separation for the same reason as applyDagreLayout: curved
+  // project-level edges read far better with breathing room between ranks.
   const hasGroupNodes = nodes.some((n) => n.id.startsWith("group:"));
-  const nodesep = hasGroupNodes ? 80 : (compact ? 30 : 60);
-  const ranksep = hasGroupNodes ? 100 : (compact ? 50 : 100);
+  const nodesep = hasGroupNodes ? 90 : (compact ? 40 : 70);
+  const ranksep = hasGroupNodes ? 150 : (compact ? 90 : 150);
 
   const g = new dagre.graphlib.Graph({ compound: true });
   g.setDefaultEdgeLabel(() => ({}));
@@ -772,7 +1017,7 @@ export function applyCompoundDagreLayout(
 
   dagre.layout(g);
 
-  return nodes.map((node) => {
+  const positioned = nodes.map((node) => {
     const pos = g.node(node.id);
     const { width, height } = getNodeDimensions(node, compact);
     return {
@@ -780,4 +1025,6 @@ export function applyCompoundDagreLayout(
       position: { x: pos.x - width / 2, y: pos.y - height / 2 },
     };
   });
+
+  return deflattenOversizedRanks(positioned, direction, compact, nodesep, ranksep, groupMembership);
 }

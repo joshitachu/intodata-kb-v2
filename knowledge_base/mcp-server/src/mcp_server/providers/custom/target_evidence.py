@@ -33,8 +33,9 @@ COMPONENT_REF_RE = re.compile(r"\bt[A-Z][A-Za-z0-9]*_\d+\b")
 
 # Params worth quoting verbatim in the component inventory. Everything not
 # matched here is scanner noise for documentation purposes (screen offsets,
-# label positions, repository ids, ...).
-_HIGH_SIGNAL_PARAM_NAMES = frozenset({
+# label positions, repository ids, ...). Public: also reused by the job graph
+# service (services/job_graph_service.py) for node param summaries.
+HIGH_SIGNAL_PARAM_NAMES = frozenset({
     "DIE_ON_ERROR", "FAILON", "DIE_ON_CHILD_ERROR", "TRANSMIT_WHOLE_CONTEXT",
     "QUERY", "TABLE", "TABLE_ACTION", "DATA_ACTION", "COMMIT_EVERY",
     "USE_BATCH_SIZE", "BATCH_SIZE", "USE_SHARED_CONNECTION",
@@ -43,7 +44,7 @@ _HIGH_SIGNAL_PARAM_NAMES = frozenset({
     "AS_STRING", "CONDITION", "PROPERTIES", "DBNAME", "SCHEMA_DB",
     "HOST", "PORT", "USER", "METHOD", "ENCODING",
 })
-_HIGH_SIGNAL_PARAM_PATTERN = re.compile(
+HIGH_SIGNAL_PARAM_PATTERN = re.compile(
     r"(URL|ENDPOINT|URI|PATH|DIRECTORY|FOLDER|TRIGGER|SCHEDULE|CRON)", re.IGNORECASE
 )
 _CODE_PARAM_NAMES = ("CODE_START", "CODE_MAIN", "CODE", "CODE_END", "CODE_ONCE", "IMPORT")
@@ -105,7 +106,8 @@ def _load_shared_contexts(scan_output_dir: Path) -> list[dict[str, Any]]:
         return []
 
 
-def _param_map(component: dict[str, Any]) -> dict[str, str]:
+def param_map(component: dict[str, Any]) -> dict[str, str]:
+    """Return a component's params as a first-wins name->value map (public: shared with job graph service)."""
     out: dict[str, str] = {}
     for param in component.get("params", []) or []:
         name = str(param.get("name") or "")
@@ -114,12 +116,12 @@ def _param_map(component: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _component_code(component: dict[str, Any]) -> str:
+def component_code(component: dict[str, Any]) -> str:
     """Prefer the top-level code field (new scans); fall back to CODE params."""
     top = component.get("code")
     if isinstance(top, str) and top.strip():
         return top
-    params = _param_map(component)
+    params = param_map(component)
     parts = []
     for name in _CODE_PARAM_NAMES:
         value = params.get(name, "")
@@ -225,11 +227,11 @@ class TargetEvidenceBuilder:
             lines.append(f"- {unique} ({ctype})")
             if not include_params:
                 continue
-            params = _param_map(comp)
+            params = param_map(comp)
             for name in sorted(params):
                 if name in ("QUERY",) or name in _CODE_PARAM_NAMES:
                     continue  # quoted verbatim in their own sections
-                if name in _HIGH_SIGNAL_PARAM_NAMES or _HIGH_SIGNAL_PARAM_PATTERN.search(name):
+                if name in HIGH_SIGNAL_PARAM_NAMES or HIGH_SIGNAL_PARAM_PATTERN.search(name):
                     value = params[name]
                     if value.strip():
                         lines.append(f"  - {name} = {_escape_cell(value)}")
@@ -239,7 +241,7 @@ class TargetEvidenceBuilder:
     def _render_code(job: dict[str, Any]) -> str:
         blocks: list[str] = []
         for comp in job.get("components", []) or []:
-            code = _component_code(comp)
+            code = component_code(comp)
             if not code.strip():
                 continue
             unique = str(comp.get("unique_name") or "")
@@ -271,7 +273,7 @@ class TargetEvidenceBuilder:
     def _render_sql(job: dict[str, Any]) -> str:
         blocks: list[str] = []
         for comp in job.get("components", []) or []:
-            params = _param_map(comp)
+            params = param_map(comp)
             query = params.get("QUERY", "")
             if len(query.strip()) < 10:
                 continue
