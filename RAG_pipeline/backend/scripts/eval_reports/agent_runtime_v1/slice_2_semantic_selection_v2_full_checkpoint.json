@@ -1,0 +1,10 @@
+{
+  "completed_provider_requests": 72,
+  "effects": 0,
+  "expected_provider_requests": 72,
+  "final_verdict": "GO",
+  "generated_at": "2026-07-20T19:32:50.227894+00:00",
+  "report_version": "2.0.0-full-checkpoint",
+  "snapshot_hash": "ab821a30d83e09bbcf4453bd6f79f16c0d7b82fd29b995256efbcf5d4d7734fd",
+  "status": "COMPLETE"
+}

@@ -1,0 +1,70 @@
+name: vw-reverse-engineering
+version: "1.3.0"
+description: >-
+  Reverse-engineering pack for Talend integrations. Produces one complete
+  reverse-engineering template (MAS2 Fase 2 structure) per scanned Talend job.
+  Every claim is
+  marked FACT (with source reference), ASSUMPTION (with reasoning/confidence),
+  or UNKNOWN / validation question. Technical discovery for rationalisation,
+  not a one-to-one rebuild blueprint. Each generated document is scoped to one
+  scanned job.
+
+phases:
+  investigation: run
+  analysis: run
+  scorecard: run
+  doc_bundles: run
+
+docs:
+  # One complete template per scanned job in scope.
+  - name: 01_INTERFACE_TEMPLATE
+    per_job: true
+    required_sections:
+      - Scope And Interfaces In This Document
+      - Integration Name
+      - Contact Information
+      - Business Context And Criticality
+      - Functional Requirements
+      - Integration Patterns
+      - Technical Implementation (IST)
+      - Quality Requirements
+      - Data Mapping
+      - Interface Specification
+      - Error Handling And Monitoring
+      - Testing
+      - Open Items For This Interface
+
+validation:
+  unknown_policy: explicit
+  mode: blocking
+
+quality_gates:
+  mode: blocking
+  required_terms:
+    - FACT
+    - ASSUMPTION
+    - VALIDATION QUESTION
+  required_evidence_terms:
+    - file
+    - component
+    - context
+  required_sections:
+    01_INTERFACE_TEMPLATE:
+      - Integration Name
+      - Contact Information
+      - Business Context And Criticality
+      - Functional Requirements
+      - Integration Patterns
+      - Technical Implementation (IST)
+      - Quality Requirements
+      - Data Mapping
+      - Interface Specification
+      - Error Handling And Monitoring
+      - Testing
+      - Open Items For This Interface
+  min_doc_bytes:
+    01_INTERFACE_TEMPLATE: 6000
+
+steps:
+  - id: generate_docs
+    type: harness
