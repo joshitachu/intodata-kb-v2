@@ -1,4 +1,4 @@
-import { ArrowDownUp, ChevronDown, ChevronUp, Eye, EyeOff, Layers, Maximize, Minimize2, Search, X } from "lucide-react";
+import { Activity, ArrowDownUp, ChevronDown, ChevronUp, Crosshair, Eye, EyeOff, Layers, Maximize, Minimize2, Search, Target, X } from "lucide-react";
 import type { GroupColor } from "@/lib/graphTransform";
 
 interface GraphToolbarProps {
@@ -27,6 +27,18 @@ interface GraphToolbarProps {
   onCollapseAll: () => void;
   onExpandAll: () => void;
   expandedGroups: Set<string>;
+  // Runtime-health overlay (S3).
+  healthOverlay: boolean;
+  onToggleHealthOverlay: () => void;
+  healthAvailable: boolean;
+  // Failure-focus dimming: dim everything outside the failing cascade.
+  focusFailures: boolean;
+  onToggleFocusFailures: () => void;
+  focusAvailable: boolean;
+  // Focus mode (click-to-centre neighbourhood exploration).
+  focusJobName: string | null;
+  focusHops: number;
+  onClearFocus: () => void;
 }
 
 function ToolbarButton({
@@ -76,9 +88,44 @@ export function GraphToolbar({
   onCollapseAll,
   onExpandAll,
   expandedGroups,
+  healthOverlay,
+  onToggleHealthOverlay,
+  healthAvailable,
+  focusFailures,
+  onToggleFocusFailures,
+  focusAvailable,
+  focusJobName,
+  focusHops,
+  onClearFocus,
 }: GraphToolbarProps) {
   return (
     <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 bg-white/80 backdrop-blur-sm flex-wrap">
+      {/* Focus mode pill: shown while a focal job neighbourhood is active. */}
+      {focusJobName && (
+        <>
+          <div
+            data-testid="focus-mode-pill"
+            className="flex items-center gap-1.5 rounded-full bg-slate-800 pl-2.5 pr-1.5 py-1 text-[11px] font-semibold text-white shadow-sm"
+          >
+            <Crosshair className="h-3.5 w-3.5" />
+            <span>Focus: {focusJobName}</span>
+            <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[9px] font-bold">
+              {focusHops} hop{focusHops === 1 ? "" : "s"}
+            </span>
+            <button
+              onClick={onClearFocus}
+              data-testid="focus-mode-clear"
+              className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full hover:bg-white/20 transition-colors"
+              title="Clear focus and return to the overview"
+              aria-label="Clear focus"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="w-px h-5 bg-slate-200" />
+        </>
+      )}
+
       {/* View mode toggle */}
       <div className="flex rounded-lg border border-slate-200 overflow-hidden shadow-sm">
         <button
@@ -114,9 +161,9 @@ export function GraphToolbar({
           <ArrowDownUp className="h-3.5 w-3.5" />
           {direction === "TB" ? "Top-Down" : "Left-Right"}
         </ToolbarButton>
-        <ToolbarButton onClick={onToggleConnections} active={showConnections} title={showConnections ? "Hide connections" : "Show connections"}>
+        <ToolbarButton onClick={onToggleConnections} active={showConnections} title={showConnections ? "Hide shared connection nodes" : "Show shared connection nodes"}>
           {showConnections ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-          Conn
+          Connections
         </ToolbarButton>
         <ToolbarButton onClick={onToggleCompact} active={compactMode} title={compactMode ? "Switch to detailed view" : "Switch to compact view"}>
           <Minimize2 className="h-3.5 w-3.5" />
@@ -126,6 +173,50 @@ export function GraphToolbar({
           <Maximize className="h-3.5 w-3.5" />
           Fit
         </ToolbarButton>
+        <button
+          onClick={onToggleHealthOverlay}
+          disabled={!healthAvailable}
+          data-testid="health-overlay-toggle"
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all duration-150
+            ${!healthAvailable
+              ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+              : healthOverlay
+                ? "bg-slate-800 text-white border-slate-700 shadow-sm"
+                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300"
+            }`}
+          title={
+            !healthAvailable
+              ? "No runtime health data for this project"
+              : healthOverlay
+                ? "Hide runtime-health overlay"
+                : "Show runtime-health overlay"
+          }
+        >
+          <Activity className="h-3.5 w-3.5" />
+          Health
+        </button>
+        <button
+          onClick={onToggleFocusFailures}
+          disabled={!focusAvailable}
+          data-testid="focus-failures-toggle"
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all duration-150
+            ${!focusAvailable
+              ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+              : focusFailures
+                ? "bg-slate-800 text-white border-slate-700 shadow-sm"
+                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300"
+            }`}
+          title={
+            !focusAvailable
+              ? "No active failures to focus on"
+              : focusFailures
+                ? "Show the whole graph"
+                : "Dim everything outside the failing path"
+          }
+        >
+          <Target className="h-3.5 w-3.5" />
+          Focus failures
+        </button>
       </div>
 
       <div className="w-px h-5 bg-slate-200" />
@@ -167,7 +258,7 @@ export function GraphToolbar({
                   onClick={() => onToggleGroup(group)}
                   className="px-2 py-1 text-[10px] rounded-full border font-semibold transition-all duration-150 flex items-center gap-0.5"
                   style={{
-                    background: isExpanded ? `linear-gradient(135deg, ${color?.bg}, white)` : "white",
+                    background: isExpanded ? (color?.bg ?? "white") : "white",
                     borderColor: isExpanded ? color?.border : `${color?.border}40`,
                     color: color?.text || "#333",
                     opacity: isExpanded ? 1 : 0.55,
@@ -187,7 +278,7 @@ export function GraphToolbar({
                 onClick={() => onToggleGroup(group)}
                 className="px-2 py-1 text-[10px] rounded-full border font-semibold transition-all duration-150"
                 style={{
-                  background: isHidden ? "white" : `linear-gradient(135deg, ${color?.bg}, white)`,
+                  background: isHidden ? "white" : (color?.bg ?? "white"),
                   borderColor: isHidden ? `${color?.border}30` : `${color?.border}60`,
                   color: color?.text || "#333",
                   opacity: isHidden ? 0.35 : 1,

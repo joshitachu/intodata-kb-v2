@@ -22,7 +22,7 @@ from src.harness.manifest import (
 from src.harness.models import (
     ActivityEvent,
     CapabilityDefinition,
-    RUNTIME_EVIDENCE_CAPABILITY,
+    STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY,
     WorkflowRun,
     WorkflowRunStatus,
     WorkflowInterrupt,
@@ -38,6 +38,15 @@ from src.harness.connectors.capabilities import build_request_capability_registr
 from src.harness.evidence_store import EvidenceSnapshot, HarnessEvidenceRepository
 from src.harness.providers.mcp_docs import McpDocumentationProvider
 from src.harness.reconciliation import DocumentationWorkflowReconciler
+from src.harness.workflow_control import (
+    WorkflowCancellationController,
+    WorkflowCancellationOutcome,
+)
+from src.harness.workflow_resume import (
+    resume_documentation_generation_workflow,
+    resume_documentation_update_workflow,
+    resume_project_onboarding_workflow,
+)
 from src.rbac.permissions import get_user_permissions, get_user_project_ids
 from src.runtime.models import RuntimeSourceTypeInfo
 from src.runtime.source_registry import all_source_providers
@@ -177,8 +186,8 @@ async def list_connectors(user: CurrentUser) -> HarnessConnectorListResponse:
                     credential_schema=provider.credential_schema(),
                 ).credential_schema
             ],
-            capability_ids=[RUNTIME_EVIDENCE_CAPABILITY.id],
-            risk_tier=RUNTIME_EVIDENCE_CAPABILITY.risk_tier.value,
+            capability_ids=[STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.id],
+            risk_tier=STRUCTURED_RUNTIME_EVIDENCE_CAPABILITY.risk_tier.value,
             enabled=True,
         )
         for provider in all_source_providers()
@@ -188,6 +197,7 @@ async def list_connectors(user: CurrentUser) -> HarnessConnectorListResponse:
 
 @router.get("/workflows", response_model=WorkflowRunListResponse)
 async def list_workflow_runs(
+    request: Request,
     user: CurrentUser,
     db: DBSession,
     conversation_id: int | None = None,
@@ -209,12 +219,32 @@ async def list_workflow_runs(
         owner_user_id=user.id,
         limit=limit,
     )
+    reconciler = DocumentationWorkflowReconciler(repo, McpDocumentationProvider())
+    reconciled_runs: list[WorkflowRun] = []
+    for run in runs:
+        if run.capability_id == "mcp.docs.generate_project_documentation" and (
+            run.status in {
+                WorkflowRunStatus.RUNNING,
+                WorkflowRunStatus.TRIGGERED,
+                WorkflowRunStatus.INDETERMINATE,
+            }
+            or any(child.status not in {"succeeded", "failed", "cancelled"} for child in run.children)
+        ):
+            run = (
+                await reconciler.reconcile(
+                    run,
+                    access_token=request.cookies.get("access_token"),
+                )
+            ).run
+        reconciled_runs.append(run)
+    runs = reconciled_runs
     return WorkflowRunListResponse(runs=runs, total=len(runs))
 
 
 @router.get("/workflows/{run_id}", response_model=WorkflowRunDetailResponse)
 async def get_workflow_run(
     run_id: int,
+    request: Request,
     user: CurrentUser,
     db: DBSession,
 ) -> WorkflowRunDetailResponse:
@@ -222,6 +252,22 @@ async def get_workflow_run(
     repo = HarnessWorkflowRepository(db)
     try:
         run = await repo.get_run(scope, run_id, owner_user_id=user.id)
+        if run.capability_id == "mcp.docs.generate_project_documentation" and (
+            run.status in {
+                WorkflowRunStatus.RUNNING,
+                WorkflowRunStatus.TRIGGERED,
+                WorkflowRunStatus.INDETERMINATE,
+            }
+            or any(child.status not in {"succeeded", "failed", "cancelled"} for child in run.children)
+        ):
+            run = (
+                await DocumentationWorkflowReconciler(
+                    repo, McpDocumentationProvider()
+                ).reconcile(
+                    run,
+                    access_token=request.cookies.get("access_token"),
+                )
+            ).run
         activity_scope = (
             None
             if scope is None
@@ -251,7 +297,11 @@ async def resume_workflow_run(
     repo = HarnessWorkflowRepository(db)
     service = HarnessWorkflowService(repo, default_capability_registry())
     try:
-        original_run = await repo.get_run([], run_id, owner_user_id=user.id)
+        original_run = await repo.get_run(
+            await get_user_project_ids(user, db),
+            run_id,
+            owner_user_id=user.id,
+        )
         pending_interrupt = await repo.get_interrupt_for_owner(
             payload.interrupt_id, run_id, user.id
         )
@@ -280,8 +330,6 @@ async def resume_workflow_run(
                 pending_interrupt.scope_snapshot.get("available_projects"), list
             )
         ):
-            from src.harness.chat import resume_documentation_generation_workflow
-
             run, _ = await resume_documentation_generation_workflow(
                 run=run,
                 project_id=payload.response.strip(),
@@ -295,8 +343,6 @@ async def resume_workflow_run(
             original_run.intent_mode == "project_onboarding"
             and pending_interrupt.interrupt_type == WorkflowInterruptType.CLARIFICATION
         ):
-            from src.harness.chat import resume_project_onboarding_workflow
-
             run, _ = await resume_project_onboarding_workflow(
                 run=run,
                 response_value=payload.response.strip(),
@@ -317,8 +363,6 @@ async def resume_workflow_run(
             normalized = payload.response.strip().lower()
             if normalized not in {"approve", "approved", "yes", "decline", "declined", "no"}:
                 raise ValueError("Choose approve or decline")
-            from src.harness.chat import resume_documentation_update_workflow
-
             run, _ = await resume_documentation_update_workflow(
                 run=run,
                 approved=normalized in {"approve", "approved", "yes"},
@@ -348,24 +392,34 @@ async def resume_workflow_run(
 async def cancel_workflow_run(
     run_id: int,
     payload: WorkflowCancelRequest,
+    request: Request,
     user: CurrentUser,
     db: DBSession,
 ) -> WorkflowActionResponse:
-    service = HarnessWorkflowService(HarnessWorkflowRepository(db), default_capability_registry())
-    try:
-        run = await service.cancel(
-            run_id=run_id,
-            owner_user_id=user.id,
-            expected_version=payload.expected_version,
-            reason=payload.reason,
-        )
-    except HarnessRunNotFoundError:
-        await db.rollback()
-        raise HTTPException(status_code=404, detail="Workflow run not found")
-    except HarnessWorkflowConflictError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Workflow state changed; reload and retry")
-    return WorkflowActionResponse(run=run, message="Workflow cancelled")
+    result = await WorkflowCancellationController(
+        HarnessWorkflowRepository(db), McpDocumentationProvider()
+    ).cancel(
+        owner_user_id=user.id,
+        project_scope=await get_user_project_ids(user, db),
+        conversation_id=None,
+        workflow_reference=str(run_id),
+        access_token=request.cookies.get("access_token"),
+        expected_version=payload.expected_version,
+        reason=payload.reason,
+    )
+    if result.outcome is WorkflowCancellationOutcome.NO_MATCH:
+        raise HTTPException(status_code=404, detail=result.message)
+    if result.outcome is WorkflowCancellationOutcome.PROVIDER_UNAVAILABLE:
+        raise HTTPException(status_code=503, detail=result.message)
+    if result.outcome in {
+        WorkflowCancellationOutcome.AMBIGUOUS,
+        WorkflowCancellationOutcome.CONFLICT,
+        WorkflowCancellationOutcome.NOT_CANCELLABLE,
+    }:
+        raise HTTPException(status_code=409, detail=result.message)
+    if result.run is None:
+        raise HTTPException(status_code=409, detail=result.message)
+    return WorkflowActionResponse(run=result.run, message=result.message)
 
 
 @router.post("/workflows/{run_id}/reconcile", response_model=WorkflowActionResponse)
@@ -388,7 +442,7 @@ async def reconcile_workflow_run(
         raise HTTPException(status_code=404, detail="Workflow run not found")
     if run.capability_id != "mcp.docs.generate_project_documentation":
         raise HTTPException(status_code=409, detail="Workflow does not support documentation reconciliation")
-    if run.status not in {
+    if not run.children and run.status not in {
         WorkflowRunStatus.RUNNING,
         WorkflowRunStatus.TRIGGERED,
         WorkflowRunStatus.INDETERMINATE,

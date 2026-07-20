@@ -117,4 +117,34 @@ describe("HarnessActivityStatus", () => {
     expect(screen.queryByText(/mcp\.docs\.search/)).not.toBeInTheDocument();
     expect(screen.queryByText(/search_documents/)).not.toBeInTheDocument();
   });
+
+  it("renders activity history without inferring canonical workflow state or timing", () => {
+    render(
+      <HarnessActivityStatus
+        activities={[
+          {
+            event_type: "provider.request",
+            label: "Starting documentation generation",
+            status: "running",
+            safe_details: {},
+            timestamp: "2026-07-18T12:00:00Z",
+          },
+          {
+            event_type: "graph.completed",
+            label: "Graph workflow completed",
+            status: "completed",
+            safe_details: {},
+            timestamp: "2026-07-18T12:00:05Z",
+            workflow_status: "failed",
+            workflow_started_at: "2026-07-18T12:00:00Z",
+            workflow_finished_at: "2026-07-18T12:00:12Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Complete")).toBeInTheDocument();
+    expect(screen.queryByText("12s")).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
+  });
 });

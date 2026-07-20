@@ -25,11 +25,12 @@ function parse(searchParams: URLSearchParams): ConversationUrlState {
   return { activeId: null, isNew: false };
 }
 
-function buildSearch(state: ConversationUrlState): string {
-  if (state.activeId !== null) {
-    return `?${CONVERSATION_PARAM}=${state.activeId}`;
-  }
-  return "";
+function buildSearch(searchParams: URLSearchParams, state: ConversationUrlState): string {
+  const next = new URLSearchParams(searchParams);
+  if (state.activeId !== null) next.set(CONVERSATION_PARAM, String(state.activeId));
+  else next.delete(CONVERSATION_PARAM);
+  const value = next.toString();
+  return value ? `?${value}` : "";
 }
 
 export function useUrlConversationId(): ConversationUrlState {
@@ -43,15 +44,16 @@ export function useSyncUrlConversationId(
 ): void {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const lastWrittenRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (pathname !== "/") return;
     if (activeId === null) return;
 
-    const next = buildSearch({ activeId, isNew });
+    const next = buildSearch(searchParams, { activeId, isNew });
     if (lastWrittenRef.current === next) return;
     lastWrittenRef.current = next;
     router.replace(`${pathname}${next}`);
-  }, [activeId, isNew, pathname, router]);
+  }, [activeId, isNew, pathname, router, searchParams]);
 }
