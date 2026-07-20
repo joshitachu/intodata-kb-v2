@@ -1,0 +1,64 @@
+{
+  "effects": {
+    "approvals": 0,
+    "consequential_executions": 0,
+    "executor_read_calls": 1,
+    "plans": 0,
+    "tasks": 0,
+    "turn_claims": 0,
+    "workflows": 0,
+    "writes": 0
+  },
+  "generated_at": "2026-07-20T20:35:30.049561+00:00",
+  "leak_guard_blocks_internal_output": true,
+  "mechanics": [
+    {
+      "case": "direct_answer_no_tool",
+      "passed": true,
+      "reads": 0,
+      "verdict": "valid"
+    },
+    {
+      "case": "read_executes_for_real",
+      "consequential_executions": 0,
+      "passed": true,
+      "reads": 1
+    }
+  ],
+  "no_evidence_state_mappings": [
+    {
+      "honest_valid": true,
+      "mislabeled_rejected": true,
+      "required_status": "no_evidence",
+      "state": "no_evidence"
+    },
+    {
+      "honest_valid": true,
+      "mislabeled_rejected": true,
+      "required_status": "source_unavailable",
+      "state": "source_unavailable"
+    },
+    {
+      "honest_valid": true,
+      "mislabeled_rejected": true,
+      "required_status": "scope_denied",
+      "state": "scope_denied"
+    },
+    {
+      "honest_valid": true,
+      "mislabeled_rejected": true,
+      "required_status": "tool_failed",
+      "state": "tool_failed"
+    },
+    {
+      "honest_valid": true,
+      "state": "partial"
+    },
+    {
+      "honest_valid": true,
+      "state": "conflicting"
+    }
+  ],
+  "report_version": "1.0.0",
+  "verdict": "PASS"
+}

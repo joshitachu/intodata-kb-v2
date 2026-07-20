@@ -1,0 +1,528 @@
+{
+  "attempts": [
+    {
+      "actual": [
+        "list_documentation_packs"
+      ],
+      "allowed_tool_sequences": [
+        [
+          "search_documentation"
+        ]
+      ],
+      "assistant_text": "I'll help you find and use Pack documentation to explain your project. Let me first check what documentation Packs are available to you, and then we can search for project information.",
+      "attempt_id": "rag.summary.001.keyword_collision",
+      "effects": 0,
+      "failure_code": "unexpected_tool_trajectory",
+      "family": "documentation_rag",
+      "finish_reason": "tool_calls",
+      "invalid_tool_calls": [],
+      "latency_ms": 2185,
+      "native_tool_calls": [
+        {
+          "arguments": {
+            "scope": "all"
+          },
+          "arguments_sha256": "eaa6a50f1cd88e5d2f2dd767e1c02f73630776d24e781616a775f611e6aa234c",
+          "known_tool": true,
+          "name": "list_documentation_packs",
+          "schema_valid": true,
+          "validation_error_count": 0
+        }
+      ],
+      "outcome": "native_tool_proposal",
+      "passed": false,
+      "prompt": "Use the Pack document to explain the project, not runtime logs.",
+      "usage": {
+        "input_tokens": 7257,
+        "output_tokens": 56,
+        "total_tokens": 7313
+      },
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "allowed_tool_sequences": [
+        [
+          "search_documentation"
+        ]
+      ],
+      "assistant_text": "I'd be happy to help you understand what a fixture project does, but I need a bit more information. Could you clarify which project you're referring to? \n\nFor example:\n- Do you have a specific **project ID** or name?\n- Is this a project you've already onboarded to Nexus, or are you asking about a project in your code repository?\n\nIf you have a project already set up in Nexus, I can search its documentation to explain what it does. Just provide the project identifier and I can look it up for you.",
+      "attempt_id": "rag.summary.001.typo",
+      "effects": 0,
+      "failure_code": "unexpected_tool_trajectory",
+      "family": "documentation_rag",
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2903,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": false,
+      "prompt": "whts this fixture projct actually do?",
+      "usage": {
+        "input_tokens": 7253,
+        "output_tokens": 110,
+        "total_tokens": 7363
+      },
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "allowed_tool_sequences": [
+        []
+      ],
+      "assistant_text": "I understand you want to know what sources I would check without actually performing the search. Here's what I'd consider based on your question:\n\n## Documentation Sources\n- **Project documentation** \u2013 design docs, architecture records, API specifications, runbooks\n- **Generated documents** \u2013 any previously created documentation for your projects\n- **Analysis Packs** \u2013 reusable documentation templates and structures\n\n## Runtime/Operational Sources\n- **Execution logs** \u2013 job runs, workflow executions, scheduled tasks\n- **Runtime health records** \u2013 system health checks, sync status\n- **Failure/incident logs** \u2013 error traces, exceptions, operational issues\n- **Source inventory** \u2013 registered data sources, connections, integrations\n\n## Project Metadata\n- **Project listings** \u2013 what projects exist, their structure\n- **Document inventories** \u2013 what documentation exists per project\n- **Active workflows** \u2013 onboarding, scanning, or documentation generation in progress\n\n## Conversation Context\n- **Current conversation history** \u2013 prior questions and answers in this session\n\n---\n\nWhich type of question are you considering? I can point you to the most relevant sources for:\n- **\"How does X work?\"** \u2192 documentation search\n- **\"Why did X fail?\"** \u2192 runtime logs + execution records\n- **\"What projects do I have?\"** \u2192 metadata queries\n- **\"What's happening right now?\"** \u2192 active workflows + runtime health",
+      "attempt_id": "rag.summary.001.negation",
+      "effects": 0,
+      "failure_code": null,
+      "family": "documentation_rag",
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 6008,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Do not search the documents; just tell me what sources you would check.",
+      "usage": {
+        "input_tokens": 7259,
+        "output_tokens": 285,
+        "total_tokens": 7544
+      },
+      "variant": "negation"
+    },
+    {
+      "actual": [
+        "search_runtime_logs"
+      ],
+      "allowed_tool_sequences": [
+        [
+          "read_runtime_evidence"
+        ],
+        [
+          "search_runtime_logs"
+        ]
+      ],
+      "assistant_text": "I'll search the runtime logs to investigate why the nightly job failed yesterday.",
+      "attempt_id": "runtime.failure.001",
+      "effects": 0,
+      "failure_code": null,
+      "family": "runtime_evidence",
+      "finish_reason": "tool_calls",
+      "invalid_tool_calls": [],
+      "latency_ms": 3672,
+      "native_tool_calls": [
+        {
+          "arguments": {
+            "limit": 20,
+            "question": "nightly job failure yesterday"
+          },
+          "arguments_sha256": "9ba164e65f632baf09d5d64026250034e03e04f374a0d5ca56148bee0777cd16",
+          "known_tool": true,
+          "name": "search_runtime_logs",
+          "schema_valid": true,
+          "validation_error_count": 0
+        }
+      ],
+      "outcome": "native_tool_proposal",
+      "passed": true,
+      "prompt": "Why did the nightly job fail yesterday?",
+      "usage": {
+        "input_tokens": 7252,
+        "output_tokens": 43,
+        "total_tokens": 7295
+      },
+      "variant": "formal"
+    },
+    {
+      "actual": [],
+      "allowed_tool_sequences": [
+        [
+          "read_runtime_evidence"
+        ]
+      ],
+      "assistant_text": "I can only investigate job failures by examining runtime logs, which would require switching to logs as you specifically asked me not to do.\n\nWithout accessing logs, I cannot determine why the nightly job failed yesterday. The failure reason would be recorded in log evidence that I would need to search.\n\nWould you like me to:\n- Search the runtime logs for yesterday's nightly job failure?\n- Check the runtime execution history for failed jobs?\n- Look at active project workflows to see if there are any ongoing issues?",
+      "attempt_id": "runtime.failure.001.keyword_collision",
+      "effects": 0,
+      "failure_code": "unexpected_tool_trajectory",
+      "family": "runtime_evidence",
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2772,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": false,
+      "prompt": "Without switching to logs, Packs, or documents: Why did the nightly job fail yesterday?",
+      "usage": {
+        "input_tokens": 7263,
+        "output_tokens": 102,
+        "total_tokens": 7365
+      },
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "allowed_tool_sequences": [
+        [
+          "query_project_metadata"
+        ],
+        [
+          "search_documentation"
+        ],
+        [
+          "search_documentation",
+          "query_project_metadata"
+        ],
+        [
+          "query_project_metadata",
+          "search_documentation"
+        ]
+      ],
+      "assistant_text": "",
+      "attempt_id": "metadata.talend.001",
+      "effects": 0,
+      "failure_code": null,
+      "family": "metadata",
+      "finish_reason": "tool_calls",
+      "invalid_tool_calls": [],
+      "latency_ms": 1469,
+      "native_tool_calls": [
+        {
+          "arguments": {
+            "query": "Talend projects platform technology stack",
+            "top_k": 20
+          },
+          "arguments_sha256": "74bfe2e14f3dabc5374b59403993461d300fe3dbd703af9919d555478a4486cc",
+          "known_tool": true,
+          "name": "search_documentation",
+          "schema_valid": true,
+          "validation_error_count": 0
+        }
+      ],
+      "outcome": "native_tool_proposal",
+      "passed": true,
+      "prompt": "Which projects use Talend?",
+      "usage": {
+        "input_tokens": 7250,
+        "output_tokens": 31,
+        "total_tokens": 7281
+      },
+      "variant": "formal"
+    },
+    {
+      "actual": [],
+      "allowed_tool_sequences": [
+        []
+      ],
+      "assistant_text": "I'm happy to help, but I need a bit more context. Could you clarify what you're referring to? For example:\n\n- A specific **project** or **document** you want me to work with?\n- A **workflow** you mentioned earlier that needs attention?\n- An **Analysis Pack draft** you'd like me to update or validate?\n- Something else from our conversation?\n\nOnce you let me know which one you mean, I can take care of it for you.",
+      "attempt_id": "metadata.talend.001.ambiguous",
+      "effects": 0,
+      "failure_code": null,
+      "family": "metadata",
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2523,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Can you handle that one?",
+      "usage": {
+        "input_tokens": 7264,
+        "output_tokens": 97,
+        "total_tokens": 7361
+      },
+      "variant": "ambiguous"
+    }
+  ],
+  "corpus": {
+    "invalid_cases_excluded": [
+      "capability.discussion.001.pronoun",
+      "metadata.talend.001.keyword_collision"
+    ],
+    "passed": 4,
+    "total": 7
+  },
+  "effects": 0,
+  "executor_calls": 0,
+  "generated_at": "2026-07-20T17:49:05.058031+00:00",
+  "model_profile": {
+    "base_url": "https://api.moonshot.ai/v1",
+    "max_retries": 0,
+    "max_tokens": 2048,
+    "provider_model": "kimi-k2.5",
+    "reasoning": {
+      "thinking": {
+        "type": "disabled"
+      }
+    },
+    "selected_model": "kimi/kimi-k2.5",
+    "temperature": 0.6,
+    "timeout_seconds": 300.0,
+    "tool_choice": "auto"
+  },
+  "onboarding": {
+    "minimum": 7,
+    "passed": 8,
+    "quality_flag_count": 4,
+    "total": 8
+  },
+  "onboarding_attempts": [
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I'll help you onboard project \"atlas\" from its Git repository. To proceed, I need the repository URL.\n\nWhat is the Git repository URL for project atlas?",
+      "attempt_id": "onboarding-01",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 1545,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Onboard project atlas from its Git repository.",
+      "quality_flags": [],
+      "usage": {
+        "input_tokens": 7253,
+        "output_tokens": 36,
+        "total_tokens": 7289
+      }
+    },
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I'll help you onboard the atlas codebase. To proceed, I need some additional information:\n\n1. **Project ID**: What would you like to name this project? (e.g., \"atlas\", \"atlas-platform\", etc.)\n\n2. **Source type**: How would you like to provide the atlas codebase?\n   - Git repository URL (if it's hosted on GitHub, GitLab, etc.)\n   - ZIP file upload\n\n3. **Platform**: What type of codebase is atlas?\n   - Generic (standard code)\n   - Lobster\n   - Talend\n   - Workato\n\nPlease provide these details so I can initiate the onboarding process.",
+      "attempt_id": "onboarding-02",
+      "clarification_concepts": [
+        "source",
+        "repository",
+        "git",
+        "zip",
+        "upload"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 3208,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Please connect the atlas codebase and begin onboarding it.",
+      "quality_flags": [
+        "requested_project_identity_already_supplied"
+      ],
+      "usage": {
+        "input_tokens": 7254,
+        "output_tokens": 136,
+        "total_tokens": 7390
+      }
+    },
+    {
+      "accepted_outcome": "tool_proposal",
+      "actual": [
+        "onboard_project"
+      ],
+      "allowed_outcome": "tool_required",
+      "assistant_text": "I'll propose onboarding the project \"atlas\" from that Git repository. This will trigger a workflow to connect and scan the source code.",
+      "attempt_id": "onboarding-03",
+      "clarification_concepts": [],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "tool_calls",
+      "invalid_tool_calls": [],
+      "latency_ms": 3186,
+      "native_tool_calls": [
+        {
+          "arguments": {
+            "project_id": "atlas",
+            "repo_url": "https://example.invalid/atlas.git",
+            "source_type": "git"
+          },
+          "arguments_sha256": "e8f19bd7623456f59cc4b4a48d0af59451aab29ef3eed4cf0c97af02f83ad95d",
+          "known_tool": true,
+          "name": "onboard_project",
+          "schema_valid": true,
+          "validation_error_count": 0
+        }
+      ],
+      "outcome": "native_tool_proposal",
+      "passed": true,
+      "prompt": "Set up project atlas from https://example.invalid/atlas.git.",
+      "quality_flags": [],
+      "usage": {
+        "input_tokens": 7257,
+        "output_tokens": 63,
+        "total_tokens": 7320
+      }
+    },
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I'll help you onboard the \"atlas\" project from Git. To proceed, I need a couple of details:\n\n1. **Repository URL** - What's the Git repository URL for the atlas project?\n2. **Project ID** - Would you like the project ID to be exactly \"atlas\", or do you have a specific project identifier you'd prefer?\n\nOnce you provide the repository URL, I can start the onboarding process for you.",
+      "attempt_id": "onboarding-04",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2379,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "I need atlas added as a new project from Git.",
+      "quality_flags": [
+        "requested_project_identity_already_supplied"
+      ],
+      "usage": {
+        "input_tokens": 7255,
+        "output_tokens": 90,
+        "total_tokens": 7345
+      }
+    },
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I can help you start onboarding the uploaded atlas source archive. To proceed, I need a couple of details:\n\n1. **Project ID**: What would you like to name this project? (e.g., \"atlas-project\", \"atlas-source\", etc.)\n\n2. **Upload receipt**: Do you have the upload receipt identifier from when the atlas archive was uploaded? This is typically a string provided after a successful file upload.\n\nOnce you provide these, I can initiate the onboarding workflow for you.",
+      "attempt_id": "onboarding-05",
+      "clarification_concepts": [
+        "upload",
+        "archive",
+        "zip",
+        "receipt"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2716,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Start onboarding the uploaded atlas source archive.",
+      "quality_flags": [
+        "requested_project_identity_already_supplied"
+      ],
+      "usage": {
+        "input_tokens": 7252,
+        "output_tokens": 103,
+        "total_tokens": 7355
+      }
+    },
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I'll help you onboard the atlas repository into Nexus as a project. To proceed, I need a few details:\n\n1. **Project ID**: What would you like to name this project in Nexus? (e.g., \"atlas\", \"atlas-repo\", \"my-org/atlas\", etc.)\n\n2. **Source type**: How would you like to provide the repository?\n   - **Git**: If it's a Git repository, please provide the repository URL\n   - **ZIP**: If you have a ZIP file, please provide the upload receipt\n\n3. **Platform** (optional): What type of codebase is this?\n   - Generic (default)\n   - Lobster\n   - Talend\n   - Workato\n\nOnce you provide the project ID and source information, I can start the onboarding workflow for you.",
+      "attempt_id": "onboarding-06",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url",
+        "source"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 7728,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Bring the atlas repository into Nexus as a project.",
+      "quality_flags": [
+        "requested_project_identity_already_supplied"
+      ],
+      "usage": {
+        "input_tokens": 7254,
+        "output_tokens": 168,
+        "total_tokens": 7422
+      }
+    },
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I'll help you onboard the \"atlas\" project. To proceed with the onboarding, I need a bit more information about the source:\n\n1. **Source type**: Is this a Git repository or a ZIP file upload?\n2. **Repository URL** (if Git): What's the URL of the authorized Git repository?\n3. **Platform**: What type of codebase is this? (generic, lobster, talend, or workato)\n\nCould you provide these details so I can onboard the atlas project with its authorized source?",
+      "attempt_id": "onboarding-07",
+      "clarification_concepts": [
+        "source",
+        "repository",
+        "git",
+        "zip",
+        "upload"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2761,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Can you onboard atlas using its authorized source?",
+      "quality_flags": [],
+      "usage": {
+        "input_tokens": 7253,
+        "output_tokens": 107,
+        "total_tokens": 7360
+      }
+    },
+    {
+      "accepted_outcome": "relevant_clarification",
+      "actual": [],
+      "allowed_outcome": "tool_or_clarification",
+      "assistant_text": "I'll help you create project \"atlas\" and attach its Git source. To proceed with the onboarding, I need the Git repository URL for the project.\n\nCould you please provide:\n- The Git repository URL for project \"atlas\"\n\nOnce you provide the repository URL, I can initiate the onboarding workflow to create the project and connect its Git source.",
+      "attempt_id": "onboarding-08",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url"
+      ],
+      "effects": 0,
+      "failure_code": null,
+      "finish_reason": "stop",
+      "invalid_tool_calls": [],
+      "latency_ms": 2118,
+      "native_tool_calls": [],
+      "outcome": "assistant_response",
+      "passed": true,
+      "prompt": "Create project atlas and attach its Git source.",
+      "quality_flags": [],
+      "usage": {
+        "input_tokens": 7253,
+        "output_tokens": 73,
+        "total_tokens": 7326
+      }
+    }
+  ],
+  "prompt_version": "slice-2-semantic-shadow-v2-diagnostic",
+  "provider_requests": 15,
+  "release_gate_eligible": false,
+  "release_gate_note": "This bounded remediation matrix does not replace the full corrected Slice 2 provider matrix or independent validation.",
+  "report_version": "2.0.0-diagnostic",
+  "runtime_versions": {
+    "langchain": "1.3.14",
+    "langchain-core": "1.4.9",
+    "langchain-openai": "1.3.5",
+    "langgraph": "1.2.9"
+  },
+  "snapshot_hash": "39c6bf20003f7ee02969456b6ddf6a426ec631d7a65c182cf18711e6ab21275b",
+  "system_prompt_sha256": "960acdeb5d4001bac197a22edfad4cf43bd47b64f1d10475fdb24a3bb2aeb75e",
+  "system_prompt_suffix": "Use native semantic tool calls for an appropriate governed next step. A tool proposal is not execution. If essential information is missing, ask one concise relevant clarification instead of guessing. Do not request optional information merely because it exists in a tool schema. For discussion, guidance, negation, or unresolved ambiguity, answer directly without a tool.",
+  "tool_count": 21,
+  "verdict": "FAIL"
+}
