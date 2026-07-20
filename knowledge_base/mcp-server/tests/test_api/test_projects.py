@@ -93,6 +93,72 @@ async def test_add_repo_valid_project_id_with_hyphens_underscores(client):
     assert resp.json()["id"] == "valid-project_1"
 
 
+async def test_generate_dispatch_preserves_governed_stack_contract(client, monkeypatch):
+    import mcp_server.api.routes.projects as projects_mod
+    from mcp_server.schemas import (
+        NexusPackSnapshot,
+        NexusPresentation,
+        compute_nexus_snapshot_hash,
+    )
+
+    await client.post(
+        "/mcp/add-repo",
+        json={"url": "zip", "project_id": "governed-dispatch", "platform": "talend"},
+    )
+    presentation = NexusPresentation.model_validate({
+        "audience": "operations",
+        "tone": "concise",
+        "formatting": ["markdown", "tables"],
+        "communication": ["qualify_uncertainty"],
+    })
+    snapshot = NexusPackSnapshot.model_validate({
+        "policy_id": "org.default",
+        "policy_hash": "a" * 64,
+        "foundation_pack_id": "foundation.core",
+        "functional_pack_ids": ["feature.operations"],
+        "style_pack_ids": ["style.operations"],
+        "resolved_packs": [
+            {"id": "foundation.core", "version": "1.0.0", "content_hash": "b" * 64},
+            {"id": "feature.operations", "version": "1.0.0", "content_hash": "c" * 64},
+            {"id": "style.operations", "version": "1.0.0", "content_hash": "d" * 64},
+        ],
+        "snapshot_hash": "0" * 64,
+    })
+    snapshot = snapshot.model_copy(
+        update={"snapshot_hash": compute_nexus_snapshot_hash(snapshot, presentation)}
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_background(_project_id, _run_id, _log_mgr, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(projects_mod, "_run_generate_background", fake_background)
+    response = await client.post(
+        "/mcp/generate",
+        json={
+            "project_id": "governed-dispatch",
+            "nexus_pack_ids": [
+                "style.operations",
+                "foundation.core",
+                "feature.operations",
+            ],
+            "nexus_pack_snapshot": snapshot.model_dump(mode="json"),
+            "nexus_presentation": presentation.model_dump(mode="json"),
+        },
+    )
+    projects_mod._currently_generating.discard("governed-dispatch")
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["run_id"], int)
+    assert captured["nexus_pack_ids"] == [
+        "foundation.core",
+        "feature.operations",
+        "style.operations",
+    ]
+    assert captured["nexus_pack_snapshot"] == snapshot
+    assert captured["nexus_presentation"] == presentation
+
+
 # --- Upload ZIP ---
 
 

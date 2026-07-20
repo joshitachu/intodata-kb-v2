@@ -3,6 +3,23 @@
 Session log for the intodoc platform. Every session should add an entry documenting
 what was done, what changed, and lessons learned.
 
+## Session: 2026-07-19 -- Local stack migration and restart completed
+
+- Nexus migration 067 was repaired, backed up, validated on a restored database copy, and applied through migration 069 locally.
+- The complete Compose stack rebuilt and all eight services, including MCP and dashboard, report healthy; MCP `/health` returned success and fresh backend/MCP logs contained no startup errors.
+- The temporary validation database was removed after successful live verification; the recoverable pre-migration dump remains at `/tmp/intodata_kb_pre_067_fix_20260719.dump`.
+
+## Session: 2026-07-19 -- Pack governance/evidence-integrity context carried into unified agent rollout
+
+### [Refactor]: Preserve MCP/IntoDoc authority while Nexus chat becomes one agent path
+
+- **Files changed**: Dashboard `src/{App.tsx,api/client.ts,api/schemas.ts,components/GenerateDialog.tsx,components/PluginPacksPage.tsx,hooks/useProjects.ts,types.ts}` plus tests and Vite/nginx config; IntoDoc `src/intodoc/{cli.py,models.py,scanner/redaction_verifier.py,lineage.py}` plus lineage tests/fixtures; MCP `src/mcp_server/{api/app.py,api/routes/plugins.py,api/routes/projects.py,config.py,db/models.py,providers/base.py,providers/custom/{harness,prompts,target_evidence}.py,schemas.py,services/{claude_service,generation_run_state,plugin_schema,component_description_service,component_graph_service,job_graph_service,lineage_service,nexus_execution_contract,pack_governance}.py}` plus migrations, Pack fixtures, and tests shown by `git diff --stat HEAD`/`git status --short`.
+- **Problem**: IntoDoc Swap-Pack execution, Nexus policy-Pack snapshots, evidence redaction, and topology/lineage work were evolving in one broad dirty branch while the chat router was being replaced.
+- **Root cause**: The branch contains concurrent but related platform work; MCP must remain the final documentation execution authority while Nexus owns orchestration and policy.
+- **Change**: Logged the boundary: Pack provenance/digest/owner governance, execution-contract validation, redaction verification, scanner lineage, and customer Pack artifacts remain intact and will be split into deliberate reviewable commits. The unified agent path calls registered capabilities rather than bypassing MCP governance.
+- **Why this approach**: Keeps the external execution authority and evidence safety contracts stable while removing only legacy chat routing paths from Nexus.
+- **Verification**: Prior project records document Pack/governance and evidence-integrity suites; the unified chat worker's current validation is recorded in the RAG log. MCP migration/deployment work remains separately gated.
+
 ## Session: 2026-07-11
 
 ### [Feature]: Evidence-based doc update endpoint inspected and committed
@@ -2578,3 +2595,15 @@ Check: `wc -l output/localESBCHECK/docs_staging/_analysis/*.md`
 - **Why this approach**: MCP remains the documentation/source provider while Nexus owns orchestration. ZIP bytes and credentials never enter LangGraph checkpoints; project defaults stay in MCP where IntoDoc already resolves them; writes are approved against one exact content version and treat filesystem plus RAG indexing as one recoverable operation.
 - **Verification**: MCP API/RBAC/update suite `111 passed`; changed owned-file Ruff checks passed. Rebuilt MCP container is healthy. Combined stack migrated to `059_harness_project_packs` through the RAG backend and all eight services are healthy.
 - **Residuals**: Authenticated manual UI traversal requires MFA. Unrelated evidence-integrity pipeline work and generated customer pack/material files remain deliberately outside commit `f260527`.
+
+## Session: 2026-07-17
+
+### [Feature]: Certified Swap Pack governance and Nexus execution boundary
+
+- **Files changed**: `mcp-server/alembic/versions/021_add_plugin_pack_governance.py`; `mcp-server/src/mcp_server/api/{app.py,routes/plugins.py,routes/projects.py}`; `mcp-server/src/mcp_server/{config.py,schemas.py}`; `mcp-server/src/mcp_server/db/models.py`; `mcp-server/src/mcp_server/services/{pack_governance,nexus_execution_contract,plugin_schema,claude_service,generation_run_state}.py`; harness/provider prompt and target-evidence integration; Pack/API/RBAC/provider tests; dashboard Pack/API/generation-dialog files; and the corresponding certified Pack directories under `mcp-server/data/plugin_packs/` and `mcp-server/plugin_packs/`. Separate uncommitted scanner/topology work is present in `intodoc/src/intodoc/{lineage.py,cli.py,models.py}` plus lineage fixtures/tests and MCP component/job/lineage services/routes/tests; it is not part of the Pack-governance claim.
+- **Problem**: Nexus private Pack creation and the actual IntoDoc Swap Pack registry were different systems. Users could not trust that the Pack selected in Nexus was the Pack used by generation, while direct local Pack mutation could bypass organizational analysis standards.
+- **Root cause**: MCP previously treated registered plugin packs primarily as editable local files and project defaults. It had no certified provenance/digest boundary and no validation contract for the compiled Nexus Pack snapshot sent with a generation request.
+- **Change**: Added certification state and provenance, trusted bundled/Git source verification, content-digest rechecks, organization-governed selection, owner/superadmin project assignment, and an execution contract that validates the Nexus snapshot before generation. Generation still resolves explicit `plugin_pack_id` before the project's saved default. Direct creation/import/deletion paths that would bypass Git/PR certification now return retired/blocked responses. Dashboard/API wiring exposes the governed documentation Pack catalogue and forwards the selected Pack to generation.
+- **Why this approach**: Organization-controlled analysis semantics need one reviewable source of truth. Nexus can help a user draft a private additive Pack, but promoting core/functional behavior remains a Git/PR operation; MCP is the final authority at the point where documentation is generated.
+- **Verification**: Current focused MCP governance, execution-contract, plugin API, generation schema, and scoped Phase 3 suite: **74 passed**. Earlier complete validation for Governance V1 recorded **1225 passed** with three pre-existing environment/catalogue failures. MCP container is healthy at session close.
+- **Current status / residuals**: The governance/execution code is uncommitted in the current broad working tree. Before commit, separate Pack work from the concurrent topology/lineage and customer Pack artifacts, decide which sample Pack directories are product fixtures, and run a real project generation proving the selected certified/private composition changes the generated document set and remains visible in both Nexus and the port-8001 dashboard.

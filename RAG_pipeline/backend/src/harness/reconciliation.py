@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import logging
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -13,14 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.harness.models import WorkflowRun, WorkflowRunStatus, WorkflowRunUpdate
 from src.harness.providers.mcp_docs import McpDocumentationProvider, McpDocumentationProviderError
 from src.harness.repository import HarnessWorkflowConflictError, HarnessWorkflowRepository
+from src.harness.workflow_ledger import (
+    TERMINAL_CHILD_STATUSES,
+    TERMINAL_PARENT_STATUSES,
+    WorkflowChildCancellationState,
+    WorkflowChildStatus,
+    WorkflowObservationSource,
+    parent_status_from_child,
+)
 
 _ACTIVE_CHILD_STATES = frozenset({"queued", "pending", "running", "triggered"})
 _SUCCESS_CHILD_STATES = frozenset({"completed", "succeeded", "ready"})
-_FAILURE_CHILD_STATES = frozenset({"failed", "error", "cancelled"})
+_FAILURE_CHILD_STATES = frozenset({"failed", "error"})
+_CANCELLED_CHILD_STATES = frozenset({"cancelled"})
 _MAX_ATTEMPTS = 6
 _BASE_BACKOFF_SECONDS = 15
 _MAX_BACKOFF_SECONDS = 15 * 60
 _DOCUMENTATION_GENERATION_CAPABILITY_ID = "mcp.docs.generate_project_documentation"
+_DOCUMENTATION_CHILD_KIND = "documentation_generation"
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +50,13 @@ class ReconciliationResult:
 class ReconciliationCycleResult:
     scanned: int
     attempted: int
+
+
+@dataclass(frozen=True)
+class CallbackIngestionResult:
+    run: WorkflowRun
+    applied: bool
+    child_status: str
 
 
 class DocumentationWorkflowReconciler:
@@ -68,12 +86,18 @@ class DocumentationWorkflowReconciler:
         *,
         access_token: str | None,
         force: bool = False,
+        source: WorkflowObservationSource = WorkflowObservationSource.POLL,
     ) -> ReconciliationResult:
-        if run.status in {
-            WorkflowRunStatus.SUCCEEDED,
-            WorkflowRunStatus.FAILED,
-            WorkflowRunStatus.CANCELLED,
-        }:
+        receipt = await self._repository.get_child_receipt(
+            [run.project_id] if run.project_id is not None else None,
+            run.id,
+            provider_id="mcp.docs",
+            child_kind=_DOCUMENTATION_CHILD_KIND,
+            owner_user_id=run.user_id,
+        )
+        if run.status in TERMINAL_PARENT_STATUSES and (
+            receipt is None or WorkflowChildStatus(receipt.status) in TERMINAL_CHILD_STATUSES
+        ):
             return ReconciliationResult(run=run, attempted=False, authoritative_status=None)
         metadata = dict(run.runtime_metadata)
         ledger = _ledger(metadata)
@@ -83,37 +107,109 @@ class DocumentationWorkflowReconciler:
 
         attempt = int(ledger.get("attempt_count", 0)) + 1
         try:
-            child = await self._provider.get_generation_status(
-                project_id=run.project_id,
-                access_token=access_token,
-            )
+            status_arguments = {
+                "project_id": run.project_id,
+                "access_token": access_token,
+            }
+            if receipt is not None:
+                status_arguments["external_run_id"] = receipt.external_run_id
+            child = await self._provider.get_generation_status(**status_arguments)
         except McpDocumentationProviderError:
             return await self._record_pending_or_indeterminate(
                 run, metadata, attempt, child_status=None, reason="provider_unavailable"
             )
 
         child_status = child.status.lower()
+        provider_timestamp = _parse_provider_timestamp(child.completed_at or child.started_at)
+        if receipt is None and child.found and child.run_id is not None:
+            receipt = await self._repository.bind_child_receipt(
+                [run.project_id] if run.project_id is not None else None,
+                workflow_run_id=run.id,
+                provider_id="mcp.docs",
+                child_kind=_DOCUMENTATION_CHILD_KIND,
+                external_run_id=child.run_id,
+                project_id=run.project_id,
+                provider_status=child_status,
+                source=source,
+                observed_at=now,
+                provider_started_at=_parse_provider_timestamp(child.started_at),
+                provider_finished_at=_parse_provider_timestamp(child.completed_at),
+                provider_timestamp=provider_timestamp,
+                owner_user_id=run.user_id,
+            )
+        if receipt is not None:
+            receipt, _ = await self._repository.record_child_observation(
+                child_receipt_id=receipt.id,
+                idempotency_key=_observation_key(
+                    receipt.external_run_id,
+                    child_status,
+                    child.completed_at or child.started_at,
+                    child.error_message,
+                ),
+                source=source,
+                provider_status=child_status,
+                observed_at=now,
+                provider_timestamp=provider_timestamp,
+                provider_started_at=_parse_provider_timestamp(child.started_at),
+                provider_finished_at=_parse_provider_timestamp(child.completed_at),
+                error_message=child.error_message,
+            )
+            child_status = receipt.provider_status
         external_generation = {
-            "run_id": child.run_id,
+            "run_id": (
+                _compat_external_id(receipt.external_run_id)
+                if receipt is not None
+                else child.run_id
+            ),
             "status": child_status,
             "reconciled_at": now.isoformat(),
         }
         metadata["external_generation"] = external_generation
-        if child.found and child_status in _SUCCESS_CHILD_STATES:
+        if receipt is not None:
+            canonical_child_status = WorkflowChildStatus(receipt.status)
+            cancellation_state = WorkflowChildCancellationState(receipt.cancellation_state)
+            target_parent_status = parent_status_from_child(
+                parent_status=run.status,
+                child_status=canonical_child_status,
+                cancellation_state=cancellation_state,
+            )
+        else:
+            canonical_child_status = WorkflowChildStatus.UNKNOWN
+            target_parent_status = run.status
+        if run.status in TERMINAL_PARENT_STATUSES:
+            refreshed = await self._repository.get_run(
+                [run.project_id] if run.project_id is not None else None,
+                run.id,
+                owner_user_id=run.user_id,
+            )
+            return ReconciliationResult(
+                run=refreshed,
+                attempted=True,
+                authoritative_status=child_status,
+            )
+        if child.found and canonical_child_status is WorkflowChildStatus.SUCCEEDED:
             return await self._transition(
                 run,
                 metadata,
-                status=WorkflowRunStatus.SUCCEEDED,
+                status=target_parent_status,
                 summary="Documentation generation completed.",
                 child_status=child_status,
             )
-        if child.found and child_status in _FAILURE_CHILD_STATES:
+        if child.found and canonical_child_status is WorkflowChildStatus.FAILED:
             message = (child.error_message or f"Documentation generation {child_status}.")[:500]
             return await self._transition(
                 run,
                 metadata,
-                status=WorkflowRunStatus.FAILED,
+                status=target_parent_status,
                 error_message=message,
+                child_status=child_status,
+            )
+        if child.found and canonical_child_status is WorkflowChildStatus.CANCELLED:
+            return await self._transition(
+                run,
+                metadata,
+                status=target_parent_status,
+                summary="Documentation generation was cancelled.",
                 child_status=child_status,
             )
         reason = "child_not_found" if not child.found else "child_still_active"
@@ -194,7 +290,18 @@ class DocumentationWorkflowReconciler:
                     output_summary=summary,
                     error_message=error_message,
                     runtime_metadata=metadata,
-                    finished_at=(now if status in {WorkflowRunStatus.SUCCEEDED, WorkflowRunStatus.FAILED, WorkflowRunStatus.INDETERMINATE} else None),
+                    finished_at=(
+                        now
+                        if status
+                        in {
+                            WorkflowRunStatus.SUCCEEDED,
+                            WorkflowRunStatus.FAILED,
+                            WorkflowRunStatus.CANCELLED,
+                            WorkflowRunStatus.INDETERMINATE,
+                        }
+                        else None
+                    ),
+                    cancelled_at=(now if status == WorkflowRunStatus.CANCELLED else None),
                 ),
                 expected_version=run.version,
             )
@@ -203,6 +310,94 @@ class DocumentationWorkflowReconciler:
             # of truth rather than overwriting it with stale child information.
             updated = await self._repository.get_run([run.project_id], run.id)
         return ReconciliationResult(run=updated, attempted=True, authoritative_status=child_status)
+
+
+class DocumentationWorkflowCallbackIngestor:
+    """Authenticated-boundary seam for exact, replay-safe provider callbacks.
+
+    MCP has no callback contract today, so this is intentionally not mounted as
+    a public route. A future authenticated adapter can call this seam without
+    inventing another transition policy.
+    """
+
+    def __init__(self, repository: HarnessWorkflowRepository) -> None:
+        self._repository = repository
+
+    async def ingest(
+        self,
+        *,
+        provider_id: str,
+        external_run_id: str | int,
+        idempotency_key: str,
+        provider_status: str,
+        source: WorkflowObservationSource = WorkflowObservationSource.CALLBACK,
+        observed_at: datetime.datetime | None = None,
+        provider_timestamp: datetime.datetime | None = None,
+        provider_started_at: datetime.datetime | None = None,
+        provider_finished_at: datetime.datetime | None = None,
+        error_message: str | None = None,
+    ) -> CallbackIngestionResult:
+        receipt = await self._repository.get_child_receipt_by_external(
+            provider_id=provider_id,
+            external_run_id=external_run_id,
+        )
+        if receipt is None:
+            raise ValueError("Unknown provider child receipt")
+        receipt, applied = await self._repository.record_child_observation(
+            child_receipt_id=receipt.id,
+            idempotency_key=idempotency_key,
+            source=source,
+            provider_status=provider_status,
+            observed_at=observed_at,
+            provider_timestamp=provider_timestamp,
+            provider_started_at=provider_started_at,
+            provider_finished_at=provider_finished_at,
+            error_message=error_message,
+        )
+        run = await self._repository.get_run(None, receipt.workflow_run_id)
+        target = parent_status_from_child(
+            parent_status=run.status,
+            child_status=WorkflowChildStatus(receipt.status),
+            cancellation_state=WorkflowChildCancellationState(receipt.cancellation_state),
+        )
+        if target != run.status:
+            now = observed_at or datetime.datetime.now(datetime.UTC)
+            run = await self._repository.update_run(
+                [run.project_id] if run.project_id is not None else None,
+                run.id,
+                WorkflowRunUpdate(
+                    status=target,
+                    output_summary=(
+                        "Documentation generation completed."
+                        if target is WorkflowRunStatus.SUCCEEDED
+                        else "Documentation generation was cancelled."
+                        if target is WorkflowRunStatus.CANCELLED
+                        else None
+                    ),
+                    error_message=(
+                        (receipt.error_message or "Documentation generation failed.")[:500]
+                        if target is WorkflowRunStatus.FAILED
+                        else None
+                    ),
+                    finished_at=(now if target in TERMINAL_PARENT_STATUSES else None),
+                    cancelled_at=(now if target is WorkflowRunStatus.CANCELLED else None),
+                    runtime_metadata={
+                        "external_generation": {
+                            "run_id": _compat_external_id(receipt.external_run_id),
+                            "status": receipt.provider_status,
+                            "reconciled_at": now.isoformat(),
+                        }
+                    },
+                ),
+                expected_version=run.version,
+            )
+        else:
+            run = await self._repository.get_run(None, run.id)
+        return CallbackIngestionResult(
+            run=run,
+            applied=applied,
+            child_status=receipt.status,
+        )
 
 
 async def reconcile_accepted_documentation_workflows(
@@ -219,7 +414,25 @@ async def reconcile_accepted_documentation_workflows(
     """
     remaining = max(1, limit)
     runs: list[WorkflowRun] = []
-    for status in (WorkflowRunStatus.TRIGGERED, WorkflowRunStatus.RUNNING):
+    seen: set[int] = set()
+    receipts = await repository.list_nonterminal_child_receipts(
+        provider_id="mcp.docs",
+        child_kind=_DOCUMENTATION_CHILD_KIND,
+        limit=remaining,
+    )
+    for receipt in receipts:
+        run = await repository.get_run(None, receipt.workflow_run_id)
+        if run.id not in seen:
+            runs.append(run)
+            seen.add(run.id)
+            remaining -= 1
+        if remaining == 0:
+            break
+    for status in (
+        WorkflowRunStatus.TRIGGERED,
+        WorkflowRunStatus.RUNNING,
+        WorkflowRunStatus.INDETERMINATE,
+    ):
         if remaining == 0:
             break
         candidates = await repository.list_runs(
@@ -228,13 +441,22 @@ async def reconcile_accepted_documentation_workflows(
             status=status,
             limit=remaining,
         )
-        runs.extend(candidates)
-        remaining -= len(candidates)
+        for candidate in candidates:
+            if candidate.id not in seen:
+                runs.append(candidate)
+                seen.add(candidate.id)
+                remaining -= 1
+                if remaining == 0:
+                    break
 
     reconciler = DocumentationWorkflowReconciler(repository, provider)
     attempted = 0
     for run in runs:
-        result = await reconciler.reconcile(run, access_token=access_token)
+        result = await reconciler.reconcile(
+            run,
+            access_token=access_token,
+            source=WorkflowObservationSource.RECOVERY,
+        )
         attempted += int(result.attempted)
     return ReconciliationCycleResult(scanned=len(runs), attempted=attempted)
 
@@ -333,3 +555,34 @@ def _next_poll_after(ledger: dict) -> datetime.datetime:
 
 def _backoff_seconds(attempt: int) -> int:
     return min(_BASE_BACKOFF_SECONDS * (2 ** max(0, attempt - 1)), _MAX_BACKOFF_SECONDS)
+
+
+def _parse_provider_timestamp(value: str | None) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=datetime.UTC) if parsed.tzinfo is None else parsed.astimezone(datetime.UTC)
+
+
+def _observation_key(
+    external_run_id: str,
+    provider_status: str,
+    provider_timestamp: str | None,
+    error_message: str | None,
+) -> str:
+    payload = "|".join(
+        (
+            external_run_id,
+            provider_status,
+            provider_timestamp or "",
+            (error_message or "")[:500],
+        )
+    )
+    return f"mcp.docs:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _compat_external_id(value: str) -> str | int:
+    return int(value) if value.isdigit() else value

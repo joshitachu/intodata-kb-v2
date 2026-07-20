@@ -9,8 +9,16 @@ from __future__ import annotations
 
 import re
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
+
+from src.harness.packs.models import PackArtifactV3
+from src.harness.packs.reference_limits import (
+    MAX_REFERENCE_AGGREGATE_EXTRACTED_TEXT_CHARS,
+    MAX_REFERENCE_ATTACHMENTS,
+    MAX_REFERENCE_EXTRACTED_TEXT_CHARS,
+)
 
 import httpx
 
@@ -25,6 +33,24 @@ _SECRET_PATTERNS = [
 _MAX_SAFE_ERROR_CHARS = 240
 _PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
 _MARKDOWN_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.md$", re.I)
+_ACTIVE_PROJECT_STATUSES = frozenset(
+    {
+        "queued",
+        "pending",
+        "running",
+        "triggered",
+        "onboarding",
+        "scanning",
+        "scan_running",
+        "processing",
+        "indexing",
+        "generating",
+        "generation_triggered",
+    }
+)
+_ACTIVE_GENERATION_STATUSES = frozenset(
+    {"queued", "pending", "running", "triggered", "generating", "generation_triggered"}
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +60,7 @@ class McpDocumentationGenerationResult:
     message: str
     status_path: str
     docs_path: str
+    run_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +79,14 @@ class McpDocumentationGenerationStatus:
     error_message: str | None
     status_path: str
     docs_path: str
+
+
+@dataclass(frozen=True)
+class McpDocumentationCancellationResult:
+    project_id: str
+    accepted: bool
+    status: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -76,20 +111,27 @@ class McpProjectInfo:
 
 
 @dataclass(frozen=True)
+class McpActiveProjectWorkflow:
+    project_id: str
+    display_name: str
+    project_status: str
+    generation_status: str | None
+    generation_started_at: str | None
+    status_path: str
+    docs_path: str
+
+
+@dataclass(frozen=True)
 class McpDocumentationPack:
-    """Safe metadata for an installed MCP document-generation pack."""
+    """Generation-authoritative MCP document Pack metadata."""
 
     id: int
     name: str
     version: str
     description: str | None
-
-
-@dataclass(frozen=True)
-class McpDocumentationPackDocumentDraft:
-    name: str
-    sections: list[str]
-    instructions: str | None = None
+    certification_status: str
+    mutable: bool
+    blocked_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +210,11 @@ class McpDocumentationProvider:
         write_model: str | None = None,
         plugin_pack_id: int | None = None,
         nexus_pack_ids: list[str] | None = None,
+        nexus_pack_snapshot: dict[str, Any] | None = None,
+        nexus_presentation: dict[str, Any] | None = None,
+        nexus_audience_render: dict[str, Any] | None = None,
+        nexus_private_pack_receipts: list[dict[str, Any]] | None = None,
+        nexus_private_analysis_packs: list[dict[str, Any]] | None = None,
         resume: bool | None = None,
         mode: str | None = None,
     ) -> McpDocumentationGenerationResult:
@@ -192,7 +239,69 @@ class McpDocumentationProvider:
         if nexus_pack_ids is not None:
             if not all(isinstance(pack_id, str) and pack_id for pack_id in nexus_pack_ids):
                 raise McpDocumentationProviderError("Invalid selected documentation packs.")
-            payload["nexus_pack_ids"] = sorted(set(nexus_pack_ids))
+            if len(nexus_pack_ids) != len(set(nexus_pack_ids)):
+                raise McpDocumentationProviderError("Duplicate documentation Pack selection.")
+            payload["nexus_pack_ids"] = list(nexus_pack_ids)
+        if nexus_pack_snapshot is not None:
+            if not isinstance(nexus_pack_snapshot, dict) or not isinstance(
+                nexus_pack_snapshot.get("snapshot_hash"), str
+            ):
+                raise McpDocumentationProviderError("Invalid governed Pack snapshot.")
+            payload["nexus_pack_snapshot"] = nexus_pack_snapshot
+        if nexus_presentation is not None:
+            if not isinstance(nexus_presentation, dict):
+                raise McpDocumentationProviderError("Invalid governed Pack presentation.")
+            payload["nexus_presentation"] = nexus_presentation
+        if nexus_audience_render is not None:
+            if not isinstance(nexus_audience_render, dict) or not set(nexus_audience_render) <= {
+                "seniority", "domain_familiarity", "decision_horizon", "detail_level"
+            } or not all(isinstance(value, str) for value in nexus_audience_render.values()):
+                raise McpDocumentationProviderError("Invalid normalized Pack audience rendering.")
+            payload["nexus_audience_render"] = nexus_audience_render
+        if nexus_private_pack_receipts is not None:
+            if not isinstance(nexus_private_pack_receipts, list) or len(nexus_private_pack_receipts) > 20:
+                raise McpDocumentationProviderError("Invalid private Pack receipts.")
+            for receipt in nexus_private_pack_receipts:
+                if not isinstance(receipt, dict) or not isinstance(receipt.get("content_hash"), str) or len(receipt["content_hash"]) != 64:
+                    raise McpDocumentationProviderError("Invalid private Pack receipt.")
+            payload["nexus_private_pack_receipts"] = nexus_private_pack_receipts
+        if nexus_private_analysis_packs is not None:
+            if not isinstance(nexus_private_analysis_packs, list) or len(nexus_private_analysis_packs) > 20:
+                raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
+            receipts: list[dict[str, Any]] = []
+            for item in nexus_private_analysis_packs:
+                if not isinstance(item, dict) or set(item) not in (
+                    {"receipt", "artifact", "missing_optional_capability_ids"},
+                    {"receipt", "artifact", "missing_optional_capability_ids", "reference_attachments"},
+                ):
+                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
+                receipt = item["receipt"]
+                artifact = item["artifact"]
+                missing = item["missing_optional_capability_ids"]
+                if (
+                    not isinstance(receipt, dict)
+                    or not isinstance(receipt.get("content_hash"), str)
+                    or len(receipt["content_hash"]) != 64
+                    or not isinstance(artifact, dict)
+                    or not isinstance(missing, list)
+                    or not all(isinstance(capability_id, str) for capability_id in missing)
+                ):
+                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.")
+                try:
+                    PackArtifactV3.model_validate_json(json.dumps(artifact), strict=True)
+                except (TypeError, ValueError):
+                    raise McpDocumentationProviderError("Invalid private Analysis Pack payload.") from None
+                if "reference_attachments" in item:
+                    _validate_reference_attachments(item["reference_attachments"])
+                receipts.append(receipt)
+            if len({receipt["content_hash"] for receipt in receipts}) != len(receipts):
+                raise McpDocumentationProviderError("Duplicate private Analysis Pack payload.")
+            if nexus_private_pack_receipts is not None and receipts != nexus_private_pack_receipts:
+                raise McpDocumentationProviderError("Private Analysis Pack receipts do not match payload.")
+            payload["nexus_private_analysis_packs"] = nexus_private_analysis_packs
+            payload.setdefault("nexus_private_pack_receipts", receipts)
+            if len(receipts) == 1:
+                payload.setdefault("nexus_audience_render", receipts[0].get("audience_render", {}))
         _set_if_present(payload, "resume", resume)
         _set_if_present(payload, "mode", mode)
 
@@ -241,6 +350,7 @@ class McpDocumentationProvider:
             message=message,
             status_path=f"/mcp/generate-runs/{project_id}",
             docs_path=f"/projects/{project_id}/docs",
+            run_id=_optional_int(data.get("run_id")),
         )
 
     async def list_project_docs(
@@ -312,9 +422,10 @@ class McpDocumentationProvider:
         self,
         *,
         project_id: str,
+        external_run_id: str | int | None = None,
         access_token: str | None = None,
     ) -> McpDocumentationGenerationStatus:
-        """Return the newest authoritative MCP generation-run receipt."""
+        """Return one exact MCP receipt, or newest only for legacy callers."""
         if not self._base_url:
             raise McpDocumentationProviderError(
                 "Documentation provider is not configured."
@@ -327,7 +438,11 @@ class McpDocumentationProvider:
                 transport=self._transport,
                 cookies={"access_token": access_token} if access_token else None,
             ) as client:
-                response = await client.get(f"/generate-runs/{project_id}")
+                response = await client.get(
+                    f"/generate-run-detail/{project_id}/{external_run_id}"
+                    if external_run_id is not None
+                    else f"/generate-runs/{project_id}"
+                )
         except httpx.TimeoutException as exc:
             raise McpDocumentationProviderError(
                 f"Documentation provider timed out after {self._timeout:g}s."
@@ -337,6 +452,23 @@ class McpDocumentationProvider:
                 _safe_error("Documentation provider could not be reached", str(exc))
             ) from exc
 
+        if response.status_code == 404 and external_run_id is not None:
+            return McpDocumentationGenerationStatus(
+                project_id=project_id,
+                found=False,
+                run_id=_optional_int(external_run_id),
+                status="not_found",
+                started_at=None,
+                completed_at=None,
+                doc_count=0,
+                quality_score=None,
+                run_verdict=None,
+                client_ready=None,
+                failed_gates=[],
+                error_message=None,
+                status_path=f"/mcp/generate-runs/{project_id}",
+                docs_path=f"/projects/{project_id}/docs",
+            )
         if response.status_code >= 400:
             raise McpDocumentationProviderError(
                 _safe_error(
@@ -345,12 +477,15 @@ class McpDocumentationProvider:
                 )
             )
         data = _json_object(response)
-        runs = data.get("runs")
-        if not isinstance(runs, list):
-            raise McpDocumentationProviderError(
-                "Documentation provider returned an invalid response."
-            )
-        latest = next((item for item in runs if isinstance(item, dict)), None)
+        if external_run_id is not None:
+            latest = data
+        else:
+            runs = data.get("runs")
+            if not isinstance(runs, list):
+                raise McpDocumentationProviderError(
+                    "Documentation provider returned an invalid response."
+                )
+            latest = next((item for item in runs if isinstance(item, dict)), None)
         status_path = f"/mcp/generate-runs/{project_id}"
         docs_path = f"/projects/{project_id}/docs"
         if latest is None:
@@ -393,6 +528,60 @@ class McpDocumentationProvider:
             ),
             status_path=status_path,
             docs_path=docs_path,
+        )
+
+    async def cancel_generation(
+        self,
+        *,
+        project_id: str,
+        access_token: str | None = None,
+    ) -> McpDocumentationCancellationResult:
+        """Request cancellation through MCP's authoritative project task owner."""
+        if not self._base_url:
+            raise McpDocumentationProviderError(
+                "Documentation provider is not configured."
+            )
+        project_id = _validated_project_id(project_id)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                timeout=self._timeout,
+                transport=self._transport,
+                cookies={"access_token": access_token} if access_token else None,
+            ) as client:
+                response = await client.post(
+                    "/reset-status", json={"project_id": project_id}
+                )
+        except httpx.TimeoutException as exc:
+            raise McpDocumentationProviderError(
+                f"Documentation provider timed out after {self._timeout:g}s."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise McpDocumentationProviderError(
+                _safe_error("Documentation provider could not be reached", str(exc))
+            ) from exc
+
+        if response.status_code == 400:
+            return McpDocumentationCancellationResult(
+                project_id=project_id,
+                accepted=False,
+                status="not_cancellable",
+                message=_safe_text(_response_error_text(response) or "Workflow is not cancellable."),
+            )
+        if response.status_code >= 400:
+            raise McpDocumentationProviderError(
+                _safe_error(
+                    f"Documentation provider returned HTTP {response.status_code}",
+                    _response_error_text(response),
+                )
+            )
+        data = _json_object(response)
+        status = str(data.get("status") or "cancelled").lower()
+        return McpDocumentationCancellationResult(
+            project_id=project_id,
+            accepted=status in {"cancelled", "reset"},
+            status=status,
+            message=_safe_text(str(data.get("message") or "Workflow cancellation accepted.")),
         )
 
     async def list_projects(
@@ -458,10 +647,59 @@ class McpDocumentationProvider:
             )
         return result
 
+    async def list_active_project_workflows(
+        self,
+        *,
+        allowed_project_ids: list[str] | None,
+        access_token: str | None = None,
+    ) -> list[McpActiveProjectWorkflow]:
+        """Return active project workflows inside the caller's authorized scope.
+
+        MCP's project listing is already RBAC-filtered by the access token. A
+        non-null Nexus scope can only narrow that result; model arguments never
+        broaden it.
+        """
+
+        projects = await self.list_projects(access_token=access_token)
+        allowed = set(allowed_project_ids) if allowed_project_ids is not None else None
+        active: list[McpActiveProjectWorkflow] = []
+        for project in projects:
+            if allowed is not None and project.id not in allowed:
+                continue
+            generation = await self.get_generation_status(
+                project_id=project.id,
+                access_token=access_token,
+            )
+            project_status = project.status.strip().casefold()
+            generation_status = (
+                generation.status.strip().casefold()
+                if generation is not None and generation.found
+                else None
+            )
+            if (
+                project_status not in _ACTIVE_PROJECT_STATUSES
+                and generation_status not in _ACTIVE_GENERATION_STATUSES
+            ):
+                continue
+            active.append(
+                McpActiveProjectWorkflow(
+                    project_id=project.id,
+                    display_name=project.display_name or project.id,
+                    project_status=project_status or "unknown",
+                    generation_status=generation_status,
+                    generation_started_at=(
+                        generation.started_at if generation is not None else None
+                    ),
+                    status_path=f"/mcp/status/{project.id}",
+                    docs_path=f"/projects/{project.id}/docs",
+                )
+            )
+        return active
+
     async def list_documentation_packs(
         self, *, access_token: str | None = None
     ) -> list[McpDocumentationPack]:
-        """List installed MCP plugin packs without exposing their filesystem paths."""
+        """List only certified immutable Packs eligible for generation selection."""
         if not self._base_url:
             raise McpDocumentationProviderError("Documentation provider is not configured.")
         try:
@@ -495,7 +733,17 @@ class McpDocumentationProvider:
             pack_id = _optional_positive_int(item.get("id"))
             raw_name = item.get("manifest_name") or item.get("name")
             version = item.get("version")
-            if pack_id is None or not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(version, str) or not version.strip():
+            certification_status = item.get("certification_status")
+            mutable = item.get("mutable")
+            if (
+                pack_id is None
+                or not isinstance(raw_name, str)
+                or not raw_name.strip()
+                or not isinstance(version, str)
+                or not version.strip()
+                or certification_status != "certified"
+                or mutable is not False
+            ):
                 continue
             description = item.get("description")
             packs.append(
@@ -504,6 +752,9 @@ class McpDocumentationProvider:
                     name=_safe_text(raw_name),
                     version=_safe_text(version),
                     description=_safe_text(description) if isinstance(description, str) and description.strip() else None,
+                    certification_status=certification_status,
+                    mutable=mutable,
+                    blocked_reason=None,
                 )
             )
         return packs
@@ -519,81 +770,6 @@ class McpDocumentationProvider:
         if project is None:
             raise McpDocumentationProviderError("Documentation project was not found.")
         return project.plugin_pack_id
-
-    async def create_documentation_pack(
-        self,
-        *,
-        name: str,
-        description: str | None,
-        documents: list[McpDocumentationPackDocumentDraft],
-        access_token: str | None = None,
-    ) -> McpDocumentationPack:
-        """Create a reusable local IntoDoc documentation Pack through MCP."""
-        if not self._base_url:
-            raise McpDocumentationProviderError("Documentation provider is not configured.")
-        payload = {
-            "name": name,
-            "description": description,
-            "documents": [
-                {
-                    "name": document.name,
-                    "sections": document.sections,
-                    "instructions": document.instructions,
-                }
-                for document in documents
-            ],
-        }
-        try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout,
-                transport=self._transport,
-                cookies={"access_token": access_token} if access_token else None,
-            ) as client:
-                response = await client.post(
-                    "/documentation-packs",
-                    json=payload,
-                )
-        except httpx.TimeoutException as exc:
-            raise McpDocumentationProviderError(
-                f"Documentation provider timed out after {self._timeout:g}s."
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise McpDocumentationProviderError(
-                _safe_error("Documentation provider could not be reached", str(exc))
-            ) from exc
-        if response.status_code >= 400:
-            raise McpDocumentationProviderError(
-                _safe_error(
-                    f"Documentation provider returned HTTP {response.status_code}",
-                    _response_error_text(response),
-                )
-            )
-        data = _json_object(response)
-        pack_id = _optional_positive_int(data.get("id"))
-        raw_name = data.get("manifest_name") or data.get("name")
-        version = data.get("version")
-        if (
-            pack_id is None
-            or not isinstance(raw_name, str)
-            or not raw_name.strip()
-            or not isinstance(version, str)
-            or not version.strip()
-        ):
-            raise McpDocumentationProviderError(
-                "Documentation provider returned an invalid response."
-            )
-        raw_description = data.get("description")
-        return McpDocumentationPack(
-            id=pack_id,
-            name=_safe_text(raw_name),
-            version=_safe_text(version),
-            description=(
-                _safe_text(raw_description)
-                if isinstance(raw_description, str) and raw_description.strip()
-                else None
-            ),
-        )
 
     async def set_project_documentation_pack(
         self,
@@ -887,12 +1063,53 @@ class McpDocumentationProvider:
             message="Documentation generation was accepted; Nexus reconciled its status after a delayed response.",
             status_path=f"/mcp/generate-runs/{project_id}",
             docs_path=f"/projects/{project_id}/docs",
+            run_id=_optional_int(active.get("id")),
         )
 
 
 def _set_if_present(payload: dict[str, Any], key: str, value: Any | None) -> None:
     if value is not None:
         payload[key] = value
+
+
+def _validate_reference_attachments(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > MAX_REFERENCE_ATTACHMENTS:
+        raise McpDocumentationProviderError("Invalid private Analysis Pack reference attachments.")
+    aggregate_extracted_chars = 0
+    for attachment in value:
+        if not isinstance(attachment, dict) or set(attachment) != {
+            "purpose", "sha256", "filename", "content_type", "extracted_text"
+        }:
+            raise McpDocumentationProviderError("Invalid private Analysis Pack reference attachments.")
+        purpose = attachment["purpose"]
+        sha256 = attachment["sha256"]
+        filename = attachment["filename"]
+        content_type = attachment["content_type"]
+        extracted_text = attachment["extracted_text"]
+        if (
+            not isinstance(purpose, str)
+            or not 1 <= len(purpose) <= 500
+            or not isinstance(sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+            or not isinstance(filename, str)
+            or not filename
+            or len(filename) > 255
+            or "/" in filename
+            or "\\" in filename
+            or not isinstance(content_type, str)
+            or not re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", content_type)
+            or len(content_type) > 120
+            or (extracted_text is not None and (
+                not isinstance(extracted_text, str)
+                or len(extracted_text) > MAX_REFERENCE_EXTRACTED_TEXT_CHARS
+            ))
+        ):
+            raise McpDocumentationProviderError("Invalid private Analysis Pack reference attachments.")
+        aggregate_extracted_chars += len(extracted_text or "")
+    if aggregate_extracted_chars > MAX_REFERENCE_AGGREGATE_EXTRACTED_TEXT_CHARS:
+        raise McpDocumentationProviderError(
+            "Private Analysis Pack reference attachments exceed the 32,000 character aggregate extracted-text limit."
+        )
 
 
 def _optional_text(value: Any) -> str | None:
