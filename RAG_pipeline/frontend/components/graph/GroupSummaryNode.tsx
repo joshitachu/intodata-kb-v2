@@ -1,5 +1,7 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
+import type { EffectiveStatus } from "@/lib/healthPropagation";
+import { STATUS_META, isOverlayStatus } from "@/lib/healthStatusMeta";
 
 export interface GroupSummaryNodeData {
   label: string;
@@ -11,31 +13,56 @@ export interface GroupSummaryNodeData {
   connectionCount: number;
   dimmed?: boolean;
   highlighted?: boolean;
+  // Runtime-health overlay (S3): the worst effective status across members.
+  worstStatus?: EffectiveStatus;
 }
 
 function GroupSummaryNodeComponent({ data }: { data: GroupSummaryNodeData }) {
   const { directionBreakdown: dir } = data;
 
+  const showStatus = isOverlayStatus(data.worstStatus);
+  const meta = showStatus ? STATUS_META[data.worstStatus!] : undefined;
+  const statusTitle = meta
+    ? `Worst runtime status in group: ${meta.label} — ${meta.description}`
+    : "";
+
   return (
     <div
-      className="topo-node rounded-xl overflow-hidden cursor-pointer"
+      className="topo-node rounded-xl overflow-hidden cursor-pointer relative"
       style={{
         width: 240,
         opacity: data.dimmed ? 0.15 : 1,
         background: `linear-gradient(135deg, ${data.color.bg}, white 70%)`,
-        boxShadow: data.highlighted
-          ? `0 0 20px 4px ${data.color.border}50, 0 4px 20px rgba(0,0,0,0.12)`
-          : `0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.04)`,
-        border: `1.5px solid ${data.color.border}40`,
+        boxShadow: meta
+          ? `0 0 0 2px ${meta.color}44, 0 4px 16px ${meta.color}22`
+          : data.highlighted
+            ? `0 0 20px 4px ${data.color.border}50, 0 4px 20px rgba(0,0,0,0.12)`
+            : `0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.04)`,
+        border: meta ? `2px solid ${meta.color}` : `1.5px solid ${data.color.border}40`,
       }}
     >
       <Handle type="target" position={Position.Top} className="!w-2.5 !h-2.5 !bg-slate-300 !border-2 !border-white" />
+
+      {meta && (
+        <span
+          data-testid="group-status-badge"
+          className="absolute top-1.5 right-1.5 z-10 flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-bold text-white shadow"
+          style={{ background: meta.color }}
+          title={statusTitle}
+          aria-label={statusTitle}
+        >
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-white/90" />
+          {meta.short}
+        </span>
+      )}
 
       {/* Top accent bar with gradient */}
       <div
         style={{
           height: 3,
-          background: `linear-gradient(90deg, ${data.color.border}, ${data.color.border}80, transparent)`,
+          background: meta
+            ? `linear-gradient(90deg, ${meta.color}, ${meta.color}80, transparent)`
+            : `linear-gradient(90deg, ${data.color.border}, ${data.color.border}80, transparent)`,
         }}
       />
 
