@@ -1,0 +1,33 @@
+{
+  "authored_action_scenarios": 25,
+  "authored_no_action_scenarios": 39,
+  "expected_provider_requests": 72,
+  "generated_at": "2026-07-20T18:30:00+02:00",
+  "model_profile": {
+    "base_url": "https://api.moonshot.ai/v1",
+    "max_retries": 0,
+    "max_tokens": 2048,
+    "provider_model": "kimi-k2.5",
+    "reasoning": {
+      "thinking": {
+        "type": "disabled"
+      }
+    },
+    "selected_model": "kimi/kimi-k2.5",
+    "temperature": 0.6,
+    "timeout_seconds": 300.0,
+    "tool_choice": "auto"
+  },
+  "planned_onboarding_prompts": 8,
+  "planned_scenarios": 64,
+  "reason": "authenticated_provider_matrix_requires_explicit_authorization",
+  "report_version": "1.0.0",
+  "runtime_versions": {
+    "langchain": "1.3.14",
+    "langchain-core": "1.4.9",
+    "langchain-openai": "1.3.5",
+    "langgraph": "1.2.9"
+  },
+  "snapshot_hash": "ab821a30d83e09bbcf4453bd6f79f16c0d7b82fd29b995256efbcf5d4d7734fd",
+  "verdict": "NOT_RUN"
+}
