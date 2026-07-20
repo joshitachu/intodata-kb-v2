@@ -15,18 +15,15 @@ from sqlalchemy.orm import selectinload
 
 from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.db.models import Conversation, ConversationMessage
-from src.config import settings
-from src.generation.conversational_rag import (
-    run_conversational_rag,
-    run_conversational_rag_stream,
-)
-from src.harness.chat import (
-    plan_model_harness_chat_turn,
-    run_harness_chat_turn,
-    run_harness_chat_turn_stream,
-)
-from src.harness.commands import list_slash_commands, resolve_slash_command
+from src.harness.commands import list_slash_commands
 from src.harness import HarnessRunNotFoundError, HarnessWorkflowRepository
+from src.harness.workflow_projection import AuthoritativeWorkflowCardProjector
+from src.harness.response_synthesis import TypedAgentResponse
+from src.harness.agent_chat_runtime import (
+    AgentChatIdempotencyConflict,
+    execute_production_agent_chat_turn,
+)
+from src.harness.agent_loop import stream_transport
 from src.rbac.permissions import get_user_permissions, get_user_project_ids
 from src.schemas import (
     ConversationCreateRequest,
@@ -78,18 +75,13 @@ def _deserialize_sources(raw: list[dict]) -> list[DocumentSource]:
 async def list_commands(user: CurrentUser) -> SlashCommandListResponse:
     """Expose only user-facing command discovery metadata.
 
-    A command is a planner seed, not a capability grant, so command discovery
-    is available to any authenticated chat user.
+    Commands are presentation and model-context hints only. They never grant a
+    capability, select an execution path, or rewrite the submitted message.
     """
     del user
     return SlashCommandListResponse(
         commands=[SlashCommandResponse(**command.public()) for command in list_slash_commands()]
     )
-
-
-def _planner_query(query: str) -> str:
-    resolved = resolve_slash_command(query)
-    return resolved.planner_query if resolved is not None else query
 
 
 @router.get("", response_model=ConversationListResponse, summary="List conversations")
@@ -159,6 +151,7 @@ async def get_conversation(
     conversation_id: int,
     db: DBSession,
     user: CurrentUser,
+    http_request: Request = None,
 ) -> ConversationDetailResponse:
     """Get a conversation with all messages."""
     result = await db.execute(
@@ -175,6 +168,47 @@ async def get_conversation(
         raise api_error(403, "forbidden", "Not authorized")
 
     workflow_repo = HarnessWorkflowRepository(db)
+    project_scope = await get_user_project_ids(user, db)
+    message_run_ids: dict[int, list[int]] = {}
+    for message in conversation.messages:
+        run_ids: list[int] = []
+        if message.workflow_run_id is not None:
+            run_ids.append(message.workflow_run_id)
+        if (
+            isinstance(message.structured_answer, dict)
+            and message.structured_answer.get("response_type") == "agent_response_v1"
+        ):
+            try:
+                stored_response = TypedAgentResponse.model_validate(
+                    message.structured_answer
+                )
+            except ValueError:
+                stored_response = None
+            if stored_response is not None:
+                run_ids.extend(
+                    card.workflow_run_id for card in stored_response.workflow_cards
+                )
+        message_run_ids[message.id] = list(dict.fromkeys(run_ids))[:20]
+    linked_run_ids = list(
+        dict.fromkeys(
+            run_id
+            for message in reversed(conversation.messages)
+            for run_id in message_run_ids[message.id]
+        )
+    )[:20]
+    cards = await AuthoritativeWorkflowCardProjector(workflow_repo).project_many(
+        linked_run_ids,
+        owner_user_id=user.id,
+        conversation_id=conversation.id,
+        project_scope=project_scope,
+        access_token=(
+            http_request.cookies.get("access_token") if http_request is not None else None
+        ),
+        reconcile=True,
+    )
+    card_by_run_id = {card.workflow_run_id: card for card in cards}
+    if linked_run_ids:
+        await db.commit()
     messages: list[MessageResponse] = []
     for message in conversation.messages:
         activities: list[MessageHarnessActivity] = []
@@ -182,7 +216,7 @@ async def get_conversation(
         if message.workflow_run_id is not None:
             try:
                 run = await workflow_repo.get_run(
-                    [], message.workflow_run_id, owner_user_id=user.id
+                    project_scope, message.workflow_run_id, owner_user_id=user.id
                 )
                 run_activities = await workflow_repo.list_activity_events(
                     None if run.project_id is None else [run.project_id], run.id
@@ -196,6 +230,9 @@ async def get_conversation(
                         summary=item.summary,
                         safe_details=_safe_activity_details(item.safe_details),
                         timestamp=item.occurred_at,
+                        workflow_status=run.status.value,
+                        workflow_started_at=run.started_at,
+                        workflow_finished_at=run.finished_at,
                     )
                     for item in run_activities
                 ]
@@ -267,9 +304,18 @@ async def get_conversation(
                 structured_answer=(
                     message.structured_answer
                     if isinstance(message.structured_answer, dict)
+                    and message.structured_answer.get("response_type")
+                    == "agent_response_v1"
                     else None
                 ),
                 harness_activities=activities,
+                workflow_cards=(
+                    [
+                        card_by_run_id[run_id]
+                        for run_id in message_run_ids[message.id]
+                        if run_id in card_by_run_id
+                    ]
+                ),
                 pending_action=pending_action,
                 created_at=message.created_at,
             )
@@ -294,6 +340,22 @@ def _safe_activity_details(raw: dict) -> dict:
         ):
             safe[str(key)[:100]] = value[:20]
     return safe
+
+
+def _agent_message_response(execution) -> MessageResponse:  # noqa: ANN001
+    message = execution.assistant_message
+    typed = execution.result.typed_response
+    return MessageResponse(
+        id=message.id,
+        role=message.role,
+        content=message.content,
+        latency_ms=message.latency_ms,
+        status=message.status,
+        workflow_run_id=message.workflow_run_id,
+        structured_answer=message.structured_answer,
+        workflow_cards=(list(typed.workflow_cards) if typed is not None else []),
+        created_at=message.created_at,
+    )
 
 
 @router.patch("/{conversation_id}", response_model=ConversationResponse, summary="Rename a conversation")
@@ -360,7 +422,7 @@ async def delete_conversation(
     )
 
 
-@router.post("/{conversation_id}/messages", response_model=MessageResponse, summary="Send a message and get a RAG response")
+@router.post("/{conversation_id}/messages", response_model=MessageResponse, summary="Send a message to the chat agent")
 async def send_message(
     conversation_id: int,
     request: ConversationMessageRequest,
@@ -369,7 +431,7 @@ async def send_message(
     user: CurrentUser,
     qdrant: QdrantClient,
 ) -> MessageResponse:
-    """Send a message and get a RAG-powered response."""
+    """Send a message through the authoritative bounded agent loop."""
     # Load conversation with messages
     result = await db.execute(
         select(Conversation)
@@ -392,59 +454,31 @@ async def send_message(
             raise api_error(403, "forbidden", "No access to this project")
         project_ids = [request.project_id]
 
-    planner_query = _planner_query(request.query)
-
-    # Auto-title from first user message if conversation has no title yet
+    # Auto-title from the first user message. The agent runtime persists the turn.
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
-
-    user_permissions = get_user_permissions(user)
-    planner_decision = await plan_model_harness_chat_turn(
-        query=planner_query,
-        conversation=conversation,
-        db=db,
-        project_ids=project_ids,
-        user_permissions=user_permissions,
-        access_token=http_request.cookies.get("access_token"),
-    )
-    if planner_decision.action != "use_rag":
-        return await run_harness_chat_turn(
-            conversation=conversation,
-            query=planner_query,
+    try:
+        execution = await execute_production_agent_chat_turn(
             db=db,
-            user_id=user.id,
-            project_ids=project_ids,
-            user_groups=user_groups,
-            user_permissions=user_permissions,
             qdrant=qdrant,
+            conversation=conversation,
+            query=request.query,
+            images=request.images,
+            client_turn_id=request.client_turn_id,
+            requested_project_id=request.project_id,
+            user_id=user.id,
+            user_groups=user_groups,
+            project_scope=project_ids,
+            permissions=get_user_permissions(user),
             access_token=http_request.cookies.get("access_token"),
-            planner_decision=planner_decision,
+            transport="nonstream",
         )
-
-    # Run conversational RAG pipeline
-    response = await run_conversational_rag(
-        conversation=conversation,
-        query=planner_query,
-        user_groups=user_groups,
-        qdrant=qdrant,
-        db=db,
-        top_k=request.top_k,
-        threshold=request.threshold,
-        user_id=str(user.id),
-        project_ids=project_ids,
-        images=request.images,
-        turn_plan=(
-            planner_decision.turn_plan.model_dump(mode="json")
-            if planner_decision.turn_plan is not None
-            else None
-        ),
-        enforce_turn_plan=settings.harness_turn_plan_enforced,
-    )
-
-    return response
+    except AgentChatIdempotencyConflict as exc:
+        raise api_error(409, "idempotency_conflict", str(exc)) from exc
+    return _agent_message_response(execution)
 
 
-@router.post("/{conversation_id}/messages/stream", summary="Send a message and stream the RAG response via SSE")
+@router.post("/{conversation_id}/messages/stream", summary="Send a message and stream the chat agent response via SSE")
 async def send_message_stream(
     conversation_id: int,
     request: ConversationMessageRequest,
@@ -453,17 +487,14 @@ async def send_message_stream(
     user: CurrentUser,
     qdrant: QdrantClient,
 ) -> StreamingResponse:
-    """Send a message and stream the RAG-powered response via SSE.
+    """Send a message through the authoritative agent and project it as SSE.
 
     Returns Server-Sent Events with:
-    - event: step               → optional read-only agent tool progress
-    - event: sources             → JSON array of DocumentSource objects
-    - event: runtime_tool_call   → backend runtime tool-use loop requested a tool (EP-004 slice 3)
-    - event: runtime_tool_result → sanitized result of that tool call (EP-004 slice 3)
-    - event: token               → individual LLM tokens (JSON-encoded string), or the runtime loop's
-                                    final answer as a single token
-    - event: usage               → token counts + cost
-    - event: done                → {message_id, latency_ms}
+    - event: agent_trace       → bounded reasoning-loop progress metadata
+    - event: agent_observation → typed capability observations
+    - event: agent_response    → the one visible typed answer
+    - event: agent_final       → terminal transport metadata
+    - event: done              → persisted message metadata
     """
     # Load conversation with messages
     result = await db.execute(
@@ -487,75 +518,42 @@ async def send_message_stream(
             raise api_error(403, "forbidden", "No access to this project")
         project_ids = [request.project_id]
 
-    planner_query = _planner_query(request.query)
-
-    # Auto-title from first user message if conversation has no title yet
+    # Auto-title from the first user message. Both public transports execute
+    # the same turn and differ only in their response projection.
     if not conversation.title and not conversation.messages:
         conversation.title = request.query[:80].strip()
-        await db.flush()
-
-    user_permissions = get_user_permissions(user)
-    planner_decision = await plan_model_harness_chat_turn(
-        query=planner_query,
-        conversation=conversation,
-        db=db,
-        project_ids=project_ids,
-        user_permissions=user_permissions,
-        access_token=http_request.cookies.get("access_token"),
-    )
-    use_harness = planner_decision.action != "use_rag"
+    try:
+        execution = await execute_production_agent_chat_turn(
+            db=db,
+            qdrant=qdrant,
+            conversation=conversation,
+            query=request.query,
+            images=request.images,
+            client_turn_id=request.client_turn_id,
+            requested_project_id=request.project_id,
+            user_id=user.id,
+            user_groups=user_groups,
+            project_scope=project_ids,
+            permissions=get_user_permissions(user),
+            access_token=http_request.cookies.get("access_token"),
+            transport="stream",
+        )
+    except AgentChatIdempotencyConflict as exc:
+        raise api_error(409, "idempotency_conflict", str(exc)) from exc
 
     async def event_generator():
-        try:
-            if use_harness:
-                async for event_type, data in run_harness_chat_turn_stream(
-                    conversation=conversation,
-                    query=planner_query,
-                    db=db,
-                    user_id=user.id,
-                    project_ids=project_ids,
-                    user_groups=user_groups,
-                    user_permissions=user_permissions,
-                    qdrant=qdrant,
-                    access_token=http_request.cookies.get("access_token"),
-                    planner_decision=planner_decision,
-                ):
-                    yield f"event: {event_type}\ndata: {data}\n\n"
-            else:
-                async for event_type, data in run_conversational_rag_stream(
-                    conversation=conversation,
-                    query=planner_query,
-                    user_groups=user_groups,
-                    qdrant=qdrant,
-                    db=db,
-                    top_k=request.top_k,
-                    threshold=request.threshold,
-                    user_id=str(user.id),
-                    project_ids=project_ids,
-                    images=request.images,
-                    turn_plan=(
-                        planner_decision.turn_plan.model_dump(mode="json")
-                        if planner_decision.turn_plan is not None
-                        else None
-                    ),
-                    enforce_turn_plan=settings.harness_turn_plan_enforced,
-                ):
-                    yield f"event: {event_type}\ndata: {data}\n\n"
-        except Exception as e:
-            logger.error("Conversation stream failed: %s", e, exc_info=True)
-            safe_message = "Chat response failed. Please try again."
-            failed_msg = ConversationMessage(
-                conversation_id=conversation.id,
-                role="assistant",
-                content="",
-                status="failed",
-                error_message=safe_message,
+        async for event_type, data in stream_transport(execution.result):
+            yield f"event: {event_type}\ndata: {data}\n\n"
+        yield (
+            "event: done\ndata: "
+            + json.dumps(
+                {
+                    "message_id": execution.assistant_message.id,
+                    "latency_ms": execution.latency_ms,
+                }
             )
-            db.add(failed_msg)
-            await db.flush()
-            await db.commit()
-            yield f"event: error\ndata: {json.dumps(safe_message)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'message_id': failed_msg.id, 'latency_ms': 0})}\n\n"
+            + "\n\n"
+        )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
