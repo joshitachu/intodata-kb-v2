@@ -8,8 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.harness.models import CapabilityDefinition, CapabilityHealth
-from src.harness.evidence_policy import validate_capability_turn_semantics
-from src.harness.registry import CapabilityRegistry
+from src.harness.registry import CapabilityCatalog
 
 
 _SAFE_METADATA_KEYS = {
@@ -29,6 +28,9 @@ class ManifestScope(BaseModel):
     permissions: set[str] | None = None
     packs: set[str] | None = None
     include_unavailable: bool = False
+    include_bounded_loop_only: bool = False
+    allowed_capability_ids: set[str] | None = None
+    denied_capability_ids: set[str] = Field(default_factory=set)
 
 
 class RuntimeCapabilityTool(BaseModel):
@@ -51,7 +53,6 @@ class RuntimeCapabilityTool(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     do_not_use_when: list[str] = Field(default_factory=list)
     task_types: list[str] = Field(default_factory=list)
-    planning_task_type: str | None = None
     evidence_sources: list[str] = Field(default_factory=list)
     output_contracts: list[str] = Field(default_factory=list)
     activity_label: str
@@ -72,7 +73,7 @@ class RuntimeCapabilityManifest(BaseModel):
 
 
 def build_runtime_capability_manifest(
-    registry: CapabilityRegistry,
+    registry: CapabilityCatalog,
     *,
     scope: ManifestScope | None = None,
 ) -> RuntimeCapabilityManifest:
@@ -112,23 +113,46 @@ def user_facing_capability_lines(tools: Iterable[RuntimeCapabilityTool]) -> list
 
 
 def _is_visible_to_runtime(capability: CapabilityDefinition, scope: ManifestScope) -> bool:
+    return runtime_visibility_reason(capability, scope) is None
+
+
+def runtime_visibility_reason(
+    capability: CapabilityDefinition,
+    scope: ManifestScope,
+) -> str | None:
+    """Return one stable server-side reason when a capability is not visible."""
+
+    if (
+        capability.metadata.get("bounded_loop_only") is True
+        and not scope.include_bounded_loop_only
+    ):
+        return "bounded_loop_filtered"
     if capability.metadata.get("runtime_hidden") is True:
-        return False
-    if not scope.include_unavailable:
-        if not capability.enabled or capability.health == CapabilityHealth.UNAVAILABLE:
-            return False
+        return "runtime_hidden"
+    if not capability.enabled:
+        return None if scope.include_unavailable else "disabled"
+    if capability.health == CapabilityHealth.UNAVAILABLE:
+        return None if scope.include_unavailable else "unhealthy"
     if scope.permissions is not None:
         required = set(capability.required_permissions)
         if required and not required.issubset(scope.permissions):
-            return False
+            return "permission_filtered"
     if scope.packs is not None and capability.packs:
         if not set(capability.packs).intersection(scope.packs):
-            return False
-    return True
+            return "pack_filtered"
+    if capability.id in scope.denied_capability_ids:
+        return "turn_policy_denied"
+    if (
+        scope.allowed_capability_ids is not None
+        and capability.id not in scope.allowed_capability_ids
+    ):
+        return "turn_policy_filtered"
+    return None
 
 
-def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
-    validate_capability_turn_semantics(capability)
+def _to_runtime_tool(
+    capability: CapabilityDefinition,
+) -> RuntimeCapabilityTool:
     safe_metadata = {
         key: value
         for key, value in capability.metadata.items()
@@ -147,7 +171,6 @@ def _to_runtime_tool(capability: CapabilityDefinition) -> RuntimeCapabilityTool:
         use_when=list(capability.use_when),
         do_not_use_when=list(capability.do_not_use_when),
         task_types=list(capability.task_types),
-        planning_task_type=capability.planning_task_type,
         evidence_sources=list(capability.evidence_sources),
         output_contracts=list(capability.output_contracts),
         activity_label=str(safe_metadata.get("activity_label") or capability.label),

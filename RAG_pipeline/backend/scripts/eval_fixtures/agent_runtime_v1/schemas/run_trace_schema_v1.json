@@ -1,0 +1,569 @@
+{
+  "$defs": {
+    "BudgetTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_class": {
+          "title": "Budget Class",
+          "type": "string"
+        },
+        "hard_limit_exceeded": {
+          "default": false,
+          "title": "Hard Limit Exceeded",
+          "type": "boolean"
+        },
+        "soft_limit_exceeded": {
+          "default": false,
+          "title": "Soft Limit Exceeded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "budget_class"
+      ],
+      "title": "BudgetTrace",
+      "type": "object"
+    },
+    "CaptureDimension": {
+      "enum": [
+        "terminal_status",
+        "boundary",
+        "tools",
+        "policy",
+        "arguments",
+        "observations",
+        "tool_observation_correlation",
+        "state",
+        "effects",
+        "grounding",
+        "response",
+        "budget",
+        "turn_authority",
+        "events",
+        "replay",
+        "recovery",
+        "transport_parity",
+        "runtime_failure"
+      ],
+      "title": "CaptureDimension",
+      "type": "string"
+    },
+    "EffectTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized": {
+          "default": true,
+          "title": "Authorized",
+          "type": "boolean"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Id"
+        },
+        "receipt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Receipt Id"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "EffectTrace",
+      "type": "object"
+    },
+    "EventTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Id"
+        },
+        "replay_of_event_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replay Of Event Id"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "sequence",
+        "kind"
+      ],
+      "title": "EventTrace",
+      "type": "object"
+    },
+    "FailureTaxonomy": {
+      "enum": [
+        "MODEL_OBJECTIVE",
+        "MODEL_TOOL",
+        "MODEL_ARGS",
+        "TOOL_CONTRACT",
+        "MANIFEST",
+        "POLICY",
+        "EXECUTION",
+        "OBSERVATION",
+        "EVIDENCE",
+        "GROUNDING",
+        "RESPONSE",
+        "PLAN_STATE",
+        "WORKFLOW_STATE",
+        "RUNTIME_PROTOCOL",
+        "TRANSPORT",
+        "EVALUATOR"
+      ],
+      "title": "FailureTaxonomy",
+      "type": "string"
+    },
+    "ObservationTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "ObservationTrace",
+      "type": "object"
+    },
+    "RecoveryTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "observation_reconstructed": {
+          "title": "Observation Reconstructed",
+          "type": "boolean"
+        },
+        "original_operation_id": {
+          "title": "Original Operation Id",
+          "type": "string"
+        },
+        "recovered_receipt_id": {
+          "title": "Recovered Receipt Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "original_operation_id",
+        "recovered_receipt_id",
+        "observation_reconstructed"
+      ],
+      "title": "RecoveryTrace",
+      "type": "object"
+    },
+    "RuntimeAttribution": {
+      "additionalProperties": false,
+      "properties": {
+        "application_revision": {
+          "title": "Application Revision",
+          "type": "string"
+        },
+        "captured_at": {
+          "title": "Captured At",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "title": "Manifest Hash",
+          "type": "string"
+        },
+        "model_profile": {
+          "title": "Model Profile",
+          "type": "string"
+        },
+        "prompt_version": {
+          "title": "Prompt Version",
+          "type": "string"
+        },
+        "runtime_version": {
+          "title": "Runtime Version",
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "stream",
+            "nonstream"
+          ],
+          "title": "Transport",
+          "type": "string"
+        }
+      },
+      "required": [
+        "application_revision",
+        "runtime_version",
+        "model_profile",
+        "prompt_version",
+        "manifest_hash",
+        "transport",
+        "captured_at"
+      ],
+      "title": "RuntimeAttribution",
+      "type": "object"
+    },
+    "StateExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "approval": {
+          "default": "none",
+          "title": "Approval",
+          "type": "string"
+        },
+        "plan": {
+          "default": "none",
+          "title": "Plan",
+          "type": "string"
+        },
+        "task": {
+          "default": "none",
+          "title": "Task",
+          "type": "string"
+        },
+        "workflow": {
+          "default": "none",
+          "title": "Workflow",
+          "type": "string"
+        }
+      },
+      "title": "StateExpectation",
+      "type": "object"
+    },
+    "ToolCallTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        },
+        "family": {
+          "title": "Family",
+          "type": "string"
+        },
+        "policy": {
+          "enum": [
+            "allowed",
+            "denied",
+            "approval_required",
+            "not_checked"
+          ],
+          "title": "Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "arguments",
+        "policy"
+      ],
+      "title": "ToolCallTrace",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attribution": {
+      "$ref": "#/$defs/RuntimeAttribution"
+    },
+    "authority_acquisitions": {
+      "default": 0,
+      "title": "Authority Acquisitions",
+      "type": "integer"
+    },
+    "boundary_decisions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Boundary Decisions",
+      "type": "array"
+    },
+    "budget": {
+      "$ref": "#/$defs/BudgetTrace"
+    },
+    "captured_dimensions": {
+      "items": {
+        "$ref": "#/$defs/CaptureDimension"
+      },
+      "title": "Captured Dimensions",
+      "type": "array"
+    },
+    "client_turn_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Client Turn Id"
+    },
+    "conflict_detected": {
+      "default": false,
+      "title": "Conflict Detected",
+      "type": "boolean"
+    },
+    "effects": {
+      "items": {
+        "$ref": "#/$defs/EffectTrace"
+      },
+      "title": "Effects",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/EventTrace"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "evidence_refs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notes"
+    },
+    "observation_traces": {
+      "items": {
+        "$ref": "#/$defs/ObservationTrace"
+      },
+      "title": "Observation Traces",
+      "type": "array"
+    },
+    "observations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Observations",
+      "type": "array"
+    },
+    "persisted_message_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Persisted Message Id"
+    },
+    "raw_internal_output": {
+      "default": false,
+      "title": "Raw Internal Output",
+      "type": "boolean"
+    },
+    "recovery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryTrace"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "repeated_response": {
+      "default": false,
+      "title": "Repeated Response",
+      "type": "boolean"
+    },
+    "response": {
+      "title": "Response",
+      "type": "string"
+    },
+    "response_metadata": {
+      "additionalProperties": true,
+      "title": "Response Metadata",
+      "type": "object"
+    },
+    "runtime_failure_hint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FailureTaxonomy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scenario_id": {
+      "title": "Scenario Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/StateExpectation"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed",
+        "not_evaluated"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "tool_calls": {
+      "items": {
+        "$ref": "#/$defs/ToolCallTrace"
+      },
+      "title": "Tool Calls",
+      "type": "array"
+    },
+    "turn_authority_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Authority Id"
+    },
+    "turn_id": {
+      "title": "Turn Id",
+      "type": "string"
+    },
+    "turn_version_after": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Version After"
+    },
+    "turn_version_before": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Version Before"
+    },
+    "unsupported_claim_count": {
+      "default": 0,
+      "title": "Unsupported Claim Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "scenario_id",
+    "turn_id",
+    "status",
+    "captured_dimensions",
+    "attribution",
+    "boundary_decisions",
+    "tool_calls",
+    "observations",
+    "state",
+    "effects",
+    "response",
+    "evidence_refs",
+    "budget"
+  ],
+  "title": "RunTrace",
+  "type": "object"
+}

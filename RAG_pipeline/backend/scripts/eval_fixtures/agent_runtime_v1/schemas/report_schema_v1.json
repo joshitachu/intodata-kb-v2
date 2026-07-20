@@ -1,0 +1,282 @@
+{
+  "$defs": {
+    "CaptureDimension": {
+      "enum": [
+        "terminal_status",
+        "boundary",
+        "tools",
+        "policy",
+        "arguments",
+        "observations",
+        "tool_observation_correlation",
+        "state",
+        "effects",
+        "grounding",
+        "response",
+        "budget",
+        "turn_authority",
+        "events",
+        "replay",
+        "recovery",
+        "transport_parity",
+        "runtime_failure"
+      ],
+      "title": "CaptureDimension",
+      "type": "string"
+    },
+    "EvaluationSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "by_family": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "title": "By Family",
+          "type": "object"
+        },
+        "by_taxonomy": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "By Taxonomy",
+          "type": "object"
+        },
+        "evaluated": {
+          "title": "Evaluated",
+          "type": "integer"
+        },
+        "evaluator_invalid": {
+          "title": "Evaluator Invalid",
+          "type": "integer"
+        },
+        "not_evaluated": {
+          "title": "Not Evaluated",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "integer"
+        },
+        "product_failed": {
+          "title": "Product Failed",
+          "type": "integer"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "evaluated",
+        "passed",
+        "product_failed",
+        "not_evaluated",
+        "evaluator_invalid",
+        "by_taxonomy",
+        "by_family"
+      ],
+      "title": "EvaluationSummary",
+      "type": "object"
+    },
+    "FailureTaxonomy": {
+      "enum": [
+        "MODEL_OBJECTIVE",
+        "MODEL_TOOL",
+        "MODEL_ARGS",
+        "TOOL_CONTRACT",
+        "MANIFEST",
+        "POLICY",
+        "EXECUTION",
+        "OBSERVATION",
+        "EVIDENCE",
+        "GROUNDING",
+        "RESPONSE",
+        "PLAN_STATE",
+        "WORKFLOW_STATE",
+        "RUNTIME_PROTOCOL",
+        "TRANSPORT",
+        "EVALUATOR"
+      ],
+      "title": "FailureTaxonomy",
+      "type": "string"
+    },
+    "GradeFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "precedence": {
+          "title": "Precedence",
+          "type": "integer"
+        },
+        "taxonomy": {
+          "$ref": "#/$defs/FailureTaxonomy"
+        }
+      },
+      "required": [
+        "taxonomy",
+        "precedence",
+        "message"
+      ],
+      "title": "GradeFailure",
+      "type": "object"
+    },
+    "RuntimeAttribution": {
+      "additionalProperties": false,
+      "properties": {
+        "application_revision": {
+          "title": "Application Revision",
+          "type": "string"
+        },
+        "captured_at": {
+          "title": "Captured At",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "title": "Manifest Hash",
+          "type": "string"
+        },
+        "model_profile": {
+          "title": "Model Profile",
+          "type": "string"
+        },
+        "prompt_version": {
+          "title": "Prompt Version",
+          "type": "string"
+        },
+        "runtime_version": {
+          "title": "Runtime Version",
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "stream",
+            "nonstream"
+          ],
+          "title": "Transport",
+          "type": "string"
+        }
+      },
+      "required": [
+        "application_revision",
+        "runtime_version",
+        "model_profile",
+        "prompt_version",
+        "manifest_hash",
+        "transport",
+        "captured_at"
+      ],
+      "title": "RuntimeAttribution",
+      "type": "object"
+    },
+    "ScenarioGrade": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluated": {
+          "title": "Evaluated",
+          "type": "boolean"
+        },
+        "evaluator_status": {
+          "enum": [
+            "product_pass",
+            "product_failure",
+            "evaluator_gap",
+            "evaluator_invalid"
+          ],
+          "title": "Evaluator Status",
+          "type": "string"
+        },
+        "failures": {
+          "items": {
+            "$ref": "#/$defs/GradeFailure"
+          },
+          "title": "Failures",
+          "type": "array"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "scenario_id": {
+          "title": "Scenario Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "uncaptured_dimensions": {
+          "items": {
+            "$ref": "#/$defs/CaptureDimension"
+          },
+          "title": "Uncaptured Dimensions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scenario_id",
+        "turn_id",
+        "evaluated",
+        "passed",
+        "evaluator_status",
+        "failures"
+      ],
+      "title": "ScenarioGrade",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "attributions": {
+      "items": {
+        "$ref": "#/$defs/RuntimeAttribution"
+      },
+      "title": "Attributions",
+      "type": "array"
+    },
+    "corpus_version": {
+      "title": "Corpus Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "grades": {
+      "items": {
+        "$ref": "#/$defs/ScenarioGrade"
+      },
+      "title": "Grades",
+      "type": "array"
+    },
+    "report_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Report Version",
+      "type": "string"
+    },
+    "summary": {
+      "$ref": "#/$defs/EvaluationSummary"
+    },
+    "target": {
+      "title": "Target",
+      "type": "string"
+    }
+  },
+  "required": [
+    "corpus_version",
+    "target",
+    "generated_at",
+    "attributions",
+    "summary",
+    "grades"
+  ],
+  "title": "EvaluationReport",
+  "type": "object"
+}
