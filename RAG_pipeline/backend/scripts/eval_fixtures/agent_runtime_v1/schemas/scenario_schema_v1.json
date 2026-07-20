@@ -1,0 +1,522 @@
+{
+  "$defs": {
+    "ArgumentConstraint": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "enum": [
+            "eq",
+            "in",
+            "present",
+            "absent"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "tool_family": {
+          "title": "Tool Family",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "tool_family",
+        "path",
+        "operator"
+      ],
+      "title": "ArgumentConstraint",
+      "type": "object"
+    },
+    "AuthorizedContext": {
+      "additionalProperties": false,
+      "properties": {
+        "manifest_hash": {
+          "title": "Manifest Hash",
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Permissions",
+          "type": "array"
+        },
+        "project_scope": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Project Scope",
+          "type": "array"
+        },
+        "user": {
+          "title": "User",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user",
+        "project_scope",
+        "permissions",
+        "manifest_hash"
+      ],
+      "title": "AuthorizedContext",
+      "type": "object"
+    },
+    "EffectExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "maximum": {
+          "default": 1,
+          "title": "Maximum",
+          "type": "integer"
+        },
+        "minimum": {
+          "default": 0,
+          "title": "Minimum",
+          "type": "integer"
+        },
+        "operation_id_required": {
+          "default": false,
+          "title": "Operation Id Required",
+          "type": "boolean"
+        },
+        "receipt_required": {
+          "default": false,
+          "title": "Receipt Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "EffectExpectation",
+      "type": "object"
+    },
+    "ExpectedTrajectory": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_effects": {
+          "items": {
+            "$ref": "#/$defs/EffectExpectation"
+          },
+          "title": "Allowed Effects",
+          "type": "array"
+        },
+        "allowed_terminal_statuses": {
+          "items": {
+            "enum": [
+              "completed",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Terminal Statuses",
+          "type": "array"
+        },
+        "allowed_tool_sequences": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Allowed Tool Sequences",
+          "type": "array"
+        },
+        "argument_constraints": {
+          "items": {
+            "$ref": "#/$defs/ArgumentConstraint"
+          },
+          "title": "Argument Constraints",
+          "type": "array"
+        },
+        "boundary_decisions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Boundary Decisions",
+          "type": "array"
+        },
+        "budget_class": {
+          "title": "Budget Class",
+          "type": "string"
+        },
+        "forbidden_effects": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Effects",
+          "type": "array"
+        },
+        "grounding": {
+          "$ref": "#/$defs/GroundingExpectation"
+        },
+        "mechanics": {
+          "$ref": "#/$defs/MechanicsExpectation"
+        },
+        "observations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Observations",
+          "type": "array"
+        },
+        "response_semantics": {
+          "items": {
+            "$ref": "#/$defs/SemanticAssertion"
+          },
+          "title": "Response Semantics",
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/StateExpectation"
+        },
+        "tool_policies": {
+          "items": {
+            "$ref": "#/$defs/ToolPolicyExpectation"
+          },
+          "title": "Tool Policies",
+          "type": "array"
+        }
+      },
+      "required": [
+        "boundary_decisions",
+        "allowed_tool_sequences",
+        "tool_policies",
+        "argument_constraints",
+        "observations",
+        "state",
+        "allowed_effects",
+        "forbidden_effects",
+        "response_semantics",
+        "grounding",
+        "budget_class"
+      ],
+      "title": "ExpectedTrajectory",
+      "type": "object"
+    },
+    "GroundingExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum_evidence_refs": {
+          "default": 0,
+          "title": "Minimum Evidence Refs",
+          "type": "integer"
+        },
+        "mode": {
+          "enum": [
+            "none",
+            "required",
+            "no_evidence",
+            "partial",
+            "conflict"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "unsupported_claims_allowed": {
+          "default": false,
+          "title": "Unsupported Claims Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "GroundingExpectation",
+      "type": "object"
+    },
+    "MechanicsExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "ordered_events": {
+          "default": false,
+          "title": "Ordered Events",
+          "type": "boolean"
+        },
+        "paired_transport_parity": {
+          "default": false,
+          "title": "Paired Transport Parity",
+          "type": "boolean"
+        },
+        "recovery_correlation": {
+          "default": false,
+          "title": "Recovery Correlation",
+          "type": "boolean"
+        },
+        "recovery_operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Operation Id"
+        },
+        "recovery_receipt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Receipt Id"
+        },
+        "replay_identity": {
+          "default": false,
+          "title": "Replay Identity",
+          "type": "boolean"
+        },
+        "tool_observation_correlation": {
+          "default": false,
+          "title": "Tool Observation Correlation",
+          "type": "boolean"
+        },
+        "turn_authority": {
+          "default": "none",
+          "enum": [
+            "none",
+            "deduplicated",
+            "concurrent"
+          ],
+          "title": "Turn Authority",
+          "type": "string"
+        }
+      },
+      "title": "MechanicsExpectation",
+      "type": "object"
+    },
+    "SemanticAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "contains",
+            "excludes",
+            "nonempty",
+            "asks_clarification",
+            "list_items_at_least",
+            "word_count_at_most"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "SemanticAssertion",
+      "type": "object"
+    },
+    "StateExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "approval": {
+          "default": "none",
+          "title": "Approval",
+          "type": "string"
+        },
+        "plan": {
+          "default": "none",
+          "title": "Plan",
+          "type": "string"
+        },
+        "task": {
+          "default": "none",
+          "title": "Task",
+          "type": "string"
+        },
+        "workflow": {
+          "default": "none",
+          "title": "Workflow",
+          "type": "string"
+        }
+      },
+      "title": "StateExpectation",
+      "type": "object"
+    },
+    "ToolPolicyExpectation": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_outcomes": {
+          "items": {
+            "enum": [
+              "allowed",
+              "denied",
+              "approval_required",
+              "not_checked"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Outcomes",
+          "type": "array"
+        },
+        "call_index": {
+          "title": "Call Index",
+          "type": "integer"
+        },
+        "family": {
+          "title": "Family",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_index",
+        "family",
+        "allowed_outcomes"
+      ],
+      "title": "ToolPolicyExpectation",
+      "type": "object"
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "$ref": "#/$defs/ExpectedTrajectory"
+        },
+        "transports": {
+          "items": {
+            "enum": [
+              "stream",
+              "nonstream"
+            ],
+            "type": "string"
+          },
+          "title": "Transports",
+          "type": "array"
+        },
+        "turn_id": {
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "user_message": {
+          "title": "User Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "turn_id",
+        "user_message",
+        "transports",
+        "expected"
+      ],
+      "title": "Turn",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "authorized_context": {
+      "$ref": "#/$defs/AuthorizedContext"
+    },
+    "conversation_seed": {
+      "items": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "title": "Conversation Seed",
+      "type": "array"
+    },
+    "family": {
+      "title": "Family",
+      "type": "string"
+    },
+    "provenance_incidents": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Provenance Incidents",
+      "type": "array"
+    },
+    "scenario_id": {
+      "title": "Scenario Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "split": {
+      "enum": [
+        "development",
+        "holdout"
+      ],
+      "title": "Split",
+      "type": "string"
+    },
+    "turns": {
+      "items": {
+        "$ref": "#/$defs/Turn"
+      },
+      "title": "Turns",
+      "type": "array"
+    },
+    "variant": {
+      "enum": [
+        "formal",
+        "informal",
+        "typo",
+        "pronoun",
+        "negation",
+        "keyword_collision",
+        "neighbor",
+        "ambiguous"
+      ],
+      "title": "Variant",
+      "type": "string"
+    }
+  },
+  "required": [
+    "scenario_id",
+    "family",
+    "split",
+    "variant",
+    "conversation_seed",
+    "authorized_context",
+    "turns"
+  ],
+  "title": "Scenario",
+  "type": "object"
+}

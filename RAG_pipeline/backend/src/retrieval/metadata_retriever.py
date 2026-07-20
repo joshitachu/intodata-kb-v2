@@ -7,15 +7,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models.document import Document
-
-if TYPE_CHECKING:
-    from src.generation.intent_classifier import MetadataIntent
+from src.retrieval.metadata_models import MetadataIntent
 
 logger = logging.getLogger(__name__)
 
@@ -464,21 +461,19 @@ async def fetch_metadata(
     user_id: int | None = None,
 ) -> MetadataContext:
     """Dispatch to the appropriate metadata retriever based on intent."""
-    from src.generation.intent_classifier import MetadataIntent as MI
-
-    if intent == MI.MY_PROFILE and user_id is not None:
+    if intent == MetadataIntent.MY_PROFILE and user_id is not None:
         return await get_user_profile(db, user_id)
-    elif intent == MI.PROJECT_LIST:
+    elif intent == MetadataIntent.PROJECT_LIST:
         return await get_project_list(db, project_ids)
-    elif intent == MI.PROJECT_DETAIL and project_filter:
+    elif intent == MetadataIntent.PROJECT_DETAIL and project_filter:
         return await get_project_detail(db, project_filter, project_ids)
-    elif intent == MI.DOCUMENT_STATS:
+    elif intent == MetadataIntent.DOCUMENT_STATS:
         return await get_document_stats(db, project_ids, project_filter)
-    elif intent == MI.DOCUMENT_LIST:
+    elif intent == MetadataIntent.DOCUMENT_LIST:
         return await get_document_list(db, project_ids, project_filter)
-    elif intent == MI.SYSTEM_OVERVIEW:
+    elif intent == MetadataIntent.SYSTEM_OVERVIEW:
         return await get_system_overview(db, project_ids)
-    elif intent == MI.HYBRID:
+    elif intent == MetadataIntent.HYBRID:
         if project_filter:
             return await get_project_detail(db, project_filter, project_ids)
         return await get_system_overview(db, project_ids)

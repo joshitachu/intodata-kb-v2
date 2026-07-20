@@ -6,7 +6,7 @@ import pytest
 from src.db.models import Conversation, User
 from src.harness import (
     CapabilityDisabledError,
-    CapabilityRegistry,
+    CapabilityCatalog,
     HarnessRunNotFoundError,
     HarnessWorkflowRepository,
     HarnessWorkflowService,
@@ -233,7 +233,7 @@ class TestCapabilityRegistry:
         assert capability.required_permissions == ["manage_projects"]
 
     def test_registry_rejects_unknown_and_disabled_capabilities(self):
-        registry = CapabilityRegistry()
+        registry = CapabilityCatalog()
 
         with pytest.raises(UnknownCapabilityError):
             registry.get("missing")
