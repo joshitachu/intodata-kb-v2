@@ -13,7 +13,7 @@ from src.harness.executor import (
 )
 from src.harness.manifest import ManifestScope, build_runtime_capability_manifest
 from src.harness.models import LOG_SEARCH_EVIDENCE_CAPABILITY
-from src.harness.registry import CapabilityRegistry, default_capability_registry
+from src.harness.registry import base_capability_registry, default_capability_registry
 from src.runtime.providers import RuntimeProviderContext
 from src.runtime.providers.stored import StoredRuntimeProvider
 from src.runtime.registry import SearchLogsInput
@@ -40,7 +40,7 @@ async def test_log_search_is_denied_by_turn_policy_before_handler_runs() -> None
         return []
 
     executor = HarnessCapabilityExecutor(
-        CapabilityRegistry([LOG_SEARCH_EVIDENCE_CAPABILITY]),
+        base_capability_registry(),
         evidence_handlers={LOG_SEARCH_EVIDENCE_CAPABILITY.id: handler},
     )
     observation = await executor.execute(
@@ -69,7 +69,7 @@ async def test_log_search_rejects_an_unauthorized_project_before_handler_runs() 
         return []
 
     executor = HarnessCapabilityExecutor(
-        CapabilityRegistry([LOG_SEARCH_EVIDENCE_CAPABILITY]),
+        base_capability_registry(),
         evidence_handlers={LOG_SEARCH_EVIDENCE_CAPABILITY.id: handler},
     )
     observation = await executor.execute(

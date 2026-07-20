@@ -225,7 +225,7 @@ async def test_langgraph_runtime_timeout_returns_safe_failure() -> None:
     }
 
 
-async def test_langgraph_runtime_pauses_for_write_approval_before_executor() -> None:
+async def test_legacy_runtime_cannot_execute_agent_hidden_write_capability() -> None:
     calls: list[dict] = []
 
     class RecordingExecutor:
@@ -254,23 +254,13 @@ async def test_langgraph_runtime_pauses_for_write_approval_before_executor() -> 
     )
     context = CapabilityExecutionContext(user_id=1, project_scope=["project-a"])
 
-    interrupted = await runtime.run_turn(
+    denied = await runtime.run_turn(
         request,
         executor=RecordingExecutor(),
         context=context,
     )
 
-    assert interrupted.status == "interrupted"
-    assert interrupted.interrupt is not None
-    assert interrupted.interrupt.kind == "approval"
+    assert denied.status == "failed"
+    assert denied.selected_capability_id is None
+    assert denied.observation is None
     assert calls == []
-
-    resumed = await runtime.resume_turn(
-        request,
-        response={"approved": True},
-        executor=RecordingExecutor(),
-        context=CapabilityExecutionContext(user_id=1, project_scope=["project-a"]),
-    )
-
-    assert resumed.status == "succeeded"
-    assert calls == [request.arguments]
