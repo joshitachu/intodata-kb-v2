@@ -25,6 +25,22 @@ import { GroupSummaryNode } from "@/components/graph/GroupSummaryNode";
 import { GraphLegend } from "@/components/graph/GraphLegend";
 import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { JobDetailPanel } from "@/components/graph/JobDetailPanel";
+import { JobGraphCanvas } from "@/components/graph/JobGraphCanvas";
+import { ComponentGraphCanvas } from "@/components/graph/ComponentGraphCanvas";
+import { TopologyBreadcrumb } from "@/components/graph/TopologyBreadcrumb";
+import { LineagePathBanner } from "@/components/graph/LineagePathBanner";
+import { useTopologyNavigation } from "@/hooks/useTopologyNavigation";
+import { useFieldLineage } from "@/hooks/useFieldLineage";
+import { useJobHealth } from "@/hooks/useJobHealth";
+import {
+  componentLineageHighlight,
+  jobLineageHighlight,
+  projectLineageHighlight,
+} from "@/lib/lineageHighlight";
+import { joinHealthToJobs } from "@/lib/jobHealth";
+import { propagateHealth, callEdgeKey, type EffectiveStatus } from "@/lib/healthPropagation";
+import { worstEffectiveStatus, FAILING_EDGE_COLOR } from "@/lib/healthStatusMeta";
+import type { FieldLineageQuery } from "@/types/lineage";
 import { MobileTopBar } from "@/components/mobile/MobileTopBar";
 import { MobileBottomSheet } from "@/components/mobile/MobileBottomSheet";
 import { useViewport } from "@/hooks/useViewport";
@@ -34,15 +50,21 @@ import {
   manifestToCollapsedFlow,
   applyDagreLayout,
   applyCompoundDagreLayout,
-  localExpandLayout,
   computeGroupBoundingBoxes,
+  applyConnectionVisibility,
   type ManifestData,
   type GraphConnectionInfo,
   type JobScanMetadata,
   type FlowResult,
   type GroupBoundingBox,
-  type ExpandAnchor,
 } from "@/lib/graphTransform";
+import { computeFailureFocusSet, isFocusDimmableNode, isFocusDimmableEdge } from "@/lib/failureFocus";
+import { computeFocus, type FocusResult } from "@/lib/focusMode";
+import { FocusInteractionContext, type FocusInteraction } from "@/components/graph/focusInteraction";
+import { CALL_EDGE_COLOR } from "@/lib/nodeStyles";
+
+// Default focus-mode horizon: focal job ± this many dependency hops.
+const DEFAULT_FOCUS_HOPS = 2;
 
 interface ProjectOption {
   id: string;
@@ -58,7 +80,8 @@ interface GraphData {
   job_metadata?: Record<string, JobScanMetadata>;
 }
 
-// Group background node rendered behind job clusters
+// Group background node rendered behind job clusters — neutral slate wash so
+// the container reads as structure, not as another colored element.
 const GroupBackgroundNode = memo(function GroupBackgroundNode({ data }: { data: GroupBoundingBox & { width: number; height: number } }) {
   return (
     <div
@@ -66,13 +89,13 @@ const GroupBackgroundNode = memo(function GroupBackgroundNode({ data }: { data: 
       style={{
         width: data.width,
         height: data.height,
-        background: `linear-gradient(135deg, ${data.color.border}08, ${data.color.border}04)`,
-        border: `1px dashed ${data.color.border}25`,
+        background: "rgba(148, 163, 184, 0.07)",
+        border: "1px solid rgba(148, 163, 184, 0.25)",
       }}
     >
       <span
         className="absolute top-2 left-3.5 text-[10px] font-bold tracking-wide pointer-events-none uppercase"
-        style={{ color: `${data.color.border}60` }}
+        style={{ color: "#94a3b8" }}
       >
         {data.group}
       </span>
@@ -96,6 +119,14 @@ function TopologyContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [direction, setDirection] = useState<"TB" | "LR">("TB");
+  // Shared connection nodes (conn:*) show what external systems each group
+  // talks to (MSSQL, REST API, ActiveMQ, ...) — the information the overview
+  // exists to surface. Visible by default. In the collapsed overview each
+  // group draws ONE aggregated edge per connection (manifestToCollapsedFlow's
+  // `group-uses` edges) instead of every job fanning its own dashed line, so
+  // this stays clean rather than becoming the old spaghetti. The toolbar
+  // "Connections" toggle hides them (applyConnectionVisibility drops conn:*
+  // nodes and every edge touching one, aggregated edges included).
   const [showConnections, setShowConnections] = useState(true);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
 
@@ -112,19 +143,292 @@ function TopologyContent() {
   const [collapsedMode, setCollapsedMode] = useState<boolean | null>(true);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
+  // ── Focus mode: click-to-centre neighbourhood exploration ────────────────
+  // When focusJobId is set the canvas shows ONLY the focal job's dependency
+  // neighbourhood (± focusHops), relaid-out compactly; everything else is
+  // hidden. Reuses the same manifest dependency maps as S3/S5 (focusMode.ts).
+  const [focusJobId, setFocusJobId] = useState<string | null>(null);
+  const [focusHops, setFocusHops] = useState<number>(DEFAULT_FOCUS_HOPS);
+
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { fitView, getNodes } = useReactFlow();
+  const { fitView } = useReactFlow();
   const { isMobile } = useViewport();
+
+  // Drill-down navigation stack (Project > Job > ...). Level 0/1 (this
+  // page's canvas) stays mounted-but-hidden while a job level is open so
+  // ascending restores the prior viewport, expand state, and layout.
+  const {
+    stack: navStack,
+    current: navCurrent,
+    depth: navDepth,
+    descendToJob,
+    descendToComponent,
+    ascend,
+    jumpTo,
+    reset: resetNavigation,
+  } = useTopologyNavigation();
+  const currentJobName = navCurrent.kind === "job" ? navCurrent.jobName : null;
+  const currentComponent = navCurrent.kind === "component" ? navCurrent : null;
+  const atProjectLevel = navDepth === 1;
+
+  // S5 field lineage ("heritage mode") - a single selection lives here so it
+  // survives ascending/descending between drill-down levels (each level's
+  // canvas remounts fresh on every descent, see the level-2/3 `key` props
+  // below). null until the user clicks a column handle in a level-3
+  // TableNode; toggled off by clicking the same column again or the path
+  // banner's close button.
+  const [lineageQuery, setLineageQuery] = useState<FieldLineageQuery | null>(null);
+  const {
+    data: lineageResponse,
+    isLoading: lineageLoading,
+    error: lineageError,
+  } = useFieldLineage(selectedProject, lineageQuery);
+
+  const handleColumnLineageClick = useCallback(
+    (jobName: string, componentName: string, table: string, column: string) => {
+      // Activating a lineage trace clears any active focus neighbourhood — the
+      // two spotlights are mutually exclusive (see handleFocusJob).
+      setFocusJobId(null);
+      setLineageQuery((prev) =>
+        prev &&
+        prev.jobName === jobName &&
+        prev.component === componentName &&
+        prev.table === table &&
+        prev.column === column
+          ? null
+          : { jobName, table, column, component: componentName, direction: "both", maxDepth: 10 },
+      );
+    },
+    [],
+  );
+
+  const handleClearLineage = useCallback(() => {
+    setLineageQuery(null);
+  }, []);
+
+  // Level-1 highlight: the single job this response is scoped to (no
+  // cross-job stitching yet server-side - see lib/lineageHighlight.ts).
+  const projectLineageIds = useMemo(
+    () => (lineageResponse ? projectLineageHighlight(lineageResponse) : null),
+    [lineageResponse],
+  );
+  // Level-2 highlight: components touched by intra-job, cross-component
+  // hops, scoped to whichever job's canvas is currently mounted.
+  const jobLineageIds = useMemo(
+    () =>
+      lineageResponse && currentJobName
+        ? jobLineageHighlight(lineageResponse, currentJobName)
+        : null,
+    [lineageResponse, currentJobName],
+  );
+  // Level-3 highlight: tables/columns/edges within the currently open
+  // component.
+  const componentLineage = useMemo(
+    () =>
+      lineageResponse && currentComponent
+        ? componentLineageHighlight(lineageResponse, currentComponent.componentName)
+        : null,
+    [lineageResponse, currentComponent],
+  );
+
+  // ── S3: live runtime-health overlay + dependency failure propagation ──────
+  // Both datasets are already in the browser: the scan manifest (from the
+  // graph fetch) supplies structure + job->job deps; a polling hook supplies
+  // live health. The join and propagation are pure client-side functions;
+  // health is never fabricated (unmatched job -> unknown, no matches -> overlay
+  // auto-hides). Toggle persists across project switches; auto-hide handles
+  // projects with no runtime data.
+  const [healthOverlayEnabled, setHealthOverlayEnabled] = useState(true);
+  const jobHealthQuery = useJobHealth(selectedProject, healthOverlayEnabled);
+
+  // Failure-focus: dim everything outside the failing cascade so the down /
+  // impacted jobs and the red propagation edges pop. Enabled by default; it is
+  // a no-op unless the health overlay is on AND a failure cascade exists (see
+  // failureFocusIds below), so the toolbar toggle is disabled until then.
+  const [focusFailures, setFocusFailures] = useState(true);
+
+  const scanJobNames = useMemo<string[]>(() => {
+    if (!graphData) return [];
+    const names = new Set<string>();
+    const m = graphData.manifest;
+    for (const n of Object.keys(m.job_groups || {})) names.add(n);
+    for (const [caller, callees] of Object.entries(m.job_calls || {})) {
+      names.add(caller);
+      for (const c of callees) names.add(c);
+    }
+    for (const [callee, callers] of Object.entries(m.job_called_by || {})) {
+      names.add(callee);
+      for (const c of callers) names.add(c);
+    }
+    return [...names];
+  }, [graphData]);
+
+  const healthJoin = useMemo(
+    () => joinHealthToJobs(scanJobNames, jobHealthQuery.data?.health ?? []),
+    [scanJobNames, jobHealthQuery.data],
+  );
+
+  const propagation = useMemo(
+    () => propagateHealth(graphData?.manifest.job_calls ?? {}, healthJoin.statusByJob),
+    [graphData, healthJoin],
+  );
+
+  const healthAvailable = healthJoin.matchCount > 0;
+  const overlayActive = healthOverlayEnabled && healthAvailable;
+  const noRuntimeData =
+    healthOverlayEnabled && jobHealthQuery.isSuccess && !healthAvailable;
+
+  // group -> worst effective status across its member jobs (for collapsed nodes)
+  const groupWorst = useMemo(() => {
+    const map = new Map<string, EffectiveStatus>();
+    if (!graphData) return map;
+    const membersByGroup = new Map<string, string[]>();
+    for (const [job, group] of Object.entries(graphData.manifest.job_groups || {})) {
+      const list = membersByGroup.get(group) ?? [];
+      list.push(job);
+      membersByGroup.set(group, list);
+    }
+    for (const [group, members] of membersByGroup) {
+      map.set(
+        group,
+        worstEffectiveStatus(
+          members.map((j) => propagation.jobs.get(j)?.effectiveStatus ?? "unknown"),
+        ),
+      );
+    }
+    return map;
+  }, [graphData, propagation]);
+
+  // The failing cascade as project-level node ids (down/impacted jobs, red-edge
+  // endpoints, failing collapsed groups), or null when there is nothing to
+  // focus. Only meaningful while the overlay is active — never recomputes
+  // propagation, just projects it into node ids (lib/failureFocus.ts).
+  const failureFocusIds = useMemo<Set<string> | null>(
+    () => (overlayActive ? computeFailureFocusSet(propagation, groupWorst) : null),
+    [overlayActive, propagation, groupWorst],
+  );
+  // Whether the "Focus failures" control has anything to act on.
+  const focusAvailable = failureFocusIds !== null;
+  // The set actually applied: only when the user has failure-focus enabled AND
+  // Focus mode (the click-to-centre neighbourhood) is NOT active. Focus mode is
+  // its own spotlight and supersedes the failure-focus resting dim, so the two
+  // never fight; runtime-health COLOURS still paint on the focused nodes.
+  const activeFocusSet = focusFailures && focusJobId === null ? failureFocusIds : null;
+
+  // Decorate a node with (or strip) its runtime status. Reference-stable: only
+  // returns a new node object when the status actually changed, so ReactFlow +
+  // React.memo skip re-rendering unchanged nodes on every 45s poll.
+  const decorateNode = useCallback(
+    (node: Node): Node => {
+      if (node.id.startsWith("job:")) {
+        const job = node.id.slice(4);
+        const p = overlayActive ? propagation.jobs.get(job) : undefined;
+        const eff: EffectiveStatus | undefined = overlayActive
+          ? (p?.effectiveStatus ?? "unknown")
+          : undefined;
+        if (eff === undefined) {
+          if (node.data.effectiveStatus === undefined) return node;
+          const { ownStatus: _o, effectiveStatus: _e, impactedVia: _v, runtimeTaskCount: _c, ...rest } = node.data;
+          return { ...node, data: rest };
+        }
+        const own = p?.ownStatus ?? "unknown";
+        const taskCount = healthJoin.byJob.get(job)?.matched.length ?? 0;
+        if (node.data.effectiveStatus === eff && node.data.ownStatus === own) return node;
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            ownStatus: own,
+            effectiveStatus: eff,
+            impactedVia: p?.impactedVia ?? [],
+            runtimeTaskCount: taskCount,
+          },
+        };
+      }
+      if (node.id.startsWith("group:")) {
+        const group = (node.data.groupName as string) ?? node.id.slice(6);
+        const worst: EffectiveStatus | undefined = overlayActive
+          ? (groupWorst.get(group) ?? "unknown")
+          : undefined;
+        if (worst === undefined) {
+          if (node.data.worstStatus === undefined) return node;
+          const { worstStatus: _w, ...rest } = node.data;
+          return { ...node, data: rest };
+        }
+        if (node.data.worstStatus === worst) return node;
+        return { ...node, data: { ...node.data, worstStatus: worst } };
+      }
+      return node;
+    },
+    [overlayActive, propagation, groupWorst, healthJoin],
+  );
+
+  // Paint (or restore) a job->job call edge that lies on a failing path.
+  const decorateEdge = useCallback(
+    (edge: Edge): Edge => {
+      const isJobCall =
+        edge.data?.edgeType === "calls" &&
+        edge.source.startsWith("job:") &&
+        edge.target.startsWith("job:");
+      const failing =
+        overlayActive &&
+        isJobCall &&
+        propagation.failingEdges.has(callEdgeKey(edge.source.slice(4), edge.target.slice(4)));
+      const currentlyFailing = edge.data?.failing === true;
+      if (failing === currentlyFailing) return edge;
+      if (failing) {
+        return {
+          ...edge,
+          animated: true,
+          style: { ...edge.style, stroke: FAILING_EDGE_COLOR, strokeWidth: 2.5 },
+          markerEnd: { type: "arrowclosed" as const, color: FAILING_EDGE_COLOR, width: 18, height: 18 },
+          data: { ...edge.data, failing: true },
+        };
+      }
+      // Restore the default neutral call-edge styling (only job->job calls reach here).
+      return {
+        ...edge,
+        animated: false,
+        style: { ...edge.style, stroke: CALL_EDGE_COLOR, strokeWidth: 1.5 },
+        markerEnd: { type: "arrowclosed" as const, color: CALL_EDGE_COLOR, width: 16, height: 16 },
+        data: { ...edge.data, failing: false },
+      };
+    },
+    [overlayActive, propagation],
+  );
+
+  // Refs so the layout effect can decorate freshly-laid nodes/edges without
+  // taking overlay data as a dependency (which would retrigger full relayout
+  // on every poll).
+  const decorateNodeRef = useRef(decorateNode);
+  const decorateEdgeRef = useRef(decorateEdge);
+  useEffect(() => {
+    decorateNodeRef.current = decorateNode;
+    decorateEdgeRef.current = decorateEdge;
+  }, [decorateNode, decorateEdge]);
+
+  // Ref so the layout effect can apply the failure-focus resting dim state to
+  // freshly-laid nodes/edges (surviving expand/collapse relayouts) without
+  // taking activeFocusSet as a dependency — that would relayout on every poll.
+  const activeFocusSetRef = useRef(activeFocusSet);
+  useEffect(() => {
+    activeFocusSetRef.current = activeFocusSet;
+  }, [activeFocusSet]);
+
+  const handleToggleHealthOverlay = useCallback(() => {
+    setHealthOverlayEnabled((v) => !v);
+  }, []);
+
+  const handleToggleFocusFailures = useCallback(() => {
+    setFocusFailures((v) => !v);
+  }, []);
 
   // Write to both local and global state when user picks a project
   const setSelectedProject = useCallback((id: string) => {
     setSelectedProjectLocal(id);
     setGlobalProject(id);
   }, [setGlobalProject]);
-
-  // Ref to store position context before expand/collapse for in-place layout
-  const expandAnchorRef = useRef<ExpandAnchor | null>(null);
 
   // Tracks the last "meaningful" layout identity that triggered a fitView.
   // Prevents fitView animations from stacking when the layout effect re-runs
@@ -171,8 +475,60 @@ function TopologyContent() {
     return map;
   }, [graphData]);
 
+  // Focus neighbourhood (pure) — null unless a focal job is selected.
+  const focusResult = useMemo<FocusResult | null>(() => {
+    if (!focusJobId || !graphData) return null;
+    const m = graphData.manifest;
+    return computeFocus(
+      focusJobId,
+      m.job_calls ?? {},
+      m.job_called_by ?? {},
+      m.job_connections_used ?? {},
+      focusHops,
+    );
+  }, [focusJobId, graphData, focusHops]);
+
+  const focusActive = focusResult !== null;
+
+  // The focused subgraph as ready-to-lay-out nodes/edges. Built by filtering the
+  // full DETAIL flow (manifestToFlow) to the in-focus id set, so every node
+  // keeps its normal colour/metadata decoration. Focal + boundary annotations
+  // are attached here for JobNode to render its ring and "+N" expand badges.
+  const focusFlow = useMemo<{ nodes: Node[]; edges: Edge[] } | null>(() => {
+    if (!focusResult || !graphData) return null;
+    const full = manifestToFlow(graphData.manifest, graphData.connections, graphData.job_metadata);
+    const inFocus = focusResult.inFocus;
+    const nodes = full.nodes
+      .filter((n) => inFocus.has(n.id))
+      .map((n) => {
+        if (!n.id.startsWith("job:")) return n;
+        const jobName = n.id.slice(4);
+        const boundary = focusResult.boundaries.get(jobName);
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            focusFocal: n.id === `job:${focusResult.focal}`,
+            focusUpstream: boundary?.upstream ?? 0,
+            focusDownstream: boundary?.downstream ?? 0,
+          },
+        };
+      });
+    const edges = full.edges.filter(
+      (e) => inFocus.has(e.source) && inFocus.has(e.target),
+    );
+    return { nodes, edges };
+  }, [focusResult, graphData]);
+
   // Visible nodes/edges from flowResult + filters
   const { visibleNodes, visibleEdges } = useMemo(() => {
+    // Focus mode short-circuits the normal collapsed/expanded pipeline: only the
+    // focal neighbourhood is shown (connection nodes still honour the toggle).
+    if (focusFlow) {
+      const filtered = applyConnectionVisibility(focusFlow.nodes, focusFlow.edges, showConnections);
+      return { visibleNodes: filtered.nodes, visibleEdges: filtered.edges };
+    }
+
     if (!flowResult) return { visibleNodes: [] as Node[], visibleEdges: [] as Edge[] };
 
     let vNodes = flowResult.nodes;
@@ -198,13 +554,11 @@ function TopologyContent() {
       vNodes = vNodes.filter((n) => !n.id.startsWith("conn:") || connectedNodeIds.has(n.id));
     }
 
-    if (!showConnections) {
-      vNodes = vNodes.filter((n) => !n.id.startsWith("conn:"));
-      vEdges = vEdges.filter((e) => e.data?.edgeType !== "uses");
-    }
+    // Drop connection nodes + every edge touching one when hidden (default).
+    const filtered = applyConnectionVisibility(vNodes, vEdges, showConnections);
 
-    return { visibleNodes: vNodes, visibleEdges: vEdges };
-  }, [flowResult, hiddenGroups, showConnections]);
+    return { visibleNodes: filtered.nodes, visibleEdges: filtered.edges };
+  }, [flowResult, hiddenGroups, showConnections, focusFlow]);
 
   // Fetch available projects
   useEffect(() => {
@@ -234,9 +588,11 @@ function TopologyContent() {
     setLoading(true);
     setError(null);
     setSelectedJob(null);
+    resetNavigation();
     setHiddenGroups(new Set());
     setSearchQuery("");
     setHoveredNodeId(null);
+    setLineageQuery(null);
     // Force the lightweight starting view on every project switch:
     //   compact nodes + collapsed (group-summary) mode.
     // Never default to the full expanded graph — it blows up memory on
@@ -244,6 +600,8 @@ function TopologyContent() {
     setCompactMode(true);
     setCollapsedMode(true);
     setExpandedGroups(new Set());
+    setFocusJobId(null);
+    setFocusHops(DEFAULT_FOCUS_HOPS);
     // Reset the fit-key so the new project always gets an initial fitView.
     lastFitKeyRef.current = null;
 
@@ -264,7 +622,19 @@ function TopologyContent() {
         setFlowResult(null);
       })
       .finally(() => setLoading(false));
-  }, [selectedProject]);
+  }, [selectedProject, resetNavigation]);
+
+  // Escape ascends one drill-down level (breadcrumb click does the same).
+  useEffect(() => {
+    if (navDepth <= 1) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        ascend();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [navDepth, ascend]);
 
   // Apply layout when visible nodes/edges, direction, or compact mode changes
   useEffect(() => {
@@ -274,10 +644,6 @@ function TopologyContent() {
       return;
     }
 
-    // Consume the anchor ref (if set by expand/collapse click)
-    const anchor = expandAnchorRef.current;
-    expandAnchorRef.current = null;
-
     // Add compact flag to node data
     const nodesWithCompact = visibleNodes.map((n) => ({
       ...n,
@@ -286,11 +652,24 @@ function TopologyContent() {
 
     let laid: Node[];
 
-    if (anchor) {
-      // Partial layout: expand/collapse in place
-      laid = localExpandLayout(nodesWithCompact, visibleEdges, anchor, direction, compactMode);
+    if (focusActive) {
+      // Focus mode: relay out ONLY the neighbourhood as a tight, centred
+      // subgraph (plain dagre, no compound clusters, no group backgrounds) so
+      // it is not sprawled across the original full-graph coordinates.
+      laid = applyDagreLayout(nodesWithCompact, visibleEdges, direction, compactMode);
     } else {
-      // Full layout (initial load, mode switch, direction change, etc.)
+      // Always a full, authoritative layout - on initial load, mode switch,
+      // direction change, AND every expand/collapse toggle. A prior version
+      // patched positions in-place on toggle (a "hole" the old node vacated,
+      // survivors pushed just far enough to clear the new cluster) - correct
+      // for a single toggle from a clean dagre layout, but the proof does not
+      // compose: after one expand, the survivor set is no longer a clean dagre
+      // output, so a second toggle's push math no longer guarantees clearance.
+      // Confirmed live: expanding two sibling groups in sequence produced
+      // overlapping group boxes and node labels. `applyCompoundDagreLayout`
+      // already handles arbitrary expanded/collapsed mixes correctly in one
+      // shot (it's the same path initial load already uses) - reuse it always
+      // rather than patch the incremental approach further.
       const hasJobNodes = nodesWithCompact.some((n) => n.id.startsWith("job:"));
       const useCompound = hasJobNodes && groupMembership.size > 0;
 
@@ -307,12 +686,11 @@ function TopologyContent() {
       }
     }
 
-    // Compute group bounding boxes (only for expanded job nodes in view)
-    const groupBoxes = computeGroupBoundingBoxes(
-      laid,
-      flowResult.groupColorMap,
-      compactMode,
-    );
+    // Group bounding boxes: skipped in focus mode (a clean neighbourhood canvas
+    // has no group-cluster backgrounds).
+    const groupBoxes = focusActive
+      ? []
+      : computeGroupBoundingBoxes(laid, flowResult.groupColorMap, compactMode);
 
     // Create background nodes from bounding boxes
     const bgNodes: Node[] = groupBoxes.map((box) => ({
@@ -332,43 +710,57 @@ function TopologyContent() {
     // strict-equality `=== false` check fails for every node, causing the
     // entire graph to be rewritten on the first mouse-enter — exactly when
     // the user notices stutter.
+    // Resting dim state on freshly-laid nodes: failure-focus (if active) dims
+    // everything outside the failing cascade. Applied here via ref so it
+    // survives expand/collapse relayouts; the interactive search/hover/lineage
+    // effects override on top and fall back to this base when cleared.
+    // Only job-level nodes/edges are dimmable by failure-focus: group summaries
+    // and connection nodes (and their aggregated group->system edges) stay
+    // full-colour at the overview so the down group's red DOWN badge and the
+    // "what talks to what" edges remain visible (isFocusDimmableNode/Edge).
+    const focusSet = activeFocusSetRef.current;
     const laidWithDefaults = laid.map((n) => ({
       ...n,
-      data: { ...n.data, dimmed: false, highlighted: false },
+      data: {
+        ...n.data,
+        dimmed: focusSet && isFocusDimmableNode(n.id) ? !focusSet.has(n.id) : false,
+        highlighted: false,
+      },
     }));
-    setNodes([...bgNodes, ...laidWithDefaults]);
-    setEdges(visibleEdges);
+    // Apply the runtime-health overlay to the freshly-laid nodes/edges (S3),
+    // then the failure-focus edge opacity (job->job edges outside the cascade dim).
+    setNodes([...bgNodes, ...laidWithDefaults.map(decorateNodeRef.current)]);
+    setEdges(
+      visibleEdges.map((e) => {
+        const decorated = decorateEdgeRef.current(e);
+        if (!focusSet) return decorated;
+        const visible =
+          !isFocusDimmableEdge(decorated.source, decorated.target) ||
+          (focusSet.has(decorated.source) && focusSet.has(decorated.target));
+        if (visible) return decorated;
+        return { ...decorated, style: { ...decorated.style, opacity: 0.15 } };
+      }),
+    );
 
-    // Smart zoom based on action
-    if (anchor?.action === "expand") {
-      // Zoom to the expanded group's nodes
-      requestAnimationFrame(() => {
-        const expandedJobNodes = laid.filter(
-          (n) => n.id.startsWith("job:") && (n.data.group as string) === anchor.groupName,
-        );
-        if (expandedJobNodes.length > 0) {
-          fitView({
-            nodes: expandedJobNodes.map((n) => ({ id: n.id })),
-            padding: 0.4,
-            duration: 400,
-          });
-        }
-      });
-    } else if (!anchor) {
-      // Full layout: fit everything — but only when the meaningful layout
-      // identity changed. Otherwise the 300ms zoom animation re-fires every
-      // time groupMembership rebuilds with the same shape, stealing the
-      // viewport and dominating frame time on heavy graphs.
-      const fitKey = `${selectedProject}|${direction}|${compactMode}|${laid.length}`;
+    // Fit everything — every layout is now a full relayout (initial load,
+    // mode switch, direction change, focus, AND every expand/collapse toggle,
+    // see the comment above) — but only when the meaningful layout identity
+    // changed. Otherwise the 300ms zoom animation re-fires every time
+    // groupMembership rebuilds with the same shape, stealing the viewport and
+    // dominating frame time on heavy graphs. The focal id + hop count are part
+    // of the key so re-focusing or expanding the horizon always refits the
+    // tight neighbourhood.
+    {
+      const fitKey = `${selectedProject}|${direction}|${compactMode}|${laid.length}|${focusJobId ?? ""}|${focusHops}`;
       if (fitKey !== lastFitKeyRef.current) {
         lastFitKeyRef.current = fitKey;
         requestAnimationFrame(() => {
-          fitView({ padding: 0.1, duration: 300 });
+          fitView({ padding: focusActive ? 0.25 : 0.1, duration: 300 });
         });
       }
     }
     // Collapse: no zoom change (keep current viewport)
-  }, [flowResult, visibleNodes, visibleEdges, direction, compactMode, groupMembership, selectedProject, setNodes, setEdges, fitView]);
+  }, [flowResult, visibleNodes, visibleEdges, direction, compactMode, groupMembership, selectedProject, focusActive, focusJobId, focusHops, setNodes, setEdges, fitView]);
 
   // Search matching — in collapsed mode, also match job names inside collapsed groups
   const searchMatchIds = useMemo<Set<string> | null>(() => {
@@ -543,6 +935,101 @@ function TopologyContent() {
     );
   }, [hoveredNodeId, searchMatchIds, adjacencyMap, setNodes, setEdges]);
 
+  // Apply the S5 level-1 lineage overlay: dim every job node except the one
+  // the active trace is scoped to. Deliberately scoped to `job:` node ids
+  // only (never group/connection/background nodes) and declared after the
+  // search/hover effects above so it always applies last and wins for job
+  // nodes specifically, without fighting either mechanism for the rest of
+  // the canvas. Runs on both activation and clearing (projectLineageIds
+  // going non-null -> null), mirroring the reset branch already used by the
+  // search/hover effects.
+  const prevProjectLineageRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (projectLineageIds === prevProjectLineageRef.current) return;
+    prevProjectLineageRef.current = projectLineageIds;
+
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (!n.id.startsWith("job:")) return n;
+        if (projectLineageIds === null) {
+          if (n.data.dimmed === false && n.data.highlighted === false) return n;
+          return { ...n, data: { ...n.data, dimmed: false, highlighted: false } };
+        }
+        const isMatch = projectLineageIds.has(n.id);
+        if (n.data.dimmed === !isMatch && n.data.highlighted === isMatch) return n;
+        return { ...n, data: { ...n.data, dimmed: !isMatch, highlighted: isMatch } };
+      }),
+    );
+  }, [projectLineageIds, setNodes]);
+
+  // Failure-focus dimming (project level). Reuses the SAME dimmed/highlighted
+  // node fields + edge-opacity as S5 lineage and hover/search — not a parallel
+  // mechanism. It is the RESTING dim layer: when the overlay is on, focus is
+  // enabled, and a cascade exists, every node/edge outside the cascade drops to
+  // ~12-15% opacity.
+  //
+  // PRECEDENCE (highest wins while active): search > hover > S5 lineage >
+  // failure-focus. While any higher source owns the fields this effect no-ops;
+  // when they clear it re-runs (they are deps) and reapplies focus AFTER their
+  // reset branch (this effect is declared last), so the two never fight into an
+  // inconsistent state. A live poll changing activeFocusSet also re-runs it.
+  useEffect(() => {
+    if (searchMatchIds !== null || hoveredNodeId !== null || projectLineageIds !== null) {
+      return;
+    }
+    const focusSet = activeFocusSet;
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id.startsWith("group-bg:")) return n;
+        // group:* and conn:* nodes are never dimmed by focus (isFocusDimmableNode).
+        const newDimmed = focusSet && isFocusDimmableNode(n.id) ? !focusSet.has(n.id) : false;
+        if (n.data.dimmed === newDimmed && n.data.highlighted === false) return n;
+        return { ...n, data: { ...n.data, dimmed: newDimmed, highlighted: false } };
+      }),
+    );
+    setEdges((eds) =>
+      eds.map((e) => {
+        const visible =
+          !focusSet ||
+          !isFocusDimmableEdge(e.source, e.target) ||
+          (focusSet.has(e.source) && focusSet.has(e.target));
+        const newOpacity = visible ? undefined : 0.15;
+        if ((e.style?.opacity ?? undefined) === newOpacity) return e;
+        if (newOpacity === undefined) {
+          const { opacity: _drop, ...restStyle } = e.style ?? {};
+          return { ...e, style: restStyle };
+        }
+        return { ...e, style: { ...e.style, opacity: newOpacity } };
+      }),
+    );
+  }, [activeFocusSet, searchMatchIds, hoveredNodeId, projectLineageIds, setNodes, setEdges]);
+
+  // S3: live-patch node/edge health when the poll refreshes or the overlay is
+  // toggled, without a full relayout. decorateNode/decorateEdge are
+  // reference-stable, so unchanged nodes keep their identity and don't
+  // re-render. Runs after the search/hover/lineage effects; it only touches
+  // status fields, never dimmed/highlighted, so it composes with them.
+  useEffect(() => {
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((n) => {
+        const d = decorateNode(n);
+        if (d !== n) changed = true;
+        return d;
+      });
+      return changed ? next : nds;
+    });
+    setEdges((eds) => {
+      let changed = false;
+      const next = eds.map((e) => {
+        const d = decorateEdge(e);
+        if (d !== e) changed = true;
+        return d;
+      });
+      return changed ? next : eds;
+    });
+  }, [decorateNode, decorateEdge, setNodes, setEdges]);
+
   // Callbacks
   const handleToggleDirection = useCallback(() => {
     setDirection((d) => (d === "TB" ? "LR" : "TB"));
@@ -556,24 +1043,40 @@ function TopologyContent() {
     fitView({ padding: 0.1, duration: 300 });
   }, [fitView]);
 
+  // ── Focus mode gestures ──────────────────────────────────────────────────
+  // Enter/re-centre focus on a job, or toggle it off if it is already focal.
+  // Entering focus closes any open detail panel and clears an active S5 lineage
+  // selection — focus and lineage are both "spotlight" mechanisms and running
+  // them together is confusing, so entering one clears the other (documented
+  // precedence; the reverse direction is handled in handleColumnLineageClick).
+  const handleFocusJob = useCallback((jobName: string) => {
+    setFocusJobId((prev) => {
+      if (prev === jobName) return null; // toggle off
+      return jobName;
+    });
+    setFocusHops(DEFAULT_FOCUS_HOPS);
+    setSelectedJob(null);
+    setLineageQuery(null);
+  }, []);
+
+  const handleClearFocus = useCallback(() => {
+    setFocusJobId(null);
+    setFocusHops(DEFAULT_FOCUS_HOPS);
+  }, []);
+
+  // Boundary "+N" affordance: push the horizon out by one hop in both directions.
+  const handleExpandHops = useCallback(() => {
+    setFocusHops((h) => h + 1);
+  }, []);
+
   const handleNodeClick: NodeMouseHandler = useCallback((_event, node) => {
     if (node.id.startsWith("job:")) {
       const jobName = node.id.slice(4);
       setSelectedJob(jobName);
     } else if (node.id.startsWith("group:")) {
-      // Capture all current positions before toggling
+      // Toggling triggers the main layout effect's full compound-dagre
+      // relayout (see its comment) - no position bookkeeping needed here.
       const groupName = node.id.slice(6);
-      const currentNodes = getNodes();
-      const positions = new Map<string, { x: number; y: number }>();
-      currentNodes.forEach((n) => positions.set(n.id, n.position));
-
-      expandAnchorRef.current = {
-        savedPositions: positions,
-        action: "expand",
-        groupName,
-        groupPosition: node.position,
-      };
-
       setExpandedGroups((prev) => {
         const next = new Set(prev);
         if (next.has(groupName)) {
@@ -584,47 +1087,29 @@ function TopologyContent() {
         return next;
       });
     }
-  }, [getNodes]);
+  }, []);
+
+  // Double-click on a job node descends into its level-2 component graph.
+  // Single-click behavior (detail panel, group expand/collapse) is unchanged.
+  const handleNodeDoubleClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      if (node.id.startsWith("job:")) {
+        setSelectedJob(null);
+        descendToJob(node.id.slice(4));
+      }
+    },
+    [descendToJob],
+  );
 
   const handleClosePanel = useCallback(() => {
     setSelectedJob(null);
   }, []);
 
-  // Group toggle: in collapsed mode toggles expand/collapse, in detail mode toggles hide/show
+  // Group toggle: in collapsed mode toggles expand/collapse, in detail mode toggles hide/show.
+  // Toggling expandedGroups triggers the main layout effect's full compound-
+  // dagre relayout (see its comment) - no position bookkeeping needed here.
   const handleToggleGroup = useCallback((group: string) => {
     if (isCollapsed) {
-      const currentNodes = getNodes();
-      const positions = new Map<string, { x: number; y: number }>();
-      currentNodes.forEach((n) => positions.set(n.id, n.position));
-
-      const isExpanding = !expandedGroups.has(group);
-      let groupPosition: { x: number; y: number };
-
-      if (isExpanding) {
-        const groupNode = currentNodes.find((n) => n.id === `group:${group}`);
-        groupPosition = groupNode?.position ?? { x: 0, y: 0 };
-      } else {
-        // Centroid of the group's job nodes
-        const groupJobs = currentNodes.filter(
-          (n) => n.id.startsWith("job:") && n.data.group === group,
-        );
-        if (groupJobs.length > 0) {
-          groupPosition = {
-            x: groupJobs.reduce((s, n) => s + n.position.x, 0) / groupJobs.length,
-            y: groupJobs.reduce((s, n) => s + n.position.y, 0) / groupJobs.length,
-          };
-        } else {
-          groupPosition = { x: 0, y: 0 };
-        }
-      }
-
-      expandAnchorRef.current = {
-        savedPositions: positions,
-        action: isExpanding ? "expand" : "collapse",
-        groupName: group,
-        groupPosition,
-      };
-
       setExpandedGroups((prev) => {
         const next = new Set(prev);
         if (next.has(group)) {
@@ -645,7 +1130,7 @@ function TopologyContent() {
         return next;
       });
     }
-  }, [isCollapsed, getNodes, expandedGroups]);
+  }, [isCollapsed]);
 
   const handleShowAllGroups = useCallback(() => {
     if (isCollapsed) {
@@ -713,6 +1198,18 @@ function TopologyContent() {
     [flowResult],
   );
 
+  // Stable context value bridging focus gestures into JobNode without touching
+  // node `data` (preserving the relayout/poll reference-stability guarantees).
+  const focusInteraction = useMemo<FocusInteraction>(
+    () => ({
+      active: focusActive,
+      focalJobName: focusJobId,
+      onFocusJob: handleFocusJob,
+      onExpandHops: handleExpandHops,
+    }),
+    [focusActive, focusJobId, handleFocusJob, handleExpandHops],
+  );
+
   const minimapNodeColor = useCallback((node: Node) => {
     if (node.id.startsWith("group-bg:")) return "transparent";
     if (node.id.startsWith("conn:")) return "#a855f7";
@@ -725,6 +1222,7 @@ function TopologyContent() {
   }, []);
 
   return (
+    <FocusInteractionContext.Provider value={focusInteraction}>
     <div className="flex flex-col h-full" data-tour="topology-page">
       {isMobile && (
         <MobileTopBar
@@ -763,10 +1261,20 @@ function TopologyContent() {
           </select>
           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
         </div>
+        {navDepth > 1 && (
+          <TopologyBreadcrumb
+            projectLabel={
+              projects.find((p) => p.id === selectedProject)?.display_name ||
+              selectedProject
+            }
+            stack={navStack}
+            onNavigate={jumpTo}
+          />
+        )}
       </div>
 
-      {/* Toolbar */}
-      {flowResult && (
+      {/* Toolbar (level 0/1 only) */}
+      {flowResult && atProjectLevel && (
         <GraphToolbar
           direction={direction}
           showConnections={showConnections}
@@ -788,11 +1296,23 @@ function TopologyContent() {
           onCollapseAll={handleCollapseAll}
           onExpandAll={handleExpandAll}
           expandedGroups={expandedGroups}
+          healthOverlay={healthOverlayEnabled}
+          onToggleHealthOverlay={handleToggleHealthOverlay}
+          healthAvailable={healthAvailable}
+          focusFailures={focusFailures}
+          onToggleFocusFailures={handleToggleFocusFailures}
+          focusAvailable={focusAvailable}
+          focusJobName={focusJobId}
+          focusHops={focusHops}
+          onClearFocus={handleClearFocus}
         />
       )}
 
       {/* Graph area */}
       <div className="flex-1 relative min-h-[500px]">
+        {/* Level 0/1 canvas: kept mounted (hidden) during drill-down so
+            ascending restores the prior viewport and expand state. */}
+        <div className={atProjectLevel ? "absolute inset-0" : "absolute inset-0 hidden"}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -830,6 +1350,7 @@ function TopologyContent() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
           onNodeMouseEnter={handleNodeMouseEnter}
           onNodeMouseLeave={handleNodeMouseLeave}
           nodeTypes={nodeTypes}
@@ -839,6 +1360,7 @@ function TopologyContent() {
           panOnDrag
           zoomOnPinch
           panActivationKeyCode={null}
+          onlyRenderVisibleElements
           proOptions={{ hideAttribution: true }}
           className="bg-background"
         >
@@ -855,8 +1377,31 @@ function TopologyContent() {
               nodeColor={minimapNodeColor}
             />
           )}
-          {flowResult && <GraphLegend groupColorMap={groupColorMap} collapsedMode={isCollapsed} />}
+          {flowResult && <GraphLegend groupColorMap={groupColorMap} collapsedMode={isCollapsed} showHealth={overlayActive} />}
         </ReactFlow>
+
+        {/* Runtime-health overlay status chips (S3), level 0/1 only. */}
+        {overlayActive && jobHealthQuery.dataUpdatedAt > 0 && (
+          <div
+            data-testid="health-freshness-chip"
+            className="absolute top-3 right-3 z-10 flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-slate-600 shadow-sm backdrop-blur-md"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            Runtime data as of{" "}
+            {new Date(jobHealthQuery.dataUpdatedAt).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </div>
+        )}
+        {noRuntimeData && (
+          <div
+            data-testid="health-no-data-note"
+            className="absolute top-3 right-3 z-10 rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-[11px] text-slate-400 shadow-sm backdrop-blur-md"
+          >
+            No runtime data for this project
+          </div>
+        )}
 
         {/* Job Detail Panel */}
         {selectedJob && selectedProject && isMobile && (
@@ -882,8 +1427,49 @@ function TopologyContent() {
             metadata={graphData?.job_metadata?.[selectedJob]}
           />
         )}
+        </div>
+
+        {/* Level 2 canvas: a fresh React Flow instance per descent. The key
+            forces a remount (new layout + animated fitView) for every level,
+            including tRunJob portal hops between sibling jobs. */}
+        {!atProjectLevel && currentJobName && selectedProject && (
+          <JobGraphCanvas
+            key={`${navDepth}:${currentJobName}`}
+            projectId={selectedProject}
+            jobName={currentJobName}
+            onOpenJob={descendToJob}
+            onOpenComponent={descendToComponent}
+            lineageComponentIds={jobLineageIds}
+          />
+        )}
+
+        {/* Level 3 canvas: one component's table graph (tMap) - or, on the
+            documented 404 fallback, the inspector rendered in this same
+            slot. Also remounts fresh per descent. */}
+        {!atProjectLevel && currentComponent && selectedProject && (
+          <ComponentGraphCanvas
+            key={`${navDepth}:${currentComponent.jobName}:${currentComponent.componentName}`}
+            projectId={selectedProject}
+            jobName={currentComponent.jobName}
+            componentName={currentComponent.componentName}
+            onAscend={ascend}
+            lineageQuery={lineageQuery}
+            lineageHighlight={componentLineage}
+            onColumnLineageClick={handleColumnLineageClick}
+          />
+        )}
+
+        {/* Field-lineage path banner (S5): floats above whichever level is
+            visible, since the highlight it summarizes can span levels 1-3. */}
+        <LineagePathBanner
+          response={lineageResponse ?? null}
+          isLoading={lineageLoading}
+          error={lineageError}
+          onClear={handleClearLineage}
+        />
       </div>
     </div>
+    </FocusInteractionContext.Provider>
   );
 }
 

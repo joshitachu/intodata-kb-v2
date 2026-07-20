@@ -1,55 +1,29 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { z } from "zod";
 import {
   type ConversationMessageRequest,
-  type DocumentSource,
-  type AgentStep,
-  type HarnessActivityEvent,
-  type HarnessPendingAction,
-  type UsageStats,
-  type RuntimeToolProgress,
-  type StructuredAnswer,
-  AgentStepSchema,
-  DocumentSourceSchema,
-  HarnessActivityEventSchema,
-  HarnessPendingActionSchema,
-  UsageStatsSchema,
+  type TypedAgentResponse,
   SseDoneSchema,
-  RuntimeToolCallEventSchema,
-  RuntimeToolResultEventSchema,
-  StructuredAnswerSchema,
+  TypedAgentResponseSchema,
 } from "@/types";
 
 export interface StreamState {
   isStreaming: boolean;
   content: string;
-  sources: DocumentSource[];
   error: string | null;
   messageId: number | null;
   latencyMs: number | null;
-  usage: UsageStats | null;
-  steps: AgentStep[];
-  harnessActivities: HarnessActivityEvent[];
-  pendingAction: HarnessPendingAction | null;
-  runtimeTools: RuntimeToolProgress[];
-  structuredAnswer: StructuredAnswer | null;
+  typedResponse?: TypedAgentResponse | null;
 }
 
 const INITIAL_STATE: StreamState = {
   isStreaming: false,
   content: "",
-  sources: [],
   error: null,
   messageId: null,
   latencyMs: null,
-  usage: null,
-  steps: [],
-  harnessActivities: [],
-  pendingAction: null,
-  runtimeTools: [],
-  structuredAnswer: null,
+  typedResponse: null,
 };
 
 export function useStreamMessage(conversationId: number | null) {
@@ -79,16 +53,10 @@ export function useStreamMessage(conversationId: number | null) {
       setStreamState({
         isStreaming: true,
         content: "",
-        sources: [],
         error: null,
         messageId: null,
         latencyMs: null,
-        usage: null,
-        steps: [],
-        harnessActivities: [],
-        pendingAction: null,
-        runtimeTools: [],
-        structuredAnswer: null,
+        typedResponse: null,
       });
 
       try {
@@ -134,139 +102,16 @@ export function useStreamMessage(conversationId: number | null) {
         let currentData: string[] = [];
 
         const dispatchEvent = (eventType: string, data: string) => {
-          if (eventType === "sources") {
+          if (eventType === "agent_response") {
             try {
-              const sources = z.array(DocumentSourceSchema).parse(JSON.parse(data));
-              setStreamState((prev) => ({ ...prev, sources }));
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "token") {
-            try {
-              const token = z.string().parse(JSON.parse(data));
+              const typedResponse = TypedAgentResponseSchema.parse(JSON.parse(data));
               setStreamState((prev) => ({
                 ...prev,
-                content: prev.content + token,
+                content: typedResponse.content,
+                typedResponse,
               }));
             } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "usage") {
-            try {
-              const usage = UsageStatsSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({ ...prev, usage }));
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "step") {
-            try {
-              const step = AgentStepSchema.parse(JSON.parse(data));
-              setStreamState((prev) => {
-                const existingIndex = prev.steps.findIndex((s) => s.id === step.id);
-                if (existingIndex === -1) {
-                  return { ...prev, steps: [...prev.steps, step] };
-                }
-                const nextSteps = [...prev.steps];
-                nextSteps[existingIndex] = step;
-                return { ...prev, steps: nextSteps };
-              });
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "runtime_tool_call") {
-            try {
-              const call = RuntimeToolCallEventSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({
-                ...prev,
-                runtimeTools: [
-                  ...prev.runtimeTools,
-                  {
-                    toolName: call.tool_name,
-                    status: "running",
-                    latencyMs: null,
-                    truncated: false,
-                    error: null,
-                  },
-                ],
-              }));
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "runtime_tool_result") {
-            try {
-              const result = RuntimeToolResultEventSchema.parse(JSON.parse(data));
-              setStreamState((prev) => {
-                const next: RuntimeToolProgress = {
-                  toolName: result.tool_name,
-                  status: result.success ? "completed" : "failed",
-                  latencyMs: result.latency_ms,
-                  truncated: result.truncated,
-                  error: result.error ?? null,
-                };
-                const matchIndex = prev.runtimeTools.findIndex(
-                  (t) => t.toolName === result.tool_name && t.status === "running",
-                );
-                if (matchIndex === -1) {
-                  return { ...prev, runtimeTools: [...prev.runtimeTools, next] };
-                }
-                const runtimeTools = [...prev.runtimeTools];
-                runtimeTools[matchIndex] = next;
-                return { ...prev, runtimeTools };
-              });
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "harness_activity" || eventType === "activity") {
-            try {
-              const activity = HarnessActivityEventSchema.parse(JSON.parse(data));
-              setStreamState((prev) => {
-                // Event records are progressive snapshots. Keep their position
-                // stable while an action moves from planned to complete.
-                const activityKey = [
-                  activity.workflow_run_id ?? "stream",
-                  activity.event_type,
-                  activity.label,
-                ].join(":");
-                const existingIndex = prev.harnessActivities.findIndex((item) =>
-                  [item.workflow_run_id ?? "stream", item.event_type, item.label].join(":") === activityKey,
-                );
-                if (existingIndex === -1) {
-                  return {
-                    ...prev,
-                    harnessActivities: [...prev.harnessActivities, activity],
-                  };
-                }
-                const harnessActivities = [...prev.harnessActivities];
-                harnessActivities[existingIndex] = {
-                  ...harnessActivities[existingIndex],
-                  ...activity,
-                  safe_details: {
-                    ...harnessActivities[existingIndex].safe_details,
-                    ...activity.safe_details,
-                  },
-                };
-                return { ...prev, harnessActivities };
-              });
-            } catch {
-              // ignore parse error
-            }
-          } else if (eventType === "final_answer") {
-            try {
-              const structuredAnswer = StructuredAnswerSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({ ...prev, structuredAnswer }));
-            } catch {
-              // Preserve token rendering when an older backend emits no typed answer.
-            }
-          } else if (eventType === "pending_action") {
-            try {
-              const pendingAction = HarnessPendingActionSchema.parse(JSON.parse(data));
-              setStreamState((prev) => ({
-                ...prev,
-                isStreaming: false,
-                pendingAction,
-              }));
-            } catch {
-              // Ignore malformed or overbroad action payloads.
+              // Malformed typed responses never replace validated stream content.
             }
           } else if (eventType === "error") {
             let message = data;

@@ -1,0 +1,129 @@
+"""Unit tests for the Level-2 job graph builder (pure transformation layer)."""
+
+from mcp_server.services.job_graph_service import (
+    build_job_graph,
+    build_param_summary,
+    derive_component_role,
+)
+
+
+def test_role_derivation_by_type_pattern():
+    assert derive_component_role("tFileInputDelimited") == "input"
+    assert derive_component_role("tRouteInput") == "input"
+    assert derive_component_role("tMSSqlOutput") == "output"
+    assert derive_component_role("tRouteOutput") == "output"
+    assert derive_component_role("tMap") == "transform"
+    assert derive_component_role("tExtractJSONFields") == "transform"
+    assert derive_component_role("tRunJob") == "orchestration"
+    assert derive_component_role("tPrejob") == "orchestration"
+    assert derive_component_role("tPostjob") == "orchestration"
+    assert derive_component_role("tWaitForFile") == "orchestration"
+    assert derive_component_role("tLogRow") == "logging"
+    assert derive_component_role("tStatCatcher") == "logging"
+    assert derive_component_role("tDie") == "logging"
+
+
+def test_param_summary_is_bounded_and_credential_free():
+    component = {
+        "unique_name": "tDBOutput_1",
+        "component_type": "tMSSqlOutput",
+        "params": (
+            [{"name": "PASSWORD", "value": "raw-secret", "field_type": "PASSWORD"}]
+            + [{"name": "KEYSTORE_SECRET", "value": "x", "field_type": "TEXT"}]
+            + [
+                # More allowlisted params than the bound admits.
+                {"name": name, "value": f'"{name.lower()}"', "field_type": "TEXT"}
+                for name in (
+                    "TABLE", "HOST", "PORT", "USER", "DBNAME", "QUERY",
+                    "FILE_NAME", "METHOD", "ENCODING", "CONDITION",
+                )
+            ]
+        ),
+    }
+    summary = build_param_summary(component)
+    assert len(summary) <= 8
+    assert "PASSWORD" not in summary
+    assert "KEYSTORE_SECRET" not in summary
+    assert "raw-secret" not in str(summary)
+
+
+def test_param_summary_masks_url_userinfo_and_truncates():
+    component = {
+        "params": [
+            {"name": "ENDPOINT_URL", "value": "https://svc:p4ss@host/api", "field_type": "TEXT"},
+            {"name": "QUERY", "value": "SELECT " + "x" * 500, "field_type": "MEMO"},
+        ],
+    }
+    summary = build_param_summary(component)
+    assert summary["ENDPOINT_URL"] == "https://svc:***@host/api"
+    assert len(summary["QUERY"]) <= 120
+    assert summary["QUERY"].endswith("...")
+
+
+def test_trunjob_target_falls_back_to_positional_refs():
+    job = {
+        "components": [
+            {"unique_name": "tRunJob_1", "component_type": "tRunJob", "params": []},
+            {"unique_name": "tRunJob_2", "component_type": "tRunJob", "params": []},
+        ],
+        "connections": [],
+        "tmap_data": [],
+        "trunjob_refs": [
+            {"child_job": "Child_A"},
+            {"child_job": "Child_B"},
+        ],
+    }
+    graph = build_job_graph("p1", "job", "grp", job)
+    targets = {n.unique_name: n.subjob_target for n in graph.nodes}
+    assert targets == {"tRunJob_1": "Child_A", "tRunJob_2": "Child_B"}
+
+
+def test_tmap_tables_positional_association_with_synthetic_fallback():
+    job = {
+        "components": [
+            {"unique_name": "tMap_1", "component_type": "tMap", "params": []},
+        ],
+        "connections": [],
+        "tmap_data": [
+            {"input_tables": ["a"], "output_tables": ["b"], "entries": [], "var_entries": []},
+            # Extra entry with no matching tMap component (old-scan mismatch).
+            {"input_tables": ["c"], "output_tables": [], "entries": [], "var_entries": []},
+        ],
+        "trunjob_refs": [],
+    }
+    graph = build_job_graph("p1", "job", "grp", job)
+    assert graph.tmap_tables["tMap_1"].input_tables == ["a"]
+    assert graph.tmap_tables["tMap#2"].input_tables == ["c"]
+
+
+def test_edges_built_from_connections_not_component_fields():
+    job = {
+        "components": [
+            # Per-component connection fields are empty, as on real scans.
+            {"unique_name": "tA_1", "component_type": "tJava",
+             "incoming_connections": [], "outgoing_connections": [], "params": []},
+            {"unique_name": "tB_1", "component_type": "tJava",
+             "incoming_connections": [], "outgoing_connections": [], "params": []},
+        ],
+        "connections": [
+            {"name": "row1", "source": "tA_1", "target": "tB_1",
+             "connector_name": "FLOW", "line_style": 0},
+            {"name": "SubjobOk1", "source": "tA_1", "target": "tB_1",
+             "connector_name": "SUBJOB_OK", "line_style": 1},
+        ],
+        "tmap_data": [],
+        "trunjob_refs": [],
+    }
+    graph = build_job_graph("p1", "job", "grp", job)
+    assert len(graph.edges) == 2
+    flow, trigger = graph.edges
+    assert flow.is_control_flow is False
+    assert trigger.is_control_flow is True
+    assert trigger.connector_name == "SUBJOB_OK"
+
+
+def test_empty_job_produces_empty_graph():
+    graph = build_job_graph("p1", "job", "grp", {})
+    assert graph.nodes == []
+    assert graph.edges == []
+    assert graph.tmap_tables == {}

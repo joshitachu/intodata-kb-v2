@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -41,6 +41,15 @@ class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
     __table_args__ = (
         Index("ix_conversation_messages_workflow_run_id", "workflow_run_id"),
+        UniqueConstraint(
+            "conversation_id",
+            "client_turn_id",
+            name="uq_conversation_messages_client_turn",
+        ),
+        UniqueConstraint(
+            "in_reply_to_message_id",
+            name="uq_conversation_messages_in_reply_to",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -68,6 +77,11 @@ class ConversationMessage(Base):
     )
     conversation_id: Mapped[int] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    client_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_turn_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    in_reply_to_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversation_messages.id", ondelete="SET NULL"), nullable=True
     )
     workflow_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("harness_workflow_runs.id", ondelete="SET NULL"), nullable=True

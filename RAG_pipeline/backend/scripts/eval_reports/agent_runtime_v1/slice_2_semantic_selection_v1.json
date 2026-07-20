@@ -1,0 +1,725 @@
+{
+  "action": {
+    "passed": 15,
+    "rate": 0.6,
+    "total": 25
+  },
+  "attempts": [
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "formal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "formal"
+    },
+    {
+      "actual": [
+        "create_pack_draft"
+      ],
+      "attempt_id": "pack.create.001",
+      "effects": 0,
+      "expected": "create_pack_draft",
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "formal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "formal"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "attempt_id": "rag.summary.001",
+      "effects": 0,
+      "expected": "search_documentation",
+      "family": "documentation_rag",
+      "passed": true,
+      "variant": "formal"
+    },
+    {
+      "actual": [
+        "search_runtime_logs"
+      ],
+      "attempt_id": "runtime.failure.001",
+      "effects": 0,
+      "expected": "read_runtime_evidence",
+      "family": "runtime_evidence",
+      "passed": false,
+      "variant": "formal"
+    },
+    {
+      "actual": [
+        "search_documentation",
+        "query_project_metadata"
+      ],
+      "attempt_id": "metadata.talend.001",
+      "effects": 0,
+      "expected": "query_project_metadata",
+      "family": "metadata",
+      "passed": false,
+      "variant": "formal"
+    },
+    {
+      "actual": [
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "workflow.status.001",
+      "effects": 0,
+      "expected": "list_active_project_workflows",
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "formal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001.informal",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001.keyword_collision",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [
+        "list_documentation_packs"
+      ],
+      "attempt_id": "capability.discussion.001.pronoun",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": false,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [],
+      "attempt_id": "capability.discussion.001.typo",
+      "effects": 0,
+      "expected": null,
+      "family": "capability_discussion",
+      "passed": true,
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.informal",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.keyword_collision",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.pronoun",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.guidance.001.typo",
+      "effects": 0,
+      "expected": null,
+      "family": "guidance",
+      "passed": true,
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.create.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [
+        "create_pack_draft"
+      ],
+      "attempt_id": "pack.create.001.informal",
+      "effects": 0,
+      "expected": "create_pack_draft",
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [
+        "create_pack_draft"
+      ],
+      "attempt_id": "pack.create.001.keyword_collision",
+      "effects": 0,
+      "expected": "create_pack_draft",
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.create.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "pack.create.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [
+        "create_pack_draft"
+      ],
+      "attempt_id": "pack.create.001.pronoun",
+      "effects": 0,
+      "expected": "create_pack_draft",
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [
+        "create_pack_draft"
+      ],
+      "attempt_id": "pack.create.001.typo",
+      "effects": 0,
+      "expected": "create_pack_draft",
+      "family": "explicit_creation",
+      "passed": true,
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.informal",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.keyword_collision",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.pronoun",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [],
+      "attempt_id": "action.negated.001.typo",
+      "effects": 0,
+      "expected": null,
+      "family": "negated_action",
+      "passed": true,
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "attempt_id": "rag.summary.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "documentation_rag",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "attempt_id": "rag.summary.001.informal",
+      "effects": 0,
+      "expected": "search_documentation",
+      "family": "documentation_rag",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "rag.summary.001.keyword_collision",
+      "effects": 0,
+      "expected": "search_documentation",
+      "family": "documentation_rag",
+      "passed": false,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [
+        "query_project_metadata",
+        "list_documentation_packs"
+      ],
+      "attempt_id": "rag.summary.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "documentation_rag",
+      "passed": false,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "rag.summary.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "documentation_rag",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "attempt_id": "rag.summary.001.pronoun",
+      "effects": 0,
+      "expected": "search_documentation",
+      "family": "documentation_rag",
+      "passed": true,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [],
+      "attempt_id": "rag.summary.001.typo",
+      "effects": 0,
+      "expected": "search_documentation",
+      "family": "documentation_rag",
+      "passed": false,
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "attempt_id": "runtime.failure.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "runtime_evidence",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [
+        "search_runtime_logs"
+      ],
+      "attempt_id": "runtime.failure.001.informal",
+      "effects": 0,
+      "expected": "read_runtime_evidence",
+      "family": "runtime_evidence",
+      "passed": false,
+      "variant": "informal"
+    },
+    {
+      "actual": [],
+      "attempt_id": "runtime.failure.001.keyword_collision",
+      "effects": 0,
+      "expected": "read_runtime_evidence",
+      "family": "runtime_evidence",
+      "passed": false,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "runtime.failure.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "runtime_evidence",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "runtime.failure.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "runtime_evidence",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [
+        "search_runtime_logs"
+      ],
+      "attempt_id": "runtime.failure.001.pronoun",
+      "effects": 0,
+      "expected": "read_runtime_evidence",
+      "family": "runtime_evidence",
+      "passed": false,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [
+        "search_runtime_logs"
+      ],
+      "attempt_id": "runtime.failure.001.typo",
+      "effects": 0,
+      "expected": "read_runtime_evidence",
+      "family": "runtime_evidence",
+      "passed": false,
+      "variant": "typo"
+    },
+    {
+      "actual": [
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "metadata.talend.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "metadata",
+      "passed": false,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [
+        "query_project_metadata"
+      ],
+      "attempt_id": "metadata.talend.001.informal",
+      "effects": 0,
+      "expected": "query_project_metadata",
+      "family": "metadata",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [
+        "query_project_metadata"
+      ],
+      "attempt_id": "metadata.talend.001.keyword_collision",
+      "effects": 0,
+      "expected": "query_project_metadata",
+      "family": "metadata",
+      "passed": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "metadata.talend.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "metadata",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "metadata.talend.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "metadata",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "attempt_id": "metadata.talend.001.pronoun",
+      "effects": 0,
+      "expected": "query_project_metadata",
+      "family": "metadata",
+      "passed": false,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "attempt_id": "metadata.talend.001.typo",
+      "effects": 0,
+      "expected": "query_project_metadata",
+      "family": "metadata",
+      "passed": false,
+      "variant": "typo"
+    },
+    {
+      "actual": [],
+      "attempt_id": "workflow.status.001.ambiguous",
+      "effects": 0,
+      "expected": null,
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "ambiguous"
+    },
+    {
+      "actual": [
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "workflow.status.001.informal",
+      "effects": 0,
+      "expected": "list_active_project_workflows",
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "informal"
+    },
+    {
+      "actual": [
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "workflow.status.001.keyword_collision",
+      "effects": 0,
+      "expected": "list_active_project_workflows",
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "actual": [],
+      "attempt_id": "workflow.status.001.negation",
+      "effects": 0,
+      "expected": null,
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "negation"
+    },
+    {
+      "actual": [],
+      "attempt_id": "workflow.status.001.neighbor",
+      "effects": 0,
+      "expected": null,
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "neighbor"
+    },
+    {
+      "actual": [
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "workflow.status.001.pronoun",
+      "effects": 0,
+      "expected": "list_active_project_workflows",
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "pronoun"
+    },
+    {
+      "actual": [
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "workflow.status.001.typo",
+      "effects": 0,
+      "expected": "list_active_project_workflows",
+      "family": "workflow_status",
+      "passed": true,
+      "variant": "typo"
+    }
+  ],
+  "effects": 0,
+  "generated_at": "2026-07-20T18:30:00+02:00",
+  "model_profile": {
+    "base_url": "https://api.moonshot.ai/v1",
+    "max_retries": 0,
+    "max_tokens": 2048,
+    "provider_model": "kimi-k2.5",
+    "reasoning": {
+      "thinking": {
+        "type": "disabled"
+      }
+    },
+    "selected_model": "kimi/kimi-k2.5",
+    "temperature": 0.6,
+    "timeout_seconds": 300.0,
+    "tool_choice": "auto"
+  },
+  "no_action": {
+    "passed": 36,
+    "rate": 0.9230769230769231,
+    "total": 39
+  },
+  "onboarding": {
+    "passed": 1,
+    "total": 8
+  },
+  "onboarding_attempts": [
+    {
+      "actual": [],
+      "attempt_id": "onboarding-01",
+      "effects": 0,
+      "passed": false
+    },
+    {
+      "actual": [],
+      "attempt_id": "onboarding-02",
+      "effects": 0,
+      "passed": false
+    },
+    {
+      "actual": [
+        "onboard_project"
+      ],
+      "attempt_id": "onboarding-03",
+      "effects": 0,
+      "passed": true
+    },
+    {
+      "actual": [],
+      "attempt_id": "onboarding-04",
+      "effects": 0,
+      "passed": false
+    },
+    {
+      "actual": [],
+      "attempt_id": "onboarding-05",
+      "effects": 0,
+      "passed": false
+    },
+    {
+      "actual": [],
+      "attempt_id": "onboarding-06",
+      "effects": 0,
+      "passed": false
+    },
+    {
+      "actual": [],
+      "attempt_id": "onboarding-07",
+      "effects": 0,
+      "passed": false
+    },
+    {
+      "actual": [],
+      "attempt_id": "onboarding-08",
+      "effects": 0,
+      "passed": false
+    }
+  ],
+  "prompt_version": "slice-2-semantic-shadow-v1",
+  "report_version": "1.0.0",
+  "runtime_versions": {
+    "langchain": "1.3.14",
+    "langchain-core": "1.4.9",
+    "langchain-openai": "1.3.5",
+    "langgraph": "1.2.9"
+  },
+  "snapshot_hash": "39c6bf20003f7ee02969456b6ddf6a426ec631d7a65c182cf18711e6ab21275b",
+  "verdict": "NO_GO"
+}

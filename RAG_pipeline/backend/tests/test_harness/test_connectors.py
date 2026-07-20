@@ -1,9 +1,11 @@
 import pytest
 import httpx
 import json
+from types import SimpleNamespace
 from pydantic import ValidationError
 
 from src.harness.connectors.catalog import default_connector_provider_registry, load_connector_catalog
+from src.harness.connectors.capabilities import build_request_capability_registry
 from src.harness.connectors.fixture import FIXTURE_CAPABILITY_ID
 from src.harness.connectors.http_elastic import ElasticHttpConnector
 from src.harness.connectors.models import (
@@ -96,7 +98,37 @@ def test_connector_types_and_capabilities_are_loaded_from_validated_catalog_data
     assert {definition.provider_key for definition in catalog} == {"fixture_knowledge", "http_elastic"}
     capability = registry.capability("http_elastic", "connector.http_elastic.search")
     assert capability.action == "read_connector_evidence"
+    assert capability.semantic_name == "search_external_index"
+    assert capability.purpose
+    assert capability.preconditions
+    assert capability.failure_recovery
+    assert capability.shadow_safe is False
     assert registry.manifest("fixture_knowledge").capability_ids == (FIXTURE_CAPABILITY_ID,)
+
+
+@pytest.mark.asyncio
+async def test_request_bound_connector_uses_immutable_instance_semantic_name():
+    instance = SimpleNamespace(id=42, name="Mutable display", provider_key="fixture_knowledge")
+    binding = SimpleNamespace(
+        connector_instance=instance,
+        capability_id=FIXTURE_CAPABILITY_ID,
+        domains=[],
+    )
+
+    class Repository:
+        async def list_eligible_bindings(self, project_ids):  # noqa: ANN001
+            assert project_ids == ["alpha"]
+            return [binding]
+
+    registry = await build_request_capability_registry(
+        Repository(), project_ids=["alpha"]
+    )
+    capability = registry.get("connector.instance_42.connector_fixture_search")
+
+    assert capability.semantic_name == "search_fixture_knowledge_connector_42"
+    assert "Mutable display" in capability.label
+    assert "Mutable display" not in capability.semantic_name
+    assert capability.shadow_safe is False
 
 
 @pytest.mark.asyncio

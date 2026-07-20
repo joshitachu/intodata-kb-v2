@@ -1,0 +1,17 @@
+name: testify patchworks
+version: 1.0.0
+description: ''
+docs:
+- name: TEST
+  required_sections:
+  - Overview
+  - Architecture
+  - Operations
+  - Evidence Register
+- name: TEST2
+  required_sections:
+  - summary
+  - use case
+steps:
+- id: generate-docs
+  type: harness

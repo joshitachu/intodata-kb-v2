@@ -46,7 +46,7 @@ interface ChatContextValue {
   setSelectedProject: (project: string) => void;
 
   // Actions
-  createConversation: () => Promise<void>;
+  createConversation: () => Promise<number | null>;
   deleteConversation: (id: number) => Promise<void>;
   handleSendMessage: (request: ConversationMessageRequest) => Promise<void>;
   retryFailedMessage: () => Promise<void>;
@@ -159,9 +159,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const createConversation = useCallback(async () => {
     try {
       const newConversation = await createMutation.mutateAsync({});
+      justCreatedIdRef.current = newConversation.id;
       setActiveConversationId(newConversation.id);
+      return newConversation.id;
     } catch (error) {
       console.error("Failed to create conversation:", error);
+      return null;
     }
   }, [createMutation]);
 
@@ -177,6 +180,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [deleteMutation, activeConversationId]);
 
   const handleSendMessage = useCallback(async (request: ConversationMessageRequest) => {
+    const stableRequest: ConversationMessageRequest = request.client_turn_id
+      ? request
+      : { ...request, client_turn_id: globalThis.crypto.randomUUID() };
     let conversationId = activeConversationId;
     if (!conversationId) {
       try {
@@ -190,7 +196,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    setPendingUserMessage(request.query);
+    setPendingUserMessage(stableRequest.query);
 
     if (mode === "deep-dive") {
       try {
@@ -224,8 +230,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     } else {
       try {
         const streamRequest = {
-          ...request,
-          project_id: request.project_id || selectedProject || undefined,
+          ...stableRequest,
+          project_id: stableRequest.project_id || selectedProject || undefined,
         };
         failedRequestRef.current = streamRequest;
         await sendStreamMessage(
