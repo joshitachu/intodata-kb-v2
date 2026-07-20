@@ -15,15 +15,14 @@ class Settings(BaseSettings):
     # routes to exactly its provider — there is no cross-provider fallback chain.
     rag_default_model: str = "kimi/kimi-k2.5"
 
-    # Fast-path fallback chain for the lightweight intent classifier ONLY (query
-    # routing in intent_classifier.py, which uses its own small models). The main
-    # RAG chat answer path routes via rag_default_model / the provider registry
-    # and does NOT use this list.
+    # Provider preference for non-agent generation surfaces.
     llm_providers: list[str] = ["kimi", "ollama"]
 
-    # Transition guard for Slice 14. Plans are always persisted for telemetry;
-    # disabling enforcement restores the legacy RAG runtime gate during rollout.
-    harness_turn_plan_enforced: bool = True
+    # Unified bounded agent-loop limits. Chat routing is unconditional.
+    agent_chat_max_iterations: int = Field(default=6, ge=1, le=20)
+    agent_chat_max_tool_calls: int = Field(default=4, ge=0, le=12)
+    agent_chat_deadline_seconds: float = Field(default=30.0, gt=0, le=300.0)
+    agent_chat_max_cost_usd: float = Field(default=0.25, ge=0, le=100.0)
 
     # Kimi (Moonshot AI)
     kimi_api_key: str = ""

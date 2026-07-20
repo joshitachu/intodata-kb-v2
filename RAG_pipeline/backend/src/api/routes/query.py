@@ -12,17 +12,15 @@ from src.api.dependencies import CurrentUser, DBSession, QdrantClient
 from src.api.errors import api_error
 from src.api.routes.auth import limiter
 from src.config import settings
-from src.generation.conversational_rag import _build_memory_context
-from src.generation.intent_classifier import Action, MetadataIntent, QueryType, analyze_query_async
+from src.memory.context import build_memory_context
 from src.db.models import QueryUsage
 from src.generation.llm_client import generate_answer_stream, get_last_usage
 from src.generation.prompt_builder import (
     build_messages,
-    build_metadata_messages,
     build_no_results_messages,
     should_use_code_assistant,
 )
-from src.retrieval.metadata_retriever import fetch_metadata, get_system_knowledge_summary
+from src.retrieval.metadata_retriever import get_system_knowledge_summary
 from src.generation.rag_chain import _execute_role_aware_search, run_rag_query
 from src.memory.hindsight_client import (
     ensure_corrections_bank,
@@ -35,10 +33,7 @@ from src.memory.hindsight_client import (
 )
 from src.rbac.permissions import get_user_groups, get_user_project_ids
 from src.retrieval.embedder import embed_text, get_last_embed_tokens
-from src.retrieval.search import (
-    merge_sources_by_document,
-    search_similar,
-)
+from src.retrieval.search import merge_sources_by_document
 from src.retrieval.vector_store import COLLECTION_NAME
 from src.schemas import (
     DebugSearchRequest,
@@ -170,14 +165,11 @@ async def query_stream(
         recall_quality_insights(body.query),
         recall_corrections(body.query),
     )
-    memory_context = _build_memory_context(user_memories, quality_insights, corrections)
+    memory_context = build_memory_context(user_memories, quality_insights, corrections)
     answer_style = "code" if should_use_code_assistant(body.query, project_ids) else "assistant"
     if memory_context:
         logger.info("Stream: Injecting %d user memories + %d quality insights + %d corrections",
                      len(user_memories), len(quality_insights), len(corrections))
-
-    # 1. Route query
-    analysis = await analyze_query_async(body.query)
 
     # Fetch system knowledge for injection
     system_knowledge: str | None = None
@@ -187,40 +179,24 @@ async def query_stream(
         except Exception as e:
             logger.warning("Stream: Failed to fetch system knowledge: %s", e)
 
-    if analysis.action == Action.METADATA:
-        # Metadata query — answer from PostgreSQL
-        logger.info("Stream: Metadata query: intent=%s, project=%s",
-                     analysis.metadata_intent, analysis.extracted_project)
-        metadata = await fetch_metadata(
-            db, analysis.metadata_intent, project_ids, analysis.extracted_project,
+    sources, auxiliary_sources = await _execute_role_aware_search(
+        body.query, body, user_groups, qdrant, project_ids,
+    )
+
+    if sources or auxiliary_sources:
+        document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
+        ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
+        messages = build_messages(
+            body.query,
+            sources,
+            reference_numbers=ref_map,
+            memory_context=memory_context,
+            system_knowledge=system_knowledge,
+            answer_style=answer_style,
+            auxiliary_sources=auxiliary_sources,
         )
-
-        # For HYBRID: also run vector search
-        hybrid_sources = []
-        if analysis.metadata_intent == MetadataIntent.HYBRID:
-            hybrid_sources = await search_similar(
-                qdrant, analysis.cleaned_query, user_groups,
-                top_k=body.top_k, threshold=body.threshold,
-                project_ids=project_ids,
-            )
-
-        if hybrid_sources:
-            document_sources = merge_sources_by_document(hybrid_sources)
-            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_metadata_messages(
-                body.query, metadata.text,
-                sources=hybrid_sources, reference_numbers=ref_map,
-                memory_context=memory_context,
-            )
-            sources_data = [s.model_dump() for s in document_sources]
-        else:
-            document_sources = []
-            messages = build_metadata_messages(
-                body.query, metadata.text, memory_context=memory_context,
-            )
-            sources_data = []
-
-    elif analysis.action == Action.RESPOND:
+        sources_data = [source.model_dump() for source in document_sources]
+    else:
         messages = build_no_results_messages(
             body.query,
             memory_context=memory_context,
@@ -229,42 +205,6 @@ async def query_stream(
         )
         sources_data = []
         document_sources = []
-    elif analysis.query_type == QueryType.SUMMARY:
-        # Summaries are too complex to stream (map-reduce), fall back to non-streaming
-        result = await run_rag_query(body, user_groups, user.id, qdrant, db, project_ids=project_ids)
-        async def _non_stream():
-            yield f"event: token\ndata: {json.dumps(result.answer)}\n\n"
-            yield f"event: sources\ndata: {json.dumps([s.model_dump() for s in result.sources])}\n\n"
-            yield "event: done\ndata: {}\n\n"
-        return StreamingResponse(_non_stream(), media_type="text/event-stream")
-    else:
-        # 2. Search (with project-level RBAC)
-        sources, auxiliary_sources = await _execute_role_aware_search(
-            analysis, body, user_groups, qdrant, project_ids,
-        )
-
-        if sources or auxiliary_sources:
-            document_sources = merge_sources_by_document([*sources, *auxiliary_sources])
-            ref_map = {doc.document_id: doc.reference_number for doc in document_sources}
-            messages = build_messages(
-                body.query,
-                sources,
-                reference_numbers=ref_map,
-                memory_context=memory_context,
-                system_knowledge=system_knowledge,
-                answer_style=answer_style,
-                auxiliary_sources=auxiliary_sources,
-            )
-            sources_data = [s.model_dump() for s in document_sources]
-        else:
-            messages = build_no_results_messages(
-                body.query,
-                memory_context=memory_context,
-                system_knowledge=system_knowledge,
-                answer_style=answer_style,
-            )
-            sources_data = []
-            document_sources = []
 
     # 3. Stream response
     async def event_generator():
@@ -322,8 +262,8 @@ async def query_stream(
                 sources_used=source_names,
                 search_result_count=len(document_sources),
                 latency_ms=latency_ms,
-                action=analysis.action.value,
-                query_type=analysis.query_type.value,
+                action="document_search",
+                query_type="document_answer",
                 project_ids=project_ids,
             ))
 
