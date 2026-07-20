@@ -1,0 +1,240 @@
+{
+  "entries": [
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "message",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"SendLocation process initiated\"\r\n\t:\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Extracting UserName and Password\"\r\n\r\n\t:\"tSetGlobalVar_7\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Extracting Salt, Password From APIUsers table\" \r\n\t:\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Copying Location XML File to Temp Folder\"\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin) ?\r\n\t\t\"Copying location XML file in LocationData Folder\"\r\n\t:\"tFixedFlowInput_3\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"200 Ok Response Send\"\r\n\t:((\"tFixedFlowInput_5\".equalsIgnoreCase(row17.origin)))?\r\n\t\t\"401 UnAuthorized Response Sent\"\r\n:null\t\t\r\n\t\r\n\t\r\n:\r\n\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while Matching TokenId with Authentication key\"\r\n\r\n\t:\"tMSSqlInput_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while Extracting Authenticating Key From APIUsers table\" \r\n\t:\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while generating Location XML File\"\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin) ?\r\n\t\t\"Error occured while Copying Location XML from Temp Folder\"\r\n\t:\r\nnull\r\n:\r\nnull",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.Message",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Message",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": []
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "origin",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"SendLocation process initiated\"\r\n\t:\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Extracting UserName and Password\"\r\n\r\n\t:\"tSetGlobalVar_7\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Extracting Salt, Password From APIUsers table\" \r\n\t:\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Copying Location XML File to Temp Folder\"\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin) ?\r\n\t\t\"Copying location XML file in LocationData Folder\"\r\n\t:\"tFixedFlowInput_3\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"200 Ok Response Send\"\r\n\t:((\"tFixedFlowInput_5\".equalsIgnoreCase(row17.origin)))?\r\n\t\t\"401 UnAuthorized Response Sent\"\r\n:null\t\t\r\n\t\r\n\t\r\n:\r\n\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while Matching TokenId with Authentication key\"\r\n\r\n\t:\"tMSSqlInput_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while Extracting Authenticating Key From APIUsers table\" \r\n\t:\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"Error Occured while generating Location XML File\"\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin) ?\r\n\t\t\"Error occured while Copying Location XML from Temp Folder\"\r\n\t:\r\nnull\r\n:\r\nnull",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.Message",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Message",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": []
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "message",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)? \r\n\t\t((String)globalMap.get(\"tFileOutputDelimited_1_FILE_NAME\"))\r\n\t: \"tFileCopy_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileCopy_1_DESTINATION_FILEPATH\"))\r\n\t: null\r\n:\r\n\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileOutputDelimited_1_ERROR_MESSAGE\"))\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileCopy_1_ERROR_MESSAGE\"))\r\n\t:\r\n\t\tnull\r\n:\r\nnull",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Description",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": [
+        "globalMap.get"
+      ]
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "origin",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)? \r\n\t\t((String)globalMap.get(\"tFileOutputDelimited_1_FILE_NAME\"))\r\n\t: \"tFileCopy_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileCopy_1_DESTINATION_FILEPATH\"))\r\n\t: null\r\n:\r\n\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"tFileOutputDelimited_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileOutputDelimited_1_ERROR_MESSAGE\"))\r\n\t:\"tFileCopy_1\".equalsIgnoreCase(row17.origin)?\r\n\t\t((String)globalMap.get(\"tFileCopy_1_ERROR_MESSAGE\"))\r\n\t:\r\n\t\tnull\r\n:\r\nnull",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Description",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": [
+        "globalMap.get"
+      ]
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "message",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"failure\".equalsIgnoreCase(row17.message)?\r\n\t\"E\"\r\n\t:\"I\"",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.Severity",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Severity",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": []
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "message",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"START\"\r\n\t: \r\n\t\"tFixedFlowInput_5\".equalsIgnoreCase(row17.origin)||\"tFIxedFlowInput_3\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"STOP\" \r\n\t:\r\n\t\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"DURATION\"\r\n\t:\r\n\t\tnull\r\n:\r\nnull",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.LogCode",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "LogCode",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": []
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "origin",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"START\"\r\n\t: \r\n\t\"tFixedFlowInput_5\".equalsIgnoreCase(row17.origin)||\"tFIxedFlowInput_3\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"STOP\" \r\n\t:\r\n\t\"tJava_2\".equalsIgnoreCase(row17.origin)?\r\n\t\t\"DURATION\"\r\n\t:\r\n\t\tnull\r\n:\r\nnull",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.LogCode",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "LogCode",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": []
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "message",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_6\".equalsIgnoreCase(row17.origin)? \r\n\t\tLong.toString(((Long)globalMap.get(\"EndTime\"))-((Long)globalMap.get(\"StartTime\")))\r\n\t:\r\n\t\t\"\"\r\n:\r\n\"\"",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.Values",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Values",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": [
+        "Long.toString",
+        "globalMap.get"
+      ]
+    },
+    {
+      "source_system": "",
+      "source_table": "row17",
+      "source_column": "origin",
+      "transformations": [
+        {
+          "transformation_type": "expression",
+          "expression": "\"success\".equalsIgnoreCase(row17.message)?\r\n\t\"tSetGlobalVar_6\".equalsIgnoreCase(row17.origin)? \r\n\t\tLong.toString(((Long)globalMap.get(\"EndTime\"))-((Long)globalMap.get(\"StartTime\")))\r\n\t:\r\n\t\t\"\"\r\n:\r\n\"\"",
+          "human_explanation": ""
+        },
+        {
+          "transformation_type": "direct_map",
+          "expression": "Var.Values",
+          "human_explanation": ""
+        }
+      ],
+      "target_table": "logVariables",
+      "target_column": "Values",
+      "job_name": "Maximo2AssetCheck_SendLocation",
+      "confidence": "likely",
+      "source_component": "tStatCatcher_1",
+      "target_component": "tSetGlobalVar_4",
+      "resolved": true,
+      "dynamic_refs": [
+        "Long.toString",
+        "globalMap.get"
+      ]
+    }
+  ],
+  "unmapped_columns": [],
+  "summary": {
+    "total_entries": 9,
+    "resolved_entries": 9,
+    "unresolved_entries": 0,
+    "tmap_components_processed": 1,
+    "jobs_with_tmap": 1,
+    "confidence_counts": {
+      "likely": 9
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "mapping_version": "1.0.0",
+  "families": {
+    "capability_discussion": null,
+    "documentation_rag": "search_documentation",
+    "explicit_creation": "create_pack_draft",
+    "guidance": null,
+    "metadata": "query_project_metadata",
+    "negated_action": null,
+    "runtime_evidence": "read_runtime_evidence",
+    "workflow_status": "list_active_project_workflows"
+  },
+  "onboarding_prompts": [
+    "Onboard project atlas from its Git repository.",
+    "Please connect the atlas codebase and begin onboarding it.",
+    "Set up project atlas from https://example.invalid/atlas.git.",
+    "I need atlas added as a new project from Git.",
+    "Start onboarding the uploaded atlas source archive.",
+    "Bring the atlas repository into Nexus as a project.",
+    "Can you onboard atlas using its authorized source?",
+    "Create project atlas and attach its Git source."
+  ]
+}

@@ -4,6 +4,7 @@ The facade resolves the superadmin-selected ``provider/model`` id to exactly one
 provider and calls it with the bare model name. There is no cross-provider
 fallback chain; a provider error is surfaced.
 """
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,9 @@ from src.generation.llm_client import (
     generate_answer,
     generate_answer_stream,
     generate_answer_with_runtime_tools,
+    get_last_usage,
+    get_turn_usage,
+    reset_turn_usage,
 )
 from src.generation.usage import UsageStats
 from src.runtime.models import RuntimeToolDefinition
@@ -163,3 +167,80 @@ async def test_tool_aware_provider_error_degrades():
         response = await generate_answer_with_runtime_tools(MESSAGES, RUNTIME_TOOLS)
 
     assert response.no_tool_support is True
+
+
+# ---------------------------------------------------------------------------
+# usage tracking: per-context last call + accumulated turn usage
+# ---------------------------------------------------------------------------
+
+
+async def test_turn_usage_accumulates_across_calls():
+    """Two generate calls in one turn sum into get_turn_usage()."""
+    reset_turn_usage()
+    provider = FakeProvider(provider_id="kimi")
+    provider.generate.side_effect = [
+        ("a1", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5, cost_usd=0.001, latency_ms=100)),
+        ("a2", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=20, output_tokens=7, cost_usd=0.002, latency_ms=200)),
+    ]
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    with p_id, p_resolve:
+        await generate_answer(MESSAGES)
+        await generate_answer(MESSAGES)
+
+    assert get_last_usage().input_tokens == 20
+    total = get_turn_usage()
+    assert total.input_tokens == 30
+    assert total.output_tokens == 12
+    assert total.cost_usd == pytest.approx(0.003)
+    assert total.latency_ms == 300
+    assert total.model == "kimi-k2.5"
+
+
+async def test_reset_turn_usage_clears_last_and_accumulated():
+    reset_turn_usage()
+    provider = FakeProvider(provider_id="kimi")
+    provider.generate.return_value = (
+        "a", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=10, output_tokens=5),
+    )
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    with p_id, p_resolve:
+        await generate_answer(MESSAGES)
+
+    reset_turn_usage()
+    assert get_last_usage() is None
+    assert get_turn_usage() is None
+
+
+async def test_stream_records_usage():
+    """A streaming call's trailing UsageStats is recorded like a sync call."""
+    reset_turn_usage()
+    provider = FakeProvider(provider_id="ollama")
+    provider._stream_tokens = ["hi"]
+    p_id, p_resolve = _patch_selection(provider, "gemma3:12b")
+    with p_id, p_resolve:
+        async for _ in generate_answer_stream(MESSAGES):
+            pass
+
+    total = get_turn_usage()
+    assert total is not None
+    assert total.provider == "ollama"
+    assert total.model == "gemma3:12b"
+
+
+async def test_usage_is_isolated_between_concurrent_tasks():
+    """Concurrent turns cannot overwrite each other's usage (ContextVar)."""
+    reset_turn_usage()
+    provider = FakeProvider(provider_id="kimi")
+    provider.generate.return_value = (
+        "a", UsageStats(provider="kimi", model="kimi-k2.5", input_tokens=5, output_tokens=2),
+    )
+    p_id, p_resolve = _patch_selection(provider, "kimi-k2.5")
+    with p_id, p_resolve:
+        async def worker():
+            await generate_answer(MESSAGES)
+            return get_turn_usage().input_tokens
+
+        results = await asyncio.gather(worker(), worker())
+        assert results == [5, 5]
+        # The parent context is untouched by child-task calls.
+        assert get_turn_usage() is None

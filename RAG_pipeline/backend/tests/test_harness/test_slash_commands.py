@@ -1,4 +1,4 @@
-from src.harness.commands import list_slash_commands, resolve_slash_command
+from src.harness.commands import list_slash_commands
 
 
 def test_slash_commands_expose_only_discovery_metadata() -> None:
@@ -12,45 +12,11 @@ def test_slash_commands_expose_only_discovery_metadata() -> None:
         "status",
         "capabilities",
     ]
-    assert all("planner_template" not in command.public() for command in commands)
+    assert all(set(command.public()) == {"name", "description", "argument_hint"} for command in commands)
 
 
-def test_resolved_command_seeds_normal_planner_input() -> None:
-    resolved = resolve_slash_command("/docs customer-api")
+def test_slash_discovery_contains_no_query_rewrite_or_routing_contract() -> None:
+    commands = list_slash_commands()
 
-    assert resolved is not None
-    assert resolved.command.name == "docs"
-    assert resolved.arguments == "customer-api"
-    assert resolved.planner_query == "Generate documentation customer-api"
-
-
-def test_unknown_slash_input_remains_a_normal_chat_message() -> None:
-    assert resolve_slash_command("/not-a-command something") is None
-
-
-def test_pack_command_and_legacy_alias_seed_documentation_pack_management() -> None:
-    current = resolve_slash_command("/pack create customer-api")
-    legacy = resolve_slash_command("/packs customer-api")
-
-    assert current is not None
-    assert current.command.name == "pack"
-    assert current.planner_query == "Manage the documentation Pack create customer-api"
-    assert legacy is not None
-    assert legacy.command.name == "pack"
-    assert legacy.planner_query == "Manage the documentation Pack customer-api"
-
-
-def test_onboarding_alias_seeds_the_onboard_command() -> None:
-    resolved = resolve_slash_command("/onboarding")
-
-    assert resolved is not None
-    assert resolved.command.name == "onboard"
-
-
-def test_capabilities_command_is_read_only_planner_input() -> None:
-    resolved = resolve_slash_command("/capabilities")
-
-    assert resolved is not None
-    assert resolved.planner_query == (
-        "Explain your currently available capabilities without executing tools"
-    )
+    assert all(not hasattr(command, "planner_template") for command in commands)
+    assert all(not hasattr(command, "seed") for command in commands)

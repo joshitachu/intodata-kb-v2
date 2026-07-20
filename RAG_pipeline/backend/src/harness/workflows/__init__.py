@@ -12,13 +12,6 @@ from .evidence_investigation import (
     EvidenceWorkflowResult,
     default_evidence_investigation_workflow,
 )
-from .operational_investigation import (
-    InvestigationCall,
-    OperationalInvestigationRequest,
-    OperationalInvestigationResult,
-    OperationalInvestigationWorkflow,
-    default_operational_investigation_workflow,
-)
 from .documentation_update import (
     DocumentationUpdateRequest,
     DocumentationUpdateResult,
@@ -36,11 +29,6 @@ __all__ = [
     "EvidenceToolCall",
     "EvidenceWorkflowResult",
     "default_evidence_investigation_workflow",
-    "InvestigationCall",
-    "OperationalInvestigationRequest",
-    "OperationalInvestigationResult",
-    "OperationalInvestigationWorkflow",
-    "default_operational_investigation_workflow",
     "normalize_project_platform",
     "DocumentationUpdateRequest",
     "DocumentationUpdateResult",

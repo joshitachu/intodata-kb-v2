@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from src.harness.manifest import ManifestScope, build_runtime_capability_manifest
+from src.harness.manifest import (
+    ManifestScope,
+    build_runtime_capability_manifest,
+    runtime_visibility_reason,
+)
 from src.harness.models import (
     CapabilityDefinition,
     CapabilityHealth,
@@ -8,11 +12,11 @@ from src.harness.models import (
     HarnessProviderType,
     HarnessRiskTier,
 )
-from src.harness.registry import CapabilityRegistry
+from src.harness.registry import CapabilityCatalog
 
 
 def test_runtime_manifest_hides_provider_metadata_and_raw_config() -> None:
-    registry = CapabilityRegistry([
+    registry = CapabilityCatalog([
         CapabilityDefinition(
             id="connector.secret.search",
             label="Search external system",
@@ -47,7 +51,7 @@ def test_runtime_manifest_hides_provider_metadata_and_raw_config() -> None:
 
 
 def test_runtime_manifest_filters_unavailable_pack_and_permission_mismatch() -> None:
-    registry = CapabilityRegistry([
+    registry = CapabilityCatalog([
         CapabilityDefinition(
             id="docs.generate",
             label="Generate docs",
@@ -91,3 +95,29 @@ def test_runtime_manifest_filters_unavailable_pack_and_permission_mismatch() -> 
 
     assert [tool.id for tool in manifest.tools] == ["logs.search"]
     assert manifest.filtered == 2
+    assert runtime_visibility_reason(registry.get("docs.generate"), ManifestScope(
+        permissions=set(), packs={"operations"}
+    )) == "permission_filtered"
+    assert runtime_visibility_reason(registry.get("disabled"), ManifestScope()) == "unhealthy"
+
+
+def test_manifest_turn_policy_reasons_are_stable() -> None:
+    capability = CapabilityDefinition(
+        id="docs.read",
+        label="Read docs",
+        provider_type=HarnessProviderType.RETRIEVAL,
+        provider_id="docs",
+        action="read",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        output_type="evidence_items",
+        risk_tier=HarnessRiskTier.READ_ONLY,
+    )
+
+    assert runtime_visibility_reason(
+        capability,
+        ManifestScope(denied_capability_ids={capability.id}),
+    ) == "turn_policy_denied"
+    assert runtime_visibility_reason(
+        capability,
+        ManifestScope(allowed_capability_ids={"different"}),
+    ) == "turn_policy_filtered"

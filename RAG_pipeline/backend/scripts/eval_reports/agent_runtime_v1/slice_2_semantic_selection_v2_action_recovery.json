@@ -1,0 +1,129 @@
+{
+  "attempts": [
+    {
+      "actual": [
+        "create_pack_draft"
+      ],
+      "allowed_tool_sequences": [
+        [
+          "create_pack_draft"
+        ]
+      ],
+      "assistant_text": "",
+      "attempt_id": "pack.create.001.typo#01",
+      "authored_action": true,
+      "effects": 0,
+      "exclusion_reason": null,
+      "failure_code": null,
+      "family": "explicit_creation",
+      "finish_reason": "tool_calls",
+      "invalid_tool_calls": [],
+      "latency_ms": 1406,
+      "native_tool_calls": [
+        {
+          "arguments": {
+            "name": "security scan"
+          },
+          "arguments_sha256": "c90ee0145804cdd264f4ae5002225d4c5f1d1ae41ca4dcf7fff51a7143ef5162",
+          "known_tool": true,
+          "name": "create_pack_draft",
+          "schema_valid": true,
+          "validation_error_count": 0,
+          "validation_errors": []
+        }
+      ],
+      "outcome": "native_tool_proposal",
+      "partial_valid_first_step": false,
+      "passed": true,
+      "prompt": "mk a securty scan pak drft",
+      "provider_error": null,
+      "requires_clarification": false,
+      "scenario_id": "pack.create.001.typo",
+      "scored": true,
+      "system_prompt_suffix_sha256": "626967ccb832c4dcbb65521297699f778cfa32eb0976c4e52fce284bb7559445",
+      "usage": {
+        "input_tokens": 7430,
+        "output_tokens": 21,
+        "total_tokens": 7451
+      },
+      "variant": "typo"
+    },
+    {
+      "actual": [
+        "search_documentation"
+      ],
+      "allowed_tool_sequences": [
+        [
+          "search_documentation"
+        ],
+        [
+          "list_documentation_packs",
+          "search_documentation"
+        ],
+        [
+          "query_project_metadata"
+        ],
+        [
+          "list_project_documents",
+          "search_documentation"
+        ]
+      ],
+      "assistant_text": "",
+      "attempt_id": "rag.summary.001.informal#01",
+      "authored_action": true,
+      "effects": 0,
+      "exclusion_reason": null,
+      "failure_code": null,
+      "family": "documentation_rag",
+      "finish_reason": "tool_calls",
+      "invalid_tool_calls": [],
+      "latency_ms": 3782,
+      "native_tool_calls": [
+        {
+          "arguments": {
+            "project_id": "fixture-project",
+            "query": "what does fixture project do overview purpose functionality",
+            "top_k": 10
+          },
+          "arguments_sha256": "3ac43c540e7ff5ee9d3cc3c9ff0638be3d0f557e8c9b1af9040cc428e47664f6",
+          "known_tool": true,
+          "name": "search_documentation",
+          "schema_valid": true,
+          "validation_error_count": 0,
+          "validation_errors": []
+        }
+      ],
+      "outcome": "native_tool_proposal",
+      "partial_valid_first_step": false,
+      "passed": true,
+      "prompt": "Quick one \u2014 summarize what fixture project does.",
+      "provider_error": null,
+      "requires_clarification": false,
+      "scenario_id": "rag.summary.001.informal",
+      "scored": true,
+      "system_prompt_suffix_sha256": "626967ccb832c4dcbb65521297699f778cfa32eb0976c4e52fce284bb7559445",
+      "usage": {
+        "input_tokens": 7430,
+        "output_tokens": 41,
+        "total_tokens": 7471
+      },
+      "variant": "informal"
+    }
+  ],
+  "completed_provider_requests": 2,
+  "effects": 0,
+  "expected_provider_requests": 2,
+  "generated_at": "2026-07-20T18:51:19.476349+00:00",
+  "matrix": "action_recovery",
+  "minimum": 1.0,
+  "passed": 2,
+  "provider_error_count": 0,
+  "rate": 1.0,
+  "release_gate_eligible": false,
+  "report_version": "2.1.0-targeted",
+  "snapshot_hash": "ab821a30d83e09bbcf4453bd6f79f16c0d7b82fd29b995256efbcf5d4d7734fd",
+  "status": "COMPLETE",
+  "tool_count": 21,
+  "total": 2,
+  "verdict": "PASS"
+}

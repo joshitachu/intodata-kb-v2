@@ -10,9 +10,20 @@ import {
   usePullPluginPack,
   useRegisterPluginPack,
   useSavePluginPackFile,
+  usePackWorkspace,
+  useProjects,
   useStarterPack,
+  useUpdatePackWorkspace,
 } from "../hooks/useProjects";
-import type { PluginPack, PluginPackBranch, StarterPack } from "../types";
+import type {
+  NexusPackCatalogItem,
+  NexusPackWorkspace,
+  NexusPersonalPack,
+  PluginPack,
+  PluginPackBranch,
+  Project,
+  StarterPack,
+} from "../types";
 
 type Selection =
   | { type: "registered"; id: number }
@@ -45,7 +56,298 @@ async function copyText(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
 
-export default function PluginPacksPage() {
+interface Props {
+  isSuperadmin?: boolean;
+}
+
+export default function PluginPacksPage({ isSuperadmin = false }: Props) {
+  const { data: projectsData, isLoading: projectsLoading } = useProjects();
+  const projects = projectsData?.projects ?? [];
+  const [projectId, setProjectId] = useState("");
+  const [organizationPackId, setOrganizationPackId] = useState<number | null>(null);
+  const [privateVersionIds, setPrivateVersionIds] = useState<number[]>([]);
+  const workspaceQuery = usePackWorkspace(projectId || null);
+  const updateWorkspace = useUpdatePackWorkspace();
+
+  useEffect(() => {
+    if (!projectId && projects.length > 0) {
+      setProjectId(projects[0].id);
+    }
+  }, [projectId, projects]);
+
+  useEffect(() => {
+    const workspace = workspaceQuery.data;
+    if (workspace) {
+      setOrganizationPackId(workspace.selected_organization_pack_id);
+      setPrivateVersionIds(workspace.selected_private_version_ids);
+    }
+  }, [workspaceQuery.data]);
+
+  const selectedProject = projects.find((project) => project.id === projectId) ?? null;
+  const workspace = workspaceQuery.data;
+
+  function togglePrivatePack(packId: number) {
+    setPrivateVersionIds((current) =>
+      current.includes(packId)
+        ? current.filter((id) => id !== packId)
+        : [...current, packId],
+    );
+  }
+
+  function saveWorkspace() {
+    if (!projectId) return;
+    updateWorkspace.mutate({
+      projectId,
+      organizationPackId,
+      privateVersionIds,
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      <section className="border-b border-white/[0.08] pb-5">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold text-slate-100">Documentation Packs</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Choose the organization baseline and any personal add-ons for one project.
+            </p>
+          </div>
+          <div className="w-full sm:w-80">
+            <label className="mb-1 block text-xs font-mono uppercase tracking-wider text-slate-600">
+              Project
+            </label>
+            <select
+              aria-label="Project"
+              className="input-dark"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              disabled={projectsLoading || projects.length === 0}
+            >
+              <option value="">Select a project</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.display_name} ({project.id})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </section>
+
+      {!projectId && !projectsLoading && (
+        <div className="card-dark p-8 text-center text-sm text-slate-500">
+          Add or select a project to configure its documentation pack.
+        </div>
+      )}
+
+      {projectId && (
+        <PackWorkspacePanel
+          project={selectedProject}
+          workspace={workspace}
+          isLoading={workspaceQuery.isLoading}
+          error={workspaceQuery.error}
+          organizationPackId={organizationPackId}
+          privateVersionIds={privateVersionIds}
+          onOrganizationPackChange={setOrganizationPackId}
+          onTogglePrivatePack={togglePrivatePack}
+          onSave={saveWorkspace}
+          isSaving={updateWorkspace.isPending}
+          saveError={updateWorkspace.error}
+        />
+      )}
+
+      {isSuperadmin && (
+        <details className="border-t border-white/[0.08] pt-5">
+          <summary className="cursor-pointer text-sm font-mono text-slate-500 hover:text-slate-300">
+            Advanced/admin: legacy registry and file/Git administration
+          </summary>
+          <div className="mt-5">
+            <LegacyPluginPacksAdmin />
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function PackWorkspacePanel({
+  project,
+  workspace,
+  isLoading,
+  error,
+  organizationPackId,
+  privateVersionIds,
+  onOrganizationPackChange,
+  onTogglePrivatePack,
+  onSave,
+  isSaving,
+  saveError,
+}: {
+  project: Project | null;
+  workspace: NexusPackWorkspace | undefined;
+  isLoading: boolean;
+  error: unknown;
+  organizationPackId: number | null;
+  privateVersionIds: number[];
+  onOrganizationPackChange: (id: number | null) => void;
+  onTogglePrivatePack: (id: number) => void;
+  onSave: () => void;
+  isSaving: boolean;
+  saveError: unknown;
+}) {
+  if (isLoading) {
+    return <p className="text-sm font-mono text-slate-500">Loading pack workspace...</p>;
+  }
+  if (error || !workspace) {
+    return (
+      <div className="card-dark p-5 text-sm text-amber-400">
+        Could not load the documentation pack workspace.
+      </div>
+    );
+  }
+
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-200">
+            {project?.display_name ?? workspace.project_id}
+          </h2>
+          <p className="mt-1 text-xs text-slate-600 font-mono">{workspace.project_id}</p>
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onSave}
+          disabled={isSaving}
+        >
+          {isSaving ? "Saving..." : "Save pack selection"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <PackSelectionList
+          title="Organization Pack"
+          description="One organization pack provides the project's base documentation behavior."
+          packs={workspace.organization_packs}
+          selectedId={organizationPackId}
+          onSelect={onOrganizationPackChange}
+        />
+        <PersonalPackSelection
+          packs={workspace.personal_packs}
+          selectedIds={privateVersionIds}
+          onToggle={onTogglePrivatePack}
+        />
+      </div>
+
+      {saveError !== null && saveError !== undefined && (
+        <p className="text-sm text-red-400 font-mono break-all">
+          {errorText(saveError, "Could not save pack selection.")}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function PackSelectionList({
+  title,
+  description,
+  packs,
+  selectedId,
+  onSelect,
+}: {
+  title: string;
+  description: string;
+  packs: NexusPackCatalogItem[];
+  selectedId: number | null;
+  onSelect: (id: number | null) => void;
+}) {
+  return (
+    <div>
+      <h3 className="text-sm font-mono text-slate-400">{title}</h3>
+      <p className="mt-1 text-xs text-slate-600">{description}</p>
+      <div className="mt-3 space-y-2">
+        <label className="flex cursor-pointer items-start gap-3 rounded border border-white/[0.08] px-3 py-2.5 hover:bg-white/[0.04]">
+          <input
+            type="radio"
+            name="organization-pack"
+            checked={selectedId === null}
+            onChange={() => onSelect(null)}
+            className="mt-1 h-4 w-4 accent-accent-primary"
+          />
+          <span>
+            <span className="block text-sm text-slate-200">Organization default</span>
+            <span className="mt-1 block text-xs text-slate-500">Use the approved Nexus documentation baseline.</span>
+          </span>
+        </label>
+        {packs.map((pack) => (
+          <label
+            key={pack.id}
+            className="flex cursor-pointer items-start gap-3 rounded border border-white/[0.08] px-3 py-2.5 hover:bg-white/[0.04]"
+          >
+            <input
+              type="radio"
+              name="organization-pack"
+              checked={selectedId === pack.id}
+              onChange={() => onSelect(pack.id)}
+              className="mt-1 h-4 w-4 accent-accent-primary"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm text-slate-200">{pack.name} v{pack.version}</span>
+              {pack.description && <span className="mt-1 block text-xs text-slate-500">{pack.description}</span>}
+            </span>
+          </label>
+        ))}
+        {packs.length === 0 && <p className="text-xs text-slate-600">No organization packs available.</p>}
+      </div>
+    </div>
+  );
+}
+
+function PersonalPackSelection({
+  packs,
+  selectedIds,
+  onToggle,
+}: {
+  packs: NexusPersonalPack[];
+  selectedIds: number[];
+  onToggle: (id: number) => void;
+}) {
+  return (
+    <div>
+      <h3 className="text-sm font-mono text-slate-400">My add-ons</h3>
+      <p className="mt-1 text-xs text-slate-600">Add saved analysis and output preferences without replacing the organization baseline.</p>
+      <div className="mt-3 space-y-2">
+        {packs.map((pack) => (
+          <label
+            key={pack.id}
+            className="flex cursor-pointer items-start gap-3 rounded border border-white/[0.08] px-3 py-2.5 hover:bg-white/[0.04]"
+          >
+            <input
+              type="checkbox"
+              checked={selectedIds.includes(pack.id)}
+              onChange={() => onToggle(pack.id)}
+              className="mt-1 h-4 w-4 accent-accent-primary"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm text-slate-200">{pack.name} v{pack.version}</span>
+              {pack.description && <span className="mt-1 block text-xs text-slate-500">{pack.description}</span>}
+              {pack.output_documents.length > 0 && (
+                <span className="mt-1 block text-xs text-slate-600">
+                  Outputs: {pack.output_documents.join(", ")}
+                </span>
+              )}
+            </span>
+          </label>
+        ))}
+        {packs.length === 0 && <p className="text-xs text-slate-600">No personal additive packs available.</p>}
+      </div>
+    </div>
+  );
+}
+
+function LegacyPluginPacksAdmin() {
   const { data: packs = [], isLoading } = usePluginPacks();
   const { data: starter } = useStarterPack();
   const {
