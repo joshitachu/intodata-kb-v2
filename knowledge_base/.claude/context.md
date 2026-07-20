@@ -1,5 +1,22 @@
 # KB Sub-project Context
 
+## Current State (2026-07-19) -- governed Packs plus unified Nexus agent path, locally deployed
+
+The shared branch contains the certified Swap-Pack governance boundary and the
+Nexus single-agent chat cleanup. MCP remains the final IntoDoc Pack authority:
+explicit `plugin_pack_id` wins over a project default, provenance and digest are
+rechecked at use time, and organization semantics remain Git/PR governed. Nexus
+chat now sends every conversation turn through one bounded agent loop and
+registered capability handler surface; no legacy planner/classifier route is
+available. This sub-project also contains concurrent topology/lineage and
+evidence-integrity work; keep those artifacts separate when preparing commits.
+
+**Next:** Migration 067's JSON/JSONB compatibility defect is repaired, the local
+database is at migration 069, and all eight Docker services are healthy. Run
+authenticated Nexus/MCP/IntoDoc acceptance before splitting the broad dirty
+tree. The production agent-retirement evidence gate remains unmet; do not claim
+a live 168-hour/1,000-turn observation window.
+
 ## Last Completed (2026-07-14) -- Nexus MCP bridge consolidated in `f260527`
 
 The MCP side of the Nexus harness foundation is committed. Secure ZIP onboarding now
@@ -312,6 +329,8 @@ Fixed three EP-005 blockers preventing koopmans heartbeats from reaching Mission
 Enterprise documentation quality gates and verdicts: enterprise mode is now the default publish path, Phase 3 doc depth is blocking, final redaction/provenance/usefulness/reviewer/quality gates are written to `_assessment/enterprise_gates.json`, audit bundles and final doc hashes are preserved under `_audit/`, scans fail closed on missing/invalid `scan_result.json`, generation background crashes complete runs as failed instead of leaving projects stuck, and dashboard run history shows structured verdicts. 350/350 backend tests pass; dashboard build passes.
 
 ## Current State
+
+- **Latest (2026-07-17, certified documentation Pack boundary, uncommitted)**: MCP is now the generation authority for certified Swap Packs. It verifies trusted bundled/Git provenance and content digests, blocks direct local lifecycle operations that bypass Git/PR, persists project Pack selection with owner/superadmin enforcement, and validates the compiled Nexus Pack snapshot before starting documentation generation. The port-8001 dashboard has governed Pack catalogue and generation-dialog wiring instead of being isolated from Nexus's Pack selection. Focused Pack/API/execution tests are 74 passed and MCP is healthy. Immediate next: separate this batch from concurrent topology/lineage and customer fixture artifacts, run the complete MCP suite, and execute one real generation proving the selected composition affects output. Private Pack drafting and attachments remain Nexus/RAG responsibilities; certified execution remains MCP/IntoDoc responsibility.
 
 - **Track A (artifact reduction)**: COMPLETE. Slices 1-5 shipped. Default run budget: ~290 files / ~20 MB (was 666 / 52 MB). 590 tests pass. `mcp-server` Docker image rebuilt and healthy. Commits `5e16911` (Slices 1+2) and `1a62a82` (Slices 3-5) on `master`.
 - **Track B (Phase 3 input quality)**: unblocked. Per Track B PRD, FR-8 dead-fallback removal (Track A prerequisite) is committed. Track B needs the full `/grill` → `/prd` → `/slices` → `/plan` → `/plan-approve pass` → build → `/inspect` → commit cycle. Output-affecting (per-call manifest.json input hashes WILL change); before/after human spot-check on >=3 docs is the quality gate.

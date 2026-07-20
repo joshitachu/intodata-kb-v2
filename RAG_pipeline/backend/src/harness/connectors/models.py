@@ -42,6 +42,13 @@ class ConnectorCapabilityDefinition(BaseModel):
     risk_tier: str = Field(default="read_only", pattern=r"^read_only$")
     packs: tuple[str, ...] = Field(default=("connectors",), max_length=20)
     activity_label: str = Field(min_length=1, max_length=160)
+    semantic_name: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,47}$")
+    purpose: str | None = Field(default=None, min_length=1, max_length=500)
+    use_when: tuple[str, ...] = Field(default=(), max_length=10)
+    do_not_use_when: tuple[str, ...] = Field(default=(), max_length=10)
+    preconditions: tuple[str, ...] = Field(default=(), max_length=10)
+    failure_recovery: dict[str, str] = Field(default_factory=dict, max_length=10)
+    shadow_safe: bool = False
 
 
 class ConnectorProviderDefinition(BaseModel):
