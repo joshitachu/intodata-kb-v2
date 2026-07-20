@@ -4,17 +4,55 @@ interface GroupColor {
   text: string;
 }
 
+import { STATUS_META, FAILING_EDGE_COLOR } from "@/lib/healthStatusMeta";
+import type { EffectiveStatus } from "@/lib/healthPropagation";
+
 interface GraphLegendProps {
   groupColorMap: Record<string, GroupColor>;
   collapsedMode?: boolean;
+  showHealth?: boolean;
 }
 
-export function GraphLegend({ groupColorMap, collapsedMode }: GraphLegendProps) {
+const HEALTH_LEGEND_ORDER: EffectiveStatus[] = [
+  "down",
+  "impacted",
+  "degraded",
+  "running",
+  "healthy",
+  "unknown",
+];
+
+export function GraphLegend({ groupColorMap, collapsedMode, showHealth }: GraphLegendProps) {
   const groups = Object.entries(groupColorMap);
 
   return (
     <div className="absolute bottom-3 left-3 bg-white/90 backdrop-blur-md border border-slate-200 rounded-xl p-3.5 text-xs shadow-lg max-w-[240px] z-10">
       <div className="font-bold mb-2.5 text-slate-800 text-[11px] uppercase tracking-wider">Legend</div>
+
+      {/* Runtime-health overlay (S3) */}
+      {showHealth && (
+        <div className="space-y-1.5 mb-2.5 pb-2.5 border-b border-slate-100" data-testid="health-legend">
+          <div className="font-semibold mb-1 text-slate-400 text-[10px] uppercase tracking-wider">Runtime health</div>
+          {HEALTH_LEGEND_ORDER.map((status) => {
+            const meta = STATUS_META[status];
+            return (
+              <div key={status} className="flex items-center gap-2.5">
+                <span
+                  className="h-2.5 w-2.5 rounded-full shrink-0"
+                  style={{ background: meta.color }}
+                />
+                <span className="text-slate-500">
+                  {meta.label} <span className="text-slate-300">— {meta.description}</span>
+                </span>
+              </div>
+            );
+          })}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-0 border-t-[2.5px]" style={{ borderColor: FAILING_EDGE_COLOR }} />
+            <span className="text-slate-500">Failing dependency path</span>
+          </div>
+        </div>
+      )}
 
       {/* Edge types */}
       <div className="space-y-1.5 mb-2.5 pb-2.5 border-b border-slate-100">

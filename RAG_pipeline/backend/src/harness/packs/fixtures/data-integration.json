@@ -59,6 +59,7 @@
         "mcp.projects.attach_uploaded_zip_source",
         "mcp.projects.trigger_scan",
         "mcp.projects.read_status",
+        "mcp.projects.list_active_workflows",
         "mcp.projects.publish_index"
       ],
       "entity_type_ids": ["integration.project"],
@@ -70,13 +71,11 @@
       "label": "Investigate integration failure",
       "description": "Collect scoped runtime and connector evidence for a failed integration execution.",
       "capability_ids": [
-        "nexus.workflow.operational_investigation",
-        "runtime.tools.query_evidence",
-        "runtime.logs.search_evidence",
-        "external.connector.read_evidence"
+        "runtime.stored.query_evidence",
+        "runtime.logs.search_evidence"
       ],
       "entity_type_ids": ["integration.flow", "integration.execution"],
-      "connector_requirement_ids": ["integration.knowledge-source"],
+      "connector_requirement_ids": [],
       "artifact_template_ids": ["integration.investigation-report"]
     }
   ],
@@ -92,14 +91,7 @@
       "media_type": "text/markdown"
     }
   ],
-  "connector_requirements": [
-    {
-      "id": "integration.knowledge-source",
-      "provider_key": "fixture_knowledge",
-      "capability_ids": ["external.connector.read_evidence"],
-      "required": true
-    }
-  ],
+  "connector_requirements": [],
   "default_scopes": {
     "project_required": true,
     "permissions": ["runtime.read", "documents.read"],

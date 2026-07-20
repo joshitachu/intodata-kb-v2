@@ -1,4 +1,5 @@
 import datetime
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,10 +9,17 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.main import app
 from src.db.models import User, Role, Conversation, ConversationMessage
-from src.harness.repository import HarnessWorkflowRepository
-from src.harness.providers.mcp_docs import McpDocumentationProvider
-from src.harness.models import WorkflowRunStatus
-from src.harness.chat import HarnessPlannerDecision
+from src.harness.agent_chat_runtime import (
+    AgentChatIdempotencyConflict,
+    AgentChatTurnExecution,
+)
+from src.harness.agent_loop import (
+    AgentBoundaryAction,
+    AgentLoopResult,
+    AgentStopReason,
+)
+from src.harness.response_synthesis import render_typed_response
+from src.harness.workflow_projection import WorkflowCard
 
 CSRF_HEADERS = {"cookie": "csrf_token=test_csrf", "X-CSRF-Token": "test_csrf"}
 
@@ -54,6 +62,34 @@ def _mock_message(id: int = 1, role: str = "user", content: str = "Hello"):
     msg.structured_answer = None
     msg.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
     return msg
+
+
+def _mock_agent_execution(content: str = "Handled by the authoritative agent"):
+    typed = render_typed_response(
+        action="answer",
+        content=content,
+        plan=None,
+        facts=[],
+        state_version="agent-route-state",
+        stop_reason="answered",
+    )
+    result = AgentLoopResult(
+        action=AgentBoundaryAction.ANSWER,
+        output=typed.content,
+        stop_reason=AgentStopReason.ANSWERED,
+        state_version="agent-route-state",
+        typed_response=typed,
+    )
+    user_message = _mock_message(id=88, role="user", content="request")
+    assistant = _mock_message(id=89, role="assistant", content=typed.content)
+    assistant.latency_ms = 12
+    assistant.structured_answer = typed.model_dump(mode="json")
+    return AgentChatTurnExecution(
+        user_message=user_message,
+        assistant_message=assistant,
+        result=result,
+        latency_ms=12,
+    )
 
 
 @pytest.fixture
@@ -227,7 +263,8 @@ class TestGetConversation:
         assert data["id"] == 1
         assert len(data["messages"]) == 2
         assert data["messages"][1]["sources"][0]["document_role"] == "policy"
-        assert data["messages"][1]["structured_answer"]["headline"] == "Component inventory"
+        assert data["messages"][1]["structured_answer"] is None
+        assert data["messages"][1]["content"] == "Answer"
 
     async def test_get_not_found(self, mock_deps):
         mock_db = mock_deps["db"]
@@ -256,6 +293,113 @@ class TestGetConversation:
             resp = await client.get("/api/v1/conversations/1")
 
         assert resp.status_code == 403
+
+    async def test_typed_response_history_is_value_exact_and_malformed_payload_fails_closed(
+        self, mock_deps
+    ):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=1, user_id=1)
+        valid = _mock_message(id=2, role="assistant", content="A direct answer.")
+        typed = render_typed_response(
+            action="answer",
+            content="A direct answer.",
+            plan=None,
+            facts=[],
+            state_version="history",
+            stop_reason="answered",
+        ).model_dump(mode="json")
+        valid.structured_answer = typed
+        malformed = _mock_message(id=3, role="assistant", content="Stored fallback text.")
+        malformed.structured_answer = {
+            "response_type": "agent_response_v1",
+            "kind": "status",
+            "content": "corrupt",
+        }
+        conv.messages = [valid, malformed]
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v1/conversations/1")
+
+        assert response.status_code == 200
+        messages = response.json()["messages"]
+        assert messages[0]["structured_answer"] == typed
+        assert messages[1]["structured_answer"] is None
+        assert messages[1]["content"] == "Stored fallback text."
+
+    async def test_history_reprojects_all_stored_typed_card_ids_without_legacy_run_id(
+        self, mock_deps
+    ):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=1, user_id=1)
+        message = _mock_message(id=2, role="assistant", content="Two workflows changed.")
+
+        def workflow_card(run_id: int, *, status: str, display_label: str) -> WorkflowCard:
+            terminal = status == "failed"
+            return WorkflowCard(
+                workflow_run_id=run_id,
+                project_id=f"project-{run_id}",
+                capability_id="mcp.docs.generate_project_documentation",
+                label=f"Documentation generation {run_id}",
+                status=status,
+                display_label=display_label,
+                display_tone="danger" if terminal else "progress",
+                is_active=not terminal,
+                error_message="Provider child failed." if terminal else None,
+                started_at="2026-07-19T01:00:00Z",
+                finished_at="2026-07-19T01:01:00Z" if terminal else None,
+                projected_at="2026-07-19T01:02:00Z",
+                elapsed_ms=60_000,
+                timing_complete=True,
+            )
+
+        stored_cards = [
+            workflow_card(44, status="in_progress", display_label="Stale running"),
+            workflow_card(45, status="in_progress", display_label="Stale running"),
+        ]
+        fresh_cards = [
+            workflow_card(44, status="failed", display_label="Already failed"),
+            workflow_card(45, status="in_progress", display_label="In progress"),
+        ]
+        typed = render_typed_response(
+            action="answer",
+            content=None,
+            plan=None,
+            facts=[],
+            workflow_cards=stored_cards,
+            state_version="history-cards",
+            stop_reason="answered",
+        ).model_dump(mode="json")
+        message.content = typed["content"]
+        message.structured_answer = typed
+        assert message.workflow_run_id is None
+        conv.messages = [message]
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        with patch(
+            "src.api.routes.conversations.AuthoritativeWorkflowCardProjector.project_many",
+            new_callable=AsyncMock,
+            return_value=fresh_cards,
+        ) as project_many:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get("/api/v1/conversations/1")
+
+        assert response.status_code == 200
+        payload = response.json()["messages"][0]
+        assert payload["structured_answer"] == typed
+        assert [card["display_label"] for card in payload["workflow_cards"]] == [
+            "Already failed",
+            "In progress",
+        ]
+        assert project_many.await_args.args[0] == [44, 45]
+        assert project_many.await_args.kwargs["reconcile"] is True
+        mock_db.commit.assert_awaited()
 
 
 class TestUpdateConversation:
@@ -341,6 +485,215 @@ class TestDeleteConversation:
 
 
 class TestSendMessage:
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "which project is currently having documents made",
+            "help me document this project",
+            "make a security scanning pack",
+            "onboard project IntodataStreams",
+            "cancel IntodataStreams",
+            "CHO-frojefe",
+        ],
+    )
+    async def test_agent_route_handles_authenticated_paraphrases_without_legacy_dispatch(
+        self, mock_deps, query
+    ):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=166, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+        execution = _mock_agent_execution()
+
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            return_value=execution,
+        ) as agent:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/conversations/166/messages",
+                    json={
+                        "query": query,
+                        "client_turn_id": "route-paraphrase-1",
+                    },
+                    headers=CSRF_HEADERS,
+                )
+
+        assert response.status_code == 200
+        assert response.json()["structured_answer"] == execution.result.typed_response.model_dump(
+            mode="json"
+        )
+        assert agent.await_args.kwargs["query"] == query
+        assert agent.await_args.kwargs["client_turn_id"] == "route-paraphrase-1"
+
+    async def test_agent_stream_and_nonstream_project_the_same_typed_result(
+        self, mock_deps
+    ):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=163, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+        execution = _mock_agent_execution("One exact typed response")
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            return_value=execution,
+        ) as agent:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                nonstream = await client.post(
+                    "/api/v1/conversations/163/messages",
+                    json={"query": "status", "client_turn_id": "transport-one-1"},
+                    headers=CSRF_HEADERS,
+                )
+                stream = await client.post(
+                    "/api/v1/conversations/163/messages/stream",
+                    json={"query": "status", "client_turn_id": "transport-two-1"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert nonstream.status_code == stream.status_code == 200
+        response_data = next(
+            json.loads(line.removeprefix("data: "))
+            for previous, line in zip(stream.text.splitlines(), stream.text.splitlines()[1:])
+            if previous == "event: agent_response" and line.startswith("data: ")
+        )
+        assert response_data == nonstream.json()["structured_answer"]
+        assert [call.kwargs["transport"] for call in agent.await_args_list] == [
+            "nonstream",
+            "stream",
+        ]
+
+    async def test_more_than_four_images_is_rejected_before_route_execution(
+        self, mock_deps
+    ):
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+        ) as agent:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/conversations/166/messages",
+                    json={"query": "inspect", "images": ["a", "b", "c", "d", "e"]},
+                    headers=CSRF_HEADERS,
+                )
+        assert response.status_code == 422
+        agent.assert_not_awaited()
+
+    @pytest.mark.parametrize("suffix", ["messages", "messages/stream"])
+    async def test_client_turn_payload_mismatch_returns_409(
+        self, mock_deps, suffix
+    ):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=166, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            side_effect=AgentChatIdempotencyConflict(
+                "client_turn_id is already bound to a different request"
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    f"/api/v1/conversations/166/{suffix}",
+                    json={"query": "different", "client_turn_id": "reused-turn-1"},
+                    headers=CSRF_HEADERS,
+                )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "idempotency_conflict"
+
+    async def test_every_new_turn_uses_authoritative_agent_execution(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=166, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+        execution = _mock_agent_execution("The authoritative agent handled the turn.")
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            return_value=execution,
+        ) as agent:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/conversations/166/messages",
+                    json={"query": "cancel IntodataStreams"},
+                    headers=CSRF_HEADERS,
+                )
+        assert response.status_code == 200
+        assert response.json()["content"] == execution.result.typed_response.content
+        agent.assert_awaited_once()
+
+    async def test_agent_failure_never_falls_through_to_legacy_pipeline(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=166, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("agent dependency failed"),
+        ):
+            transport = ASGITransport(app=app, raise_app_exceptions=False)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/conversations/166/messages",
+                    json={"query": "cancel IntodataStreams"},
+                    headers=CSRF_HEADERS,
+                )
+        assert response.status_code == 500
+
+    async def test_workflow_status_intent_uses_harness_public_route(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=163, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        response = MagicMock()
+        response.id = 9
+        response.role = "assistant"
+        response.content = "Active project workflows: project-a is generating documentation."
+        response.sources = None
+        response.latency_ms = 10
+        response.status = "completed"
+        response.error_message = None
+        response.primary_source_layer = None
+        response.fallback_used = False
+        response.doc_gap = False
+        response.workflow_run_id = None
+        response.harness_activities = []
+        response.pending_action = None
+        response.created_at = datetime.datetime(2026, 7, 18, tzinfo=datetime.timezone.utc)
+        execution = _mock_agent_execution(response.content)
+
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            return_value=execution,
+        ) as agent:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                api_response = await client.post(
+                    "/api/v1/conversations/163/messages",
+                    json={"query": "which project is currently having documents made"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert api_response.status_code == 200
+        agent.assert_awaited_once()
+
     async def test_slash_command_is_resolved_before_the_normal_planner(self, mock_deps):
         mock_db = mock_deps["db"]
         conv = _mock_conversation(id=1, user_id=1)
@@ -364,16 +717,12 @@ class TestSendMessage:
         response.pending_action = None
         response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
 
-        decision = HarnessPlannerDecision(action="use_rag", mode="rag")
+        execution = _mock_agent_execution(response.content)
         with patch(
-            "src.api.routes.conversations.plan_model_harness_chat_turn",
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
             new_callable=AsyncMock,
-            return_value=decision,
-        ) as planner, patch(
-            "src.api.routes.conversations.run_conversational_rag",
-            new_callable=AsyncMock,
-            return_value=response,
-        ) as rag:
+            return_value=execution,
+        ) as agent:
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 result = await client.post(
@@ -383,8 +732,7 @@ class TestSendMessage:
                 )
 
         assert result.status_code == 200
-        assert planner.await_args.kwargs["query"] == "Generate documentation customer-api"
-        assert rag.await_args.kwargs["query"] == "Generate documentation customer-api"
+        assert agent.await_args.kwargs["query"] == "/docs customer-api"
 
     async def test_send_message_success(self, mock_deps):
         mock_db = mock_deps["db"]
@@ -395,26 +743,11 @@ class TestSendMessage:
         result.scalar_one_or_none.return_value = conv
         mock_db.execute = AsyncMock(return_value=result)
 
-        mock_response = MagicMock()
-        mock_response.id = 1
-        mock_response.role = "assistant"
-        mock_response.content = "The answer is 42."
-        mock_response.sources = None
-        mock_response.latency_ms = 100
-        mock_response.status = "completed"
-        mock_response.error_message = None
-        mock_response.primary_source_layer = None
-        mock_response.fallback_used = False
-        mock_response.doc_gap = False
-        mock_response.workflow_run_id = None
-        mock_response.harness_activities = []
-        mock_response.pending_action = None
-        mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
-
+        execution = _mock_agent_execution("The answer is 42.")
         with patch(
-            "src.api.routes.conversations.run_conversational_rag",
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
             new_callable=AsyncMock,
-            return_value=mock_response,
+            return_value=execution,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -472,27 +805,12 @@ class TestSendMessage:
         result.scalar_one_or_none.return_value = conv
         mock_db.execute = AsyncMock(return_value=result)
 
-        mock_response = MagicMock()
-        mock_response.id = 1
-        mock_response.role = "assistant"
-        mock_response.content = "Answer"
-        mock_response.sources = None
-        mock_response.latency_ms = 50
-        mock_response.status = "completed"
-        mock_response.error_message = None
-        mock_response.primary_source_layer = None
-        mock_response.fallback_used = False
-        mock_response.doc_gap = False
-        mock_response.workflow_run_id = None
-        mock_response.harness_activities = []
-        mock_response.pending_action = None
-        mock_response.created_at = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
-
+        execution = _mock_agent_execution("Answer")
         with patch(
-            "src.api.routes.conversations.run_conversational_rag",
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ) as mock_rag:
+            return_value=execution,
+        ) as agent:
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
@@ -502,14 +820,42 @@ class TestSendMessage:
                 )
 
         assert resp.status_code == 200
-        # Verify the options were passed
-        call_kwargs = mock_rag.call_args.kwargs
-        assert call_kwargs["top_k"] == 10
-        assert call_kwargs["threshold"] == 0.8
+        agent.assert_awaited_once()
 
 
 class TestSendMessageStream:
-    async def test_stream_failure_persists_failed_assistant_message(self, mock_deps):
+    async def test_stream_uses_only_unified_agent_transport_events(self, mock_deps):
+        mock_db = mock_deps["db"]
+        conv = _mock_conversation(id=1, user_id=1)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conv
+        mock_db.execute = AsyncMock(return_value=result)
+
+        execution = _mock_agent_execution("Open the Pack draft from the artifact link.")
+        with patch(
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            return_value=execution,
+        ) as agent:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/conversations/1/messages/stream",
+                    json={"query": "I want to create a pack"},
+                    headers=CSRF_HEADERS,
+                )
+
+        assert resp.status_code == 200
+        events = [
+            line.removeprefix("event: ")
+            for line in resp.text.splitlines()
+            if line.startswith("event: ")
+        ]
+        assert events == ["agent_response", "agent_final", "done"]
+        assert "workspace" not in events
+        agent.assert_awaited_once()
+
+    async def test_stream_agent_failure_fails_closed_before_transport(self, mock_deps):
         mock_db = mock_deps["db"]
         mock_db.add = MagicMock()
         mock_db.commit = AsyncMock()
@@ -524,15 +870,12 @@ class TestSendMessageStream:
         result.scalar_one_or_none.return_value = conv
         mock_db.execute = AsyncMock(return_value=result)
 
-        async def failing_stream(**_kwargs):
-            raise RuntimeError("Provider timed out")
-            yield  # noqa: unreachable - keeps this an async generator
-
         with patch(
-            "src.api.routes.conversations.run_conversational_rag_stream",
-            side_effect=failing_stream,
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Provider timed out"),
         ):
-            transport = ASGITransport(app=app)
+            transport = ASGITransport(app=app, raise_app_exceptions=False)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
                     "/api/v1/conversations/1/messages/stream",
@@ -540,21 +883,10 @@ class TestSendMessageStream:
                     headers=CSRF_HEADERS,
                 )
 
-        assert resp.status_code == 200
-        assert "event: error" in resp.text
-        assert "event: done" in resp.text
-        assert '"message_id": 42' in resp.text
-        mock_db.commit.assert_awaited_once()
+        assert resp.status_code == 500
+        mock_db.commit.assert_not_awaited()
 
-        failed_msg = mock_db.add.call_args.args[0]
-        assert isinstance(failed_msg, ConversationMessage)
-        assert failed_msg.role == "assistant"
-        assert failed_msg.status == "failed"
-        assert failed_msg.error_message == "Chat response failed. Please try again."
-
-    async def test_stream_relays_runtime_tool_events_in_order(self, mock_deps):
-        """Backend runtime tool-use loop events (EP-004 slice 3) are relayed
-        as additive SSE events, ending with the existing usage/done pair."""
+    async def test_agent_final_is_metadata_only(self, mock_deps):
         mock_db = mock_deps["db"]
         mock_db.add = MagicMock()
         mock_db.commit = AsyncMock()
@@ -565,17 +897,11 @@ class TestSendMessageStream:
         result.scalar_one_or_none.return_value = conv
         mock_db.execute = AsyncMock(return_value=result)
 
-        async def fake_stream(**_kwargs):
-            yield ("sources", "[]")
-            yield ("runtime_tool_call", '{"tool_name": "detect_failures", "arguments": {}}')
-            yield ("runtime_tool_result", '{"tool_name": "detect_failures", "success": true}')
-            yield ("token", '"The nightly_sync job failed."')
-            yield ("usage", '{"input_tokens": 10, "output_tokens": 5}')
-            yield ("done", '{"message_id": 99, "latency_ms": 120}')
-
+        execution = _mock_agent_execution("The nightly_sync job failed.")
         with patch(
-            "src.api.routes.conversations.run_conversational_rag_stream",
-            side_effect=fake_stream,
+            "src.api.routes.conversations.execute_production_agent_chat_turn",
+            new_callable=AsyncMock,
+            return_value=execution,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -586,97 +912,14 @@ class TestSendMessageStream:
                 )
 
         assert resp.status_code == 200
-        events_in_order = [
-            line.removeprefix("event: ")
-            for line in resp.text.splitlines()
-            if line.startswith("event: ")
-        ]
-        assert events_in_order == [
-            "sources", "runtime_tool_call", "runtime_tool_result", "token", "usage", "done",
-        ]
-
-
-async def test_stream_docs_generation_runs_through_langgraph_and_persists_runtime_metadata(
-    db_session,
-    monkeypatch,
-) -> None:
-    from src.api.dependencies import get_current_user, get_db, get_qdrant
-
-    user = User(
-        username="graph-stream-user",
-        email="graph-stream@example.com",
-        is_superadmin=True,
-    )
-    db_session.add(user)
-    await db_session.flush()
-    conversation = Conversation(user_id=user.id, title="Graph stream")
-    db_session.add(conversation)
-    await db_session.flush()
-
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["generate_path"] = request.url.path
-        seen["generate_payload"] = request.read()
-        return httpx.Response(
-            200,
-            json={"status": "generation_triggered", "message": "docs started"},
+        lines = resp.text.splitlines()
+        final_data = next(
+            json.loads(line.removeprefix("data: "))
+            for previous, line in zip(lines, lines[1:])
+            if previous == "event: agent_final"
         )
-
-    provider = McpDocumentationProvider(
-        base_url="http://mcp.internal/mcp",
-        transport=httpx.MockTransport(handler),
-    )
-    monkeypatch.setattr("src.harness.chat.McpDocumentationProvider", lambda: provider)
-
-    current_user = SimpleNamespace(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        is_superadmin=True,
-        roles=[],
-    )
-    app.dependency_overrides[get_db] = lambda: db_session
-    app.dependency_overrides[get_current_user] = lambda: current_user
-    app.dependency_overrides[get_qdrant] = lambda: AsyncMock()
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                f"/api/v1/conversations/{conversation.id}/messages/stream",
-                json={"query": "Generate docs for this project", "project_id": "project-a"},
-                headers=CSRF_HEADERS,
-            )
-            assert response.status_code == 200
-            assert "event: harness_activity" in response.text
-            assert "Documentation generation started for `project-a`" in response.text
-            assert seen["generate_path"] == "/mcp/generate"
-            assert b'"project_id":"project-a"' in seen["generate_payload"]
-
-            runs = await HarnessWorkflowRepository(db_session).list_runs(
-                None,
-                project_id="project-a",
-            )
-            assert len(runs) == 1
-            run = runs[0]
-            assert run.status == WorkflowRunStatus.TRIGGERED
-            assert run.runtime_provider_id == "langgraph.nexus"
-            assert run.runtime_thread_id == f"harness-run-{run.id}"
-            assert run.runtime_run_id
-            assert run.current_node == "finalize"
-            assert run.runtime_metadata["graph"] == "docs_generation"
-            assert run.runtime_metadata["checkpoint_id"]
-
-            detail = await client.get(f"/api/v1/harness/workflows/{run.id}")
-            body = detail.json()
-            assert body["run"]["runtime_provider_id"] == "langgraph.nexus"
-            assert body["run"]["runtime_metadata"]["graph"] == "docs_generation"
-            assert any(
-                activity["runtime_node"] == "execute_capability"
-                for activity in body["activities"]
-            )
-    finally:
-        app.dependency_overrides.clear()
+        assert "typed_response" not in final_data
+        assert "output" not in final_data
 
 
 # --- Soft delete tests (real SQLite DB via db_session) ---

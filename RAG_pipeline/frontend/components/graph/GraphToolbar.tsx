@@ -1,4 +1,4 @@
-import { ArrowDownUp, ChevronDown, ChevronUp, Eye, EyeOff, Layers, Maximize, Minimize2, Search, X } from "lucide-react";
+import { Activity, ArrowDownUp, ChevronDown, ChevronUp, Eye, EyeOff, Layers, Maximize, Minimize2, Search, Target, X } from "lucide-react";
 import type { GroupColor } from "@/lib/graphTransform";
 
 interface GraphToolbarProps {
@@ -27,6 +27,14 @@ interface GraphToolbarProps {
   onCollapseAll: () => void;
   onExpandAll: () => void;
   expandedGroups: Set<string>;
+  // Runtime-health overlay (S3).
+  healthOverlay: boolean;
+  onToggleHealthOverlay: () => void;
+  healthAvailable: boolean;
+  // Failure-focus dimming: dim everything outside the failing cascade.
+  focusFailures: boolean;
+  onToggleFocusFailures: () => void;
+  focusAvailable: boolean;
 }
 
 function ToolbarButton({
@@ -76,6 +84,12 @@ export function GraphToolbar({
   onCollapseAll,
   onExpandAll,
   expandedGroups,
+  healthOverlay,
+  onToggleHealthOverlay,
+  healthAvailable,
+  focusFailures,
+  onToggleFocusFailures,
+  focusAvailable,
 }: GraphToolbarProps) {
   return (
     <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 bg-white/80 backdrop-blur-sm flex-wrap">
@@ -114,9 +128,9 @@ export function GraphToolbar({
           <ArrowDownUp className="h-3.5 w-3.5" />
           {direction === "TB" ? "Top-Down" : "Left-Right"}
         </ToolbarButton>
-        <ToolbarButton onClick={onToggleConnections} active={showConnections} title={showConnections ? "Hide connections" : "Show connections"}>
+        <ToolbarButton onClick={onToggleConnections} active={showConnections} title={showConnections ? "Hide shared connection nodes" : "Show shared connection nodes"}>
           {showConnections ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-          Conn
+          Connections
         </ToolbarButton>
         <ToolbarButton onClick={onToggleCompact} active={compactMode} title={compactMode ? "Switch to detailed view" : "Switch to compact view"}>
           <Minimize2 className="h-3.5 w-3.5" />
@@ -126,6 +140,50 @@ export function GraphToolbar({
           <Maximize className="h-3.5 w-3.5" />
           Fit
         </ToolbarButton>
+        <button
+          onClick={onToggleHealthOverlay}
+          disabled={!healthAvailable}
+          data-testid="health-overlay-toggle"
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all duration-150
+            ${!healthAvailable
+              ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+              : healthOverlay
+                ? "bg-slate-800 text-white border-slate-700 shadow-sm"
+                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300"
+            }`}
+          title={
+            !healthAvailable
+              ? "No runtime health data for this project"
+              : healthOverlay
+                ? "Hide runtime-health overlay"
+                : "Show runtime-health overlay"
+          }
+        >
+          <Activity className="h-3.5 w-3.5" />
+          Health
+        </button>
+        <button
+          onClick={onToggleFocusFailures}
+          disabled={!focusAvailable}
+          data-testid="focus-failures-toggle"
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium rounded-lg border transition-all duration-150
+            ${!focusAvailable
+              ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
+              : focusFailures
+                ? "bg-slate-800 text-white border-slate-700 shadow-sm"
+                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300"
+            }`}
+          title={
+            !focusAvailable
+              ? "No active failures to focus on"
+              : focusFailures
+                ? "Show the whole graph"
+                : "Dim everything outside the failing path"
+          }
+        >
+          <Target className="h-3.5 w-3.5" />
+          Focus failures
+        </button>
       </div>
 
       <div className="w-px h-5 bg-slate-200" />
