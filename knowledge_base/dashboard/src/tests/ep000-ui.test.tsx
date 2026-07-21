@@ -3,6 +3,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
 import ABComparison from "../components/ABComparison";
+import GenerateDialog from "../components/GenerateDialog";
+import PluginPacksPage from "../components/PluginPacksPage";
 import ProjectSettings from "../components/ProjectSettings";
 import ValidationReviewPanel from "../components/ValidationReviewPanel";
 import { api } from "../api/client";
@@ -21,8 +23,12 @@ vi.mock("../api/client", () => ({
     submitReview: vi.fn(),
     updateProject: vi.fn(),
     deleteProject: vi.fn(),
+    listProjects: vi.fn(),
     listPluginPacks: vi.fn(),
     assignPluginPack: vi.fn(),
+    getPackWorkspace: vi.fn(),
+    updatePackWorkspace: vi.fn(),
+    generate: vi.fn(),
   },
 }));
 
@@ -87,6 +93,36 @@ const runs = {
     },
   ],
   total: 2,
+};
+
+const workspaceProject: Project = {
+  id: "p1",
+  display_name: "Workspace Project",
+  repo_url: null,
+  local_path: "/tmp/p1",
+  platform: "talend",
+  doc_generation_provider: null,
+  source_type: "zip",
+  status: "ready",
+  last_scan_at: null,
+  last_generate_at: null,
+  last_rag_push_at: null,
+  job_count: 2,
+  doc_count: 1,
+  error_message: null,
+  last_ingested_commit_sha: null,
+  auto_reingest_enabled: false,
+  auto_reingest_last_checked_at: null,
+  auto_reingest_error: null,
+  git_update_summary: null,
+  has_github_token: false,
+  connection_kind: "pat",
+  github_account_login: null,
+  webhook_status: null,
+  instruction_pack_dir: null,
+  plugin_pack_id: null,
+  created_at: null,
+  updated_at: null,
 };
 
 beforeEach(() => {
@@ -225,5 +261,73 @@ describe("EP-000 dashboard panels", () => {
     await waitFor(() => expect(screen.getByText("Instruction Pack")).toBeInTheDocument());
     expect(await screen.findByText("v-test")).toBeInTheDocument();
     expect(screen.getByText("phase2_preamble (7 chars)")).toBeInTheDocument();
+  });
+
+  it("renders the project pack workspace and saves unified selections", async () => {
+    const workspace = {
+      project_id: "p1",
+      organization_packs: [
+        { id: 10, name: "Swap Pack", version: "2.0", description: "Base docs" },
+      ],
+      personal_packs: [
+        {
+          id: 21,
+          name: "Quality Pack",
+          version: "1.0",
+          description: "Adds quality output",
+          output_documents: ["quality.md"],
+        },
+      ],
+      selected_organization_pack_id: 10,
+      selected_private_version_ids: [],
+    };
+    vi.mocked(api.listProjects).mockResolvedValue({ projects: [workspaceProject], total: 1 });
+    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.updatePackWorkspace).mockResolvedValue({
+      ...workspace,
+      selected_private_version_ids: [21],
+    });
+
+    renderWithClient(<PluginPacksPage isSuperadmin={false} />);
+
+    expect(await screen.findByText("Documentation Packs")).toBeInTheDocument();
+    expect(await screen.findByText("Swap Pack v2.0")).toBeInTheDocument();
+    expect(screen.getByText("Quality Pack v1.0")).toBeInTheDocument();
+    expect(screen.queryByText(/Advanced\/admin/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Save pack selection" }));
+
+    await waitFor(() => {
+      expect(api.updatePackWorkspace).toHaveBeenCalledWith("p1", 10, [21]);
+    });
+  });
+
+  it("passes the selected workspace IDs from GenerateDialog to the Nexus hook", async () => {
+    const workspace = {
+      project_id: "p1",
+      organization_packs: [
+        { id: 10, name: "Swap Pack", version: "2.0", description: null },
+      ],
+      personal_packs: [
+        { id: 21, name: "Quality Pack", version: "1.0", output_documents: [] },
+      ],
+      selected_organization_pack_id: 10,
+      selected_private_version_ids: [21],
+    };
+    vi.mocked(api.listModels).mockResolvedValue({ models: [] });
+    vi.mocked(api.getPackWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.generate).mockResolvedValue({ status: "started", message: "ok" });
+
+    renderWithClient(
+      <GenerateDialog project={workspaceProject} open onClose={vi.fn()} />,
+    );
+
+    expect(await screen.findByText("Swap Pack v2.0")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => {
+      expect(api.generate).toHaveBeenCalledWith("p1", true, null, null, null, 10, [21]);
+    });
   });
 });

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncGenerator
+from contextvars import ContextVar
 
 from src.generation.providers import registry
 from src.generation.providers.types import RuntimeToolCallRequest, ToolAwareLLMResponse
@@ -29,17 +30,61 @@ __all__ = [
     "generate_answer_stream",
     "generate_answer_with_runtime_tools",
     "get_last_usage",
+    "get_turn_usage",
+    "reset_turn_usage",
     "cleanup_llm_clients",
 ]
 
-# Usage from the last completed call, for callers that read stats after the fact
-# (streaming exhausts the generator before stats are available).
-_last_usage: UsageStats | None = None
+# Usage tracking lives in ContextVars so it is scoped to the current
+# request/task: a turn that never calls the LLM reads None instead of stale
+# stats from an unrelated request, and concurrent requests cannot overwrite
+# each other's numbers. `_last_usage` holds the most recent call;
+# `_turn_usage` accumulates every call made since `reset_turn_usage()`.
+_last_usage: ContextVar[UsageStats | None] = ContextVar("llm_last_usage", default=None)
+_turn_usage: ContextVar[UsageStats | None] = ContextVar("llm_turn_usage", default=None)
 
 
 def get_last_usage() -> UsageStats | None:
-    """Return usage stats from the last completed generate call."""
-    return _last_usage
+    """Return usage stats from the last completed generate call in this context."""
+    return _last_usage.get()
+
+
+def get_turn_usage() -> UsageStats | None:
+    """Return a copy of the usage accumulated across all generate calls made
+    in this context since the last `reset_turn_usage()` (or task start)."""
+    total = _turn_usage.get()
+    if total is None:
+        return None
+    return UsageStats(
+        provider=total.provider,
+        model=total.model,
+        input_tokens=total.input_tokens,
+        output_tokens=total.output_tokens,
+        cost_usd=total.cost_usd,
+        latency_ms=total.latency_ms,
+    )
+
+
+def reset_turn_usage() -> None:
+    """Clear last/accumulated usage. Call once at the start of each user turn,
+    before any LLM call that should be attributed to that turn."""
+    _last_usage.set(None)
+    _turn_usage.set(None)
+
+
+def _record_usage(usage: UsageStats) -> None:
+    """Store `usage` as the last call and add it to the turn accumulator."""
+    _last_usage.set(usage)
+    total = _turn_usage.get()
+    if total is None:
+        total = UsageStats()
+        _turn_usage.set(total)
+    total.provider = usage.provider
+    total.model = usage.model
+    total.input_tokens += usage.input_tokens
+    total.output_tokens += usage.output_tokens
+    total.cost_usd += usage.cost_usd
+    total.latency_ms += usage.latency_ms
 
 
 async def _resolve_selection() -> tuple:
@@ -60,7 +105,6 @@ async def generate_answer(
     images: list[str] | None = None,
 ) -> str:
     """Generate an answer from the selected provider. Raises on provider error."""
-    global _last_usage
     provider, model = await _resolve_selection()
     t0 = time.perf_counter()
     try:
@@ -80,7 +124,7 @@ async def generate_answer(
         "LLM response from %s/%s (%.0fms, %d in / %d out tokens)",
         provider.provider_id, model, elapsed, usage.input_tokens, usage.output_tokens,
     )
-    _last_usage = usage
+    _record_usage(usage)
     return result
 
 
@@ -90,12 +134,11 @@ async def generate_answer_stream(
 ) -> AsyncGenerator[str, None]:
     """Stream tokens from the selected provider. After exhaustion, call
     get_last_usage() for stats. Raises on provider error."""
-    global _last_usage
     provider, model = await _resolve_selection()
     try:
         async for item in provider.stream(messages=messages, model=model, images=images):
             if isinstance(item, UsageStats):
-                _last_usage = item
+                _record_usage(item)
                 logger.info(
                     "LLM streaming from %s/%s (%dms, %d in / %d out tokens)",
                     provider.provider_id, model, item.latency_ms,
@@ -125,7 +168,6 @@ async def generate_answer_with_runtime_tools(
     no_tool_support=True so the caller can fall back to generate_answer() without
     claiming live data.
     """
-    global _last_usage
     provider, model = await _resolve_selection()
     if not provider.supports_tools:
         return ToolAwareLLMResponse(provider=provider.provider_id, no_tool_support=True)
@@ -140,5 +182,5 @@ async def generate_answer_with_runtime_tools(
         )
         return ToolAwareLLMResponse(provider=provider.provider_id, no_tool_support=True)
     if response.usage:
-        _last_usage = response.usage
+        _record_usage(response.usage)
     return response

@@ -5,8 +5,7 @@ from pydantic import ValidationError
 
 from src.db.models import Conversation, User
 from src.db.models.harness import HarnessWorkflowRunRow
-from src.generation.agent_loop import RuntimeLoopOutcome, RuntimeProgressEvent
-from src.harness.evidence import query_runtime_evidence
+from src.harness.evidence_contracts import EvidenceAccessPolicy, EvidenceSynthesisPlan
 from src.harness.evidence_store.conflicts import group_conflicts
 from src.harness.evidence_store.composer import (
     InvestigationAnswer,
@@ -23,67 +22,8 @@ from src.harness.evidence_store.synthesis import (
     aggregate_runtime_failures,
 )
 from src.harness.evidence_store.writer import EvidenceGroundedWriter
-from src.harness.planner import (
-    EvidencePolicy,
-    TurnExecutionMode,
-    TurnPlan,
-    TurnTaskType,
-)
 
 NOW = datetime(2026, 7, 11, 12, 0, tzinfo=UTC)
-
-
-async def test_runtime_evidence_uses_agent_tool_receipts_and_preserves_scope(
-    db_session, monkeypatch
-):
-    captured = {}
-
-    async def runtime_loop(messages, **kwargs):
-        captured["messages"] = messages
-        captured.update(kwargs)
-        return RuntimeLoopOutcome(
-            final_answer="ESB_PROD is online and had 12 executions in the requested window.",
-            used_runtime_data=True,
-            progress_events=[
-                RuntimeProgressEvent(
-                    "runtime_tool_result",
-                    {
-                        "tool_name": "list_runtime_engines",
-                        "success": True,
-                        "data": [
-                            {
-                                "engine_id": "engine-1",
-                                "engine_name": "ESB_PROD",
-                                "status": "online",
-                                "environment_name": "PROD",
-                                "last_seen_at": "2026-07-11T11:00:00Z",
-                            }
-                        ],
-                    },
-                )
-            ],
-        )
-
-    monkeypatch.setattr("src.harness.evidence.run_runtime_tool_loop", runtime_loop)
-    result = await query_runtime_evidence(
-        question="Show ESB_PROD executions and health",
-        project_id="cdc",
-        project_scope=["cdc"],
-        db=db_session,
-        since=NOW - timedelta(days=2),
-        until=NOW,
-    )
-
-    assert result.status == "succeeded"
-    assert captured["project_scope"] == ["cdc"]
-    assert "selected project is cdc" in captured["messages"][0]["content"]
-    assert captured["messages"][-1]["content"] == "Show ESB_PROD executions and health"
-    assert result.items[0].metadata["runtime_answer"].startswith("ESB_PROD is online")
-    assert result.items[0].metadata["tools_used"] == ["list_runtime_engines"]
-    assert any(item.title == "ESB_PROD" for item in result.items)
-    assert result.answer_draft == (
-        "ESB_PROD is online and had 12 executions in the requested window."
-    )
 
 
 def test_runtime_draft_preserves_markdown_layout():
@@ -128,19 +68,16 @@ def turn_plan(*, output_contract="documentation_explanation", runtime=False):
         if runtime
         else ["runtime_evidence", "connector_evidence", "generated_documentation"]
     )
-    return TurnPlan(
+    return EvidenceSynthesisPlan(
         objective="Answer from evidence",
-        task_type=TurnTaskType.RUNTIME_ANSWER if runtime else TurnTaskType.DOCUMENT_ANSWER,
-        resolved_scope={"project_id": "project-a"},
-        evidence_policy=EvidencePolicy(
+        answer_kind="runtime_answer" if runtime else "document_answer",
+        evidence_policy=EvidenceAccessPolicy(
             allowed=allowed,
             denied=denied,
             preferred=allowed,
             required=allowed,
         ),
-        execution_mode=TurnExecutionMode.EVIDENCE,
         output_contract=output_contract,
-        confidence=0.9,
     )
 
 
@@ -497,19 +434,16 @@ def test_documentation_failure_guidance_is_not_current_runtime_status():
         "The current status could not be established from the available evidence."
     )
 
-    plan = TurnPlan(
+    plan = EvidenceSynthesisPlan(
         objective="Why did the job fail?",
-        task_type=TurnTaskType.OPERATIONAL_INVESTIGATION,
-        resolved_scope={"project_id": "project-a"},
-        evidence_policy=EvidencePolicy(
+        answer_kind="operational_investigation",
+        evidence_policy=EvidenceAccessPolicy(
             allowed=["indexed_documentation", "runtime_evidence"],
             denied=["connector_evidence", "generated_documentation"],
             preferred=["runtime_evidence", "indexed_documentation"],
             required=["runtime_evidence"],
         ),
-        execution_mode=TurnExecutionMode.WORKFLOW,
         output_contract="incident_report",
-        confidence=0.9,
     )
     answer = EvidenceAnswerSynthesizer().compose(
         question=plan.objective,
@@ -543,11 +477,10 @@ def test_incident_synthesis_uses_typed_result_and_deduplicates_documents():
             summary="General debugging guidance.",
         ),
     ]
-    plan = TurnPlan(
+    plan = EvidenceSynthesisPlan(
         objective="Why did AssetCheck_Main_Job fail last night?",
-        task_type=TurnTaskType.OPERATIONAL_INVESTIGATION,
-        resolved_scope={"project_id": "alitalend"},
-        evidence_policy=EvidencePolicy(
+        answer_kind="operational_investigation",
+        evidence_policy=EvidenceAccessPolicy(
             allowed=[
                 "indexed_documentation",
                 "generated_documentation",
@@ -558,9 +491,7 @@ def test_incident_synthesis_uses_typed_result_and_deduplicates_documents():
             preferred=["runtime_evidence", "connector_evidence"],
             required=["runtime_evidence"],
         ),
-        execution_mode=TurnExecutionMode.WORKFLOW,
         output_contract="incident_report",
-        confidence=0.9,
     )
     investigation = InvestigationAnswer(
         direct_status="The current status could not be established from the available evidence.",

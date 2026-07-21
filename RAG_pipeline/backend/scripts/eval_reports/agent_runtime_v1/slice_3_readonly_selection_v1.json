@@ -1,0 +1,481 @@
+{
+  "boundary": {
+    "passed": 10,
+    "rate": 1.0,
+    "total": 10
+  },
+  "boundary_attempts": [
+    {
+      "attempt_id": "direct.answer.001",
+      "effects": 0,
+      "expected": "no_tool",
+      "family": "direct_conversation",
+      "finish_reason": "stop",
+      "passed": true,
+      "response_text": "Hello! I'm **Nexus**, an AI assistant designed to help you with questions about your projects, documentation, and runtime operations.\n\nI can help you with things like:\n- Searching and reading project documentation\n- Looking up runtime evidence, execution status, and logs\n- Checking documentation generation status\n- Listing available documentation packs and project workflows\n- Querying project metadata and summaries\n\nI'm currently operating in **read-only mode**, which means I can look up and explain information but cannot create, modify, or execute any actions.\n\nHow can I help you today?\n\n```nexus-grounding\n{\"answer_status\": \"grounded\", \"citations\": [], \"disclosures\": []}\n```",
+      "selected": [],
+      "tool_calls": [],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "capability.overview.001",
+      "effects": 0,
+      "expected": "no_tool",
+      "family": "capability_overview",
+      "finish_reason": "stop",
+      "passed": true,
+      "response_text": "I'm Nexus, a read-only assistant that can help you with several areas:\n\n**Project & Documentation**\n- Search through your project documentation for explanations, inventories, comparisons, or planning\n- List and read generated documents for authorized projects\n- Check documentation generation status for specific projects\n- Browse available documentation packs (organization, private, or all)\n\n**Runtime & Operations**\n- Search runtime logs for errors, exceptions, or symptoms\n- View structured runtime evidence like execution records, failures, health status, sync status, and source inventory\n- List active project workflows (onboarding, scanning, documentation generation)\n\n**Metadata & Discovery**\n- Query project metadata (list projects, document stats, system overview)\n- List generated documents for a specific project\n- View your profile information\n\n**Important boundaries:**\n- I can only **read** and search\u2014I cannot create, update, delete, onboard, or generate anything\n- I work only with projects and documents you're authorized to access\n- I ground all factual claims in evidence from the tools I call\n\nWhat would you like to explore? If you have a specific project in mind, I can help you search its documentation or check its runtime status.\n\n```nexus-grounding\n{\"answer_status\": \"grounded\", \"citations\": [], \"disclosures\": []}\n```",
+      "selected": [],
+      "tool_calls": [],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "capability.discussion.001",
+      "effects": 0,
+      "expected": "no_tool",
+      "family": "capability_discussion",
+      "finish_reason": "stop",
+      "passed": true,
+      "response_text": "No, Nexus cannot create Packs. Nexus is a read-only assistant that can help you explore and understand existing documentation, runtime evidence, and metadata, but it cannot perform any state-changing actions.\n\nWhat Nexus **can** do regarding Packs:\n- List available documentation Packs (organization, private, or all)\n- Read your existing private Analysis Pack drafts\n- Search and read documentation that was generated using a Pack\n\nTo create a new Pack or begin a Pack draft, you would need to use the appropriate Nexus platform interface or tools outside of this read-only assistant.\n\n```nexus-grounding\n{\"answer_status\": \"grounded\",\n \"citations\": [],\n \"disclosures\": []}\n```",
+      "selected": [],
+      "tool_calls": [],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "pack.guidance.001",
+      "effects": 0,
+      "expected": "no_tool",
+      "family": "guidance",
+      "finish_reason": "stop",
+      "passed": true,
+      "response_text": "Here's guidance for designing a security-focused Analysis Pack:\n\n**Define Clear Scope and Objectives**\n- Identify the specific security domain: vulnerability scanning, compliance (SOC2, ISO27001, PCI-DSS), secrets detection, dependency risk, or runtime threat detection\n- State what the Pack will discover, assess, or report on\n- Decide whether it generates documentation, produces findings, or both\n\n**Structure Around Evidence Sources**\n- Map the data sources your Pack needs: source code, dependency manifests, infrastructure-as-code, CI/CD configurations, runtime telemetry, or audit logs\n- Design prompts that extract security-relevant facts from each source type\n- Include validation steps to reduce false positives\n\n**Design for Actionable Output**\n- Structure findings with severity levels and clear remediation guidance\n- Include references to standards or frameworks (CWE, OWASP, NIST) where applicable\n- Provide context: why the finding matters, how it could be exploited, and how to fix it\n\n**Consider Pack Types**\n- **Documentation Pack**: Generates security architecture docs, data flow diagrams, or compliance evidence\n- **Swap Pack**: Reusable security analysis components others can incorporate\n- **Plugin Pack**: Integrates with external security tools or scanners\n\n**Build in Safety and Privacy**\n- Avoid prompting for sensitive credentials or keys\n- Design redaction-aware analysis that respects data classification\n- Include confidence scoring for findings\n\n**Iterate and Validate**\n- Test against known-bad and known-good examples\n- Tune thresholds to balance coverage vs. noise\n- Document assumptions and limitations\n\nWould you like me to search existing documentation for security Pack examples or patterns, or do you have a specific security domain in mind?\n\n```nexus-grounding\n{\"answer_status\": \"grounded\", \"citations\": [], \"disclosures\": []}\n```",
+      "selected": [],
+      "tool_calls": [],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "action.negated.001",
+      "effects": 0,
+      "expected": "no_tool",
+      "family": "negated_action",
+      "finish_reason": "stop",
+      "passed": true,
+      "response_text": "I understand. I'm here to help explain and guide you through the approach for creating a Pack without actually performing any creation actions. Since this is our first exchange and there's no prior conversation to recap, I'll provide general guidance on Pack creation approaches.\n\n## Understanding Pack Creation in Nexus\n\n**What is a Pack?**\nA Pack is a documentation template or analysis configuration that can be used to generate consistent documentation across projects. There are different types:\n- **Documentation Packs** - for generating project documentation\n- **Swap Packs** - for migration or transformation scenarios\n- **Plugin Packs** - for extending functionality\n- **Private Packs** - personal/organization-specific configurations\n\n**The General Approach to Creating a Pack:**\n\n1. **Define the Purpose**\n   - What type of documentation or analysis will this Pack generate?\n   - What problem does it solve?\n   - Who is the target audience?\n\n2. **Design the Structure**\n   - Identify the sections and content types needed\n   - Define any variables or placeholders that should be customizable per project\n   - Consider the output format (markdown, structured data, etc.)\n\n3. **Configure the Pack**\n   - Set up the template structure\n   - Define any rules or conditions for content generation\n   - Configure any integrations or data sources\n\n4. **Test and Refine**\n   - Apply the Pack to test projects\n   - Review generated output\n   - Iterate on the template based on results\n\n**What I Can Help You With (Read-Only):**\n- Explain Pack concepts and best practices\n- Discuss template design approaches\n- Review what types of Packs are available in your scope\n- Explain how existing Packs are structured (if you have access to examples)\n\n**What I Cannot Do (Creation Actions):**\n- Create a new Pack draft\n- Save or publish Pack configurations\n- Modify existing Packs\n- Onboard projects or generate documentation\n\nWould you like me to explore what Packs are currently available to you, or would you prefer to discuss a specific aspect of Pack design in more detail?\n\n```nexus-grounding\n{\"answer_status\": \"grounded\",\n \"citations\": [],\n \"disclosures\": []}\n```",
+      "selected": [],
+      "tool_calls": [],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "correction.docs_not_logs.001",
+      "effects": 0,
+      "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+      "family": "correction",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "I'll search the documentation for Fixture Project to see what might look wrong.",
+      "selected": [
+        "search_documentation"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "project_id": "Fixture Project",
+            "query": "Fixture Project overnight issue problem wrong error failure"
+          },
+          "name": "search_documentation"
+        }
+      ],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "workflow.keyword_collision.001",
+      "effects": 0,
+      "expected": "tool_call:['list_active_project_workflows']",
+      "family": "unrelated_keyword",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "I'll check which projects currently have active documentation workflows.",
+      "selected": [
+        "list_active_project_workflows"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {},
+          "name": "list_active_project_workflows"
+        }
+      ],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "plan.simple.001",
+      "effects": 0,
+      "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+      "family": "simple_objective",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "I'll help you find information about \"Fixture Project\". Let me search the documentation and project metadata to understand what it does.",
+      "selected": [
+        "query_project_metadata",
+        "search_documentation"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query_type": "project_list"
+          },
+          "name": "query_project_metadata"
+        },
+        {
+          "arguments": {
+            "query": "What does Fixture Project do?"
+          },
+          "name": "search_documentation"
+        }
+      ],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "task.switch.001",
+      "effects": 0,
+      "expected": "tool_call:['list_documentation_packs', 'list_project_documents', 'query_project_metadata', 'search_documentation']",
+      "family": "task_switch",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "The Pack draft is waiting for a purpose.",
+      "selected": [
+        "query_project_metadata"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query_type": "project_list"
+          },
+          "name": "query_project_metadata"
+        }
+      ],
+      "variant": "formal"
+    },
+    {
+      "attempt_id": "workflow.interruption.001",
+      "effects": 0,
+      "expected": "no_tool",
+      "family": "active_workflow_interruption",
+      "finish_reason": "stop",
+      "passed": true,
+      "response_text": "Nexus is a read-only assistant designed to help you explore and understand your software projects through documentation and runtime evidence. I can help you with:\n\n**Documentation & Project Understanding**\n- Search and read indexed project documentation\n- List generated documents and documentation packs\n- Explain your codebase architecture, APIs, and components\n\n**Runtime & Operational Insights**\n- Search runtime logs for errors, exceptions, or specific events\n- View execution history and job statuses\n- Check runtime health, sync status, and failure reports\n\n**Project Metadata**\n- List your authorized projects\n- View project statistics and document inventories\n- Check documentation generation status\n\n**How I Work**\n- I operate in **read-only mode** \u2014 I cannot create, modify, onboard, or delete anything\n- I ground all factual claims in evidence from your actual project data\n- I respect your authority boundaries and will ask for clarification when needed\n\n**To get started**, you can ask me things like:\n- \"What projects do I have access to?\"\n- \"Search my documentation for authentication logic\"\n- \"Show me recent failed executions\"\n- \"What documentation packs are available?\"\n\nWhat would you like to explore?\n\n```nexus-grounding\n{\"answer_status\": \"grounded\", \"citations\": [], \"disclosures\": []}\n```",
+      "selected": [],
+      "tool_calls": [],
+      "variant": "formal"
+    }
+  ],
+  "effects": 0,
+  "executor_calls": 0,
+  "generated_at": "2026-07-21T08:11:31.531164+00:00",
+  "model_profile": {
+    "base_url": "https://api.moonshot.ai/v1",
+    "max_retries": 0,
+    "max_tokens": 2048,
+    "provider_model": "kimi-k2.5",
+    "reasoning": {
+      "thinking": {
+        "type": "disabled"
+      }
+    },
+    "selected_model": "kimi/kimi-k2.5",
+    "temperature": 0.6,
+    "timeout_seconds": 300.0,
+    "tool_choice": "auto"
+  },
+  "prompt_version": "slice-3-readonly-primary-v2",
+  "provider_requests": 19,
+  "read_only_tool": {
+    "passed": 9,
+    "rate": 1.0,
+    "total": 9
+  },
+  "read_only_tool_attempts": [
+    {
+      "allowed": [
+        "list_documentation_packs",
+        "list_project_documents",
+        "query_project_metadata",
+        "search_documentation"
+      ],
+      "attempt_id": "rag.summary.001",
+      "effects": 0,
+      "family": "documentation_rag",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "search_documentation",
+        "query_project_metadata"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "Fixture Project overview purpose what it does"
+          },
+          "name": "search_documentation"
+        },
+        {
+          "arguments": {
+            "query_type": "project_list"
+          },
+          "name": "query_project_metadata"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "list_documentation_packs",
+        "list_project_documents",
+        "query_project_metadata",
+        "search_documentation"
+      ],
+      "attempt_id": "rag.summary.001.keyword_collision",
+      "effects": 0,
+      "family": "documentation_rag",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "search_documentation"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "Fixture Project Pack document what it does purpose functionality",
+            "top_k": 10
+          },
+          "name": "search_documentation"
+        }
+      ],
+      "tracked_miss": true,
+      "variant": "keyword_collision"
+    },
+    {
+      "allowed": [
+        "read_document",
+        "search_documentation"
+      ],
+      "attempt_id": "rag.followup.jobs.001",
+      "effects": 0,
+      "family": "rag_followup",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "I'll search the documentation for information about the ten scheduled jobs.",
+      "selected": [
+        "search_documentation"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "ten scheduled jobs list",
+            "top_k": 10
+          },
+          "name": "search_documentation"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "query_project_metadata",
+        "search_documentation"
+      ],
+      "attempt_id": "metadata.talend.001",
+      "effects": 0,
+      "family": "metadata",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "search_documentation",
+        "search_runtime_logs"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "Talend ETL integration data integration tool usage"
+          },
+          "name": "search_documentation"
+        },
+        {
+          "arguments": {
+            "question": "Talend job execution ETL process"
+          },
+          "name": "search_runtime_logs"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "read_runtime_evidence",
+        "search_runtime_logs"
+      ],
+      "attempt_id": "runtime.failure.001",
+      "effects": 0,
+      "family": "runtime_evidence",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "search_runtime_logs"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "limit": 20,
+            "question": "nightly job failed yesterday"
+          },
+          "name": "search_runtime_logs"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "get_documentation_generation_status",
+        "list_active_project_workflows"
+      ],
+      "attempt_id": "workflow.status.001",
+      "effects": 0,
+      "family": "workflow_status",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "list_active_project_workflows"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {},
+          "name": "list_active_project_workflows"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "list_active_project_workflows",
+        "list_documentation_packs"
+      ],
+      "attempt_id": "read.multi.001",
+      "effects": 0,
+      "family": "multi_part_read",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "list_active_project_workflows",
+        "list_documentation_packs"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {},
+          "name": "list_active_project_workflows"
+        },
+        {
+          "arguments": {
+            "scope": "all"
+          },
+          "name": "list_documentation_packs"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "list_active_project_workflows",
+        "list_documentation_packs"
+      ],
+      "attempt_id": "reads.multiple.001",
+      "effects": 0,
+      "family": "multiple_reads",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "",
+      "selected": [
+        "list_documentation_packs",
+        "list_active_project_workflows"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "scope": "all"
+          },
+          "name": "list_documentation_packs"
+        },
+        {
+          "arguments": {},
+          "name": "list_active_project_workflows"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    },
+    {
+      "allowed": [
+        "query_project_metadata",
+        "search_documentation"
+      ],
+      "attempt_id": "format.summary.001",
+      "effects": 0,
+      "family": "user_format",
+      "finish_reason": "tool_calls",
+      "passed": true,
+      "response_text": "I'll search for information about \"Fixture Project\" to provide you with a grounded summary.",
+      "selected": [
+        "search_documentation"
+      ],
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "Fixture Project overview summary description",
+            "top_k": 10
+          },
+          "name": "search_documentation"
+        }
+      ],
+      "tracked_miss": false,
+      "variant": "formal"
+    }
+  ],
+  "release_gate_eligible": false,
+  "report_version": "1.0.0",
+  "runtime_release": "slice-3-readonly-primary-v1",
+  "runtime_versions": {
+    "langchain": "1.3.14",
+    "langchain-core": "1.4.9",
+    "langchain-openai": "1.3.5",
+    "langgraph": "1.2.9"
+  },
+  "scope_note": "Representative authenticated sample: up to 1 corpus variant(s) per family plus the tracked keyword-collision miss. Not the full eight-variant release matrix; independent validation still required.",
+  "thresholds": {
+    "boundary_rate_minimum": 0.95,
+    "naturalness_family_floor": 4.0,
+    "naturalness_mean_minimum": 4.2,
+    "no_evidence_state_rate_minimum": 0.95,
+    "read_only_tool_rate_minimum": 0.95,
+    "repetition_rate_maximum": 0.0025
+  },
+  "tracked_keyword_collision": [
+    {
+      "attempt_id": "rag.summary.001.keyword_collision",
+      "passed": true,
+      "selected": [
+        "search_documentation"
+      ]
+    }
+  ],
+  "verdict": "GO"
+}
