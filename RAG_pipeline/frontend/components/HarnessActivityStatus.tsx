@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -61,18 +61,6 @@ function resultCount(activities: HarnessActivityEvent[]) {
   return count;
 }
 
-function activityStart(activities: HarnessActivityEvent[], fallback: number) {
-  const timestamps = activities
-    .map((activity) => activity.timestamp ? Date.parse(activity.timestamp) : Number.NaN)
-    .filter(Number.isFinite);
-  return timestamps.length > 0 ? Math.min(...timestamps) : fallback;
-}
-
-function formatElapsed(milliseconds: number) {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
 function StatusIcon({ status }: { status: HarnessActivityEvent["status"] }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />;
   if (status === "completed") return <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />;
@@ -91,16 +79,7 @@ interface HarnessActivityStatusProps {
 export function HarnessActivityStatus({ activities }: HarnessActivityStatusProps) {
   const detailsId = useId();
   const [expanded, setExpanded] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
-  const firstSeenAt = useRef(Date.now());
   const latest = activities.at(-1);
-  const running = activities.some((activity) => activity.status === "running");
-
-  useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [running]);
 
   const details = useMemo(() => activities.map((activity) => ({
     activity,
@@ -110,7 +89,6 @@ export function HarnessActivityStatus({ activities }: HarnessActivityStatusProps
   if (!latest) return null;
 
   const count = resultCount(activities);
-  const elapsed = formatElapsed(now - activityStart(activities, firstSeenAt.current));
   const actionCount = activities.length;
 
   return (
@@ -126,7 +104,6 @@ export function HarnessActivityStatus({ activities }: HarnessActivityStatusProps
         <StatusIcon status={latest.status} />
         <span className="min-w-0 flex-1 truncate font-medium text-foreground">{latest.label}</span>
         <span className="shrink-0">{statusText(latest.status)}</span>
-        <span className="shrink-0 text-muted-foreground/70">{elapsed}</span>
         <span className="shrink-0 text-muted-foreground/70">
           {count > 0 ? `${count} ${count === 1 ? "result" : "results"}` : `${actionCount} ${actionCount === 1 ? "action" : "actions"}`}
         </span>

@@ -400,3 +400,17 @@ knowledge_base/
 6. For MCP server work, read `.agent/system/mcp-server.md`
 7. Run dashboard: `cd dashboard && npm run dev`
 8. Run MCP server: `cd mcp-server && python -m mcp_server --serve`
+
+### Certified Swap Pack governance invariants (2026-07-17)
+
+- **MCP/IntoDoc is the final documentation-Pack execution authority.** Nexus can draft, compose, and select, but generation resolves an explicit `plugin_pack_id` first and the project's saved default second; MCP must reject an untrusted or stale Pack before work starts.
+- **Organization semantic Packs are changed through Git/PR only.** Certification requires configured trusted provenance plus a matching content digest, and Git sources require the reviewed ref/commit and clean-tree integrity checks. Direct create/import/delete/edit routes must not silently bypass this boundary.
+- **Certification is rechecked at use time.** A database row saying `certified` is not sufficient after filesystem or Git content changes. Recompute and compare provenance/digest before assignment and generation to close TOCTOU gaps.
+- **A Nexus snapshot is an execution receipt, not a second Swap Pack registry.** Validate its identities, hashes, policy, presentation, and protected fields at the MCP boundary. Keep `nexus_pack_ids`/snapshot semantics distinct from `plugin_pack_id`, which selects the actual IntoDoc plugin pack.
+- **Project Pack assignment is a management operation.** Require owner or superadmin, not merely project read access. User-created private Packs remain owner-scoped until explicitly shared/activated; promotion to organization semantics is never automatic.
+
+### Nexus agent/MCP boundary (2026-07-19)
+
+- MCP/IntoDoc remains the final authority for documentation Pack provenance, digest, certification, project assignment, and generation. Nexus's unified agent may select the registered capability and supply a validated snapshot, but it must not recreate or bypass MCP governance.
+- Agent observations must retain safe provenance and artifact references; ZIP bytes, credentials, raw provider payloads, and hidden reasoning never enter Conversation State or workflow receipts.
+- Topology/lineage and evidence-integrity artifacts are concurrent work in the dirty branch. Split them from the chat-router retirement before commit or deployment.

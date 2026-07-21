@@ -45,10 +45,7 @@ export function MessageList({
   }, [
     messages,
     streamingMessage?.content,
-    streamingMessage?.harnessActivities,
-    streamingMessage?.pendingAction,
-    streamingMessage?.runtimeTools,
-    streamingMessage?.structuredAnswer,
+    streamingMessage?.typedResponse,
     deepDiveState?.content,
     deepDiveState?.thinking,
     scrollToBottom,
@@ -127,6 +124,7 @@ export function MessageList({
             conversationId={conversationId ?? null}
             harnessActivities={message.harness_activities}
             pendingAction={message.pending_action}
+            workflowCards={message.workflow_cards}
             onRetry={
               liveErrorHasPersistedMessage && message.id === latestMessage?.id
                 ? onRetryMessage
@@ -164,31 +162,23 @@ export function MessageList({
           !liveErrorHasPersistedMessage &&
           (streamingMessage.isStreaming ||
             streamingMessage.content ||
-            streamingMessage.structuredAnswer ||
-            streamingMessage.error ||
-            streamingMessage.pendingAction) && (
+            streamingMessage.typedResponse ||
+            streamingMessage.error) && (
             <MessageBubble
               message={{
                 id: -2,
                 role: "assistant",
                 content: streamingMessage.content,
-                sources:
-                  streamingMessage.sources.length > 0
-                    ? streamingMessage.sources
-                    : null,
+                sources: null,
                 latency_ms: streamingMessage.latencyMs,
                 status: streamingMessage.error ? "failed" : "completed",
                 error_message: streamingMessage.error,
-                structured_answer: streamingMessage.structuredAnswer,
+                structured_answer: streamingMessage.typedResponse,
+                workflow_cards: streamingMessage.typedResponse?.workflow_cards,
                 created_at: new Date().toISOString(),
               }}
               isStreaming={streamingMessage.isStreaming}
-              hasSources={streamingMessage.sources.length > 0}
-              usage={streamingMessage.usage}
-              steps={streamingMessage.steps}
-              harnessActivities={streamingMessage.harnessActivities}
-              pendingAction={streamingMessage.pendingAction}
-              runtimeTools={streamingMessage.runtimeTools}
+              workflowCards={streamingMessage.typedResponse?.workflow_cards}
               onRetry={streamingMessage.error ? onRetryMessage : undefined}
             />
           )}

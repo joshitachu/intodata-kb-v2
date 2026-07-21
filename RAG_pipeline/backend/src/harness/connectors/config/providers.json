@@ -14,16 +14,26 @@
           "type": "object",
           "required": ["query"],
           "properties": {
-            "query": {"type": "string"},
-            "project_id": {"type": ["string", "null"]},
-            "limit": {"type": "integer"}
+            "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            "project_id": {"type": ["string", "null"], "maxLength": 255},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50}
           },
           "additionalProperties": false
         },
         "output_type": "evidence_items",
         "risk_tier": "read_only",
         "packs": ["connectors"],
-        "activity_label": "Searching fixture knowledge"
+        "activity_label": "Searching fixture knowledge",
+        "semantic_name": "search_fixture_knowledge",
+        "purpose": "Search bounded records from one authorized fixture-knowledge connector.",
+        "use_when": ["The user asks for evidence held by this configured fixture connector."],
+        "do_not_use_when": ["The request concerns Nexus documentation or runtime evidence instead."],
+        "preconditions": ["The server bound an eligible connector instance to this request."],
+        "failure_recovery": {
+          "unavailable": "Report that the connector is unavailable without inventing evidence.",
+          "failed": "Report the safe failure and retry only when marked retryable."
+        },
+        "shadow_safe": false
       }
     ],
     "config_schema": {
@@ -46,16 +56,26 @@
           "type": "object",
           "required": ["query"],
           "properties": {
-            "query": {"type": "string"},
-            "project_id": {"type": ["string", "null"]},
-            "limit": {"type": "integer"}
+            "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            "project_id": {"type": ["string", "null"], "maxLength": 255},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50}
           },
           "additionalProperties": false
         },
         "output_type": "evidence_items",
         "risk_tier": "read_only",
         "packs": ["connectors"],
-        "activity_label": "Searching external index"
+        "activity_label": "Searching external index",
+        "semantic_name": "search_external_index",
+        "purpose": "Search bounded records from one authorized external index connector.",
+        "use_when": ["The user asks for evidence held by this configured external index."],
+        "do_not_use_when": ["The request concerns Nexus documentation or runtime evidence instead."],
+        "preconditions": ["The server bound an eligible healthy connector instance to this request."],
+        "failure_recovery": {
+          "unavailable": "Report that the connector is unavailable without inventing evidence.",
+          "failed": "Report the safe failure and retry only when marked retryable."
+        },
+        "shadow_safe": false
       }
     ],
     "config_schema": {

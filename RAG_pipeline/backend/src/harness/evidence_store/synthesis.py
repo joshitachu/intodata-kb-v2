@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.harness.planner import TurnPlan
+from src.harness.evidence_contracts import EvidenceSynthesisPlan
 
 from .models import EvidenceSnapshot, EvidenceSourceClass
 
@@ -100,7 +100,7 @@ class EvidenceAnswerSynthesizer:
         self,
         *,
         question: str,
-        plan: TurnPlan,
+        plan: EvidenceSynthesisPlan,
         evidence: list[EvidenceSnapshot],
         draft: str,
     ) -> StructuredEvidenceAnswer:
@@ -135,7 +135,7 @@ class EvidenceAnswerSynthesizer:
         elif contract == "incident_report":
             headline = "Operational finding"
         else:
-            headline = "Documentation answer" if plan.task_type.value == "document_answer" else "Answer"
+            headline = "Documentation answer" if plan.answer_kind == "document_answer" else "Answer"
 
         # Runtime rankings are deterministic aggregations. Provider prose can contain
         # planning chatter, tool names, or claims from context that the TurnPlan denied,
@@ -163,7 +163,7 @@ class EvidenceAnswerSynthesizer:
         self,
         *,
         question: str,
-        plan: TurnPlan,
+        plan: EvidenceSynthesisPlan,
         evidence: list[EvidenceSnapshot],
         investigation: InvestigationAnswer,
     ) -> StructuredEvidenceAnswer:
@@ -272,7 +272,7 @@ class EvidenceAnswerSynthesizer:
         self,
         answer: StructuredEvidenceAnswer,
         *,
-        plan: TurnPlan,
+        plan: EvidenceSynthesisPlan,
         evidence: list[EvidenceSnapshot],
     ) -> None:
         available = {_evidence_id(item) for item in evidence}
@@ -288,7 +288,7 @@ class EvidenceAnswerSynthesizer:
 
     @staticmethod
     def _validate_evidence_policy(
-        plan: TurnPlan, evidence: Iterable[EvidenceSnapshot]
+        plan: EvidenceSynthesisPlan, evidence: Iterable[EvidenceSnapshot]
     ) -> list[EvidenceSnapshot]:
         result = list(evidence)
         for item in result:
@@ -366,7 +366,9 @@ def _inventory_rows(evidence: list[EvidenceSnapshot]) -> list[dict[str, Any]]:
     return rows
 
 
-def _sufficiency_limitations(plan: TurnPlan, evidence: list[EvidenceSnapshot]) -> list[str]:
+def _sufficiency_limitations(
+    plan: EvidenceSynthesisPlan, evidence: list[EvidenceSnapshot]
+) -> list[str]:
     present = {_SOURCE_POLICY[item.source_class] for item in evidence}
     missing = [source for source in plan.evidence_policy.required if source not in present]
     if not evidence:
