@@ -1,0 +1,175 @@
+{
+  "acceptance_version": "2.0.0-diagnostic",
+  "purpose": "Objective-level remediation matrix; does not replace the full Slice 2 release matrix.",
+  "targeted_scenario_ids": [
+    "rag.summary.001.keyword_collision",
+    "rag.summary.001.typo",
+    "rag.summary.001.negation",
+    "runtime.failure.001",
+    "runtime.failure.001.keyword_collision",
+    "metadata.talend.001",
+    "metadata.talend.001.ambiguous"
+  ],
+  "evaluator_invalid_scenario_ids": [
+    "capability.discussion.001.pronoun",
+    "pack.guidance.001.pronoun",
+    "metadata.talend.001.keyword_collision"
+  ],
+  "family_allowed_tool_sequences": {
+    "documentation_rag": [
+      [
+        "search_documentation"
+      ],
+      [
+        "list_documentation_packs",
+        "search_documentation"
+      ],
+      [
+        "query_project_metadata"
+      ],
+      [
+        "list_project_documents",
+        "search_documentation"
+      ]
+    ],
+    "runtime_evidence": [
+      [
+        "read_runtime_evidence"
+      ],
+      [
+        "search_runtime_logs"
+      ]
+    ],
+    "metadata": [
+      [
+        "query_project_metadata"
+      ],
+      [
+        "search_documentation"
+      ],
+      [
+        "search_documentation",
+        "query_project_metadata"
+      ],
+      [
+        "query_project_metadata",
+        "search_documentation"
+      ]
+    ],
+    "workflow_status": [
+      [
+        "list_active_project_workflows"
+      ],
+      [
+        "get_documentation_generation_status"
+      ]
+    ],
+    "explicit_creation": [
+      [
+        "create_pack_draft"
+      ]
+    ]
+  },
+  "scenario_allowed_tool_sequences": {
+    "rag.summary.001.negation": [
+      []
+    ],
+    "runtime.failure.001.keyword_collision": [
+      [
+        "read_runtime_evidence"
+      ]
+    ],
+    "metadata.talend.001.ambiguous": [
+      []
+    ]
+  },
+  "thresholds": {
+    "action_rate_minimum": 0.95,
+    "no_action_rate_minimum": 0.95,
+    "onboarding_minimum": 7
+  },
+  "onboarding_cases": [
+    {
+      "attempt_id": "onboarding-01",
+      "prompt": "Onboard project atlas from its Git repository.",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url"
+      ]
+    },
+    {
+      "attempt_id": "onboarding-02",
+      "prompt": "Please connect the atlas codebase and begin onboarding it.",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "source",
+        "repository",
+        "git",
+        "zip",
+        "upload"
+      ]
+    },
+    {
+      "attempt_id": "onboarding-03",
+      "prompt": "Set up project atlas from https://example.invalid/atlas.git.",
+      "allowed_outcome": "tool_required",
+      "clarification_concepts": []
+    },
+    {
+      "attempt_id": "onboarding-04",
+      "prompt": "I need atlas added as a new project from Git.",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url"
+      ]
+    },
+    {
+      "attempt_id": "onboarding-05",
+      "prompt": "Start onboarding the uploaded atlas source archive.",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "upload",
+        "archive",
+        "zip",
+        "receipt"
+      ]
+    },
+    {
+      "attempt_id": "onboarding-06",
+      "prompt": "Bring the atlas repository into Nexus as a project.",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url",
+        "source"
+      ]
+    },
+    {
+      "attempt_id": "onboarding-07",
+      "prompt": "Can you onboard atlas using its authorized source?",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "source",
+        "repository",
+        "git",
+        "zip",
+        "upload"
+      ]
+    },
+    {
+      "attempt_id": "onboarding-08",
+      "prompt": "Create project atlas and attach its Git source.",
+      "allowed_outcome": "tool_or_clarification",
+      "clarification_concepts": [
+        "repository",
+        "repo",
+        "url"
+      ]
+    }
+  ]
+}

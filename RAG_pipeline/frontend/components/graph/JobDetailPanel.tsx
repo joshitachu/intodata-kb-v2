@@ -1,28 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
-interface JobDetailData {
-  project_id: string;
-  job_name: string;
-  group: string;
-  scan_data: {
-    name?: string;
-    path?: string;
-    purpose?: string;
-    author?: string;
-    version?: string;
-    creation_date?: string;
-    modification_date?: string;
-    components?: Array<{
-      unique_name: string;
-      component_type: string;
-    }>;
-  };
-  doc_sections: Array<{ heading: string; content: string }>;
-  summary: string;
-  direction: string;
-}
+import { useCallback, useEffect, useState } from "react";
+import { useJobDetail } from "@/hooks/useJobDetail";
 
 interface JobMetadata {
   purpose?: string;
@@ -53,40 +32,9 @@ const DIRECTION_BADGE: Record<string, { label: string; cls: string }> = {
 };
 
 export function JobDetailPanel({ projectId, jobName, onClose, metadata }: JobDetailPanelProps) {
-  const [data, setData] = useState<JobDetailData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, isLoading: loading, error: queryError } = useJobDetail(projectId, jobName);
+  const error = queryError instanceof Error ? queryError.message : null;
   const [allExpanded, setAllExpanded] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setLoading(true);
-    setError(null);
-
-    fetch(
-      `/api/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(jobName)}/detail`,
-      { signal: controller.signal },
-    )
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => null);
-          throw new Error(body?.error || `Failed to load (${res.status})`);
-        }
-        return res.json();
-      })
-      .then((d: JobDetailData) => setData(d))
-      .catch((err) => {
-        if (err instanceof Error && err.name === "AbortError") return;
-        setError(err instanceof Error ? err.message : "Failed to load job detail");
-      })
-      .finally(() => setLoading(false));
-
-    return () => controller.abort();
-  }, [projectId, jobName]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
