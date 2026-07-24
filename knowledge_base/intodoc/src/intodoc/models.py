@@ -106,11 +106,23 @@ class ContextVariable(BaseModel):
     name: str
     type: str = "String"
     values: dict[str, str] = Field(default_factory=dict)  # env_name → value
+    # Talend repository context reference carried by inline job contexts.
+    # This is a stable project artifact ID, not a folder/name heuristic.
+    repository_context_id: str = ""
 
 
 class ContextGroup(BaseModel):
     name: str
     variables: list[ContextVariable] = Field(default_factory=list)
+    # Canonical identity and provenance for contexts parsed from a Talend
+    # project.  Defaults keep historic scan JSON fully compatible.
+    context_id: str = ""
+    context_key: str = ""
+    source_root: str = ""
+    source_project: str = ""
+    source_role: str = ""
+    purpose: str = ""
+    description: str = ""
 
 
 class ParsedJob(BaseModel):
@@ -180,6 +192,13 @@ class ProjectManifest(BaseModel):
     job_source_roots: dict[str, str] = Field(default_factory=dict)
     job_files: dict[str, str] = Field(default_factory=dict)
     unresolved_job_calls: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    # Support-artifact lineage. Context keys are canonical within the combined
+    # scan and resolve to stable Talend Property IDs where available.
+    context_used_by: dict[str, list[str]] = Field(default_factory=dict)
+    context_metadata: dict[str, dict] = Field(default_factory=dict)
+    job_context_links: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    unresolved_context_refs: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
+    job_support_roots: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # ── Scan Result ──────────────────────────────────────────────────────

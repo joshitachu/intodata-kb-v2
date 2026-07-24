@@ -561,7 +561,7 @@ class ScannerService:
         all_contexts = self._load_contexts(output_dir)
         related_contexts = [
             c for c in all_contexts
-            if c.get("name") in context_names_used
+            if (c.get("context_key") or c.get("name")) in context_names_used
         ]
 
         # Load related routines
@@ -731,6 +731,13 @@ class ScannerService:
         if not manifest:
             return {}
 
+        chunk_context_keys = {
+            context_key
+            for job_name, values in manifest.get("job_contexts_used", {}).items()
+            if job_name in job_names
+            for context_key in values
+        }
+
         return {
             "job_calls": {
                 k: v for k, v in manifest.get("job_calls", {}).items()
@@ -771,6 +778,28 @@ class ScannerService:
             },
             "unresolved_job_calls": {
                 k: v for k, v in manifest.get("unresolved_job_calls", {}).items()
+                if k in job_names
+            },
+            "context_used_by": {
+                k: [job for job in v if job in job_names]
+                for k, v in manifest.get("context_used_by", {}).items()
+                if any(job in job_names for job in v)
+            },
+            "context_metadata": {
+                context_key: metadata
+                for context_key, metadata in manifest.get("context_metadata", {}).items()
+                if context_key in chunk_context_keys
+            },
+            "job_context_links": {
+                k: v for k, v in manifest.get("job_context_links", {}).items()
+                if k in job_names
+            },
+            "unresolved_context_refs": {
+                k: v for k, v in manifest.get("unresolved_context_refs", {}).items()
+                if k in job_names
+            },
+            "job_support_roots": {
+                k: v for k, v in manifest.get("job_support_roots", {}).items()
                 if k in job_names
             },
         }

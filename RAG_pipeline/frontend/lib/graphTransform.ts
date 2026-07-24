@@ -149,9 +149,18 @@ export interface ManifestData {
   job_groups: Record<string, string>;
   routines_used_by?: Record<string, string[]>;
   job_contexts_used?: Record<string, string[]>;
+  context_used_by?: Record<string, string[]>;
+  context_metadata?: Record<string, {
+    name?: string;
+    source_root?: string;
+    source_project?: string;
+    source_role?: string;
+    purpose?: string;
+    variable_count?: number;
+  }>;
   /** Composite Talend bundles keep one scan while exposing root clusters. */
   job_source_roots?: Record<string, string>;
-  source_roots?: Array<{ id: string; path: string; platform?: string }>;
+  source_roots?: Array<{ id: string; path: string; platform?: string; role?: string; label?: string }>;
 }
 
 export function topologyGroupForJob(manifest: ManifestData, job: string): string {
@@ -166,6 +175,7 @@ export interface FlowResult {
   stats: {
     jobCount: number;
     connectionCount: number;
+    contextCount: number;
     edgeCount: number;
     groupCount: number;
   };
@@ -211,6 +221,7 @@ export function manifestToFlow(
 ): FlowResult {
   const jobNames = new Set<string>();
   const connNames = new Set<string>();
+  const contextNames = new Set<string>();
 
   // Collect all job names from every manifest field
   for (const name of Object.keys(manifest.job_groups || {})) {
@@ -230,6 +241,13 @@ export function manifestToFlow(
   }
   for (const name of Object.keys(manifest.connection_used_by || {})) {
     connNames.add(name);
+  }
+  for (const [job, contexts] of Object.entries(manifest.job_contexts_used || {})) {
+    jobNames.add(job);
+    for (const context of contexts) contextNames.add(context);
+  }
+  for (const name of Object.keys(manifest.context_used_by || {})) {
+    contextNames.add(name);
   }
 
   // Build group -> color mapping
@@ -322,6 +340,26 @@ export function manifestToFlow(
       },
     });
   }
+  for (const contextKey of contextNames) {
+    const metadata = manifest.context_metadata?.[contextKey];
+    const usedBy = manifest.context_used_by?.[contextKey] || [];
+    const label = metadata?.name || contextKey;
+    nodes.push({
+      id: `conn:context:${contextKey}`,
+      type: "connectionNode",
+      position: { x: 0, y: 0 },
+      data: {
+        label,
+        displayLabel: label,
+        connectionType: metadata?.source_project
+          ? `Talend context · ${metadata.source_project}`
+          : "Talend context",
+        host: "",
+        database: metadata?.purpose || metadata?.source_root || "",
+        usageCount: usedBy.length,
+      },
+    });
+  }
 
   // Create edges
   const edges: Edge[] = [];
@@ -352,6 +390,19 @@ export function manifestToFlow(
       });
     }
   }
+  for (const [job, contexts] of Object.entries(manifest.job_contexts_used || {})) {
+    for (const contextKey of contexts) {
+      edges.push({
+        id: `uses-context:${job}:${contextKey}`,
+        source: `job:${job}`,
+        target: `conn:context:${contextKey}`,
+        type: PROJECT_EDGE_TYPE,
+        style: { ...USES_EDGE_STYLE },
+        markerEnd: { type: "arrowclosed" as const, color: USES_EDGE_COLOR, width: 14, height: 14 },
+        data: { edgeType: "uses-context" },
+      });
+    }
+  }
 
   return {
     nodes,
@@ -361,6 +412,7 @@ export function manifestToFlow(
     stats: {
       jobCount: jobNames.size,
       connectionCount: connNames.size,
+      contextCount: contextNames.size,
       edgeCount: edges.length,
       groupCount: groups.length,
     },
@@ -603,6 +655,9 @@ export function manifestToCollapsedFlow(
   for (const [job, conns] of Object.entries(manifest.job_connections_used || {})) {
     jobNames.add(job);
   }
+  for (const job of Object.keys(manifest.job_contexts_used || {})) {
+    jobNames.add(job);
+  }
 
   // ── Build group → jobs map ───────────────────────────────────────
   const groupJobMap = new Map<string, string[]>();
@@ -655,9 +710,11 @@ export function manifestToCollapsedFlow(
 
   // Track which connections are actually referenced
   const referencedConns = new Set<string>();
+  const referencedContexts = new Set<string>();
   // Dedup the aggregated group->system edges: at most one per (group, conn)
   // pair regardless of how many jobs in a collapsed group use the connection.
   const emittedGroupUses = new Set<string>();
+  const emittedGroupContextUses = new Set<string>();
 
   // ── Create nodes per group ───────────────────────────────────────
   for (const [group, jobs] of groupJobMap) {
@@ -841,6 +898,41 @@ export function manifestToCollapsedFlow(
     }
   }
 
+  // Repository contexts are support dependencies, rendered alongside external
+  // connections but kept as a distinct edge type and statistic.
+  for (const [job, contexts] of Object.entries(manifest.job_contexts_used || {})) {
+    const jobGroup = jobGroupLookup.get(job) || "Ungrouped";
+    const jobExpanded = expanded.has(jobGroup);
+    for (const contextKey of contexts) {
+      referencedContexts.add(contextKey);
+      if (jobExpanded) {
+        edges.push({
+          id: `uses-context:${job}:${contextKey}`,
+          source: `job:${job}`,
+          target: `conn:context:${contextKey}`,
+          type: PROJECT_EDGE_TYPE,
+          style: { ...USES_EDGE_STYLE },
+          markerEnd: { type: "arrowclosed" as const, color: USES_EDGE_COLOR, width: 14, height: 14 },
+          data: { edgeType: "uses-context" },
+        });
+      } else {
+        const edgeId = `grp-uses-context:${jobGroup}:${contextKey}`;
+        if (!emittedGroupContextUses.has(edgeId)) {
+          emittedGroupContextUses.add(edgeId);
+          edges.push({
+            id: edgeId,
+            source: `group:${jobGroup}`,
+            target: `conn:context:${contextKey}`,
+            type: PROJECT_EDGE_TYPE,
+            style: { ...USES_EDGE_STYLE },
+            markerEnd: { type: "arrowclosed" as const, color: USES_EDGE_COLOR, width: 14, height: 14 },
+            data: { edgeType: "group-uses-context" },
+          });
+        }
+      }
+    }
+  }
+
   // ── Connection nodes (only those referenced) ─────────────────────
   const connNames = new Set<string>();
   for (const conns of Object.values(manifest.job_connections_used || {})) {
@@ -869,6 +961,25 @@ export function manifestToCollapsedFlow(
       },
     });
   }
+  for (const contextKey of referencedContexts) {
+    const metadata = manifest.context_metadata?.[contextKey];
+    const usedBy = manifest.context_used_by?.[contextKey] || [];
+    nodes.push({
+      id: `conn:context:${contextKey}`,
+      type: "connectionNode",
+      position: { x: 0, y: 0 },
+      data: {
+        label: metadata?.name || contextKey,
+        displayLabel: metadata?.name || contextKey,
+        connectionType: metadata?.source_project
+          ? `Talend context · ${metadata.source_project}`
+          : "Talend context",
+        host: "",
+        database: metadata?.purpose || metadata?.source_root || "",
+        usageCount: usedBy.length,
+      },
+    });
+  }
 
   return {
     nodes,
@@ -878,6 +989,7 @@ export function manifestToCollapsedFlow(
     stats: {
       jobCount: jobNames.size,
       connectionCount: referencedConns.size,
+      contextCount: referencedContexts.size,
       edgeCount: edges.length,
       groupCount: groups.length,
     },

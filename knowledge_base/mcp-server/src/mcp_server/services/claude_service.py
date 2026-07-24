@@ -191,14 +191,27 @@ def _render_chunk_extras(chunk_data: dict, chunk_id: str, parts: list[str]) -> N
         for ctx in related_ctx:
             ctx_name = ctx.get("name", "?")
             parts.append(f"\n### Context Group: {ctx_name}\n")
+            source_project = ctx.get("source_project", "")
+            source_root = ctx.get("source_root", "")
+            source_role = ctx.get("source_role", "")
+            if source_project:
+                parts.append(f"- **Source project**: `{source_project}`\n")
+            if source_root:
+                role_suffix = f" ({source_role})" if source_role else ""
+                parts.append(f"- **Source root**: `{source_root}`{role_suffix}\n")
+            if ctx.get("purpose"):
+                parts.append(f"- **Purpose**: {ctx['purpose']}\n")
+            if ctx.get("description"):
+                parts.append(f"- **Description**: {ctx['description']}\n")
             for var in ctx.get("variables", ctx.get("items", [])):
                 vname = var.get("name", "?")
-                vval = var.get("value", "")
                 vtype = var.get("type", "")
-                vprompt = var.get("prompt_value", "")
-                line = f"- `{vname}` ({vtype}): `{vval}`"
-                if vprompt and vprompt != vval:
-                    line += f" (prompt: `{vprompt}`)"
+                values = var.get("values")
+                if isinstance(values, dict):
+                    rendered_values = json.dumps(values, ensure_ascii=False, sort_keys=True)
+                else:
+                    rendered_values = str(var.get("value", ""))
+                line = f"- `{vname}` ({vtype}): `{rendered_values}`"
                 parts.append(line + "\n")
 
     manifest = chunk_data.get("manifest", {})

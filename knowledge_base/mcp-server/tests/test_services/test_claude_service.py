@@ -12,7 +12,10 @@ import pytest
 from mcp_server.providers.base import DocGenContext
 from mcp_server.providers.claude_cli import ClaudeCliProvider
 from mcp_server.providers.custom.providers import ClaudeCliModelProvider
-from mcp_server.services.claude_service import DocGenerationCoordinator as ClaudeService
+from mcp_server.services.claude_service import (
+    DocGenerationCoordinator as ClaudeService,
+    _render_chunk_extras,
+)
 
 
 def test_format_chunk_markdown_uses_composite_job_identity():
@@ -26,6 +29,30 @@ def test_format_chunk_markdown_uses_composite_job_identity():
     assert "## Job: root_a_Shared-123" in rendered
     assert "Display name: `Shared`" in rendered
     assert "Source root: `exports/A`" in rendered
+
+
+def test_render_chunk_extras_includes_redacted_support_context_evidence():
+    parts: list[str] = []
+    _render_chunk_extras({
+        "related_contexts": [{
+            "name": "Runtime",
+            "source_project": "Shared Configuration",
+            "source_root": "shared",
+            "source_role": "support",
+            "purpose": "Runtime endpoints",
+            "variables": [{
+                "name": "API_SECRET",
+                "type": "id_String",
+                "values": {"DEV": "[REDACTED]", "PROD": "[REDACTED]"},
+            }],
+        }],
+    }, "chunk", parts)
+
+    rendered = "".join(parts)
+    assert "Shared Configuration" in rendered
+    assert "`shared` (support)" in rendered
+    assert '"DEV": "[REDACTED]"' in rendered
+    assert '"PROD": "[REDACTED]"' in rendered
 
 
 @pytest.fixture

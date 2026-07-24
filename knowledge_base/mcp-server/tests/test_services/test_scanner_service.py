@@ -190,6 +190,74 @@ def test_composite_segmented_chunk_round_trip_preserves_canonical_ids(scanner, t
     assert data["manifest"]["job_source_roots"] == {parent_id: "one"}
 
 
+def test_chunk_includes_linked_support_context_by_canonical_key(scanner, tmp_path):
+    scan = tmp_path / "scan"
+    jobs_dir = scan / "jobs" / "Jobs"
+    jobs_dir.mkdir(parents=True)
+    job_file = jobs_dir / "Consumer.json"
+    job_file.write_text(json.dumps({
+        "name": "Consumer",
+        "job_id": "Consumer",
+        "source_root": "client",
+        "group": "Jobs",
+        "components": [],
+        "raw_routines": [],
+    }))
+    (scan / "contexts.json").write_text(json.dumps([{
+        "name": "Runtime",
+        "context_key": "shared_Runtime-123",
+        "source_root": "shared",
+        "source_project": "Shared Configuration",
+        "source_role": "support",
+        "variables": [{
+            "name": "API_SECRET",
+            "type": "id_String",
+            "values": {"DEV": "[REDACTED]"},
+        }],
+    }]))
+    (scan / "manifest.json").write_text(json.dumps({
+        "job_calls": {},
+        "job_called_by": {},
+        "job_connections_used": {},
+        "connection_used_by": {},
+        "job_contexts_used": {"Consumer": ["shared_Runtime-123"]},
+        "context_used_by": {"shared_Runtime-123": ["Consumer"]},
+        "context_metadata": {
+            "shared_Runtime-123": {
+                "name": "Runtime",
+                "source_root": "shared",
+                "source_project": "Shared Configuration",
+            },
+        },
+        "job_context_links": {
+            "Consumer": [{
+                "context_key": "shared_Runtime-123",
+                "context_id": "_runtime",
+                "resolution": "repository_id",
+            }],
+        },
+        "job_support_roots": {"Consumer": ["shared"]},
+        "job_groups": {"Consumer": "Jobs"},
+        "job_source_roots": {"Consumer": "client"},
+        "job_files": {"Consumer": "jobs/Jobs/Consumer.json"},
+        "source_roots": [
+            {"id": "client", "path": "client", "role": "execution"},
+            {"id": "shared", "path": "shared", "role": "support"},
+        ],
+    }))
+
+    chunk_id = scanner.get_chunk_definitions(str(tmp_path))["chunks"][0]["chunk_id"]
+    data = scanner.read_chunk_data(str(tmp_path), chunk_id)
+
+    assert [context["context_key"] for context in data["related_contexts"]] == [
+        "shared_Runtime-123"
+    ]
+    assert data["manifest"]["context_used_by"] == {
+        "shared_Runtime-123": ["Consumer"]
+    }
+    assert data["manifest"]["job_support_roots"] == {"Consumer": ["shared"]}
+
+
 def test_get_chunk_definitions(scanner, tmp_path):
     scan = {"jobs": [
         {"name": "j1", "group": "A"},

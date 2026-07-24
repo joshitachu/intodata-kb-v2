@@ -1255,6 +1255,7 @@ function TopologyContent() {
       flowResult?.stats || {
         jobCount: 0,
         connectionCount: 0,
+        contextCount: 0,
         edgeCount: 0,
         groupCount: 0,
       },

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from intodoc.scanner.credential_filter import CredentialFilter
+from intodoc.scanner.post_filter import filter_scan_result
 from intodoc.platforms.talend.parser import TalendParser
 from intodoc.models import Component, MetadataConnection, ParsedJob, ScanResult
 
@@ -355,6 +356,36 @@ def _write_context(project, rel_dir, name, version, var_xml):
     )
 
 
+def _write_talend_descriptor(project, label, technical_label):
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "talend.project").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<xmi:XMI xmlns:xmi="http://www.omg.org/XMI" '
+        'xmlns:TalendProperties="http://www.talend.org/properties">'
+        f'<TalendProperties:Project label="{label}" technicalLabel="{technical_label}"/>'
+        "</xmi:XMI>",
+        encoding="utf-8",
+    )
+
+
+def _write_repository_context(project, name, context_id, variables):
+    var_xml = "".join(
+        f'<contextParameter name="{var_name}" type="id_String" value="{value}"/>'
+        for var_name, value in variables
+    )
+    _write_context(project, name, name, "0.1", var_xml)
+    props = project / "context" / name / f"{name}_0.1.properties"
+    props.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<xmi:XMI xmlns:xmi="http://www.omg.org/XMI" '
+        'xmlns:TalendProperties="http://www.talend.org/properties">'
+        f'<TalendProperties:Property id="{context_id}" label="{name}" '
+        'purpose="Shared runtime configuration"/>'
+        "</xmi:XMI>",
+        encoding="utf-8",
+    )
+
+
 class TestContextDiscovery:
     """Context items occur flat AND nested in per-group subfolders, and are
     version-duplicated like jobs -- both layouts must yield latest-only groups."""
@@ -392,3 +423,68 @@ class TestContextDiscovery:
                        '<contextParameter name="V" type="id_String" value="v"/>')
         result = parser.parse(tmp_path)
         assert "BigGroup" in [g.name for g in result.context_groups]
+
+    def test_descriptor_backed_support_project_links_by_repository_id(self, parser, tmp_path):
+        execution = _synthetic_project(tmp_path / "client")
+        support = tmp_path / "bundle" / "shared_config"
+        _write_talend_descriptor(support, "Shared Configuration", "SHARED_CONFIG")
+        _write_repository_context(
+            support,
+            "Runtime",
+            "_runtime_context",
+            [("Host", "example.internal"), ("API_SECRET", "example-sensitive-value")],
+        )
+        inline_context = (
+            '<context name="DEV">'
+            '<contextParameter name="Host" type="id_String" value="" '
+            'repositoryContextId="_runtime_context"/>'
+            '<contextParameter name="API_SECRET" type="id_String" value="" '
+            'repositoryContextId="_runtime_context"/>'
+            "</context>"
+        )
+        _write_job(execution, "Jobs", "Consumer", "0.1", inline_context)
+
+        result = parser.parse(tmp_path)
+
+        assert result.stats["execution_roots"] == 1
+        assert result.stats["support_roots"] == 1
+        support_descriptor = next(
+            root for root in result.manifest.source_roots if root["role"] == "support"
+        )
+        assert support_descriptor["path"] == "bundle/shared_config"
+        assert support_descriptor["label"] == "Shared Configuration"
+
+        context = next(group for group in result.context_groups if group.name == "Runtime")
+        assert context.context_id == "_runtime_context"
+        assert context.source_role == "support"
+        assert context.source_project == "Shared Configuration"
+        assert result.manifest.job_contexts_used["Consumer"] == ["Runtime"]
+        assert result.manifest.context_used_by["Runtime"] == ["Consumer"]
+        assert result.manifest.job_support_roots["Consumer"] == ["bundle/shared_config"]
+        assert result.manifest.job_context_links["Consumer"][0]["resolution"] == "repository_id"
+
+        filter_scan_result(result, CredentialFilter())
+        api_secret = next(
+            variable for variable in context.variables if variable.name == "API_SECRET"
+        )
+        assert set(api_secret.values.values()) == {"[REDACTED]"}
+
+    def test_ambiguous_repository_id_is_reported_without_inventing_edge(self, parser, tmp_path):
+        execution = _synthetic_project(tmp_path / "client")
+        inline_context = (
+            '<context name="DEV"><contextParameter name="Host" type="id_String" '
+            'value="" repositoryContextId="_duplicate"/></context>'
+        )
+        _write_job(execution, "Jobs", "Consumer", "0.1", inline_context)
+        for folder, name in (("one", "First"), ("two", "Second")):
+            support = tmp_path / folder
+            _write_talend_descriptor(support, name, name.upper())
+            _write_repository_context(support, name, "_duplicate", [("Host", folder)])
+
+        result = parser.parse(tmp_path)
+
+        assert "Consumer" not in result.manifest.job_contexts_used
+        assert result.manifest.unresolved_context_refs["Consumer"] == [{
+            "context_id": "_duplicate",
+            "resolution": "ambiguous",
+        }]

@@ -697,4 +697,53 @@ describe("applyCompoundDagreLayout positions the in-group call-graph hub structu
     expect(flow.nodes.find((node) => node.id === "job:one::Parent")?.data.group).toBe("one");
     expect(flow.edges.some((edge) => edge.source === "job:one::Parent" && edge.target === "job:two::Child")).toBe(true);
   });
+
+  it("renders linked support contexts as distinct topology dependencies", () => {
+    const manifest: ManifestData = {
+      job_calls: {},
+      job_called_by: {},
+      job_connections_used: {},
+      connection_used_by: {},
+      job_groups: { Consumer: "Jobs" },
+      job_source_roots: { Consumer: "client" },
+      job_contexts_used: { Consumer: ["shared_Runtime-123"] },
+      context_used_by: { "shared_Runtime-123": ["Consumer"] },
+      context_metadata: {
+        "shared_Runtime-123": {
+          name: "Runtime",
+          source_root: "shared",
+          source_project: "Shared Configuration",
+          source_role: "support",
+          purpose: "Runtime endpoints",
+          variable_count: 2,
+        },
+      },
+    };
+
+    const flow = manifestToFlow(manifest, []);
+    const contextNode = flow.nodes.find(
+      (node) => node.id === "conn:context:shared_Runtime-123",
+    );
+    expect(contextNode?.data.label).toBe("Runtime");
+    expect(contextNode?.data.connectionType).toBe(
+      "Talend context · Shared Configuration",
+    );
+    expect(flow.edges).toContainEqual(expect.objectContaining({
+      source: "job:Consumer",
+      target: "conn:context:shared_Runtime-123",
+      data: { edgeType: "uses-context" },
+    }));
+    expect(flow.stats.contextCount).toBe(1);
+    expect(flow.stats.connectionCount).toBe(0);
+
+    const collapsed = manifestToCollapsedFlow(manifest, []);
+    expect(collapsed.nodes.some(
+      (node) => node.id === "conn:context:shared_Runtime-123",
+    )).toBe(true);
+    expect(collapsed.edges).toContainEqual(expect.objectContaining({
+      source: "group:client",
+      target: "conn:context:shared_Runtime-123",
+      data: { edgeType: "group-uses-context" },
+    }));
+  });
 });

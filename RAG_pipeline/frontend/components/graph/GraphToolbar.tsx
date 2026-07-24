@@ -7,6 +7,7 @@ interface GraphToolbarProps {
   stats: {
     jobCount: number;
     connectionCount: number;
+    contextCount: number;
     edgeCount: number;
     groupCount: number;
   };
@@ -320,6 +321,12 @@ export function GraphToolbar({
         <span>{stats.jobCount} <span className="text-slate-300">components</span></span>
         <span className="text-slate-200">|</span>
         <span>{stats.connectionCount} <span className="text-slate-300">conn</span></span>
+        {stats.contextCount > 0 && (
+          <>
+            <span className="text-slate-200">|</span>
+            <span>{stats.contextCount} <span className="text-slate-300">contexts</span></span>
+          </>
+        )}
         <span className="text-slate-200">|</span>
         <span>{stats.groupCount} <span className="text-slate-300">groups</span></span>
         {collapsedMode && expandedGroups.size > 0 && (

@@ -206,8 +206,16 @@ class TalendParser(BaseParser):
         self._warn_root = repo_root
         self._superseded_versions = 0
 
-        talend_roots = _find_talend_roots(repo_root)
-        if not talend_roots:
+        execution_roots = _find_talend_roots(repo_root)
+        support_roots = [
+            root for root in _find_talend_project_roots(repo_root)
+            if root not in execution_roots and _has_supported_talend_artifacts(root)
+        ]
+        talend_roots = sorted(
+            [*execution_roots, *support_roots],
+            key=lambda root: root.relative_to(repo_root).as_posix(),
+        )
+        if not execution_roots:
             console.print(f"[yellow]Warning: No Talend project structure found under {repo_root}[/yellow]")
             return ScanResult(
                 platform="talend",
@@ -238,9 +246,12 @@ class TalendParser(BaseParser):
         root_descriptors: list[dict[str, str]] = []
         superseded_versions = 0
         all_warnings: list[ScanWarning] = []
+        execution_root_set = set(execution_roots)
         for talend_root in talend_roots:
             source_root = talend_root.relative_to(repo_root).as_posix() or "."
-            console.print(f"  Talend project root: [cyan]{source_root}[/cyan]")
+            role = "execution" if talend_root in execution_root_set else "support"
+            project_metadata = self._read_talend_project_metadata(talend_root)
+            console.print(f"  Talend {role} root: [cyan]{source_root}[/cyan]")
             # XMI identifiers are project-local. Reset all parser indexes between
             # roots so an identifier from one export cannot resolve another.
             self._xmi_id_index = {}
@@ -248,8 +259,10 @@ class TalendParser(BaseParser):
             self._superseded_versions = 0
             self._warnings = []
             self._build_metadata_index(talend_root)
-            self._build_job_id_index(talend_root)
-            root_jobs = self._parse_all_jobs(talend_root)
+            root_jobs: list[ParsedJob] = []
+            if role == "execution":
+                self._build_job_id_index(talend_root)
+                root_jobs = self._parse_all_jobs(talend_root)
             for job in root_jobs:
                 job.source_root = source_root
             jobs.extend(root_jobs)
@@ -257,16 +270,30 @@ class TalendParser(BaseParser):
             for connection in root_connections:
                 connection.additional_params["source_root"] = source_root
             connections.extend(root_connections)
-            context_groups.extend(self._parse_all_contexts(talend_root))
+            root_contexts = self._parse_all_contexts(
+                talend_root,
+                source_root=source_root,
+                source_project=project_metadata.get("label", ""),
+                source_role=role,
+            )
+            context_groups.extend(root_contexts)
             routines.extend(self._parse_routines(talend_root))
             superseded_versions += self._superseded_versions
             all_warnings.extend(self._warnings)
-            root_descriptors.append({"id": source_root, "path": source_root, "platform": "talend"})
+            root_descriptors.append({
+                "id": source_root,
+                "path": source_root,
+                "platform": "talend",
+                "role": role,
+                "label": project_metadata.get("label", ""),
+                "technical_label": project_metadata.get("technical_label", ""),
+            })
 
-        composite = len(talend_roots) > 1
+        composite = len(execution_roots) > 1
         connections = self._qualify_composite_connections(jobs, connections, composite)
         self._qualify_composite_jobs(jobs, composite)
-        manifest = self._build_manifest(jobs, routines, root_descriptors)
+        self._qualify_context_groups(context_groups)
+        manifest = self._build_manifest(jobs, routines, root_descriptors, context_groups)
         console.print(f"  Manifest built: {len(manifest.job_calls)} job-call edges")
 
         return ScanResult(
@@ -284,6 +311,8 @@ class TalendParser(BaseParser):
                 "total_jobs": len(jobs),
                 "talend_roots": root_descriptors,
                 "total_roots": len(talend_roots),
+                "execution_roots": len(execution_roots),
+                "support_roots": len(support_roots),
                 "superseded_job_versions": superseded_versions,
                 "total_connections": len(connections),
                 "total_contexts": len(context_groups),
@@ -389,7 +418,14 @@ class TalendParser(BaseParser):
                 latest[k] = (key, f)
         return [f for _, f in sorted(latest.values(), key=lambda t: str(t[1]))]
 
-    def _parse_all_contexts(self, talend_root: Path) -> list[ContextGroup]:
+    def _parse_all_contexts(
+        self,
+        talend_root: Path,
+        *,
+        source_root: str = "",
+        source_project: str = "",
+        source_role: str = "",
+    ) -> list[ContextGroup]:
         """Parse context/**/*.item files (latest version per group)."""
         ctx_dir = talend_root / "context"
         if not ctx_dir.exists():
@@ -402,6 +438,14 @@ class TalendParser(BaseParser):
                 root = ET.fromstring(text)
                 group = self._parse_context_file(root, item_file.stem)
                 if group:
+                    sidecar = self._read_context_sidecar(item_file)
+                    group.context_id = sidecar.get("id", "")
+                    group.context_key = group.name
+                    group.source_root = source_root
+                    group.source_project = source_project
+                    group.source_role = source_role
+                    group.purpose = sidecar.get("purpose", "")
+                    group.description = sidecar.get("description", "")
                     groups.append(group)
             except ET.ParseError as e:
                 console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
@@ -439,6 +483,47 @@ class TalendParser(BaseParser):
             return None
 
         return ContextGroup(name=name, variables=list(variables.values()))
+
+    def _read_context_sidecar(self, item_file: Path) -> dict[str, str]:
+        """Read stable identity and descriptive metadata for a context item."""
+        props_file = item_file.with_suffix(".properties")
+        if not props_file.exists():
+            return {}
+        try:
+            root = ET.fromstring(self._read_filtered(props_file))
+        except ET.ParseError as e:
+            self._warn(kind="parse_error", file=props_file, message=str(e), phase="context")
+            return {}
+
+        for elem in root.iter():
+            if _local_tag(elem.tag) == "Property":
+                return {
+                    "id": elem.get("id", ""),
+                    "label": elem.get("label", ""),
+                    "purpose": elem.get("purpose", ""),
+                    "description": elem.get("description", ""),
+                }
+        return {}
+
+    def _read_talend_project_metadata(self, talend_root: Path) -> dict[str, str]:
+        """Read display metadata from talend.project without relying on its folder name."""
+        descriptor = talend_root / "talend.project"
+        if not descriptor.is_file():
+            return {}
+        try:
+            root = ET.fromstring(self._read_filtered(descriptor))
+        except ET.ParseError:
+            return {}
+        for elem in root.iter():
+            if _local_tag(elem.tag) == "Project":
+                return {
+                    "label": elem.get("label", ""),
+                    "technical_label": (
+                        elem.get("technicalLabel", "")
+                        or elem.get("technical_label", "")
+                    ),
+                }
+        return {}
 
     # ── Job Parsing ──────────────────────────────────────────────────
 
@@ -570,6 +655,7 @@ class TalendParser(BaseParser):
                         name=var_name,
                         type=param.get("type", "id_String"),
                         values={env_name: param.get("value", "")},
+                        repository_context_id=param.get("repositoryContextId", ""),
                     ))
 
         if variables:
@@ -583,6 +669,8 @@ class TalendParser(BaseParser):
                 found = next((v for v in existing.variables if v.name == var.name), None)
                 if found:
                     found.values.update(var.values)
+                    if not found.repository_context_id:
+                        found.repository_context_id = var.repository_context_id
                 else:
                     existing.variables.append(var)
 
@@ -860,14 +948,58 @@ class TalendParser(BaseParser):
                     ref.resolution = "ambiguous"
 
     @staticmethod
+    def _qualify_context_groups(context_groups: list[ContextGroup]) -> None:
+        """Assign collision-free context keys without changing display names."""
+        by_name: dict[str, list[ContextGroup]] = {}
+        for group in context_groups:
+            by_name.setdefault(group.name, []).append(group)
+        for name, groups in by_name.items():
+            if len(groups) == 1:
+                groups[0].context_key = name
+                continue
+            for index, group in enumerate(groups):
+                raw = (
+                    f"{group.source_root}::{name}::"
+                    f"{group.context_id or index}"
+                )
+                slug = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "context"
+                digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
+                group.context_key = f"{slug[:56].rstrip('_') or 'context'}-{digest}"
+
+    @staticmethod
     def _build_manifest(
-        jobs: list[ParsedJob], routines: list[Routine], source_roots: list[dict[str, str]],
+        jobs: list[ParsedJob],
+        routines: list[Routine],
+        source_roots: list[dict[str, str]],
+        context_groups: list[ContextGroup] | None = None,
     ) -> ProjectManifest:
         """Build cross-reference manifest from parsed jobs."""
         m = ProjectManifest()
 
         m.source_roots = source_roots
-        composite = len(source_roots) > 1
+        composite = sum(root.get("role", "execution") == "execution" for root in source_roots) > 1
+        contexts = context_groups or []
+        contexts_by_id: dict[str, list[ContextGroup]] = {}
+        for context in contexts:
+            context_key = context.context_key or context.name
+            if context.context_id:
+                contexts_by_id.setdefault(context.context_id, []).append(context)
+            m.context_metadata[context_key] = {
+                "name": context.name,
+                "context_id": context.context_id,
+                "source_root": context.source_root,
+                "source_project": context.source_project,
+                "source_role": context.source_role,
+                "purpose": context.purpose,
+                "description": context.description,
+                "environments": sorted({
+                    environment
+                    for variable in context.variables
+                    for environment in variable.values
+                }),
+                "variable_count": len(context.variables),
+            }
+
         for job in jobs:
             job_key = job.job_id or job.name
             m.job_source_roots[job_key] = job.source_root
@@ -899,10 +1031,42 @@ class TalendParser(BaseParser):
                 for cn in conn_names:
                     m.connection_used_by.setdefault(cn, []).append(job_key)
 
-            # job_contexts_used (from context groups)
-            ctx_names = [cg.name for cg in job.context_groups if cg.name != "inline"]
-            if ctx_names:
-                m.job_contexts_used[job_key] = ctx_names
+            # Resolve repository contexts by stable Talend Property ID. Never
+            # choose the first matching folder/project when an ID is ambiguous.
+            linked_contexts: list[str] = []
+            seen_context_ids: set[str] = set()
+            for inline_group in job.context_groups:
+                for variable in inline_group.variables:
+                    context_id = variable.repository_context_id
+                    if (
+                        not context_id
+                        or context_id.lower() == "built-in"
+                        or context_id in seen_context_ids
+                    ):
+                        continue
+                    seen_context_ids.add(context_id)
+                    matches = contexts_by_id.get(context_id, [])
+                    if len(matches) == 1:
+                        context = matches[0]
+                        context_key = context.context_key or context.name
+                        linked_contexts.append(context_key)
+                        m.context_used_by.setdefault(context_key, []).append(job_key)
+                        m.job_context_links.setdefault(job_key, []).append({
+                            "context_key": context_key,
+                            "context_id": context_id,
+                            "resolution": "repository_id",
+                        })
+                        if context.source_role == "support" and context.source_root:
+                            m.job_support_roots.setdefault(job_key, []).append(context.source_root)
+                    else:
+                        m.unresolved_context_refs.setdefault(job_key, []).append({
+                            "context_id": context_id,
+                            "resolution": "ambiguous" if matches else "unresolved",
+                        })
+            if linked_contexts:
+                m.job_contexts_used[job_key] = sorted(set(linked_contexts))
+            if job_key in m.job_support_roots:
+                m.job_support_roots[job_key] = sorted(set(m.job_support_roots[job_key]))
 
             # routines_used_by
             for rname in job.raw_routines:
@@ -960,6 +1124,42 @@ def _find_talend_roots(repo_root: Path) -> list[Path]:
             continue
         selected.append(candidate)
     return selected
+
+
+def _find_talend_project_roots(repo_root: Path) -> list[Path]:
+    """Find descriptor-backed Talend projects, including support-only projects."""
+    descriptors: list[Path] = []
+    root_descriptor = repo_root / "talend.project"
+    if root_descriptor.is_file():
+        descriptors.append(root_descriptor)
+    descriptors.extend(
+        descriptor
+        for descriptor in repo_root.rglob("talend.project")
+        if descriptor != root_descriptor
+        and "__MACOSX" not in descriptor.relative_to(repo_root).parts
+        and not any(part.startswith("._") for part in descriptor.relative_to(repo_root).parts)
+    )
+
+    roots: list[Path] = []
+    for descriptor in sorted(descriptors):
+        try:
+            xml_root = ET.fromstring(
+                descriptor.read_text(encoding="utf-8", errors="replace")
+            )
+        except (ET.ParseError, OSError):
+            continue
+        if any(_local_tag(elem.tag) == "Project" for elem in xml_root.iter()):
+            roots.append(descriptor.parent)
+    return roots
+
+
+def _has_supported_talend_artifacts(candidate: Path) -> bool:
+    """Whether a descriptor-backed project contains scanner-supported artifacts."""
+    return any((
+        (candidate / "context").is_dir(),
+        (candidate / "metadata" / "connections").is_dir(),
+        (candidate / "code" / "routines").is_dir(),
+    ))
 
 
 def _qualified_job_id(source_root: str, discriminator: str) -> str:
