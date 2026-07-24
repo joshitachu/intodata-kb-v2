@@ -222,6 +222,50 @@ class TestCompositeTalendBundles:
         assert result.manifest.connection_used_by["JMS · esb.orders"] == ["Inbound"]
         assert result.manifest.connection_used_by["DIRECT · validate"] == ["Inbound"]
 
+    def test_route_channel_direction_comes_from_component_flow(self, parser, tmp_path):
+        root = _synthetic_project(tmp_path)
+        routes = root / "routes" / "Service"
+        routes.mkdir(parents=True)
+        body = (
+            '<node componentName="cJMS">'
+            '<elementParameter name="UNIQUE_NAME" value="queueIn"/>'
+            '<elementParameter name="DESTINATION" value="&quot;orders.in&quot;"/>'
+            "</node>"
+            '<node componentName="cProcessor">'
+            '<elementParameter name="UNIQUE_NAME" value="processor"/>'
+            "</node>"
+            '<node componentName="cJMS">'
+            '<elementParameter name="UNIQUE_NAME" value="queueOut"/>'
+            '<elementParameter name="DESTINATION" value="&quot;orders.out&quot;"/>'
+            "</node>"
+            '<connection source="queueIn" target="processor" connectorName="ROUTE"/>'
+            '<connection source="processor" target="queueOut" connectorName="ROUTE"/>'
+        )
+        (routes / "Directional_0.1.item").write_text(
+            '<?xml version="1.0"?><talendfile:ProcessType '
+            + _ITEM_XMLNS
+            + ">"
+            + body
+            + "</talendfile:ProcessType>",
+            encoding="utf-8",
+        )
+        (routes / "Directional_0.1.properties").write_text(
+            '<?xml version="1.0"?><xmi:XMI xmlns:xmi="http://www.omg.org/XMI" '
+            'xmlns:TalendProperties="http://www.talend.org/properties">'
+            '<TalendProperties:Property label="Directional" version="0.1"/>'
+            "</xmi:XMI>",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+        channels = {
+            channel["component_name"]: channel
+            for channel in result.manifest.artifact_channels
+        }
+
+        assert channels["queueIn"]["direction"] == "input"
+        assert channels["queueOut"]["direction"] == "output"
+
     def test_talend_routlet_spelling_is_classified_as_routelet_wrapper(
         self, parser, tmp_path,
     ):
@@ -440,6 +484,46 @@ class TestCompositeTalendBundles:
         assert {connection.name for connection in retained} == {"one::Shared", "two::Shared"}
         assert first.components[0].metadata_connection_ref == "one::Shared"
         assert second.components[0].metadata_connection_ref == "two::Shared"
+
+    def test_repository_connections_preserve_input_output_direction(self):
+        job = ParsedJob(
+            name="Transfer",
+            path="process/Transfer.item",
+            job_id="Transfer",
+            components=[
+                Component(
+                    unique_name="read",
+                    component_type="tMSSqlInput",
+                    metadata_connection_ref="SourceDB",
+                ),
+                Component(
+                    unique_name="write",
+                    component_type="tPostgresqlOutput",
+                    metadata_connection_ref="TargetDB",
+                ),
+            ],
+        )
+
+        manifest = TalendParser._build_manifest([job], [], [])
+
+        assert manifest.artifact_resources == [
+            {
+                "artifact": "Transfer",
+                "resource_type": "repository_connection",
+                "resource": "SourceDB",
+                "direction": "input",
+                "component_name": "read",
+                "provenance": "tMSSqlInput",
+            },
+            {
+                "artifact": "Transfer",
+                "resource_type": "repository_connection",
+                "resource": "TargetDB",
+                "direction": "output",
+                "component_name": "write",
+                "provenance": "tPostgresqlOutput",
+            },
+        ]
 
 
 class TestTMapExtraction:

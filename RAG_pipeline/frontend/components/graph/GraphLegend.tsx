@@ -107,14 +107,25 @@ export function GraphLegend({
             <span className="text-slate-500">Route invokes Job</span>
           </div>
         )}
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-0 border-t-[1.5px] border-dashed" style={{ borderColor: "#c4b5fd" }} />
-          <span className="text-slate-500">
-            {showArtifactTaxonomy && collapsedMode
-              ? "Shared cross-group JMS channel"
-              : "Connection usage"}
-          </span>
-        </div>
+        {showArtifactTaxonomy && collapsedMode ? (
+          <>
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-0 border-t-[2px] border-violet-500 relative">
+                <div className="absolute -right-0.5 -top-[3px] w-0 h-0 border-l-[4px] border-l-violet-500 border-y-[3px] border-y-transparent" />
+              </div>
+              <span className="text-slate-500">Produces / consumes resource</span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-0 border-t-[1.5px] border-dashed" style={{ borderColor: "#c4b5fd" }} />
+              <span className="text-slate-500">Resource direction unknown</span>
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-0 border-t-[1.5px] border-dashed" style={{ borderColor: "#c4b5fd" }} />
+            <span className="text-slate-500">Connection usage</span>
+          </div>
+        )}
         {collapsedMode && (
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-0 border-t-[2.5px] border-slate-500" />
@@ -143,7 +154,11 @@ export function GraphLegend({
           <div className="w-4 h-3 rounded border border-slate-200 bg-white shadow-sm flex items-center justify-center">
             <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />
           </div>
-          <span className="text-slate-500">Connection</span>
+          <span className="text-slate-500">
+            {showArtifactTaxonomy && collapsedMode
+              ? "Shared source / destination"
+              : "Connection"}
+          </span>
         </div>
         {collapsedMode && (
           <div className="flex items-center gap-2.5">
@@ -153,6 +168,11 @@ export function GraphLegend({
             <span className="text-slate-500">
               Group (click to {showArtifactTaxonomy ? "explore" : "expand"})
             </span>
+          </div>
+        )}
+        {showArtifactTaxonomy && collapsedMode && (
+          <div className="text-[9px] leading-snug text-slate-400">
+            Hover a group or resource to trace its visible relationships.
           </div>
         )}
       </div>

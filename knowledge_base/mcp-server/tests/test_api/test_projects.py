@@ -13,6 +13,30 @@ import pytest
 from sqlalchemy import select
 
 
+def test_component_flow_direction_distinguishes_route_inputs_and_outputs():
+    from mcp_server.api.routes.projects import _component_flow_direction
+
+    job_data = {
+        "connections": [
+            {"source": "queueIn", "target": "processor"},
+            {"source": "processor", "target": "queueOut"},
+        ],
+    }
+
+    assert _component_flow_direction(job_data, "queueIn") == "input"
+    assert _component_flow_direction(job_data, "queueOut") == "output"
+    assert _component_flow_direction(job_data, "processor") == "both"
+    assert _component_flow_direction(job_data, "missing") == "unknown"
+
+
+def test_component_resource_direction_uses_talend_component_semantics():
+    from mcp_server.api.routes.projects import _component_resource_direction
+
+    assert _component_resource_direction("tMSSqlInput") == "input"
+    assert _component_resource_direction("tFileOutputDelimited") == "output"
+    assert _component_resource_direction("tDBRow") == "unknown"
+
+
 # --- Add Repo ---
 
 

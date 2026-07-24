@@ -1034,8 +1034,29 @@ function TopologyContent() {
       return;
     }
 
-    const neighbors = adjacencyMap.get(hoveredNodeId) || new Set<string>();
-    const connectedSet = new Set<string>([hoveredNodeId, ...neighbors]);
+    const connectedSet = new Set<string>([hoveredNodeId]);
+    let frontier = new Set<string>([hoveredNodeId]);
+    // In the Talend landscape, a group and another group are commonly two
+    // hops apart through a shared source/destination hub. Trace those two
+    // hops so hovering a group reveals the actual producer -> resource ->
+    // consumer relationship instead of highlighting only the middle hub.
+    const maxHops =
+      showArtifactTaxonomy &&
+      focusedGroup === null &&
+      hoveredNodeId.startsWith("group:")
+        ? 2
+        : 1;
+    for (let hop = 0; hop < maxHops; hop += 1) {
+      const next = new Set<string>();
+      for (const nodeId of frontier) {
+        for (const neighbor of adjacencyMap.get(nodeId) || []) {
+          if (connectedSet.has(neighbor)) continue;
+          connectedSet.add(neighbor);
+          next.add(neighbor);
+        }
+      }
+      frontier = next;
+    }
 
     setNodes((nds) =>
       nds.map((n) => {
@@ -1062,7 +1083,15 @@ function TopologyContent() {
         return { ...e, style: { ...e.style, opacity: newOpacity } };
       }),
     );
-  }, [hoveredNodeId, searchMatchIds, adjacencyMap, setNodes, setEdges]);
+  }, [
+    hoveredNodeId,
+    searchMatchIds,
+    adjacencyMap,
+    showArtifactTaxonomy,
+    focusedGroup,
+    setNodes,
+    setEdges,
+  ]);
 
   // Apply the S5 level-1 lineage overlay: dim every job node except the one
   // the active trace is scoped to. Deliberately scoped to `job:` node ids

@@ -839,6 +839,10 @@ class ScannerService:
                 endpoint for endpoint in manifest.get("artifact_endpoints", [])
                 if isinstance(endpoint, dict) and endpoint.get("artifact") in job_names
             ],
+            "artifact_resources": [
+                resource for resource in manifest.get("artifact_resources", [])
+                if isinstance(resource, dict) and resource.get("artifact") in job_names
+            ],
         }
 
     @staticmethod

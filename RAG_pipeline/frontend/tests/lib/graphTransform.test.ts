@@ -40,6 +40,20 @@ describe("filterManifestByArtifactKind", () => {
       relation_type: "route_invokes_job",
       resolution: "same_root",
     }],
+    artifact_resources: [
+      {
+        artifact: "JobA",
+        resource_type: "repository_connection",
+        resource: "OrdersDB",
+        direction: "output",
+      },
+      {
+        artifact: "RouteA",
+        resource_type: "repository_connection",
+        resource: "RuntimeBroker",
+        direction: "input",
+      },
+    ],
   };
 
   it("filters source data before collapsed summaries and aggregated edges are built", () => {
@@ -52,6 +66,9 @@ describe("filterManifestByArtifactKind", () => {
     });
     expect(routeManifest.context_used_by).toEqual({ Runtime: ["RouteA"] });
     expect(routeManifest.artifact_relations).toEqual([]);
+    expect(routeManifest.artifact_resources).toEqual([
+      expect.objectContaining({ artifact: "RouteA", resource: "RuntimeBroker" }),
+    ]);
     expect(flow.stats.jobCount).toBe(1);
     expect(flow.stats.routeCount).toBe(1);
     expect(flow.nodes.find((node) => node.id === "group:Routes")?.data.jobCount).toBe(1);
@@ -97,26 +114,78 @@ describe("layered Talend landscape", () => {
       BRoute: "route",
       CRoute: "route",
     },
+    artifact_channels: [
+      { artifact: "ARoute", channel_type: "jms", channel: "private.a", direction: "output" },
+      { artifact: "ARoute", channel_type: "jms", channel: "pair.ab", direction: "output" },
+      { artifact: "BRoute", channel_type: "jms", channel: "pair.ab", direction: "input" },
+      { artifact: "ARoute", channel_type: "jms", channel: "shared.bus", direction: "output" },
+      { artifact: "BRoute", channel_type: "jms", channel: "shared.bus", direction: "input" },
+      { artifact: "CRoute", channel_type: "jms", channel: "shared.bus", direction: "input" },
+      { artifact: "ARoute", channel_type: "direct", channel: "same-name", direction: "output" },
+      { artifact: "BRoute", channel_type: "direct", channel: "same-name", direction: "input" },
+    ],
+    artifact_resources: [
+      {
+        artifact: "AJob",
+        resource_type: "repository_connection",
+        resource: "SharedDB",
+        direction: "output",
+      },
+      {
+        artifact: "BRoute",
+        resource_type: "repository_connection",
+        resource: "SharedDB",
+        direction: "input",
+      },
+    ],
   };
 
-  it("keeps the first level bounded to groups and proven cross-group JMS links", () => {
+  it("shows directional group-resource-group lineage without private resources", () => {
     const flow = manifestToLandscapeFlow(manifest, []);
 
     expect(flow.nodes.filter((node) => node.id.startsWith("group:"))).toHaveLength(3);
     expect(flow.nodes.some((node) => node.id.startsWith("job:"))).toBe(false);
-    expect(flow.nodes.some((node) => node.id === "conn:JMS · private.a")).toBe(false);
+    expect(flow.nodes.some((node) => node.id.includes("private.a"))).toBe(false);
     expect(flow.nodes.some((node) => node.id.includes("DIRECT · same-name"))).toBe(false);
 
-    const pair = flow.edges.find((edge) => edge.id.includes("landscape-pair"));
-    expect(pair?.data?.edgeType).toBe("shared-channel");
-    expect(pair?.label).toBe("pair.ab");
+    const pair = flow.nodes.find((node) => node.id.includes("jms:pair.ab"));
+    expect(pair?.data.connectionType).toBe("Shared JMS channel");
+    expect(pair?.data.alwaysShowLabel).toBe(true);
+    expect(flow.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "group:Root/Project/GroupA",
+        target: pair?.id,
+        data: expect.objectContaining({ direction: "output" }),
+      }),
+      expect.objectContaining({
+        source: pair?.id,
+        target: "group:Root/Project/GroupB",
+        data: expect.objectContaining({ direction: "input" }),
+      }),
+    ]));
 
     const bus = flow.nodes.find((node) =>
-      node.id.includes("JMS · shared.bus"),
+      node.id.includes("jms:shared.bus"),
     );
     expect(bus?.data.connectionType).toBe("Shared JMS channel");
-    expect(flow.edges.filter((edge) => edge.target === bus?.id)).toHaveLength(3);
-    expect(flow.stats.connectionCount).toBe(2);
+    expect(flow.edges.filter((edge) => edge.target === bus?.id)).toHaveLength(1);
+    expect(flow.edges.filter((edge) => edge.source === bus?.id)).toHaveLength(2);
+
+    const database = flow.nodes.find((node) =>
+      node.id.includes("repository_connection:SharedDB"),
+    );
+    expect(database?.data.connectionType).toBe("Shared repository connection");
+    expect(flow.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "group:Root/Project/GroupA",
+        target: database?.id,
+      }),
+      expect.objectContaining({
+        source: database?.id,
+        target: "group:Root/Project/GroupB",
+      }),
+    ]));
+    expect(flow.stats.connectionCount).toBe(3);
   });
 
   it("isolates one group before detailed Job and Route nodes are materialized", () => {
@@ -134,7 +203,7 @@ describe("layered Talend landscape", () => {
     const hidden = applyConnectionVisibility(flow.nodes, flow.edges, false);
 
     expect(hidden.nodes.some((node) => node.id.startsWith("conn:"))).toBe(false);
-    expect(hidden.edges.some((edge) => edge.data?.edgeType === "shared-channel")).toBe(false);
+    expect(hidden.edges.some((edge) => edge.data?.edgeType === "shared-resource")).toBe(false);
   });
 });
 

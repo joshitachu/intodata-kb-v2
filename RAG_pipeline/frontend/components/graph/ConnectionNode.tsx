@@ -27,11 +27,13 @@ interface ConnectionNodeData {
   dimmed?: boolean;
   highlighted?: boolean;
   compact?: boolean;
+  alwaysShowLabel?: boolean;
 }
 
 function ConnectionNodeComponent({ data }: { data: ConnectionNodeData }) {
   const zoomedOut = useZoomBelow(LABEL_MIN_ZOOM);
-  const pillMode = data.compact === true && zoomedOut;
+  const pillMode =
+    data.compact === true && zoomedOut && data.alwaysShowLabel !== true;
   const horizontal = data.dir === "LR";
   const targetPosition = horizontal ? Position.Left : Position.Top;
   const sourcePosition = horizontal ? Position.Right : Position.Bottom;

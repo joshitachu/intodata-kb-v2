@@ -47,7 +47,7 @@ describe("GraphLegend", () => {
     expect(screen.queryByText("Component orchestration")).not.toBeInTheDocument();
   });
 
-  it("labels the landscape edge as a cross-group JMS relationship", () => {
+  it("explains directional shared resources in the landscape", () => {
     render(
       <GraphLegend
         groupColorMap={GROUP_COLOR_MAP}
@@ -56,7 +56,10 @@ describe("GraphLegend", () => {
       />,
     );
 
-    expect(screen.getByText("Shared cross-group JMS channel")).toBeInTheDocument();
+    expect(screen.getByText("Produces / consumes resource")).toBeInTheDocument();
+    expect(screen.getByText("Resource direction unknown")).toBeInTheDocument();
+    expect(screen.getByText("Shared source / destination")).toBeInTheDocument();
+    expect(screen.getByText(/Hover a group or resource/)).toBeInTheDocument();
     expect(screen.getByText("Group (click to explore)")).toBeInTheDocument();
   });
 });

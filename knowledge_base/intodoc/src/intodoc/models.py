@@ -227,6 +227,7 @@ class ProjectManifest(BaseModel):
     artifact_relations: list[dict] = Field(default_factory=list)
     artifact_channels: list[dict] = Field(default_factory=list)
     artifact_endpoints: list[dict] = Field(default_factory=list)
+    artifact_resources: list[dict] = Field(default_factory=list)
 
 
 # ── Scan Result ──────────────────────────────────────────────────────

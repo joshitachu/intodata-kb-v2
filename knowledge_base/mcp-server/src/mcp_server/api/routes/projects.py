@@ -2984,6 +2984,40 @@ def _derive_systems_from_job_json(job_data: dict, platform: str) -> list[str]:
         return []
 
 
+def _component_flow_direction(job_data: dict, component_name: str) -> str:
+    """Backfill Route endpoint direction for scans created before this fact."""
+    connections = job_data.get("connections", [])
+    has_incoming = any(
+        connection.get("target") == component_name
+        for connection in connections
+        if isinstance(connection, dict)
+    )
+    has_outgoing = any(
+        connection.get("source") == component_name
+        for connection in connections
+        if isinstance(connection, dict)
+    )
+    if has_outgoing and not has_incoming:
+        return "input"
+    if has_incoming and not has_outgoing:
+        return "output"
+    if has_incoming and has_outgoing:
+        return "both"
+    return "unknown"
+
+
+def _component_resource_direction(component_type: str) -> str:
+    """Backfill repository-resource access from a Talend component name."""
+    normalized = component_type.lower()
+    if "input" in normalized and "output" in normalized:
+        return "both"
+    if "input" in normalized:
+        return "input"
+    if "output" in normalized:
+        return "output"
+    return "unknown"
+
+
 def _derive_direction(path: str, job_name: str) -> str:
     """Derive data-flow direction from job path or naming conventions."""
     path_lower = path.lower().replace("\\", "/")
@@ -3256,6 +3290,29 @@ async def get_project_graph(project_id: str, request: Request):
     ai_summaries = SummaryService.load_summaries(project_id)
 
     job_groups: dict[str, str] = manifest.get("job_groups", {})
+    artifact_channels = [
+        channel
+        for channel in manifest.get("artifact_channels", [])
+        if isinstance(channel, dict)
+    ]
+    artifact_endpoints = [
+        endpoint
+        for endpoint in manifest.get("artifact_endpoints", [])
+        if isinstance(endpoint, dict)
+    ]
+    artifact_resources = [
+        resource
+        for resource in manifest.get("artifact_resources", [])
+        if isinstance(resource, dict)
+    ]
+    resource_keys = {
+        (
+            resource.get("artifact"),
+            resource.get("component_name"),
+            resource.get("resource"),
+        )
+        for resource in artifact_resources
+    }
     jobs_dir = scan_dir / "jobs"
     job_metadata: dict[str, JobScanMetadata] = {}
     all_system_names: set[str] = set()
@@ -3290,6 +3347,51 @@ async def get_project_graph(project_id: str, request: Request):
                         comp_types.append(ctype)
             except (json.JSONDecodeError, OSError):
                 pass
+
+        # Backward-compatible topology enrichment. Existing scans already
+        # retain component graphs, so direction can be recovered without
+        # requiring the user to upload the ZIP again.
+        if job_data:
+            for channel in artifact_channels:
+                if (
+                    channel.get("artifact") == job_name
+                    and not channel.get("direction")
+                ):
+                    channel["direction"] = _component_flow_direction(
+                        job_data, str(channel.get("component_name", "")),
+                    )
+            for endpoint in artifact_endpoints:
+                if (
+                    endpoint.get("artifact") == job_name
+                    and not endpoint.get("direction")
+                ):
+                    endpoint["direction"] = _component_flow_direction(
+                        job_data, str(endpoint.get("component_name", "")),
+                    )
+            for component in job_data.get("components", []):
+                if not isinstance(component, dict):
+                    continue
+                resource = component.get("metadata_connection_ref")
+                if not resource:
+                    continue
+                resource_key = (
+                    job_name,
+                    component.get("unique_name"),
+                    resource,
+                )
+                if resource_key in resource_keys:
+                    continue
+                artifact_resources.append({
+                    "artifact": job_name,
+                    "resource_type": "repository_connection",
+                    "resource": resource,
+                    "direction": _component_resource_direction(
+                        str(component.get("component_type", "")),
+                    ),
+                    "component_name": component.get("unique_name", ""),
+                    "provenance": component.get("component_type", ""),
+                })
+                resource_keys.add(resource_key)
 
         # Fallback: derive systems at request time for old scans
         if needs_runtime_derivation and not ext_systems and job_data:
@@ -3335,6 +3437,9 @@ async def get_project_graph(project_id: str, request: Request):
     # systems. Named channel nodes remain self-describing in the manifest.
     manifest["job_connections_used"] = job_connections_used
     manifest["connection_used_by"] = connection_used_by
+    manifest["artifact_channels"] = artifact_channels
+    manifest["artifact_endpoints"] = artifact_endpoints
+    manifest["artifact_resources"] = artifact_resources
 
     if all_system_names:
         existing_conn_names = {c.name for c in connections}

@@ -1182,6 +1182,16 @@ class TalendParser(BaseParser):
             for comp in job.components:
                 if comp.metadata_connection_ref:
                     conn_names.add(comp.metadata_connection_ref)
+                    m.artifact_resources.append({
+                        "artifact": job_key,
+                        "resource_type": "repository_connection",
+                        "resource": comp.metadata_connection_ref,
+                        "direction": _component_resource_direction(
+                            comp.component_type,
+                        ),
+                        "component_name": comp.unique_name,
+                        "provenance": comp.component_type,
+                    })
             if conn_names:
                 m.job_connections_used[job_key] = sorted(conn_names)
                 for cn in conn_names:
@@ -1254,6 +1264,9 @@ class TalendParser(BaseParser):
                             "artifact": job_key,
                             "channel_type": channel_type,
                             "channel": channel,
+                            "direction": _route_component_direction(
+                                job, comp.unique_name,
+                            ),
                             "component_name": comp.unique_name,
                             "provenance": comp.component_type,
                         })
@@ -1271,6 +1284,9 @@ class TalendParser(BaseParser):
                         m.artifact_endpoints.append({
                             "artifact": job_key,
                             "endpoint_type": comp.component_type.removeprefix("c").lower(),
+                            "direction": _route_component_direction(
+                                job, comp.unique_name,
+                            ),
                             "component_name": comp.unique_name,
                             "provenance": comp.component_type,
                         })
@@ -1381,6 +1397,41 @@ def _safe_route_channel(params: list[ComponentParam]) -> str:
             return "configured endpoint"
         return re.sub(r"\s+", " ", value)[:120]
     return "configured channel"
+
+
+def _route_component_direction(job: ParsedJob, component_name: str) -> str:
+    """Classify a Camel endpoint from its position in the Route graph.
+
+    ``input`` means the resource feeds the Route; ``output`` means the Route
+    publishes or writes to the resource. Components with both incoming and
+    outgoing Route edges are exchanges, while disconnected/incomplete exports
+    remain explicitly unknown.
+    """
+    has_incoming = any(
+        connection.target == component_name for connection in job.connections
+    )
+    has_outgoing = any(
+        connection.source == component_name for connection in job.connections
+    )
+    if has_outgoing and not has_incoming:
+        return "input"
+    if has_incoming and not has_outgoing:
+        return "output"
+    if has_incoming and has_outgoing:
+        return "both"
+    return "unknown"
+
+
+def _component_resource_direction(component_type: str) -> str:
+    """Infer repository-resource access from canonical Talend component names."""
+    normalized = component_type.lower()
+    if "input" in normalized and "output" in normalized:
+        return "both"
+    if normalized.endswith("input") or "input" in normalized:
+        return "input"
+    if normalized.endswith("output") or "output" in normalized:
+        return "output"
+    return "unknown"
 
 
 def _route_channel_connection_name(channel_type: str, channel: str) -> str:

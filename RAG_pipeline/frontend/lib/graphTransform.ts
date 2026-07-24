@@ -171,8 +171,26 @@ export interface ManifestData {
     resolution?: string;
     provenance?: string;
   }>;
-  artifact_channels?: Array<{ artifact: string; channel_type: string; channel?: string }>;
-  artifact_endpoints?: Array<{ artifact: string; endpoint_type: string }>;
+  artifact_channels?: Array<{
+    artifact: string;
+    channel_type: string;
+    channel?: string;
+    direction?: "input" | "output" | "both" | "unknown" | string;
+    component_name?: string;
+  }>;
+  artifact_endpoints?: Array<{
+    artifact: string;
+    endpoint_type: string;
+    direction?: "input" | "output" | "both" | "unknown" | string;
+    component_name?: string;
+  }>;
+  artifact_resources?: Array<{
+    artifact: string;
+    resource_type: string;
+    resource: string;
+    direction?: "input" | "output" | "both" | "unknown" | string;
+    component_name?: string;
+  }>;
 }
 
 export type ArtifactKindFilter = "all" | "job" | "route";
@@ -231,6 +249,9 @@ function filterManifestToArtifacts(
     ),
     artifact_endpoints: (manifest.artifact_endpoints || []).filter((endpoint) =>
       keep.has(endpoint.artifact),
+    ),
+    artifact_resources: (manifest.artifact_resources || []).filter((resource) =>
+      keep.has(resource.artifact),
     ),
   };
 }
@@ -1166,10 +1187,14 @@ export function manifestToCollapsedFlow(
 /**
  * First-level Talend landscape: one node per functional/project group.
  *
- * Individual designs and private channels are intentionally absent. Named JMS
- * channels are shown only when they connect more than one group: two-group
- * channels become one labelled edge, while broad shared buses become a single
- * hub rather than an unreadable group-to-group clique.
+ * Individual designs and private resources are intentionally absent. Shared
+ * integration resources become directional hubs:
+ *
+ *   producer group -> shared resource -> consumer group
+ *
+ * Shared inputs and outputs remain visible even when every participant is on
+ * the same side of the resource. Unknown direction is kept as a dashed,
+ * explicitly unproven relationship rather than guessed.
  */
 export function manifestToLandscapeFlow(
   manifest: ManifestData,
@@ -1192,85 +1217,173 @@ export function manifestToLandscapeFlow(
   );
 
   const groupNames = new Set(base.groups);
-  const pairChannels = new Map<string, string[]>();
-  let sharedChannelCount = 0;
+  type ResourceDirection = {
+    input: boolean;
+    output: boolean;
+    unknown: boolean;
+  };
+  type SharedResource = {
+    label: string;
+    displayLabel: string;
+    connectionType: string;
+    groups: Map<string, ResourceDirection>;
+  };
+  const resources = new Map<string, SharedResource>();
 
-  for (const [channel, artifacts] of Object.entries(
-    manifest.connection_used_by || {},
-  )) {
-    // Direct/DirectVM names are local Camel endpoints. Identical names in two
-    // exports do not prove cross-group communication, so only explicit JMS
-    // destinations qualify as landscape relationships.
-    if (!channel.startsWith("JMS ·")) continue;
-    const groups = [
-      ...new Set(
-        artifacts
-          .map((artifact) => topologyGroupForJob(manifest, artifact))
-          .filter((group) => groupNames.has(group)),
-      ),
-    ].sort();
-    if (groups.length < 2) continue;
-    sharedChannelCount += 1;
-
-    if (groups.length === 2) {
-      const pairKey = `${groups[0]}→${groups[1]}`;
-      const names = pairChannels.get(pairKey) ?? [];
-      names.push(channel.slice("JMS · ".length));
-      pairChannels.set(pairKey, names);
-      continue;
+  const normalizeResourceName = (raw: string | undefined): string => {
+    const value = (raw || "").trim();
+    const unquoted =
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+        ? value.slice(1, -1)
+        : value;
+    if (
+      !unquoted ||
+      unquoted === "configured channel" ||
+      unquoted === "configured endpoint"
+    ) {
+      return "";
     }
+    return unquoted.replace(/\s+/g, " ");
+  };
 
-    const hubId = `conn:landscape:${channel}`;
+  const addResourceUse = (
+    key: string,
+    label: string,
+    displayLabel: string,
+    connectionType: string,
+    artifact: string,
+    direction: string | undefined,
+  ) => {
+    const group = topologyGroupForJob(manifest, artifact);
+    if (!groupNames.has(group)) return;
+    const resource = resources.get(key) ?? {
+      label,
+      displayLabel,
+      connectionType,
+      groups: new Map<string, ResourceDirection>(),
+    };
+    const use = resource.groups.get(group) ?? {
+      input: false,
+      output: false,
+      unknown: false,
+    };
+    if (direction === "input" || direction === "both") use.input = true;
+    if (direction === "output" || direction === "both") use.output = true;
+    if (!direction || direction === "unknown") use.unknown = true;
+    resource.groups.set(group, use);
+    resources.set(key, resource);
+  };
+
+  for (const channel of manifest.artifact_channels || []) {
+    // Direct/DirectVM endpoints are local Route plumbing. Identical names in
+    // separate projects do not prove cross-group communication.
+    if (channel.channel_type.toLowerCase() !== "jms") continue;
+    const name = normalizeResourceName(channel.channel);
+    if (!name) continue;
+    addResourceUse(
+      `jms:${name}`,
+      `JMS · ${name}`,
+      name,
+      "Shared JMS channel",
+      channel.artifact,
+      channel.direction,
+    );
+  }
+
+  for (const resource of manifest.artifact_resources || []) {
+    const name = normalizeResourceName(resource.resource);
+    if (!name) continue;
+    addResourceUse(
+      `${resource.resource_type}:${name}`,
+      name,
+      name,
+      "Shared repository connection",
+      resource.artifact,
+      resource.direction,
+    );
+  }
+
+  let sharedResourceCount = 0;
+  for (const [resourceKey, resource] of resources) {
+    if (resource.groups.size < 2) continue;
+    sharedResourceCount += 1;
+    const hubId = `conn:landscape:${resourceKey}`;
     nodes.push({
       id: hubId,
       type: "connectionNode",
       position: { x: 0, y: 0 },
       data: {
-        label: channel,
-        displayLabel: channel.slice("JMS · ".length),
-        connectionType: "Shared JMS channel",
+        label: resource.label,
+        displayLabel: resource.displayLabel,
+        connectionType: resource.connectionType,
         host: "",
         database: "",
-        usageCount: groups.length,
+        usageCount: resource.groups.size,
+        alwaysShowLabel: true,
       },
     });
-    for (const group of groups) {
-      edges.push({
-        id: `landscape-channel:${group}:${channel}`,
-        source: `group:${group}`,
-        target: hubId,
-        type: PROJECT_EDGE_TYPE,
-        animated: false,
-        style: { ...USES_EDGE_STYLE, strokeWidth: 2 },
-        data: { edgeType: "shared-channel", channel },
-      });
+    for (const [group, direction] of resource.groups) {
+      const groupId = `group:${group}`;
+      if (direction.output) {
+        edges.push({
+          id: `landscape-resource:output:${group}:${resourceKey}`,
+          source: groupId,
+          target: hubId,
+          type: PROJECT_EDGE_TYPE,
+          animated: false,
+          style: { stroke: "#8b5cf6", strokeWidth: 2 },
+          markerEnd: {
+            type: "arrowclosed" as const,
+            color: "#8b5cf6",
+            width: 17,
+            height: 17,
+          },
+          data: {
+            edgeType: "shared-resource",
+            resource: resource.label,
+            direction: "output",
+          },
+        });
+      }
+      if (direction.input) {
+        edges.push({
+          id: `landscape-resource:input:${resourceKey}:${group}`,
+          source: hubId,
+          target: groupId,
+          type: PROJECT_EDGE_TYPE,
+          animated: false,
+          style: { stroke: "#8b5cf6", strokeWidth: 2 },
+          markerEnd: {
+            type: "arrowclosed" as const,
+            color: "#8b5cf6",
+            width: 17,
+            height: 17,
+          },
+          data: {
+            edgeType: "shared-resource",
+            resource: resource.label,
+            direction: "input",
+          },
+        });
+      }
+      if (direction.unknown && !direction.input && !direction.output) {
+        edges.push({
+          id: `landscape-resource:unknown:${group}:${resourceKey}`,
+          source: groupId,
+          target: hubId,
+          type: PROJECT_EDGE_TYPE,
+          animated: false,
+          style: { ...USES_EDGE_STYLE, strokeWidth: 1.5 },
+          data: {
+            edgeType: "shared-resource",
+            resource: resource.label,
+            direction: "unknown",
+          },
+        });
+      }
     }
-  }
-
-  for (const [pair, channels] of pairChannels) {
-    const [sourceGroup, targetGroup] = pair.split("→", 2);
-    const sortedChannels = [...new Set(channels)].sort();
-    const label =
-      sortedChannels.length === 1
-        ? sortedChannels[0]
-        : `${sortedChannels[0]} +${sortedChannels.length - 1}`;
-    edges.push({
-      id: `landscape-pair:${pair}`,
-      source: `group:${sourceGroup}`,
-      target: `group:${targetGroup}`,
-      type: PROJECT_EDGE_TYPE,
-      animated: false,
-      label,
-      labelStyle: { fill: "#6d28d9", fontWeight: 650, fontSize: 10 },
-      labelBgStyle: { fill: "#faf5ff", fillOpacity: 0.96 },
-      labelBgPadding: [5, 3] as [number, number],
-      labelBgBorderRadius: 5,
-      style: { ...USES_EDGE_STYLE, strokeWidth: 2 },
-      data: {
-        edgeType: "shared-channel",
-        channels: sortedChannels,
-      },
-    });
   }
 
   return {
@@ -1279,7 +1392,7 @@ export function manifestToLandscapeFlow(
     edges,
     stats: {
       ...base.stats,
-      connectionCount: sharedChannelCount,
+      connectionCount: sharedResourceCount,
       contextCount: 0,
       edgeCount: edges.length,
     },
