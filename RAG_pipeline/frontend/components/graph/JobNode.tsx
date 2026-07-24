@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { Crosshair, ChevronUp, ChevronDown, Route, Cog } from "lucide-react";
+import { Crosshair, ChevronUp, ChevronDown } from "lucide-react";
 import type { EffectiveStatus } from "@/lib/healthPropagation";
 import type { JobStatus } from "@/lib/jobHealth";
 import { STATUS_META, isOverlayStatus } from "@/lib/healthStatusMeta";
@@ -38,6 +38,7 @@ interface JobNodeData {
   summary: string;
   direction: string;
   artifactKind?: string;
+  artifactTaxonomy?: boolean;
   artifactRole?: string;
   dimmed?: boolean;
   highlighted?: boolean;
@@ -150,21 +151,13 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
         background: "white",
         border,
         boxShadow,
-        maxWidth: data.compact ? JOB_NODE_WIDTH_COMPACT : JOB_NODE_WIDTH,
-        padding: "6px 10px 6px 12px",
+        width: data.compact ? JOB_NODE_WIDTH_COMPACT : JOB_NODE_WIDTH,
+        padding: "5px 10px 5px 12px",
         ...(data.dimmed ? DIMMED_STYLE : { opacity: 1 }),
       }}
     >
       <Handle type="target" position={targetPosition} className="!w-2 !h-2 !bg-slate-300 !border-2 !border-white" />
       <span style={accentBarStyle(artifactAccent)} />
-      <span
-        className="absolute right-2 top-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[8px] font-bold"
-        style={{ background: `${artifactAccent}18`, color: artifactAccent }}
-        aria-label={isRoute ? "Talend Route" : "Talend Job"}
-      >
-        {isRoute ? <Route className="h-2.5 w-2.5" /> : <Cog className="h-2.5 w-2.5" />}
-        {isRoute ? "ROUTE" : "JOB"}
-      </span>
 
       {/* Focus trigger: appears on hover (or always while focal). Single-click
           enters/re-centres focus mode on this job; clicking the focal node's
@@ -222,7 +215,7 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
           <ChevronDown className="h-2.5 w-2.5" />+{downstreamHidden}
         </button>
       )}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-2">
         {badge && (
           <span
             className="text-[8px] font-bold px-1.5 py-0.5 rounded text-white shrink-0"
@@ -231,13 +224,25 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
             {badge.label}
           </span>
         )}
-        <span
-          className="text-[11px] font-semibold truncate"
-          style={{ color: TITLE_COLOR }}
-          title={data.label}
-        >
-          {middleEllipsis(data.displayLabel ?? data.label, (data.compact ? 20 : 26) - (badge ? 6 : 0))}
-        </span>
+        <div className="min-w-0 flex-1">
+          <span
+            className="block truncate text-[11px] font-semibold leading-tight"
+            style={{ color: TITLE_COLOR }}
+            title={data.label}
+          >
+            {middleEllipsis(data.displayLabel ?? data.label, (data.compact ? 20 : 26) - (badge ? 6 : 0))}
+          </span>
+          {data.artifactTaxonomy && (
+            <span
+              data-testid="artifact-kind-label"
+              className="mt-0.5 block text-[8px] font-semibold leading-none"
+              style={{ color: artifactAccent }}
+              aria-label={isRoute ? "Talend Route" : "Talend Job"}
+            >
+              {isRoute ? "Route" : "Job"}
+            </span>
+          )}
+        </div>
       </div>
       {statusBadge}
       <Handle type="source" position={sourcePosition} className="!w-2 !h-2 !bg-slate-300 !border-2 !border-white" />

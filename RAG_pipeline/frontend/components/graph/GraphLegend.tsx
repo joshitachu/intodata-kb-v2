@@ -109,7 +109,11 @@ export function GraphLegend({
         )}
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-0 border-t-[1.5px] border-dashed" style={{ borderColor: "#c4b5fd" }} />
-          <span className="text-slate-500">Connection usage</span>
+          <span className="text-slate-500">
+            {showArtifactTaxonomy && collapsedMode
+              ? "Shared cross-group JMS channel"
+              : "Connection usage"}
+          </span>
         </div>
         {collapsedMode && (
           <div className="flex items-center gap-2.5">
@@ -146,7 +150,9 @@ export function GraphLegend({
             <div className="w-4 h-3 rounded border border-slate-200 bg-white overflow-hidden flex shadow-sm">
               <div className="w-[3px] h-full bg-indigo-400" />
             </div>
-            <span className="text-slate-500">Group (click to expand)</span>
+            <span className="text-slate-500">
+              Group (click to {showArtifactTaxonomy ? "explore" : "expand"})
+            </span>
           </div>
         )}
       </div>

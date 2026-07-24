@@ -5,12 +5,14 @@ import {
   applyCompoundDagreLayout,
   applyConnectionVisibility,
   filterManifestByArtifactKind,
+  filterManifestByGroup,
   deflattenOversizedRanks,
   displayNameFor,
   groupCommonPrefix,
   resolveDisplayPrefixes,
   manifestToFlow,
   manifestToCollapsedFlow,
+  manifestToLandscapeFlow,
   getDimensionsForId,
   MAX_NODES_PER_FLAT_RANK,
   type ManifestData,
@@ -54,6 +56,85 @@ describe("filterManifestByArtifactKind", () => {
     expect(flow.stats.routeCount).toBe(1);
     expect(flow.nodes.find((node) => node.id === "group:Routes")?.data.jobCount).toBe(1);
     expect(flow.nodes.some((node) => node.id === "group:Jobs")).toBe(false);
+  });
+});
+
+describe("layered Talend landscape", () => {
+  const manifest: ManifestData = {
+    job_calls: {},
+    job_called_by: {},
+    job_connections_used: {
+      ARoute: [
+        "JMS · private.a",
+        "JMS · pair.ab",
+        "JMS · shared.bus",
+        "DIRECT · same-name",
+      ],
+      BRoute: [
+        "JMS · pair.ab",
+        "JMS · shared.bus",
+        "DIRECT · same-name",
+      ],
+      CRoute: ["JMS · shared.bus"],
+      AJob: ["Database"],
+    },
+    connection_used_by: {
+      "JMS · private.a": ["ARoute"],
+      "JMS · pair.ab": ["ARoute", "BRoute"],
+      "JMS · shared.bus": ["ARoute", "BRoute", "CRoute"],
+      "DIRECT · same-name": ["ARoute", "BRoute"],
+      Database: ["AJob"],
+    },
+    job_groups: {
+      ARoute: "Root/Project/GroupA",
+      AJob: "Root/Project/GroupA",
+      BRoute: "Root/Project/GroupB",
+      CRoute: "Root/Other/GroupC",
+    },
+    artifact_kinds: {
+      ARoute: "route",
+      AJob: "job",
+      BRoute: "route",
+      CRoute: "route",
+    },
+  };
+
+  it("keeps the first level bounded to groups and proven cross-group JMS links", () => {
+    const flow = manifestToLandscapeFlow(manifest, []);
+
+    expect(flow.nodes.filter((node) => node.id.startsWith("group:"))).toHaveLength(3);
+    expect(flow.nodes.some((node) => node.id.startsWith("job:"))).toBe(false);
+    expect(flow.nodes.some((node) => node.id === "conn:JMS · private.a")).toBe(false);
+    expect(flow.nodes.some((node) => node.id.includes("DIRECT · same-name"))).toBe(false);
+
+    const pair = flow.edges.find((edge) => edge.id.includes("landscape-pair"));
+    expect(pair?.data?.edgeType).toBe("shared-channel");
+    expect(pair?.label).toBe("pair.ab");
+
+    const bus = flow.nodes.find((node) =>
+      node.id.includes("JMS · shared.bus"),
+    );
+    expect(bus?.data.connectionType).toBe("Shared JMS channel");
+    expect(flow.edges.filter((edge) => edge.target === bus?.id)).toHaveLength(3);
+    expect(flow.stats.connectionCount).toBe(2);
+  });
+
+  it("isolates one group before detailed Job and Route nodes are materialized", () => {
+    const group = filterManifestByGroup(manifest, "Root/Project/GroupA");
+    const flow = manifestToFlow(group, []);
+
+    expect(Object.keys(group.job_groups)).toEqual(["ARoute", "AJob"]);
+    expect(flow.nodes.filter((node) => node.id.startsWith("job:"))).toHaveLength(2);
+    expect(flow.nodes.some((node) => node.id === "job:BRoute")).toBe(false);
+    expect(flow.groups).toEqual(["Root/Project/GroupA"]);
+  });
+
+  it("hides every shared-channel relationship when connections are toggled off", () => {
+    const flow = manifestToLandscapeFlow(manifest, []);
+    const hidden = applyConnectionVisibility(flow.nodes, flow.edges, false);
+
+    expect(hidden.nodes.some((node) => node.id.startsWith("conn:"))).toBe(false);
+    expect(hidden.edges.some((edge) => edge.data?.edgeType === "shared-channel")).toBe(false);
   });
 });
 

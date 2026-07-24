@@ -15,6 +15,7 @@ import {
 export interface GroupSummaryNodeData {
   label: string;
   groupName: string;
+  projectLabel?: string;
   // Canvas layout direction: handles swap sides in LR mode.
   dir?: "TB" | "LR";
   color: { bg: string; border: string; text: string };
@@ -96,6 +97,14 @@ function GroupSummaryNodeComponent({ data }: { data: GroupSummaryNodeData }) {
             {data.jobCount}
           </span>
         </div>
+        {data.projectLabel && (
+          <div
+            className="-mt-1 mb-2 truncate text-[8px] font-semibold uppercase tracking-wide text-slate-400"
+            title={data.groupName}
+          >
+            {data.projectLabel}
+          </div>
+        )}
 
         {(data.routeCount || data.talendJobCount) ? (
           <div className="mb-2 flex items-center gap-1 text-[9px] font-semibold">

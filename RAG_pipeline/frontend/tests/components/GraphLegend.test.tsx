@@ -46,4 +46,17 @@ describe("GraphLegend", () => {
     expect(screen.getByText("Route invokes Job")).toBeInTheDocument();
     expect(screen.queryByText("Component orchestration")).not.toBeInTheDocument();
   });
+
+  it("labels the landscape edge as a cross-group JMS relationship", () => {
+    render(
+      <GraphLegend
+        groupColorMap={GROUP_COLOR_MAP}
+        showArtifactTaxonomy
+        collapsedMode
+      />,
+    );
+
+    expect(screen.getByText("Shared cross-group JMS channel")).toBeInTheDocument();
+    expect(screen.getByText("Group (click to explore)")).toBeInTheDocument();
+  });
 });

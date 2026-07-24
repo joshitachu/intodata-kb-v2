@@ -177,22 +177,10 @@ export interface ManifestData {
 
 export type ArtifactKindFilter = "all" | "job" | "route";
 
-/**
- * Filter the manifest itself instead of hiding already-rendered nodes. This
- * keeps collapsed group counts, aggregated edges, connections, and focus-mode
- * traversal consistent with the selected Talend design type.
- */
-export function filterManifestByArtifactKind(
+function filterManifestToArtifacts(
   manifest: ManifestData,
-  filter: ArtifactKindFilter,
+  keep: Set<string>,
 ): ManifestData {
-  if (filter === "all") return manifest;
-
-  const keep = new Set(
-    Object.entries(manifest.artifact_kinds || {})
-      .filter(([, kind]) => kind === filter)
-      .map(([artifact]) => artifact),
-  );
   const keys = <T>(record: Record<string, T> | undefined): Record<string, T> =>
     Object.fromEntries(
       Object.entries(record || {}).filter(([artifact]) => keep.has(artifact)),
@@ -247,6 +235,37 @@ export function filterManifestByArtifactKind(
   };
 }
 
+/**
+ * Filter the manifest itself instead of hiding already-rendered nodes. This
+ * keeps collapsed group counts, aggregated edges, connections, and focus-mode
+ * traversal consistent with the selected Talend design type.
+ */
+export function filterManifestByArtifactKind(
+  manifest: ManifestData,
+  filter: ArtifactKindFilter,
+): ManifestData {
+  if (filter === "all") return manifest;
+
+  const keep = new Set(
+    Object.entries(manifest.artifact_kinds || {})
+      .filter(([, kind]) => kind === filter)
+      .map(([artifact]) => artifact),
+  );
+  return filterManifestToArtifacts(manifest, keep);
+}
+
+export function filterManifestByGroup(
+  manifest: ManifestData,
+  group: string,
+): ManifestData {
+  const keep = new Set(
+    Object.keys(manifest.job_groups || {}).filter(
+      (artifact) => topologyGroupForJob(manifest, artifact) === group,
+    ),
+  );
+  return filterManifestToArtifacts(manifest, keep);
+}
+
 export function topologyGroupForJob(manifest: ManifestData, job: string): string {
   // Functional group first.  Source root is provenance, not the architecture
   // view's primary cluster (otherwise a composite bundle is one mega-node).
@@ -297,7 +316,10 @@ export function applyConnectionVisibility(
   return {
     nodes: nodes.filter((n) => !n.id.startsWith("conn:")),
     edges: edges.filter(
-      (e) => !e.source.startsWith("conn:") && !e.target.startsWith("conn:"),
+      (e) =>
+        !e.source.startsWith("conn:") &&
+        !e.target.startsWith("conn:") &&
+        e.data?.edgeType !== "shared-channel",
     ),
   };
 }
@@ -407,6 +429,7 @@ export function manifestToFlow(
         summary: meta?.summary || "",
         direction: meta?.direction || "",
         artifactKind: meta?.artifact_kind || manifest.artifact_kinds?.[name] || "job",
+        artifactTaxonomy: Boolean(manifest.artifact_kinds?.[name]),
         artifactRole: meta?.artifact_role || "standalone",
       },
     });
@@ -534,12 +557,12 @@ export function manifestToFlow(
 // end-truncation to eat the disambiguating suffix (see middleEllipsis in
 // nodeStyles.ts, which JobNode/ConnectionNode use as the remaining fallback).
 export const JOB_NODE_WIDTH = 240;
-const JOB_NODE_HEIGHT = 40;
+const JOB_NODE_HEIGHT = 48;
 export const CONN_NODE_WIDTH = 190;
 const CONN_NODE_HEIGHT = 40;
 
 export const JOB_NODE_WIDTH_COMPACT = 180;
-export const JOB_NODE_HEIGHT_COMPACT = 36;
+export const JOB_NODE_HEIGHT_COMPACT = 44;
 export const CONN_NODE_WIDTH_COMPACT = 140;
 export const CONN_NODE_HEIGHT_COMPACT = 32;
 
@@ -730,7 +753,7 @@ export function computeGroupBoundingBoxes(
 // ── Collapsed / Overview mode ───────────────────────────────────────
 
 const GROUP_SUMMARY_NODE_WIDTH = 240;
-const GROUP_SUMMARY_NODE_HEIGHT = 110;
+const GROUP_SUMMARY_NODE_HEIGHT = 124;
 
 const DIRECTION_MAP: Record<string, "in" | "out" | "both"> = {
   OnRamp: "in",
@@ -853,12 +876,14 @@ export function manifestToCollapsedFlow(
             summary: meta?.summary || "",
             direction: meta?.direction || "",
             artifactKind: meta?.artifact_kind || manifest.artifact_kinds?.[name] || "job",
+            artifactTaxonomy: Boolean(manifest.artifact_kinds?.[name]),
             artifactRole: meta?.artifact_role || "standalone",
           },
         });
       }
     } else {
       // Collapsed: single summary node
+      const groupParts = group.split("/").filter(Boolean);
       const dirBreakdown = { in: 0, out: 0, both: 0, unknown: 0 };
       const systemSet = new Set<string>();
       let connCount = 0;
@@ -882,8 +907,10 @@ export function manifestToCollapsedFlow(
         type: "groupSummaryNode",
         position: { x: 0, y: 0 },
         data: {
-          label: group,
+          label: groupParts.at(-1) || group,
           groupName: group,
+          projectLabel:
+            groupParts.length > 1 ? groupParts.at(-2) : undefined,
           color,
           jobCount: jobs.length,
           routeCount,
@@ -1132,6 +1159,129 @@ export function manifestToCollapsedFlow(
       groupCount: groups.length,
       routeCount: [...jobNames].filter((name) => (jobMetadata?.[name]?.artifact_kind || manifest.artifact_kinds?.[name]) === "route").length,
       talendJobCount: [...jobNames].filter((name) => (jobMetadata?.[name]?.artifact_kind || manifest.artifact_kinds?.[name] || "job") === "job").length,
+    },
+  };
+}
+
+/**
+ * First-level Talend landscape: one node per functional/project group.
+ *
+ * Individual designs and private channels are intentionally absent. Named JMS
+ * channels are shown only when they connect more than one group: two-group
+ * channels become one labelled edge, while broad shared buses become a single
+ * hub rather than an unreadable group-to-group clique.
+ */
+export function manifestToLandscapeFlow(
+  manifest: ManifestData,
+  connections: GraphConnectionInfo[],
+  jobMetadata?: Record<string, JobScanMetadata>,
+): FlowResult {
+  const base = manifestToCollapsedFlow(
+    manifest,
+    connections,
+    jobMetadata,
+    new Set<string>(),
+  );
+  const nodes = base.nodes.filter((node) => node.id.startsWith("group:"));
+  const edges = base.edges.filter(
+    (edge) =>
+      edge.source.startsWith("group:") &&
+      edge.target.startsWith("group:") &&
+      edge.data?.edgeType !== "group-uses" &&
+      edge.data?.edgeType !== "group-uses-context",
+  );
+
+  const groupNames = new Set(base.groups);
+  const pairChannels = new Map<string, string[]>();
+  let sharedChannelCount = 0;
+
+  for (const [channel, artifacts] of Object.entries(
+    manifest.connection_used_by || {},
+  )) {
+    // Direct/DirectVM names are local Camel endpoints. Identical names in two
+    // exports do not prove cross-group communication, so only explicit JMS
+    // destinations qualify as landscape relationships.
+    if (!channel.startsWith("JMS ·")) continue;
+    const groups = [
+      ...new Set(
+        artifacts
+          .map((artifact) => topologyGroupForJob(manifest, artifact))
+          .filter((group) => groupNames.has(group)),
+      ),
+    ].sort();
+    if (groups.length < 2) continue;
+    sharedChannelCount += 1;
+
+    if (groups.length === 2) {
+      const pairKey = `${groups[0]}→${groups[1]}`;
+      const names = pairChannels.get(pairKey) ?? [];
+      names.push(channel.slice("JMS · ".length));
+      pairChannels.set(pairKey, names);
+      continue;
+    }
+
+    const hubId = `conn:landscape:${channel}`;
+    nodes.push({
+      id: hubId,
+      type: "connectionNode",
+      position: { x: 0, y: 0 },
+      data: {
+        label: channel,
+        displayLabel: channel.slice("JMS · ".length),
+        connectionType: "Shared JMS channel",
+        host: "",
+        database: "",
+        usageCount: groups.length,
+      },
+    });
+    for (const group of groups) {
+      edges.push({
+        id: `landscape-channel:${group}:${channel}`,
+        source: `group:${group}`,
+        target: hubId,
+        type: PROJECT_EDGE_TYPE,
+        animated: false,
+        style: { ...USES_EDGE_STYLE, strokeWidth: 2 },
+        data: { edgeType: "shared-channel", channel },
+      });
+    }
+  }
+
+  for (const [pair, channels] of pairChannels) {
+    const [sourceGroup, targetGroup] = pair.split("→", 2);
+    const sortedChannels = [...new Set(channels)].sort();
+    const label =
+      sortedChannels.length === 1
+        ? sortedChannels[0]
+        : `${sortedChannels[0]} +${sortedChannels.length - 1}`;
+    edges.push({
+      id: `landscape-pair:${pair}`,
+      source: `group:${sourceGroup}`,
+      target: `group:${targetGroup}`,
+      type: PROJECT_EDGE_TYPE,
+      animated: false,
+      label,
+      labelStyle: { fill: "#6d28d9", fontWeight: 650, fontSize: 10 },
+      labelBgStyle: { fill: "#faf5ff", fillOpacity: 0.96 },
+      labelBgPadding: [5, 3] as [number, number],
+      labelBgBorderRadius: 5,
+      style: { ...USES_EDGE_STYLE, strokeWidth: 2 },
+      data: {
+        edgeType: "shared-channel",
+        channels: sortedChannels,
+      },
+    });
+  }
+
+  return {
+    ...base,
+    nodes,
+    edges,
+    stats: {
+      ...base.stats,
+      connectionCount: sharedChannelCount,
+      contextCount: 0,
+      edgeCount: edges.length,
     },
   };
 }

@@ -49,11 +49,13 @@ import { Maximize2 } from "lucide-react";
 import {
   manifestToFlow,
   manifestToCollapsedFlow,
+  manifestToLandscapeFlow,
   applyDagreLayout,
   applyCompoundDagreLayout,
   computeGroupBoundingBoxes,
   applyConnectionVisibility,
   filterManifestByArtifactKind,
+  filterManifestByGroup,
   topologyGroupForJob,
   getDimensionsForId,
   type ManifestData,
@@ -120,7 +122,7 @@ const GroupBackgroundNode = memo(function GroupBackgroundNode({ data }: { data: 
         className="absolute top-2 left-3.5 font-bold tracking-wide pointer-events-none uppercase"
         style={{ color: "#94a3b8", fontSize: labelSize }}
       >
-        {data.group}
+        {data.group.split("/").filter(Boolean).at(-1) || data.group}
       </span>
     </div>
   );
@@ -158,7 +160,14 @@ function TopologyContent() {
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [artifactFilter, setArtifactFilter] = useState<"all" | "route" | "job">("all");
+  const [focusedGroup, setFocusedGroup] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const selectedProjectOption = useMemo(
+    () => projects.find((project) => project.id === selectedProject),
+    [projects, selectedProject],
+  );
+  const showArtifactTaxonomy =
+    selectedProjectOption?.platform.toLowerCase() === "talend";
   // Always start in compact node rendering — full nodes are memory-heavy on large graphs.
   const [compactMode, setCompactMode] = useState(true);
 
@@ -458,6 +467,7 @@ function TopologyContent() {
 
   useEffect(() => {
     setArtifactFilter("all");
+    setFocusedGroup(null);
   }, [selectedProject]);
 
   // Tracks the last "meaningful" layout identity that triggered a fitView.
@@ -474,21 +484,41 @@ function TopologyContent() {
 
   // Determine effective collapsed mode (resolve auto)
   const isCollapsed = useMemo(() => {
+    if (showArtifactTaxonomy) return focusedGroup === null;
     if (collapsedMode !== null) return collapsedMode;
     // Auto: collapse if >30 jobs
     return (flowResult?.stats.jobCount ?? 0) > 30;
-  }, [collapsedMode, flowResult]);
+  }, [showArtifactTaxonomy, focusedGroup, collapsedMode, flowResult]);
 
   const activeManifest = useMemo(
-    () => graphData
-      ? filterManifestByArtifactKind(graphData.manifest, artifactFilter)
-      : null,
-    [graphData, artifactFilter],
+    () => {
+      if (!graphData) return null;
+      const scoped =
+        showArtifactTaxonomy && focusedGroup
+          ? filterManifestByGroup(graphData.manifest, focusedGroup)
+          : graphData.manifest;
+      return filterManifestByArtifactKind(scoped, artifactFilter);
+    },
+    [graphData, showArtifactTaxonomy, focusedGroup, artifactFilter],
   );
 
   // Build the flow result based on mode
   const activeFlowResult = useMemo(() => {
     if (!graphData || !activeManifest) return null;
+    if (showArtifactTaxonomy && !focusedGroup) {
+      return manifestToLandscapeFlow(
+        activeManifest,
+        graphData.connections,
+        graphData.job_metadata,
+      );
+    }
+    if (showArtifactTaxonomy && focusedGroup) {
+      return manifestToFlow(
+        activeManifest,
+        graphData.connections,
+        graphData.job_metadata,
+      );
+    }
     if (isCollapsed) {
       return manifestToCollapsedFlow(
         activeManifest,
@@ -498,7 +528,14 @@ function TopologyContent() {
       );
     }
     return manifestToFlow(activeManifest, graphData.connections, graphData.job_metadata);
-  }, [graphData, activeManifest, isCollapsed, expandedGroups]);
+  }, [
+    graphData,
+    activeManifest,
+    showArtifactTaxonomy,
+    focusedGroup,
+    isCollapsed,
+    expandedGroups,
+  ]);
 
   // Keep flowResult in sync
   useEffect(() => {
@@ -1164,9 +1201,16 @@ function TopologyContent() {
       const jobName = node.id.slice(4);
       setSelectedJob(jobName);
     } else if (node.id.startsWith("group:")) {
+      const groupName = node.id.slice(6);
+      if (showArtifactTaxonomy) {
+        setFocusedGroup(groupName);
+        setSelectedJob(null);
+        setFocusJobId(null);
+        setLineageQuery(null);
+        return;
+      }
       // Toggling triggers the main layout effect's full compound-dagre
       // relayout (see its comment) - no position bookkeeping needed here.
-      const groupName = node.id.slice(6);
       setExpandedGroups((prev) => {
         const next = new Set(prev);
         if (next.has(groupName)) {
@@ -1178,7 +1222,7 @@ function TopologyContent() {
         return next;
       });
     }
-  }, []);
+  }, [showArtifactTaxonomy]);
 
   // Double-click on a job node descends into its level-2 component graph.
   // Single-click behavior (detail panel, group expand/collapse) is unchanged.
@@ -1200,6 +1244,13 @@ function TopologyContent() {
   // Toggling expandedGroups triggers the main layout effect's full compound-
   // dagre relayout (see its comment) - no position bookkeeping needed here.
   const handleToggleGroup = useCallback((group: string) => {
+    if (showArtifactTaxonomy) {
+      setFocusedGroup((current) => current === group ? null : group);
+      setSelectedJob(null);
+      setFocusJobId(null);
+      setLineageQuery(null);
+      return;
+    }
     if (isCollapsed) {
       setExpandedGroups((prev) => {
         const next = new Set(prev);
@@ -1222,34 +1273,46 @@ function TopologyContent() {
         return next;
       });
     }
-  }, [isCollapsed]);
+  }, [showArtifactTaxonomy, isCollapsed]);
 
   const handleShowAllGroups = useCallback(() => {
+    if (showArtifactTaxonomy) {
+      setFocusedGroup(null);
+      return;
+    }
     if (isCollapsed) {
       setExpandedGroups(new Set());
     } else {
       setHiddenGroups(new Set());
     }
-  }, [isCollapsed]);
+  }, [showArtifactTaxonomy, isCollapsed]);
 
   const handleHideAllGroups = useCallback(() => {
+    if (showArtifactTaxonomy) return;
     if (isCollapsed) {
       setExpandedGroups(new Set());
     } else if (flowResult) {
       setHiddenGroups(new Set(flowResult.groups));
     }
-  }, [isCollapsed, flowResult]);
+  }, [showArtifactTaxonomy, isCollapsed, flowResult]);
 
   const handleCollapseAll = useCallback(() => {
+    if (showArtifactTaxonomy) {
+      setFocusedGroup(null);
+      setSelectedJob(null);
+      setFocusJobId(null);
+      setLineageQuery(null);
+    }
     setCollapsedMode(true);
     setExpandedGroups(new Set());
-  }, []);
+  }, [showArtifactTaxonomy]);
 
   const handleExpandAll = useCallback(() => {
+    if (showArtifactTaxonomy) return;
     setCollapsedMode(false);
     setExpandedGroups(new Set());
     setHiddenGroups(new Set());
-  }, []);
+  }, [showArtifactTaxonomy]);
 
   const handleSearchChange = useCallback((query: string) => {
     setSearchQuery(query);
@@ -1292,13 +1355,6 @@ function TopologyContent() {
     () => flowResult?.groups || [],
     [flowResult],
   );
-  const selectedProjectOption = useMemo(
-    () => projects.find((project) => project.id === selectedProject),
-    [projects, selectedProject],
-  );
-  const showArtifactTaxonomy =
-    selectedProjectOption?.platform.toLowerCase() === "talend";
-
   // Stable context value bridging focus gestures into JobNode without touching
   // node `data` (preserving the relayout/poll reference-stability guarantees).
   const focusInteraction = useMemo<FocusInteraction>(
@@ -1423,6 +1479,7 @@ function TopologyContent() {
           artifactFilter={artifactFilter}
           onArtifactFilterChange={setArtifactFilter}
           showArtifactTaxonomy={showArtifactTaxonomy}
+          focusedGroup={focusedGroup}
         />
       )}
 
