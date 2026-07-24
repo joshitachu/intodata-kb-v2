@@ -3,11 +3,12 @@
 import { useCallback, useMemo, useState } from "react";
 
 // Breadcrumb navigation stack for the topology drill-down
-// (Project > Job > Component - S2 adds the component level's table graph).
+// (Project > Group > Job > Component).
 // Each entry is one rendered React Flow canvas level.
 
 export type TopologyLevel =
   | { kind: "project" }
+  | { kind: "group"; groupName: string }
   | { kind: "job"; jobName: string }
   | { kind: "component"; jobName: string; componentName: string };
 
@@ -15,6 +16,7 @@ export interface TopologyNavigation {
   stack: TopologyLevel[];
   current: TopologyLevel;
   depth: number;
+  descendToGroup: (groupName: string) => void;
   descendToJob: (jobName: string) => void;
   descendToComponent: (componentName: string) => void;
   ascend: () => void;
@@ -26,6 +28,16 @@ const ROOT: TopologyLevel[] = [{ kind: "project" }];
 
 export function useTopologyNavigation(): TopologyNavigation {
   const [stack, setStack] = useState<TopologyLevel[]>(ROOT);
+
+  const descendToGroup = useCallback((groupName: string) => {
+    setStack((prev) => {
+      const top = prev[prev.length - 1];
+      if (top.kind === "group" && top.groupName === groupName) return prev;
+      // A group is always a direct child of the landscape. Replacing any
+      // deeper path avoids stale Job/Component crumbs when switching groups.
+      return [{ kind: "project" }, { kind: "group", groupName }];
+    });
+  }, []);
 
   const descendToJob = useCallback((jobName: string) => {
     setStack((prev) => {
@@ -76,12 +88,23 @@ export function useTopologyNavigation(): TopologyNavigation {
       stack,
       current,
       depth,
+      descendToGroup,
       descendToJob,
       descendToComponent,
       ascend,
       jumpTo,
       reset,
     }),
-    [stack, current, depth, descendToJob, descendToComponent, ascend, jumpTo, reset],
+    [
+      stack,
+      current,
+      depth,
+      descendToGroup,
+      descendToJob,
+      descendToComponent,
+      ascend,
+      jumpTo,
+      reset,
+    ],
   );
 }

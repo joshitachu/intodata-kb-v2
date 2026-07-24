@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { TopologyLevel } from "@/hooks/useTopologyNavigation";
 
 interface TopologyBreadcrumbProps {
@@ -13,6 +13,8 @@ function levelLabel(level: TopologyLevel, projectLabel: string): string {
   switch (level.kind) {
     case "project":
       return projectLabel;
+    case "group":
+      return level.groupName.split("/").filter(Boolean).at(-1) || level.groupName;
     case "job":
       return level.jobName;
     case "component":
@@ -30,6 +32,18 @@ export function TopologyBreadcrumb({
       aria-label="Topology breadcrumb"
       className="flex items-center gap-1 min-w-0 text-xs"
     >
+      {stack.length > 1 && (
+        <button
+          type="button"
+          onClick={() => onNavigate(stack.length - 2)}
+          className="mr-1 flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 font-semibold text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-900"
+          aria-label={`Back to ${levelLabel(stack[stack.length - 2], projectLabel)}`}
+          title={`Back to ${levelLabel(stack[stack.length - 2], projectLabel)}`}
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+          Back
+        </button>
+      )}
       {stack.map((level, index) => {
         const isLast = index === stack.length - 1;
         const label = levelLabel(level, projectLabel);

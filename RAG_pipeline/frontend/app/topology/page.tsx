@@ -160,7 +160,6 @@ function TopologyContent() {
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [artifactFilter, setArtifactFilter] = useState<"all" | "route" | "job">("all");
-  const [focusedGroup, setFocusedGroup] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const selectedProjectOption = useMemo(
     () => projects.find((project) => project.id === selectedProject),
@@ -196,15 +195,19 @@ function TopologyContent() {
     stack: navStack,
     current: navCurrent,
     depth: navDepth,
+    descendToGroup,
     descendToJob,
     descendToComponent,
     ascend,
     jumpTo,
     reset: resetNavigation,
   } = useTopologyNavigation();
+  const focusedGroup =
+    navStack.find((level) => level.kind === "group")?.groupName ?? null;
   const currentJobName = navCurrent.kind === "job" ? navCurrent.jobName : null;
   const currentComponent = navCurrent.kind === "component" ? navCurrent : null;
-  const atProjectLevel = navDepth === 1;
+  const atProjectLevel =
+    navCurrent.kind === "project" || navCurrent.kind === "group";
 
   // S5 field lineage ("heritage mode") - a single selection lives here so it
   // survives ascending/descending between drill-down levels (each level's
@@ -467,7 +470,6 @@ function TopologyContent() {
 
   useEffect(() => {
     setArtifactFilter("all");
-    setFocusedGroup(null);
   }, [selectedProject]);
 
   // Tracks the last "meaningful" layout identity that triggered a fitView.
@@ -1203,7 +1205,7 @@ function TopologyContent() {
     } else if (node.id.startsWith("group:")) {
       const groupName = node.id.slice(6);
       if (showArtifactTaxonomy) {
-        setFocusedGroup(groupName);
+        descendToGroup(groupName);
         setSelectedJob(null);
         setFocusJobId(null);
         setLineageQuery(null);
@@ -1222,7 +1224,7 @@ function TopologyContent() {
         return next;
       });
     }
-  }, [showArtifactTaxonomy]);
+  }, [showArtifactTaxonomy, descendToGroup]);
 
   // Double-click on a job node descends into its level-2 component graph.
   // Single-click behavior (detail panel, group expand/collapse) is unchanged.
@@ -1245,7 +1247,11 @@ function TopologyContent() {
   // dagre relayout (see its comment) - no position bookkeeping needed here.
   const handleToggleGroup = useCallback((group: string) => {
     if (showArtifactTaxonomy) {
-      setFocusedGroup((current) => current === group ? null : group);
+      if (focusedGroup === group) {
+        jumpTo(0);
+      } else {
+        descendToGroup(group);
+      }
       setSelectedJob(null);
       setFocusJobId(null);
       setLineageQuery(null);
@@ -1273,11 +1279,17 @@ function TopologyContent() {
         return next;
       });
     }
-  }, [showArtifactTaxonomy, isCollapsed]);
+  }, [
+    showArtifactTaxonomy,
+    focusedGroup,
+    jumpTo,
+    descendToGroup,
+    isCollapsed,
+  ]);
 
   const handleShowAllGroups = useCallback(() => {
     if (showArtifactTaxonomy) {
-      setFocusedGroup(null);
+      jumpTo(0);
       return;
     }
     if (isCollapsed) {
@@ -1285,7 +1297,7 @@ function TopologyContent() {
     } else {
       setHiddenGroups(new Set());
     }
-  }, [showArtifactTaxonomy, isCollapsed]);
+  }, [showArtifactTaxonomy, jumpTo, isCollapsed]);
 
   const handleHideAllGroups = useCallback(() => {
     if (showArtifactTaxonomy) return;
@@ -1298,14 +1310,14 @@ function TopologyContent() {
 
   const handleCollapseAll = useCallback(() => {
     if (showArtifactTaxonomy) {
-      setFocusedGroup(null);
+      jumpTo(0);
       setSelectedJob(null);
       setFocusJobId(null);
       setLineageQuery(null);
     }
     setCollapsedMode(true);
     setExpandedGroups(new Set());
-  }, [showArtifactTaxonomy]);
+  }, [showArtifactTaxonomy, jumpTo]);
 
   const handleExpandAll = useCallback(() => {
     if (showArtifactTaxonomy) return;
@@ -1435,8 +1447,10 @@ function TopologyContent() {
         {navDepth > 1 && (
           <TopologyBreadcrumb
             projectLabel={
-              projects.find((p) => p.id === selectedProject)?.display_name ||
-              selectedProject
+              showArtifactTaxonomy
+                ? "Landscape"
+                : projects.find((p) => p.id === selectedProject)?.display_name ||
+                  selectedProject
             }
             stack={navStack}
             onNavigate={jumpTo}

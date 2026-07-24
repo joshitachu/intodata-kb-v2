@@ -17,6 +17,38 @@ describe("useTopologyNavigation", () => {
     expect(result.current.current).toEqual({ kind: "job", jobName: "jobA" });
   });
 
+  it("keeps the group in the path while exploring one of its designs", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.descendToGroup("Root/Project/ITEM"));
+    act(() => result.current.descendToJob("OnRamp"));
+
+    expect(result.current.stack).toEqual([
+      { kind: "project" },
+      { kind: "group", groupName: "Root/Project/ITEM" },
+      { kind: "job", jobName: "OnRamp" },
+    ]);
+
+    act(() => result.current.ascend());
+    expect(result.current.current).toEqual({
+      kind: "group",
+      groupName: "Root/Project/ITEM",
+    });
+    act(() => result.current.ascend());
+    expect(result.current.current).toEqual({ kind: "project" });
+  });
+
+  it("switches groups without retaining a stale deeper path", () => {
+    const { result } = renderHook(() => useTopologyNavigation());
+    act(() => result.current.descendToGroup("Project/GroupA"));
+    act(() => result.current.descendToJob("JobA"));
+    act(() => result.current.descendToGroup("Project/GroupB"));
+
+    expect(result.current.stack).toEqual([
+      { kind: "project" },
+      { kind: "group", groupName: "Project/GroupB" },
+    ]);
+  });
+
   it("stacks sibling job hops (tRunJob portal navigation)", () => {
     const { result } = renderHook(() => useTopologyNavigation());
     act(() => result.current.descendToJob("jobA"));
