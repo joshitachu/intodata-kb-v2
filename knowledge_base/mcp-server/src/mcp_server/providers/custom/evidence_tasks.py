@@ -7,7 +7,7 @@ this chunk" (substring match against group-wide inventories). Downstream
 prompts then required every listed unit to be analyzed, forcing models to
 fabricate analyses for jobs whose evidence they never received.
 
-This module plans tasks on `## Job:` section boundaries instead:
+This module plans tasks on typed executable-design section boundaries instead:
 
 - A job's evidence section is NEVER split across tasks.
 - Multiple whole jobs are bin-packed into one task up to a byte budget
@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 
 TASKS_DIRNAME = "_tasks"
 
-_JOB_HEADING_RE = re.compile(r"^## Job:\s*(.+?)\s*$", re.MULTILINE)
+_JOB_HEADING_RE = re.compile(
+    r"^## (?:(?:Talend )?(?:Job|Route)|Artifact):\s*(.+?)\s*$",
+    re.MULTILINE,
+)
 _TRAILING_SEPARATOR_RE = re.compile(r"(?:\n---\s*)+\Z")
 
 
@@ -40,10 +43,10 @@ def _safe_name(value: str) -> str:
 
 @dataclass(frozen=True)
 class JobSection:
-    """One `## Job:` section extracted from a group evidence file."""
+    """One typed executable-design section extracted from group evidence."""
 
     name: str
-    text: str  # includes the `## Job:` heading line
+    text: str  # includes the typed heading line
 
     @property
     def size_bytes(self) -> int:
@@ -74,7 +77,8 @@ class EvidenceTask:
 def split_job_sections(text: str) -> tuple[str, list[JobSection]]:
     """Split group evidence markdown into (preamble, job sections).
 
-    Sections start at each ``## Job: <name>`` heading and run to the next one.
+    Sections start at each supported Job/Route/Artifact heading and run to the
+    next one.
     The ``---`` horizontal-rule separators the preprocess writer emits between
     jobs are stripped from section tails (they are cosmetic separators, not
     content). Returns the text before the first heading as the preamble.
@@ -127,7 +131,7 @@ def _match_units(
 
 
 def job_section_texts(task_path: Path, units: list[str]) -> dict[str, str]:
-    """Return each unit's own ``## Job:`` evidence-section text from a task file.
+    """Return each unit's own typed evidence-section text from a task file.
 
     A bin-packed task can hold several whole jobs' evidence in one file.
     Verified failure mode: an agent analyzing several sibling jobs at once
@@ -221,8 +225,8 @@ def plan_evidence_tasks(
         # partial-evidence fabrication problem, so run one oversized task and
         # surface the condition instead.
         logger.warning(
-            "group %s evidence is %d bytes (> budget %d) but has no '## Job:' "
-            "sections; running a single oversized task",
+            "group %s evidence is %d bytes (> budget %d) but has no typed "
+            "Job/Route sections; running a single oversized task",
             group, file_bytes, budget_bytes,
         )
         return [EvidenceTask(index=1, task_id=group, path=group_file, units=list(group_units))]

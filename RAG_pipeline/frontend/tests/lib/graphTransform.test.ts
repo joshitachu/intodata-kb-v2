@@ -4,6 +4,7 @@ import {
   applyDagreLayout,
   applyCompoundDagreLayout,
   applyConnectionVisibility,
+  filterManifestByArtifactKind,
   deflattenOversizedRanks,
   displayNameFor,
   groupCommonPrefix,
@@ -14,6 +15,47 @@ import {
   MAX_NODES_PER_FLAT_RANK,
   type ManifestData,
 } from "@/lib/graphTransform";
+
+describe("filterManifestByArtifactKind", () => {
+  const manifest: ManifestData = {
+    job_calls: { JobA: ["JobB"] },
+    job_called_by: { JobB: ["JobA"] },
+    job_connections_used: {
+      JobA: ["Database"],
+      RouteA: ["JMS · esb.input"],
+    },
+    connection_used_by: {
+      Database: ["JobA"],
+      "JMS · esb.input": ["RouteA"],
+    },
+    job_groups: { JobA: "Jobs", JobB: "Jobs", RouteA: "Routes" },
+    job_contexts_used: { JobA: ["Runtime"], RouteA: ["Runtime"] },
+    context_used_by: { Runtime: ["JobA", "RouteA"] },
+    artifact_kinds: { JobA: "job", JobB: "job", RouteA: "route" },
+    artifact_relations: [{
+      source: "RouteA",
+      target: "JobA",
+      relation_type: "route_invokes_job",
+      resolution: "same_root",
+    }],
+  };
+
+  it("filters source data before collapsed summaries and aggregated edges are built", () => {
+    const routeManifest = filterManifestByArtifactKind(manifest, "route");
+    const flow = manifestToCollapsedFlow(routeManifest, []);
+
+    expect(routeManifest.job_groups).toEqual({ RouteA: "Routes" });
+    expect(routeManifest.connection_used_by).toEqual({
+      "JMS · esb.input": ["RouteA"],
+    });
+    expect(routeManifest.context_used_by).toEqual({ Runtime: ["RouteA"] });
+    expect(routeManifest.artifact_relations).toEqual([]);
+    expect(flow.stats.jobCount).toBe(1);
+    expect(flow.stats.routeCount).toBe(1);
+    expect(flow.nodes.find((node) => node.id === "group:Routes")?.data.jobCount).toBe(1);
+    expect(flow.nodes.some((node) => node.id === "group:Jobs")).toBe(false);
+  });
+});
 
 function jobNode(id: string): Node {
   return { id: `job:${id}`, type: "jobNode", position: { x: 0, y: 0 }, data: { label: id } };
@@ -150,6 +192,39 @@ describe("project-level edges use bezier (default) routing", () => {
     for (const e of edges) {
       expect(e.type).toBe("default");
     }
+  });
+});
+
+describe("Talend artifact taxonomy in topology", () => {
+  it("renders Routes distinctly and labels a Route -> Job invocation", () => {
+    const manifest: ManifestData = {
+      job_calls: {}, job_called_by: {}, job_connections_used: {}, connection_used_by: {},
+      job_groups: { Inbound: "Service", Worker: "Processing" },
+      job_source_roots: { Inbound: "esb", Worker: "esb" },
+      artifact_kinds: { Inbound: "route", Worker: "job" },
+      artifact_relations: [{
+        source: "Inbound", target: "Worker", relation_type: "route_invokes_job", resolution: "same_root",
+      }],
+    };
+    const flow = manifestToFlow(manifest, [], {
+      Inbound: { purpose: "", author: "", modification_date: "", component_count: 1, component_types: [], subgroup: "", has_docs: false, external_systems: [], summary: "", direction: "", artifact_kind: "route" },
+      Worker: { purpose: "", author: "", modification_date: "", component_count: 1, component_types: [], subgroup: "", has_docs: false, external_systems: [], summary: "", direction: "", artifact_kind: "job" },
+    });
+    expect(flow.nodes.find((node) => node.id === "job:Inbound")?.type).toBe("routeNode");
+    expect(flow.nodes.find((node) => node.id === "job:Worker")?.type).toBe("jobNode");
+    expect(flow.edges.find((edge) => edge.data?.edgeType === "route_invokes_job")?.data?.edgeType).toBe("route_invokes_job");
+    expect(flow.stats).toMatchObject({ jobCount: 2, routeCount: 1, talendJobCount: 1 });
+    const collapsed = manifestToCollapsedFlow(manifest, [], undefined, new Set());
+    expect(collapsed.edges.some((edge) => edge.data?.edgeType === "route_invokes_job")).toBe(true);
+  });
+
+  it("uses functional groups before source-root provenance", () => {
+    const manifest: ManifestData = {
+      job_calls: {}, job_called_by: {}, job_connections_used: {}, connection_used_by: {},
+      job_groups: { Inbound: "Service" },
+      job_source_roots: { Inbound: "EnterpriseServiceBus" },
+    };
+    expect(manifestToFlow(manifest, []).groups).toEqual(["Service"]);
   });
 });
 
@@ -681,7 +756,7 @@ describe("applyCompoundDagreLayout positions the in-group call-graph hub structu
     }
   });
 
-  it("clusters a composite bundle by source root while retaining cross-root calls", () => {
+  it("uses functional groups before source-root provenance while retaining cross-root calls", () => {
     const manifest: ManifestData = {
       job_calls: { "one::Parent": ["two::Child"] },
       job_called_by: { "two::Child": ["one::Parent"] },
@@ -693,8 +768,8 @@ describe("applyCompoundDagreLayout positions the in-group call-graph hub structu
     };
 
     const flow = manifestToFlow(manifest, []);
-    expect(flow.groups).toEqual(["one", "two"]);
-    expect(flow.nodes.find((node) => node.id === "job:one::Parent")?.data.group).toBe("one");
+    expect(flow.groups).toEqual(["one/Jobs", "two/Jobs"]);
+    expect(flow.nodes.find((node) => node.id === "job:one::Parent")?.data.group).toBe("one/Jobs");
     expect(flow.edges.some((edge) => edge.source === "job:one::Parent" && edge.target === "job:two::Child")).toBe(true);
   });
 
@@ -741,7 +816,7 @@ describe("applyCompoundDagreLayout positions the in-group call-graph hub structu
       (node) => node.id === "conn:context:shared_Runtime-123",
     )).toBe(true);
     expect(collapsed.edges).toContainEqual(expect.objectContaining({
-      source: "group:client",
+      source: "group:Jobs",
       target: "conn:context:shared_Runtime-123",
       data: { edgeType: "group-uses-context" },
     }));

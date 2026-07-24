@@ -42,6 +42,8 @@ export const JobScanDataSchema = z.object({
   version: z.string().optional(),
   creation_date: z.string().optional(),
   modification_date: z.string().optional(),
+  artifact_kind: z.string().optional(),
+  artifact_role: z.string().optional(),
   components: z.array(ScanComponentSchema).optional().default([]),
 });
 export type JobScanData = z.infer<typeof JobScanDataSchema>;

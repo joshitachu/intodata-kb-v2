@@ -134,7 +134,7 @@ function unitLabel(platform: string, count: number): string {
   const id = platform.toLowerCase();
   if (id === "workato") return count === 1 ? "recipe" : "recipes";
   if (id === "lobster") return count === 1 ? "workflow" : "workflows";
-  if (id === "talend") return count === 1 ? "component" : "components";
+  if (id === "talend") return count === 1 ? "Talend design" : "Talend designs";
   return count === 1 ? "unit" : "units";
 }
 
@@ -931,7 +931,7 @@ export default function SourcesSettingsPage() {
           <Stat label="Sources" value={projects.length} />
           <Stat label="GitHub" value={projects.filter((p) => p.source_type === "git").length} />
           <Stat label="Docs" value={projects.reduce((sum, p) => sum + (p.doc_count ?? 0), 0)} />
-          <Stat label="Recipes / components" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
+          <Stat label="Recipes / Talend designs" value={projects.reduce((sum, p) => sum + (p.job_count ?? 0), 0)} />
         </div>
 
         {projects.length === 0 ? (
@@ -1128,6 +1128,9 @@ function SourceRow({
                   {source.id} &middot; {platformLabel ?? source.platform} &middot;{" "}
                   {source.source_type === "git" ? "GitHub" : "ZIP"} &middot;{" "}
                   {source.job_count ?? 0} {unitLabel(source.platform, source.job_count ?? 0)} &middot;{" "}
+                  {source.platform === "talend" && source.artifact_counts
+                    ? `${source.artifact_counts.job_count ?? 0} Jobs · ${source.artifact_counts.route_count ?? 0} Routes · `
+                    : ""}
                   {source.doc_count ?? 0} docs
                 </p>
               ) : (
@@ -1173,6 +1176,12 @@ function SourceRow({
               label={unitLabel(source.platform, source.job_count ?? 0)}
               value={String(source.job_count ?? 0)}
             />
+            {source.platform === "talend" && source.artifact_counts && (
+              <Meta
+                label="Jobs / Routes"
+                value={`${source.artifact_counts.job_count ?? 0} / ${source.artifact_counts.route_count ?? 0}`}
+              />
+            )}
             <Meta label="Docs" value={String(source.doc_count ?? 0)} />
           </div>
           <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">

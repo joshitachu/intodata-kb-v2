@@ -31,4 +31,19 @@ describe("GraphLegend", () => {
     expect(screen.getByText("Component orchestration")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide legend" })).toBeInTheDocument();
   });
+
+  it("explains Talend Jobs, Routes, and their distinct invocation edge", () => {
+    render(
+      <GraphLegend
+        groupColorMap={GROUP_COLOR_MAP}
+        showArtifactTaxonomy
+      />,
+    );
+
+    expect(screen.getByText("Talend Job")).toBeInTheDocument();
+    expect(screen.getByText("Talend Route")).toBeInTheDocument();
+    expect(screen.getByText("Job calls Job")).toBeInTheDocument();
+    expect(screen.getByText("Route invokes Job")).toBeInTheDocument();
+    expect(screen.queryByText("Component orchestration")).not.toBeInTheDocument();
+  });
 });

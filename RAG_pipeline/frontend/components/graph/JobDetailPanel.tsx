@@ -10,6 +10,8 @@ interface JobMetadata {
   external_systems?: string[];
   summary?: string;
   direction?: string;
+  artifact_kind?: string;
+  artifact_role?: string;
 }
 
 interface JobDetailPanelProps {
@@ -54,6 +56,13 @@ export function JobDetailPanel({ projectId, jobName, onClose, metadata }: JobDet
   const componentTypes = metadata?.component_types ?? [];
   const direction = data?.direction || metadata?.direction || "";
   const summary = data?.summary || metadata?.summary || metadata?.purpose || data?.scan_data?.purpose || "";
+  const artifactKind = metadata?.artifact_kind || data?.scan_data?.artifact_kind;
+  const artifactLabel =
+    artifactKind === "route"
+      ? "Talend Route"
+      : artifactKind === "job"
+        ? "Talend Job"
+        : "Component";
 
   return (
     <div className="absolute top-0 right-0 bottom-0 w-[400px] bg-card border-l shadow-xl z-30 flex flex-col overflow-hidden">
@@ -62,6 +71,17 @@ export function JobDetailPanel({ projectId, jobName, onClose, metadata }: JobDet
         <div className="min-w-0">
           <h2 className="text-sm font-semibold truncate">{jobName}</h2>
           <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
+            {artifactKind && (
+              <span
+                className={
+                  artifactKind === "route"
+                    ? "rounded bg-orange-50 px-1.5 py-0.5 font-semibold text-orange-700"
+                    : "rounded bg-blue-50 px-1.5 py-0.5 font-semibold text-blue-700"
+                }
+              >
+                {artifactLabel}
+              </span>
+            )}
             {data && (
               <>
                 <span className="px-1.5 py-0.5 rounded bg-muted font-medium">{data.group}</span>
@@ -105,11 +125,11 @@ export function JobDetailPanel({ projectId, jobName, onClose, metadata }: JobDet
 
         {data && !loading && (
           <div className="space-y-4">
-            {/* What This Component Does */}
+            {/* What this executable design does */}
             {summary && (
               <div className="space-y-1">
                 <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
-                  What This Component Does
+                  What This {artifactLabel} Does
                 </h3>
                 <p className="text-sm leading-relaxed">{summary}</p>
               </div>

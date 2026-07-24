@@ -19,6 +19,8 @@ export interface GroupSummaryNodeData {
   dir?: "TB" | "LR";
   color: { bg: string; border: string; text: string };
   jobCount: number;
+  routeCount?: number;
+  talendJobCount?: number;
   directionBreakdown: { in: number; out: number; both: number; unknown: number };
   topSystems: string[];
   connectionCount: number;
@@ -94,6 +96,17 @@ function GroupSummaryNodeComponent({ data }: { data: GroupSummaryNodeData }) {
             {data.jobCount}
           </span>
         </div>
+
+        {(data.routeCount || data.talendJobCount) ? (
+          <div className="mb-2 flex items-center gap-1 text-[9px] font-semibold">
+            {(data.talendJobCount ?? 0) > 0 && (
+              <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">{data.talendJobCount} Jobs</span>
+            )}
+            {(data.routeCount ?? 0) > 0 && (
+              <span className="rounded bg-orange-50 px-1.5 py-0.5 text-orange-700">{data.routeCount} Routes</span>
+            )}
+          </div>
+        ) : null}
 
         {/* Direction badges */}
         <div className="flex items-center gap-1 mb-2">

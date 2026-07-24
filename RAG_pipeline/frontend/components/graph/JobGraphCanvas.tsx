@@ -33,6 +33,7 @@ import { collapseLinearChains, CHAIN_SUMMARY_NODE_TYPE } from "@/lib/chainCollap
 interface JobGraphCanvasProps {
   projectId: string;
   jobName: string;
+  artifactKind?: string;
   /** Called when a tRunJob portal node is double-clicked. */
   onOpenJob: (jobName: string) => void;
   /** Called when a has_subgraph (tMap) node is double-clicked - descends
@@ -87,10 +88,12 @@ function EdgeStyleLegend({
 function JobGraphCanvasInner({
   projectId,
   jobName,
+  artifactKind,
   onOpenJob,
   onOpenComponent,
   lineageComponentIds = null,
 }: JobGraphCanvasProps) {
+  const designLabel = artifactKind === "route" ? "Route" : "Job";
   const { data, isLoading, error } = useJobGraph(projectId, jobName);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -212,7 +215,7 @@ function JobGraphCanvasInner({
         <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20">
           <div className="flex items-center gap-2 text-muted-foreground">
             <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-            Loading job graph...
+            Loading {designLabel.toLowerCase()} graph...
           </div>
         </div>
       )}
@@ -220,7 +223,7 @@ function JobGraphCanvasInner({
       {error && !isLoading && (
         <div className="absolute inset-0 flex items-center justify-center z-20">
           <p className="text-sm text-muted-foreground">
-            {error instanceof Error ? error.message : "Failed to load job graph"}
+            {error instanceof Error ? error.message : `Failed to load ${designLabel.toLowerCase()} graph`}
           </p>
         </div>
       )}
@@ -228,7 +231,7 @@ function JobGraphCanvasInner({
       {!isLoading && !error && flowResult && flowResult.nodes.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center z-20">
           <p className="text-sm text-muted-foreground">
-            No components found for this job.
+            No components found for this {designLabel.toLowerCase()}.
           </p>
         </div>
       )}

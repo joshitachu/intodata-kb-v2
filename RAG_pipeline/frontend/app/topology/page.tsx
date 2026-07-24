@@ -53,6 +53,7 @@ import {
   applyCompoundDagreLayout,
   computeGroupBoundingBoxes,
   applyConnectionVisibility,
+  filterManifestByArtifactKind,
   topologyGroupForJob,
   getDimensionsForId,
   type ManifestData,
@@ -83,6 +84,11 @@ interface ProjectOption {
   display_name: string;
   platform: string;
   job_count: number;
+  artifact_counts?: {
+    total_artifacts?: number;
+    job_count?: number;
+    route_count?: number;
+  };
 }
 
 interface GraphData {
@@ -122,6 +128,7 @@ const GroupBackgroundNode = memo(function GroupBackgroundNode({ data }: { data: 
 
 const nodeTypes = {
   jobNode: JobNode,
+  routeNode: JobNode,
   connectionNode: ConnectionNode,
   groupBackground: GroupBackgroundNode,
   groupSummaryNode: GroupSummaryNode,
@@ -150,6 +157,7 @@ function TopologyContent() {
   // Existing state
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  const [artifactFilter, setArtifactFilter] = useState<"all" | "route" | "job">("all");
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   // Always start in compact node rendering — full nodes are memory-heavy on large graphs.
   const [compactMode, setCompactMode] = useState(true);
@@ -448,6 +456,10 @@ function TopologyContent() {
     setGlobalProject(id);
   }, [setGlobalProject]);
 
+  useEffect(() => {
+    setArtifactFilter("all");
+  }, [selectedProject]);
+
   // Tracks the last "meaningful" layout identity that triggered a fitView.
   // Prevents fitView animations from stacking when the layout effect re-runs
   // for unrelated reasons (e.g. groupMembership rebuilding with the same shape).
@@ -467,19 +479,26 @@ function TopologyContent() {
     return (flowResult?.stats.jobCount ?? 0) > 30;
   }, [collapsedMode, flowResult]);
 
+  const activeManifest = useMemo(
+    () => graphData
+      ? filterManifestByArtifactKind(graphData.manifest, artifactFilter)
+      : null,
+    [graphData, artifactFilter],
+  );
+
   // Build the flow result based on mode
   const activeFlowResult = useMemo(() => {
-    if (!graphData) return null;
+    if (!graphData || !activeManifest) return null;
     if (isCollapsed) {
       return manifestToCollapsedFlow(
-        graphData.manifest,
+        activeManifest,
         graphData.connections,
         graphData.job_metadata,
         expandedGroups,
       );
     }
-    return manifestToFlow(graphData.manifest, graphData.connections, graphData.job_metadata);
-  }, [graphData, isCollapsed, expandedGroups]);
+    return manifestToFlow(activeManifest, graphData.connections, graphData.job_metadata);
+  }, [graphData, activeManifest, isCollapsed, expandedGroups]);
 
   // Keep flowResult in sync
   useEffect(() => {
@@ -491,19 +510,19 @@ function TopologyContent() {
   // Build group membership map for compound layout (jobNodeId → groupId)
   const groupMembership = useMemo(() => {
     const map = new Map<string, string>();
-    if (!graphData) return map;
-    const jobGroups = graphData.manifest.job_groups || {};
+    if (!activeManifest) return map;
+    const jobGroups = activeManifest.job_groups || {};
     for (const job of Object.keys(jobGroups)) {
-      const group = topologyGroupForJob(graphData.manifest, job);
+      const group = topologyGroupForJob(activeManifest, job);
       map.set(`job:${job}`, group);
     }
     return map;
-  }, [graphData]);
+  }, [activeManifest]);
 
   // Focus neighbourhood (pure) — null unless a focal job is selected.
   const focusResult = useMemo<FocusResult | null>(() => {
-    if (!focusJobId || !graphData) return null;
-    const m = graphData.manifest;
+    if (!focusJobId || !activeManifest) return null;
+    const m = activeManifest;
     return computeFocus(
       focusJobId,
       m.job_calls ?? {},
@@ -511,7 +530,7 @@ function TopologyContent() {
       m.job_connections_used ?? {},
       focusHops,
     );
-  }, [focusJobId, graphData, focusHops]);
+  }, [focusJobId, activeManifest, focusHops]);
 
   const focusActive = focusResult !== null;
 
@@ -520,8 +539,8 @@ function TopologyContent() {
   // keeps its normal colour/metadata decoration. Focal + boundary annotations
   // are attached here for JobNode to render its ring and "+N" expand badges.
   const focusFlow = useMemo<{ nodes: Node[]; edges: Edge[] } | null>(() => {
-    if (!focusResult || !graphData) return null;
-    const full = manifestToFlow(graphData.manifest, graphData.connections, graphData.job_metadata);
+    if (!focusResult || !graphData || !activeManifest) return null;
+    const full = manifestToFlow(activeManifest, graphData.connections, graphData.job_metadata);
     const inFocus = focusResult.inFocus;
     const nodes = full.nodes
       .filter((n) => inFocus.has(n.id))
@@ -543,7 +562,7 @@ function TopologyContent() {
       (e) => inFocus.has(e.source) && inFocus.has(e.target),
     );
     return { nodes, edges };
-  }, [focusResult, graphData]);
+  }, [focusResult, graphData, activeManifest]);
 
   // Visible nodes/edges from flowResult + filters
   const { visibleNodes, visibleEdges } = useMemo(() => {
@@ -846,10 +865,10 @@ function TopologyContent() {
     }
 
     // In collapsed mode, also search within collapsed group job names
-    if (isCollapsed && graphData) {
-      const jobGroups = graphData.manifest.job_groups || {};
+    if (isCollapsed && activeManifest) {
+      const jobGroups = activeManifest.job_groups || {};
       for (const job of Object.keys(jobGroups)) {
-        const group = topologyGroupForJob(graphData.manifest, job);
+        const group = topologyGroupForJob(activeManifest, job);
         if (job.toLowerCase().includes(q) && !expandedGroups.has(group)) {
           // The group summary node matches
           matches.add(`group:${group}`);
@@ -858,7 +877,7 @@ function TopologyContent() {
     }
 
     return matches;
-  }, [searchQuery, visibleNodes, isCollapsed, graphData, expandedGroups]);
+  }, [searchQuery, visibleNodes, isCollapsed, activeManifest, expandedGroups]);
 
   // Track previous searchMatchIds to avoid redundant updates
   const prevSearchRef = useRef<Set<string> | null>(null);
@@ -1258,6 +1277,8 @@ function TopologyContent() {
         contextCount: 0,
         edgeCount: 0,
         groupCount: 0,
+        routeCount: 0,
+        talendJobCount: 0,
       },
     [flowResult],
   );
@@ -1271,6 +1292,12 @@ function TopologyContent() {
     () => flowResult?.groups || [],
     [flowResult],
   );
+  const selectedProjectOption = useMemo(
+    () => projects.find((project) => project.id === selectedProject),
+    [projects, selectedProject],
+  );
+  const showArtifactTaxonomy =
+    selectedProjectOption?.platform.toLowerCase() === "talend";
 
   // Stable context value bridging focus gestures into JobNode without touching
   // node `data` (preserving the relayout/poll reference-stability guarantees).
@@ -1290,6 +1317,12 @@ function TopologyContent() {
     if (node.id.startsWith("group:")) {
       const color = (node.data as Record<string, unknown>).color as { border: string } | undefined;
       return color?.border || "#6366f1";
+    }
+    if ((node.data as Record<string, unknown>).artifactKind === "route") {
+      return "#ea580c";
+    }
+    if ((node.data as Record<string, unknown>).artifactKind === "job") {
+      return "#2563eb";
     }
     const color = (node.data as Record<string, unknown>).color as { border: string } | undefined;
     return color?.border || "#3b82f6";
@@ -1327,11 +1360,19 @@ function TopologyContent() {
             {projects.length === 0 && (
               <option value="">No scanned projects</option>
             )}
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.display_name} ({p.platform}, {p.job_count} components)
-              </option>
-            ))}
+            {projects.map((p) => {
+              const counts = p.artifact_counts;
+              const total = counts?.total_artifacts ?? p.job_count;
+              const countLabel =
+                p.platform.toLowerCase() === "talend" && counts
+                  ? `${total} designs — ${counts.job_count ?? 0} Jobs · ${counts.route_count ?? 0} Routes`
+                  : `${p.job_count} components`;
+              return (
+                <option key={p.id} value={p.id}>
+                  {p.display_name} ({p.platform}, {countLabel})
+                </option>
+              );
+            })}
           </select>
           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
         </div>
@@ -1379,6 +1420,9 @@ function TopologyContent() {
           focusJobName={focusJobId}
           focusHops={focusHops}
           onClearFocus={handleClearFocus}
+          artifactFilter={artifactFilter}
+          onArtifactFilterChange={setArtifactFilter}
+          showArtifactTaxonomy={showArtifactTaxonomy}
         />
       )}
 
@@ -1451,7 +1495,14 @@ function TopologyContent() {
             maskColor="rgba(0,0,0,0.1)"
             nodeColor={minimapNodeColor}
           />
-          {flowResult && <GraphLegend groupColorMap={groupColorMap} collapsedMode={isCollapsed} showHealth={overlayActive} />}
+          {flowResult && (
+            <GraphLegend
+              groupColorMap={groupColorMap}
+              collapsedMode={isCollapsed}
+              showHealth={overlayActive}
+              showArtifactTaxonomy={showArtifactTaxonomy}
+            />
+          )}
         </ReactFlow>
 
         {/* Runtime-health overlay status chips (S3), level 0/1 only. */}
@@ -1511,6 +1562,7 @@ function TopologyContent() {
             key={`${navDepth}:${currentJobName}`}
             projectId={selectedProject}
             jobName={currentJobName}
+            artifactKind={graphData?.job_metadata?.[currentJobName]?.artifact_kind}
             onOpenJob={descendToJob}
             onOpenComponent={descendToComponent}
             lineageComponentIds={jobLineageIds}

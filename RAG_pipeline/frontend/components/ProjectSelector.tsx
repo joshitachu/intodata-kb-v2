@@ -44,11 +44,18 @@ export function ProjectSelector() {
         )}
       >
         <option value="">Select a project...</option>
-        {data.projects.map((project) => (
-          <option key={project.id} value={project.id}>
-            {project.display_name} ({project.job_count} components)
-          </option>
-        ))}
+        {data.projects.map((project) => {
+          const counts = project.artifact_counts;
+          const talendBreakdown =
+            project.platform.toLowerCase() === "talend" && counts
+              ? `${counts.total_artifacts ?? project.job_count} designs — ${counts.job_count ?? 0} Jobs · ${counts.route_count ?? 0} Routes`
+              : `${project.job_count} components`;
+          return (
+            <option key={project.id} value={project.id}>
+              {project.display_name} ({talendBreakdown})
+            </option>
+          );
+        })}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
     </div>

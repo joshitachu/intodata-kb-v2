@@ -27,6 +27,7 @@ from intodoc.models import (
     TMapData,
     TMapEntry,
     TRunJobRef,
+    ArtifactReference,
 )
 from intodoc.platforms.base_parser import BaseParser
 from intodoc.scanner.walker import walk_repo
@@ -50,6 +51,8 @@ _INTERNAL_COMPONENTS: frozenset[str] = frozenset({
     "tFileCopy", "tFileExist",
     "tMsgBox", "tWarn", "tDie", "tBufferInput", "tBufferOutput",
     "tNormalize", "tDenormalize", "tIterateToFlow",
+    "tConvertType", "tXMLMap", "tXSLT", "tLibraryLoad", "tLogCatcher",
+    "tStatCatcher", "tRowGenerator",
     # ESB/Camel infrastructure — pure routing/transformation, no external system
     "cDirect", "cSplitter", "cAggregator", "cMessageRouter", "cRecipientList",
     "cProcessor", "cSetBody", "cSetHeader", "cSetProperty", "cRemoveHeader",
@@ -90,6 +93,8 @@ _TALEND_SYSTEM_MAP: dict[str, str] = {
     "tSFTP": "SFTP",
     "tSAP": "SAP",
     "tLDAP": "LDAP",
+    "tFileInput": "File endpoint",
+    "tFileOutput": "File endpoint",
     "tJDBC": "JDBC",
     "tElasticsearch": "Elasticsearch",
     "tDynamoDB": "DynamoDB",
@@ -99,6 +104,9 @@ _TALEND_SYSTEM_MAP: dict[str, str] = {
     # ESB/Camel components that represent external systems
     "cREST": "REST API",
     "cRESTClient": "REST API",
+    "cSOAP": "SOAP API",
+    "cHttp": "HTTP API",
+    "cFile": "File endpoint",
     "cJMS": "JMS Broker",
     "cActiveMQ": "ActiveMQ",
     "cKafkaInput": "Kafka",
@@ -117,12 +125,10 @@ _STRIP_SUFFIXES = (
 
 # ── ESB / Camel Route Classification ─────────────────────────────────
 #
-# Talend Studio serializes both regular DI Jobs and ESB Routes (Camel-based)
-# into the same .item/.properties format under process/. There is no file-type
-# distinction; the only signal that a job is an ESB/Camel route is its use of
-# c-prefixed Camel components (versus t-prefixed Talend DI components). This is
-# the single source of truth for that detection -- the mcp-server consumes the
-# computed is_esb_route / esb_component_types fields rather than re-deriving them.
+# Talend Studio stores executable designs in distinct repository directories:
+# process/ for Jobs and routes/ for Camel Routes. The c-prefixed palette
+# classifier below is additive component evidence for compatibility and
+# diagnostics; directory identity remains the canonical artifact taxonomy.
 #
 # Classification keys off the palette prefix convention itself (a lowercase "c"
 # followed by an uppercase letter), not a hardcoded list of known Camel component
@@ -158,6 +164,13 @@ def _extract_talend_external_system(component_type: str) -> str | None:
             best_len = len(prefix)
     if best_match:
         return best_match
+
+    # Unknown Camel components are routing steps, not external systems. Treating
+    # cOnException/cTry/cJavaDSLProcessor (and custom routelet wrappers) as
+    # systems creates a noisy, factually wrong topology.
+    lowered = component_type.lower()
+    if component_type.startswith("c") or "routelet" in lowered or "routlet" in lowered:
+        return None
 
     # Fallback: strip 't' prefix + known suffixes -> title case
     name = component_type
@@ -294,7 +307,17 @@ class TalendParser(BaseParser):
         self._qualify_composite_jobs(jobs, composite)
         self._qualify_context_groups(context_groups)
         manifest = self._build_manifest(jobs, routines, root_descriptors, context_groups)
-        console.print(f"  Manifest built: {len(manifest.job_calls)} job-call edges")
+        job_call_edges = sum(len(callees) for callees in manifest.job_calls.values())
+        route_invocation_edges = sum(
+            relation.get("relation_type") == "route_invokes_job"
+            and bool(relation.get("target"))
+            for relation in manifest.artifact_relations
+        )
+        console.print(
+            "  Manifest built: "
+            f"{job_call_edges} Job→Job calls, "
+            f"{route_invocation_edges} Route→Job invocations"
+        )
 
         return ScanResult(
             platform="talend",
@@ -309,6 +332,17 @@ class TalendParser(BaseParser):
                 "total_files_walked": len(all_files),
                 "total_files_indexed": len(files),
                 "total_jobs": len(jobs),
+                # ``total_jobs`` is the historic total-design count.  New
+                # clients must use the explicit taxonomy below so Routes are
+                # never presented as DI Jobs.
+                "total_artifacts": len(jobs),
+                "job_count": sum(job.artifact_kind == "job" for job in jobs),
+                "route_count": sum(job.artifact_kind == "route" for job in jobs),
+                "joblet_count": sum(job.artifact_kind == "joblet" for job in jobs),
+                "routelet_count": sum(job.artifact_kind == "routelet" for job in jobs),
+                "empty_or_unparsed_count": sum(
+                    job.scan_quality != "complete" for job in jobs
+                ),
                 "talend_roots": root_descriptors,
                 "total_roots": len(talend_roots),
                 "execution_roots": len(execution_roots),
@@ -371,12 +405,23 @@ class TalendParser(BaseParser):
     # ── Job ID Index ──────────────────────────────────────────────────
 
     def _build_job_id_index(self, talend_root: Path) -> None:
-        """Build Property.id → Property.label index from process/**/*.properties files."""
-        process_dir = talend_root / "process"
-        if not process_dir.exists():
+        """Build Property.id → label index for executable designs.
+
+        Route invocations refer to Jobs, but indexing both repository folders
+        also makes the stored evidence useful when a malformed source uses a
+        Route identity in a reference; final relation resolution still limits
+        cTalendJob targets to canonical ``job`` artifacts.
+        """
+        props_files = [
+            props_file
+            for directory in self._JOB_SOURCE_DIRS
+            for props_file in sorted((talend_root / directory).rglob("*.properties"))
+            if (talend_root / directory).exists()
+        ]
+        if not props_files:
             return
 
-        for props_file in sorted(process_dir.rglob("*.properties")):
+        for props_file in props_files:
             try:
                 text = self._read_filtered(props_file)
                 root = ET.fromstring(text)
@@ -387,6 +432,7 @@ class TalendParser(BaseParser):
                         prop_label = elem.get("label", "")
                         if prop_id and prop_label:
                             self._job_id_index[prop_id] = prop_label
+                            self._job_id_index[prop_id.lstrip("_")] = prop_label
             except ET.ParseError as e:
                 console.print(f"  [yellow]XML parse error in {props_file.name}: {e}[/yellow]")
                 self._warn(kind="parse_error", file=props_file, message=str(e), phase="job_id_index")
@@ -545,6 +591,22 @@ class TalendParser(BaseParser):
                     job = self._parse_job(item_file, base_dir)
                     if job:
                         job.source_design = dir_name
+                        # Repository location is the canonical identity. A
+                        # Route with only a routelet/custom component is still
+                        # a Route even when the ESB palette heuristic is empty.
+                        job.artifact_kind = "route" if dir_name == "routes" else "job"
+                        job.artifact_role = (
+                            "routelet_wrapper"
+                            if dir_name == "routes" and any(
+                                any(
+                                    marker in component.component_type.lower()
+                                    for marker in ("routelet", "routlet")
+                                )
+                                for component in job.components
+                            )
+                            else "standalone"
+                        )
+                        job.scan_quality = "empty" if not job.components else "complete"
                         jobs.append(job)
                 except ET.ParseError as e:
                     console.print(f"  [yellow]XML parse error in {item_file.name}: {e}[/yellow]")
@@ -742,6 +804,8 @@ class TalendParser(BaseParser):
         # Extract tRunJob references
         if comp_type == "tRunJob":
             self._extract_trunjob_ref(params, job)
+        elif comp_type == "cTalendJob":
+            self._extract_ctalendjob_ref(params, job, unique_name)
 
     def _parse_mapper_data(self, node_data: ET.Element) -> TMapData:
         """Parse a TalendMapper:MapperData nodeData element."""
@@ -805,6 +869,37 @@ class TalendParser(BaseParser):
                 child_job=child_job,
                 child_job_xmi_id=xmi_ref,
                 context_params=context_params,
+            ))
+
+    def _extract_ctalendjob_ref(
+        self, params: list[ComponentParam], job: ParsedJob, component_name: str,
+    ) -> None:
+        """Extract a Route -> Job invocation without trusting a display label.
+
+        Talend Studio versions serialize the selected Job under different
+        parameter names.  We retain both the human-readable target and the
+        repository identity, resolving only when there is one safe match.
+        """
+        target_name = ""
+        xmi_ref = ""
+        for param in params:
+            if param.name in {"SELECTED_JOB_NAME", "JOB_NAME", "PROCESS"}:
+                target_name = param.value
+            elif param.name in {
+                "SELECTED_JOB_NAME:PROCESS_TYPE_PROCESS",
+                "PROCESS:PROCESS_TYPE_PROCESS",
+                "JOB_NAME:PROCESS_TYPE_PROCESS",
+            }:
+                xmi_ref = param.value
+        if not target_name and xmi_ref:
+            candidate_id = xmi_ref.split(":")[-1].lstrip("_")
+            target_name = self._job_id_index.get(candidate_id, "")
+        if target_name or xmi_ref:
+            job.artifact_refs.append(ArtifactReference(
+                target_name=target_name or xmi_ref,
+                target_xmi_id=xmi_ref,
+                relation_type="route_invokes_job",
+                component_name=component_name,
             ))
 
     def _parse_connection(self, conn_elem: ET.Element, job: ParsedJob) -> None:
@@ -946,6 +1041,28 @@ class TalendParser(BaseParser):
                     ref.resolution = "global"
                 elif len(global_matches) > 1:
                     ref.resolution = "ambiguous"
+            for ref in job.artifact_refs:
+                # cTalendJob invokes DI Job designs.  Do not choose a same
+                # named Route or a duplicate target; ambiguity remains useful
+                # evidence but is never rendered as a false topology edge.
+                candidates = [
+                    item for item in by_root_name.get((job.source_root, ref.target_name), [])
+                    if item.artifact_kind == "job"
+                ]
+                global_candidates = [
+                    item for item in by_name.get(ref.target_name, [])
+                    if item.artifact_kind == "job"
+                ]
+                if len(candidates) == 1:
+                    ref.resolved_artifact_id = candidates[0].job_id
+                    ref.resolution = "same_root"
+                elif len(candidates) > 1:
+                    ref.resolution = "ambiguous"
+                elif len(global_candidates) == 1:
+                    ref.resolved_artifact_id = global_candidates[0].job_id
+                    ref.resolution = "global"
+                elif len(global_candidates) > 1:
+                    ref.resolution = "ambiguous"
 
     @staticmethod
     def _qualify_context_groups(context_groups: list[ContextGroup]) -> None:
@@ -977,7 +1094,10 @@ class TalendParser(BaseParser):
         m = ProjectManifest()
 
         m.source_roots = source_roots
-        composite = sum(root.get("role", "execution") == "execution" for root in source_roots) > 1
+        composite_execution_bundle = sum(
+            root.get("role", "execution") == "execution"
+            for root in source_roots
+        ) > 1
         contexts = context_groups or []
         contexts_by_id: dict[str, list[ContextGroup]] = {}
         for context in contexts:
@@ -1002,10 +1122,19 @@ class TalendParser(BaseParser):
 
         for job in jobs:
             job_key = job.job_id or job.name
+            m.artifact_kinds[job_key] = job.artifact_kind
             m.job_source_roots[job_key] = job.source_root
             # job_groups
             group = job.group or "Global"
-            m.job_groups[job_key] = f"{job.source_root}/{group}" if composite else group
+            # Keep functional folders as the primary grouping, but qualify
+            # them in a multi-project bundle so identically named folders such
+            # as "Jobs" from different Talend projects never collapse into one
+            # misleading topology group.
+            m.job_groups[job_key] = (
+                f"{job.source_root}/{group}"
+                if composite_execution_bundle and job.source_root
+                else group
+            )
 
             # job_calls / job_called_by (from tRunJob refs)
             if job.trunjob_refs:
@@ -1020,6 +1149,33 @@ class TalendParser(BaseParser):
                     m.job_calls[job_key] = children
                     for child in children:
                         m.job_called_by.setdefault(child, []).append(job_key)
+                        m.artifact_relations.append({
+                            "source": job_key,
+                            "target": child,
+                            "relation_type": "job_calls_job",
+                            "resolution": "resolved",
+                            "provenance": "tRunJob",
+                        })
+
+            for ref in job.artifact_refs:
+                if ref.resolved_artifact_id:
+                    m.artifact_relations.append({
+                        "source": job_key,
+                        "target": ref.resolved_artifact_id,
+                        "relation_type": ref.relation_type,
+                        "resolution": ref.resolution,
+                        "provenance": "cTalendJob",
+                        "component_name": ref.component_name,
+                    })
+                else:
+                    m.artifact_relations.append({
+                        "source": job_key,
+                        "target": "",
+                        "target_name": ref.target_name,
+                        "relation_type": ref.relation_type,
+                        "resolution": ref.resolution,
+                        "provenance": "cTalendJob",
+                    })
 
             # job_connections_used / connection_used_by (from component refs)
             conn_names: set[str] = set()
@@ -1080,6 +1236,44 @@ class TalendParser(BaseParser):
                     systems.add(system)
             if systems:
                 m.job_external_systems[job_key] = sorted(systems)
+
+            # Route communication is first-class structural evidence. These
+            # records intentionally keep only endpoint/channel *kind* and a
+            # redacted, bounded logical name; scanner output must not expose
+            # literal URLs or credentials from component parameters.
+            if job.artifact_kind == "route":
+                for comp in job.components:
+                    if comp.component_type in {"cDirect", "cDirectVM", "cJMS"}:
+                        channel_type = {
+                            "cDirect": "direct",
+                            "cDirectVM": "direct-vm",
+                            "cJMS": "jms",
+                        }[comp.component_type]
+                        channel = _safe_route_channel(comp.params)
+                        m.artifact_channels.append({
+                            "artifact": job_key,
+                            "channel_type": channel_type,
+                            "channel": channel,
+                            "component_name": comp.unique_name,
+                            "provenance": comp.component_type,
+                        })
+                        connection_name = _route_channel_connection_name(
+                            channel_type, channel,
+                        )
+                        if connection_name:
+                            used = m.job_connections_used.setdefault(job_key, [])
+                            if connection_name not in used:
+                                used.append(connection_name)
+                            users = m.connection_used_by.setdefault(connection_name, [])
+                            if job_key not in users:
+                                users.append(job_key)
+                    elif comp.component_type in {"cREST", "cSOAP", "cFile", "cTimer"}:
+                        m.artifact_endpoints.append({
+                            "artifact": job_key,
+                            "endpoint_type": comp.component_type.removeprefix("c").lower(),
+                            "component_name": comp.unique_name,
+                            "provenance": comp.component_type,
+                        })
 
         return m
 
@@ -1167,6 +1361,34 @@ def _qualified_job_id(source_root: str, discriminator: str) -> str:
     raw = f"{source_root}::{discriminator}"
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_") or "job"
     return f"{slug[:56].rstrip('_') or 'job'}-{hashlib.sha256(raw.encode()).hexdigest()[:12]}"
+
+
+def _safe_route_channel(params: list[ComponentParam]) -> str:
+    """Return non-sensitive channel evidence suitable for the topology API."""
+    channel_names = {
+        "URI", "ENDPOINT_URI", "DIRECT_URI", "DESTINATION", "QUEUE",
+        "QUEUE_NAME", "TOPIC", "TOPIC_NAME", "JMS_DESTINATION", "NAME",
+    }
+    for param in params:
+        if param.name.upper() not in channel_names:
+            continue
+        value = param.value.strip()
+        if not value:
+            continue
+        # URLs often include infrastructure details, query credentials, or a
+        # service path. Preserve only that an endpoint is configured.
+        if "://" in value or "@" in value or "password" in value.lower():
+            return "configured endpoint"
+        return re.sub(r"\s+", " ", value)[:120]
+    return "configured channel"
+
+
+def _route_channel_connection_name(channel_type: str, channel: str) -> str:
+    """Create a stable shared-channel topology node without inventing identity."""
+    normalized = channel.strip().strip("\"'")
+    if not normalized or normalized in {"configured channel", "configured endpoint"}:
+        return ""
+    return f"{channel_type.upper()} · {normalized}"
 
 
 def _find_talend_root(repo_root: Path) -> Path | None:

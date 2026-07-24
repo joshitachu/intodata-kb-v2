@@ -467,6 +467,13 @@ export const DeepDiveProjectSchema = z.object({
   display_name: z.string(),
   platform: z.string(),
   job_count: z.number(),
+  artifact_counts: z.object({
+    total_artifacts: z.number().optional(),
+    job_count: z.number().optional(),
+    route_count: z.number().optional(),
+    joblet_count: z.number().optional(),
+    routelet_count: z.number().optional(),
+  }).optional(),
   last_scan_at: z.string().nullable(),
 });
 

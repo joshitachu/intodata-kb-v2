@@ -36,6 +36,9 @@ class ProjectResponse(BaseModel):
     last_generate_at: datetime.datetime | None = None
     last_rag_push_at: datetime.datetime | None = None
     job_count: int = 0
+    # Additive scan-derived taxonomy. ``job_count`` remains the legacy total
+    # design count until persistence callers migrate.
+    artifact_counts: dict[str, int] = Field(default_factory=dict)
     doc_count: int = 0
     error_message: str | None = None
     last_ingested_commit_sha: str | None = None
@@ -1026,6 +1029,7 @@ class DeepDiveProject(BaseModel):
     display_name: str
     platform: str
     job_count: int = 0
+    artifact_counts: dict[str, int] = Field(default_factory=dict)
     last_scan_at: datetime.datetime | None = None
 
 
@@ -1077,6 +1081,8 @@ class JobScanMetadata(BaseModel):
     external_systems: list[str] = []
     summary: str = ""
     direction: str = ""
+    artifact_kind: str = "job"
+    artifact_role: str = "standalone"
 
 
 class ProjectGraphResponse(BaseModel):
@@ -1084,6 +1090,7 @@ class ProjectGraphResponse(BaseModel):
     manifest: dict
     connections: list[GraphConnectionInfo] = []
     job_metadata: dict[str, JobScanMetadata] = {}
+    artifact_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class JobDocSection(BaseModel):

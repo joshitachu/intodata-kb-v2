@@ -94,6 +94,21 @@ class TRunJobRef(BaseModel):
     resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved
 
 
+class ArtifactReference(BaseModel):
+    """A typed reference between independently executable Talend designs.
+
+    ``jobs`` remains the wire-format collection for historic callers, but a
+    Talend Route is not a DI Job.  This model keeps the relation explicit
+    without making consumers infer it from a component palette prefix.
+    """
+    target_name: str
+    target_xmi_id: str = ""
+    relation_type: str  # job_calls_job | route_invokes_job
+    component_name: str = ""
+    resolved_artifact_id: str = ""
+    resolution: str = "unresolved"  # same_root | global | ambiguous | unresolved
+
+
 class Connection(BaseModel):
     name: str
     source: str
@@ -143,14 +158,21 @@ class ParsedJob(BaseModel):
     context_groups: list[ContextGroup] = Field(default_factory=list)
     tmap_data: list[TMapData] = Field(default_factory=list)
     trunjob_refs: list[TRunJobRef] = Field(default_factory=list)
+    artifact_refs: list[ArtifactReference] = Field(default_factory=list)
     raw_routines: list[str] = Field(default_factory=list)
     group: str = ""
     subgroup: str = ""
     active: bool = True
-    # ESB/Camel route classification (Talend serializes DI Jobs and ESB Routes in
-    # the same .item format; the only signal is c-prefixed Camel component usage).
+    # Additive Camel palette evidence. Canonical Job/Route identity comes from
+    # the Talend repository directory and is stored in artifact_kind below.
     is_esb_route: bool = False
     esb_component_types: list[str] = Field(default_factory=list)
+    # Canonical Talend repository taxonomy.  Defaults preserve historic scan
+    # JSON; the parser assigns this from process/ versus routes/, never from
+    # a c-component heuristic.
+    artifact_kind: str = "job"  # job | route | joblet | routelet
+    artifact_role: str = "standalone"  # standalone | reusable | routelet_wrapper
+    scan_quality: str = "complete"  # complete | empty | parse_warning
 
 
 class MetadataConnection(BaseModel):
@@ -199,6 +221,12 @@ class ProjectManifest(BaseModel):
     job_context_links: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
     unresolved_context_refs: dict[str, list[dict[str, str]]] = Field(default_factory=dict)
     job_support_roots: dict[str, list[str]] = Field(default_factory=dict)
+    # Additive typed topology facts.  Legacy job_* maps intentionally stay so
+    # external clients can migrate independently.
+    artifact_kinds: dict[str, str] = Field(default_factory=dict)
+    artifact_relations: list[dict] = Field(default_factory=list)
+    artifact_channels: list[dict] = Field(default_factory=list)
+    artifact_endpoints: list[dict] = Field(default_factory=list)
 
 
 # ── Scan Result ──────────────────────────────────────────────────────

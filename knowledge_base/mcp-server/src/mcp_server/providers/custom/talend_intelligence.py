@@ -7,7 +7,6 @@ consume these facts rather than rediscovering them from raw scanner output.
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -27,6 +26,9 @@ class TalendESBFacts(BaseModel):
     esb_components: list[str] = Field(default_factory=list)
     esb_component_types: list[str] = Field(default_factory=list)
     esb_job_count: int = 0
+    total_artifacts: int = 0
+    talend_job_count: int = 0
+    route_count: int = 0
 
 
 class TalendActivityFlags(BaseModel):
@@ -52,23 +54,32 @@ def detect_talend_esb_patterns(scan_result: dict[str, Any]) -> TalendESBFacts:
     the result has esb_detected=False and empty lists.
     """
     jobs: list[dict[str, Any]] = scan_result.get("jobs") or []
-    esb_job_names: list[str] = []
+    route_names: list[str] = []
     esb_type_set: set[str] = set()
 
     for job in jobs:
-        if not job.get("is_esb_route"):
+        # Repository taxonomy is canonical.  The historic ESB flag remains
+        # supporting component evidence for old scan caches only.
+        is_route = job.get("artifact_kind") == "route"
+        if not is_route and "artifact_kind" in job:
+            continue
+        if not is_route and not job.get("is_esb_route"):
             continue
         job_name: str = str(job.get("name") or job.get("job_name") or "")
-        if job_name and job_name not in esb_job_names:
-            esb_job_names.append(job_name)
+        if job_name and job_name not in route_names:
+            route_names.append(job_name)
         for comp_type in job.get("esb_component_types") or []:
             esb_type_set.add(str(comp_type))
 
     return TalendESBFacts(
-        esb_detected=bool(esb_job_names),
-        esb_components=sorted(esb_job_names),
+        esb_detected=bool(route_names),
+        esb_components=sorted(route_names),
         esb_component_types=sorted(esb_type_set),
-        esb_job_count=len(esb_job_names),
+        # Kept for backward compatibility with phase validators.
+        esb_job_count=len(route_names),
+        total_artifacts=len(jobs),
+        talend_job_count=sum(job.get("artifact_kind", "job") == "job" for job in jobs),
+        route_count=len(route_names),
     )
 
 

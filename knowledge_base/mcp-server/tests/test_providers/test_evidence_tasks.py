@@ -35,6 +35,20 @@ def test_split_job_sections_extracts_preamble_and_jobs(tmp_path):
     assert "## Job: JobB" not in sections[0].text
 
 
+def test_split_job_sections_accepts_typed_talend_jobs_and_routes():
+    text = (
+        "# Talend designs\n"
+        "\n---\n## Talend Route: Inbound\n\nroute evidence\n"
+        "\n---\n## Talend Job: Worker\n\njob evidence\n"
+    )
+
+    _, sections = split_job_sections(text)
+
+    assert [section.name for section in sections] == ["Inbound", "Worker"]
+    assert sections[0].text.startswith("## Talend Route: Inbound")
+    assert sections[1].text.startswith("## Talend Job: Worker")
+
+
 def test_small_group_is_single_task_with_original_file(tmp_path):
     path = _write_group_file(tmp_path, {"JobA": 100, "JobB": 100})
     tasks = plan_evidence_tasks("GroupA", path, ["JobA", "JobB"], tmp_path / "out", budget_bytes=70_000)

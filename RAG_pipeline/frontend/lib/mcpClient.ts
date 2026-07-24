@@ -46,6 +46,13 @@ export interface SourceProject {
   source_type: string;
   status: string;
   job_count?: number;
+  artifact_counts?: {
+    total_artifacts?: number;
+    job_count?: number;
+    route_count?: number;
+    joblet_count?: number;
+    routelet_count?: number;
+  };
   doc_count?: number;
   error_message?: string | null;
   last_scan_at?: string | null;

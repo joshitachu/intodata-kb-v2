@@ -26,9 +26,32 @@ def test_format_chunk_markdown_uses_composite_job_identity():
     parts, count = ClaudeService._format_chunk_markdown(Scanner(), "/tmp", [{"chunk_id": "one"}])
     rendered = "".join(parts)
     assert count == 1
-    assert "## Job: root_a_Shared-123" in rendered
+    assert "## Talend Job: root_a_Shared-123" in rendered
     assert "Display name: `Shared`" in rendered
     assert "Source root: `exports/A`" in rendered
+
+
+def test_format_chunk_markdown_keeps_talend_routes_distinct_from_jobs():
+    class Scanner:
+        def read_chunk_data(self, _output_dir, _chunk_id):
+            return {
+                "jobs": [{
+                    "name": "Inbound",
+                    "job_id": "Inbound",
+                    "artifact_kind": "route",
+                    "components": [],
+                }],
+            }
+
+    parts, count = ClaudeService._format_chunk_markdown(
+        Scanner(), "/tmp", [{"chunk_id": "one"}], platform="talend",
+    )
+    rendered = "".join(parts)
+
+    assert count == 1
+    assert "## Talend Route: Inbound" in rendered
+    assert "## Talend Job: Inbound" not in rendered
+    assert "Analyze as message mediation" in rendered
 
 
 def test_render_chunk_extras_includes_redacted_support_context_evidence():

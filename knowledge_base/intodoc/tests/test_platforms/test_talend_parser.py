@@ -155,6 +155,122 @@ class TestVersionDedup:
 
 
 class TestCompositeTalendBundles:
+    def test_route_ctalendjob_resolves_a_same_root_di_job(self, parser, tmp_path):
+        root = _synthetic_project(tmp_path)
+        _write_job(root, "Jobs", "Worker", "0.1")
+        routes = root / "routes" / "Service"
+        routes.mkdir(parents=True)
+        body = (
+            '<node componentName="cTalendJob"><elementParameter name="UNIQUE_NAME" value="invoke"/>'
+            '<elementParameter name="SELECTED_JOB_NAME" value="Worker"/></node>'
+        )
+        (routes / "Inbound_0.1.item").write_text(
+            '<?xml version="1.0"?><talendfile:ProcessType ' + _ITEM_XMLNS + '>' + body + '</talendfile:ProcessType>',
+            encoding="utf-8",
+        )
+        (routes / "Inbound_0.1.properties").write_text(
+            '<?xml version="1.0"?><xmi:XMI xmlns:xmi="http://www.omg.org/XMI" xmlns:TalendProperties="http://www.talend.org/properties">'
+            '<TalendProperties:Property label="Inbound" version="0.1"/></xmi:XMI>', encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+        route = next(job for job in result.jobs if job.name == "Inbound")
+        assert route.artifact_kind == "route"
+        assert route.artifact_refs[0].resolution == "same_root"
+        assert route.artifact_refs[0].resolved_artifact_id == "Worker"
+        assert result.manifest.artifact_relations == [{
+            "source": "Inbound", "target": "Worker", "relation_type": "route_invokes_job",
+            "resolution": "same_root", "provenance": "cTalendJob", "component_name": "invoke",
+        }]
+
+    def test_route_channels_become_shared_topology_dependencies(self, parser, tmp_path):
+        root = _synthetic_project(tmp_path)
+        routes = root / "routes" / "Service"
+        routes.mkdir(parents=True)
+        body = (
+            '<node componentName="cJMS">'
+            '<elementParameter name="UNIQUE_NAME" value="queue"/>'
+            '<elementParameter name="DESTINATION" value="&quot;esb.orders&quot;"/>'
+            "</node>"
+            '<node componentName="cDirect">'
+            '<elementParameter name="UNIQUE_NAME" value="direct"/>'
+            '<elementParameter name="NAME" value="&quot;validate&quot;"/>'
+            "</node>"
+        )
+        (routes / "Inbound_0.1.item").write_text(
+            '<?xml version="1.0"?><talendfile:ProcessType '
+            + _ITEM_XMLNS
+            + ">"
+            + body
+            + "</talendfile:ProcessType>",
+            encoding="utf-8",
+        )
+        (routes / "Inbound_0.1.properties").write_text(
+            '<?xml version="1.0"?><xmi:XMI xmlns:xmi="http://www.omg.org/XMI" '
+            'xmlns:TalendProperties="http://www.talend.org/properties">'
+            '<TalendProperties:Property label="Inbound" version="0.1"/>'
+            "</xmi:XMI>",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+
+        assert result.manifest.job_connections_used["Inbound"] == [
+            "JMS · esb.orders",
+            "DIRECT · validate",
+        ]
+        assert result.manifest.connection_used_by["JMS · esb.orders"] == ["Inbound"]
+        assert result.manifest.connection_used_by["DIRECT · validate"] == ["Inbound"]
+
+    def test_talend_routlet_spelling_is_classified_as_routelet_wrapper(
+        self, parser, tmp_path,
+    ):
+        root = _synthetic_project(tmp_path)
+        routes = root / "routes"
+        routes.mkdir()
+        (routes / "Trigger_0.1.item").write_text(
+            '<?xml version="1.0"?><talendfile:ProcessType '
+            + _ITEM_XMLNS
+            + '><node componentName="trigger_OnTime_routlet">'
+            '<elementParameter name="UNIQUE_NAME" value="trigger"/>'
+            "</node></talendfile:ProcessType>",
+            encoding="utf-8",
+        )
+        (routes / "Trigger_0.1.properties").write_text(
+            '<?xml version="1.0"?><xmi:XMI xmlns:xmi="http://www.omg.org/XMI" '
+            'xmlns:TalendProperties="http://www.talend.org/properties">'
+            '<TalendProperties:Property label="Trigger" version="0.1"/>'
+            "</xmi:XMI>",
+            encoding="utf-8",
+        )
+
+        result = parser.parse(tmp_path)
+
+        route = next(job for job in result.jobs if job.name == "Trigger")
+        assert route.artifact_kind == "route"
+        assert route.artifact_role == "routelet_wrapper"
+
+    def test_ambiguous_route_ctalendjob_never_creates_an_edge(self, parser, tmp_path):
+        caller = _synthetic_project(tmp_path / "caller")
+        one = _synthetic_project(tmp_path / "one")
+        two = _synthetic_project(tmp_path / "two")
+        _write_job(one, "Jobs", "Worker", "0.1")
+        _write_job(two, "Jobs", "Worker", "0.1")
+        routes = caller / "routes"
+        routes.mkdir()
+        (routes / "Inbound_0.1.item").write_text(
+            '<?xml version="1.0"?><talendfile:ProcessType ' + _ITEM_XMLNS + '><node componentName="cTalendJob">'
+            '<elementParameter name="SELECTED_JOB_NAME" value="Worker"/></node></talendfile:ProcessType>', encoding="utf-8",
+        )
+        (routes / "Inbound_0.1.properties").write_text(
+            '<?xml version="1.0"?><xmi:XMI xmlns:xmi="http://www.omg.org/XMI" xmlns:TalendProperties="http://www.talend.org/properties">'
+            '<TalendProperties:Property label="Inbound" version="0.1"/></xmi:XMI>', encoding="utf-8",
+        )
+        result = parser.parse(tmp_path)
+        route = next(job for job in result.jobs if job.name == "Inbound")
+        assert route.artifact_refs[0].resolution == "ambiguous"
+        assert route.artifact_refs[0].resolved_artifact_id == ""
+        assert result.manifest.artifact_relations[0]["target"] == ""
     def test_multiple_roots_are_one_scan_with_qualified_duplicate_ids(self, parser, tmp_path):
         first = _synthetic_project(tmp_path / "exports" / "first")
         second = _synthetic_project(tmp_path / "exports" / "second")
@@ -173,6 +289,13 @@ class TestCompositeTalendBundles:
         assert len({job.job_id for job in shared}) == 2
         assert len(result.manifest.source_roots) == 2
         assert len(result.manifest.job_groups) == 3
+        assert {
+            result.manifest.job_groups[job.job_id]
+            for job in result.jobs
+        } == {
+            "exports/first/SYNTH/Jobs",
+            "exports/second/SYNTH/Jobs",
+        }
 
     def test_cross_root_runjob_resolves_unique_target(self, parser, tmp_path):
         first = _synthetic_project(tmp_path / "one")

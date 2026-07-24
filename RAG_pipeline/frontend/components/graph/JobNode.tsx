@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { Crosshair, ChevronUp, ChevronDown } from "lucide-react";
+import { Crosshair, ChevronUp, ChevronDown, Route, Cog } from "lucide-react";
 import type { EffectiveStatus } from "@/lib/healthPropagation";
 import type { JobStatus } from "@/lib/jobHealth";
 import { STATUS_META, isOverlayStatus } from "@/lib/healthStatusMeta";
@@ -37,6 +37,8 @@ interface JobNodeData {
   externalSystems: string[];
   summary: string;
   direction: string;
+  artifactKind?: string;
+  artifactRole?: string;
   dimmed?: boolean;
   highlighted?: boolean;
   compact?: boolean;
@@ -76,17 +78,19 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
   const isFocusActive = focus?.active === true;
 
   const accent = data.color.border;
+  const isRoute = data.artifactKind === "route";
+  const artifactAccent = isRoute ? "#ea580c" : "#2563eb";
   const horizontal = data.dir === "LR";
   const targetPosition = horizontal ? Position.Left : Position.Top;
   const sourcePosition = horizontal ? Position.Right : Position.Bottom;
   const border = isFocal
-    ? `2px solid ${accent}`
+    ? `2px solid ${artifactAccent}`
     : meta
       ? `2px solid ${meta.color}`
-      : CARD_BORDER;
+      : `1px solid ${isRoute ? "#fed7aa" : "#bfdbfe"}`;
   const boxShadow =
     data.highlighted && !meta
-      ? cardShadow(true, accent)
+      ? cardShadow(true, artifactAccent)
       : CARD_SHADOW;
 
   // Full accessible description for the status (own + how it was impacted).
@@ -123,8 +127,8 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
       <div
         className="topo-node rounded-md relative"
         style={{
-          background: meta ? "white" : `${accent}26`,
-          border: meta ? `2px solid ${meta.color}` : `1.5px solid ${accent}`,
+          background: meta ? "white" : `${artifactAccent}20`,
+          border: meta ? `2px solid ${meta.color}` : `1.5px solid ${artifactAccent}`,
           boxShadow,
           width: JOB_NODE_WIDTH_COMPACT,
           height: JOB_NODE_HEIGHT_COMPACT,
@@ -152,7 +156,15 @@ function JobNodeComponent({ data }: { data: JobNodeData }) {
       }}
     >
       <Handle type="target" position={targetPosition} className="!w-2 !h-2 !bg-slate-300 !border-2 !border-white" />
-      <span style={accentBarStyle(accent)} />
+      <span style={accentBarStyle(artifactAccent)} />
+      <span
+        className="absolute right-2 top-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[8px] font-bold"
+        style={{ background: `${artifactAccent}18`, color: artifactAccent }}
+        aria-label={isRoute ? "Talend Route" : "Talend Job"}
+      >
+        {isRoute ? <Route className="h-2.5 w-2.5" /> : <Cog className="h-2.5 w-2.5" />}
+        {isRoute ? "ROUTE" : "JOB"}
+      </span>
 
       {/* Focus trigger: appears on hover (or always while focal). Single-click
           enters/re-centres focus mode on this job; clicking the focal node's

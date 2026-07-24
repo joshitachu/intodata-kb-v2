@@ -139,6 +139,8 @@ export interface JobScanMetadata {
   external_systems: string[];
   summary: string;
   direction: string;
+  artifact_kind?: "job" | "route" | "joblet" | "routelet" | string;
+  artifact_role?: string;
 }
 
 export interface ManifestData {
@@ -161,10 +163,94 @@ export interface ManifestData {
   /** Composite Talend bundles keep one scan while exposing root clusters. */
   job_source_roots?: Record<string, string>;
   source_roots?: Array<{ id: string; path: string; platform?: string; role?: string; label?: string }>;
+  artifact_kinds?: Record<string, string>;
+  artifact_relations?: Array<{
+    source: string;
+    target?: string;
+    relation_type: string;
+    resolution?: string;
+    provenance?: string;
+  }>;
+  artifact_channels?: Array<{ artifact: string; channel_type: string; channel?: string }>;
+  artifact_endpoints?: Array<{ artifact: string; endpoint_type: string }>;
+}
+
+export type ArtifactKindFilter = "all" | "job" | "route";
+
+/**
+ * Filter the manifest itself instead of hiding already-rendered nodes. This
+ * keeps collapsed group counts, aggregated edges, connections, and focus-mode
+ * traversal consistent with the selected Talend design type.
+ */
+export function filterManifestByArtifactKind(
+  manifest: ManifestData,
+  filter: ArtifactKindFilter,
+): ManifestData {
+  if (filter === "all") return manifest;
+
+  const keep = new Set(
+    Object.entries(manifest.artifact_kinds || {})
+      .filter(([, kind]) => kind === filter)
+      .map(([artifact]) => artifact),
+  );
+  const keys = <T>(record: Record<string, T> | undefined): Record<string, T> =>
+    Object.fromEntries(
+      Object.entries(record || {}).filter(([artifact]) => keep.has(artifact)),
+    );
+  const artifactLinks = (
+    record: Record<string, string[]> | undefined,
+  ): Record<string, string[]> =>
+    Object.fromEntries(
+      Object.entries(record || {})
+        .filter(([artifact]) => keep.has(artifact))
+        .map(([artifact, linked]) => [
+          artifact,
+          linked.filter((target) => keep.has(target)),
+        ])
+        .filter(([, linked]) => (linked as string[]).length > 0),
+    );
+  const reverseLinks = (
+    record: Record<string, string[]> | undefined,
+  ): Record<string, string[]> =>
+    Object.fromEntries(
+      Object.entries(record || {})
+        .map(([name, artifacts]) => [
+          name,
+          artifacts.filter((artifact) => keep.has(artifact)),
+        ])
+        .filter(([, artifacts]) => (artifacts as string[]).length > 0),
+    );
+
+  return {
+    ...manifest,
+    job_calls: artifactLinks(manifest.job_calls),
+    job_called_by: artifactLinks(manifest.job_called_by),
+    job_connections_used: keys(manifest.job_connections_used),
+    connection_used_by: reverseLinks(manifest.connection_used_by),
+    job_groups: keys(manifest.job_groups),
+    routines_used_by: reverseLinks(manifest.routines_used_by),
+    job_contexts_used: keys(manifest.job_contexts_used),
+    context_used_by: reverseLinks(manifest.context_used_by),
+    job_source_roots: keys(manifest.job_source_roots),
+    artifact_kinds: keys(manifest.artifact_kinds),
+    artifact_relations: (manifest.artifact_relations || []).filter(
+      (relation) =>
+        keep.has(relation.source) &&
+        (!relation.target || keep.has(relation.target)),
+    ),
+    artifact_channels: (manifest.artifact_channels || []).filter((channel) =>
+      keep.has(channel.artifact),
+    ),
+    artifact_endpoints: (manifest.artifact_endpoints || []).filter((endpoint) =>
+      keep.has(endpoint.artifact),
+    ),
+  };
 }
 
 export function topologyGroupForJob(manifest: ManifestData, job: string): string {
-  return manifest.job_source_roots?.[job] || manifest.job_groups?.[job] || "Ungrouped";
+  // Functional group first.  Source root is provenance, not the architecture
+  // view's primary cluster (otherwise a composite bundle is one mega-node).
+  return manifest.job_groups?.[job] || manifest.job_source_roots?.[job] || "Ungrouped";
 }
 
 export interface FlowResult {
@@ -178,6 +264,8 @@ export interface FlowResult {
     contextCount: number;
     edgeCount: number;
     groupCount: number;
+    routeCount: number;
+    talendJobCount: number;
   };
 }
 
@@ -302,7 +390,7 @@ export function manifestToFlow(
     const meta = jobMetadata?.[name];
     nodes.push({
       id: `job:${name}`,
-      type: "jobNode",
+      type: meta?.artifact_kind === "route" || manifest.artifact_kinds?.[name] === "route" ? "routeNode" : "jobNode",
       position: { x: 0, y: 0 },
       data: {
         label: name,
@@ -318,6 +406,8 @@ export function manifestToFlow(
         externalSystems: meta?.external_systems || [],
         summary: meta?.summary || "",
         direction: meta?.direction || "",
+        artifactKind: meta?.artifact_kind || manifest.artifact_kinds?.[name] || "job",
+        artifactRole: meta?.artifact_role || "standalone",
       },
     });
   }
@@ -363,8 +453,26 @@ export function manifestToFlow(
 
   // Create edges
   const edges: Edge[] = [];
+  // Typed relations supersede the legacy job_calls map where available.
+  const relationEdges = (manifest.artifact_relations || []).filter(
+    (relation) => relation.target && relation.resolution !== "ambiguous" && relation.resolution !== "unresolved",
+  );
+  for (const relation of relationEdges) {
+    edges.push({
+      id: `${relation.relation_type}:${relation.source}:${relation.target}`,
+      source: `job:${relation.source}`,
+      target: `job:${relation.target}`,
+      type: PROJECT_EDGE_TYPE,
+      animated: false,
+      style: { ...CALL_EDGE_STYLE, stroke: relation.relation_type === "route_invokes_job" ? "#ea580c" : CALL_EDGE_COLOR },
+      markerEnd: { type: "arrowclosed" as const, color: relation.relation_type === "route_invokes_job" ? "#ea580c" : CALL_EDGE_COLOR, width: 16, height: 16 },
+      data: { edgeType: relation.relation_type },
+      label: relation.relation_type === "route_invokes_job" ? "invokes Job" : undefined,
+    });
+  }
   for (const [caller, callees] of Object.entries(manifest.job_calls || {})) {
     for (const callee of callees) {
+      if (relationEdges.some((relation) => relation.source === caller && relation.target === callee)) continue;
       edges.push({
         id: `calls:${caller}:${callee}`,
         source: `job:${caller}`,
@@ -415,6 +523,8 @@ export function manifestToFlow(
       contextCount: contextNames.size,
       edgeCount: edges.length,
       groupCount: groups.length,
+      routeCount: [...jobNames].filter((name) => (jobMetadata?.[name]?.artifact_kind || manifest.artifact_kinds?.[name]) === "route").length,
+      talendJobCount: [...jobNames].filter((name) => (jobMetadata?.[name]?.artifact_kind || manifest.artifact_kinds?.[name] || "job") === "job").length,
     },
   };
 }
@@ -726,7 +836,7 @@ export function manifestToCollapsedFlow(
         const meta = jobMetadata?.[name];
         nodes.push({
           id: `job:${name}`,
-          type: "jobNode",
+          type: meta?.artifact_kind === "route" || manifest.artifact_kinds?.[name] === "route" ? "routeNode" : "jobNode",
           position: { x: 0, y: 0 },
           data: {
             label: name,
@@ -742,6 +852,8 @@ export function manifestToCollapsedFlow(
             externalSystems: meta?.external_systems || [],
             summary: meta?.summary || "",
             direction: meta?.direction || "",
+            artifactKind: meta?.artifact_kind || manifest.artifact_kinds?.[name] || "job",
+            artifactRole: meta?.artifact_role || "standalone",
           },
         });
       }
@@ -750,6 +862,8 @@ export function manifestToCollapsedFlow(
       const dirBreakdown = { in: 0, out: 0, both: 0, unknown: 0 };
       const systemSet = new Set<string>();
       let connCount = 0;
+      let routeCount = 0;
+      let talendJobCount = 0;
 
       for (const name of jobs) {
         const meta = jobMetadata?.[name];
@@ -759,6 +873,8 @@ export function manifestToCollapsedFlow(
 
         for (const sys of meta?.external_systems || []) systemSet.add(sys);
         connCount += (manifest.job_connections_used || {})[name]?.length || 0;
+        if ((meta?.artifact_kind || manifest.artifact_kinds?.[name]) === "route") routeCount++;
+        else talendJobCount++;
       }
 
       nodes.push({
@@ -770,6 +886,8 @@ export function manifestToCollapsedFlow(
           groupName: group,
           color,
           jobCount: jobs.length,
+          routeCount,
+          talendJobCount,
           directionBreakdown: dirBreakdown,
           topSystems: [...systemSet].slice(0, 5),
           connectionCount: connCount,
@@ -783,33 +901,51 @@ export function manifestToCollapsedFlow(
   // Track inter-group edges to aggregate (collapsed→collapsed gets one edge with count)
   const interGroupEdges = new Map<string, number>(); // "source→target" → count
 
-  for (const [caller, callees] of Object.entries(manifest.job_calls || {})) {
+  const callRelations = [
+    ...(manifest.artifact_relations || [])
+      .filter((relation) => relation.target && relation.resolution !== "ambiguous" && relation.resolution !== "unresolved")
+      .map((relation) => ({
+        caller: relation.source,
+        callee: relation.target as string,
+        relationType: relation.relation_type,
+      })),
+    ...Object.entries(manifest.job_calls || {}).flatMap(([caller, callees]) =>
+      callees
+        .filter((callee) => !(manifest.artifact_relations || []).some(
+          (relation) => relation.source === caller && relation.target === callee,
+        ))
+        .map((callee) => ({ caller, callee, relationType: "calls" })),
+    ),
+  ];
+
+  for (const { caller, callee, relationType } of callRelations) {
     const callerGroup = jobGroupLookup.get(caller) || "Ungrouped";
-    for (const callee of callees) {
-      const calleeGroup = jobGroupLookup.get(callee) || "Ungrouped";
+    const calleeGroup = jobGroupLookup.get(callee) || "Ungrouped";
 
       const callerExpanded = expanded.has(callerGroup);
       const calleeExpanded = expanded.has(calleeGroup);
 
-      if (callerExpanded && calleeExpanded) {
+    const edgeColor = relationType === "route_invokes_job" ? "#ea580c" : CALL_EDGE_COLOR;
+    if (callerExpanded && calleeExpanded) {
         edges.push({
-          id: `calls:${caller}:${callee}`,
+          id: `${relationType}:${caller}:${callee}`,
           source: `job:${caller}`,
           target: `job:${callee}`,
           type: PROJECT_EDGE_TYPE,
           animated: false,
-          style: { ...CALL_EDGE_STYLE },
-          markerEnd: { type: "arrowclosed" as const, color: CALL_EDGE_COLOR, width: 16, height: 16 },
-          data: { edgeType: "calls" },
+          style: { ...CALL_EDGE_STYLE, stroke: edgeColor },
+          markerEnd: { type: "arrowclosed" as const, color: edgeColor, width: 16, height: 16 },
+          data: { edgeType: relationType },
+          label: relationType === "route_invokes_job" ? "invokes Job" : undefined,
         });
-      } else if (!callerExpanded && !calleeExpanded) {
+    } else if (!callerExpanded && !calleeExpanded) {
         if (callerGroup === calleeGroup) continue;
-        const key = `group:${callerGroup}→group:${calleeGroup}`;
+        const key = `${relationType}|group:${callerGroup}→group:${calleeGroup}`;
         interGroupEdges.set(key, (interGroupEdges.get(key) || 0) + 1);
-      } else {
+    } else {
         const sourceId = callerExpanded ? `job:${caller}` : `group:${callerGroup}`;
         const targetId = calleeExpanded ? `job:${callee}` : `group:${calleeGroup}`;
-        const edgeKey = `mixed:${sourceId}→${targetId}`;
+        const edgeKey = `${relationType}|mixed:${sourceId}→${targetId}`;
         if (!interGroupEdges.has(edgeKey)) {
           interGroupEdges.set(edgeKey, 1);
           edges.push({
@@ -818,35 +954,37 @@ export function manifestToCollapsedFlow(
             target: targetId,
             type: PROJECT_EDGE_TYPE,
             animated: false,
-            style: { ...CALL_EDGE_STYLE },
-            markerEnd: { type: "arrowclosed" as const, color: CALL_EDGE_COLOR, width: 16, height: 16 },
-            data: { edgeType: "calls" },
+            style: { ...CALL_EDGE_STYLE, stroke: edgeColor },
+            markerEnd: { type: "arrowclosed" as const, color: edgeColor, width: 16, height: 16 },
+            data: { edgeType: relationType },
+            label: relationType === "route_invokes_job" ? "invokes Job" : undefined,
           });
         } else {
           interGroupEdges.set(edgeKey, interGroupEdges.get(edgeKey)! + 1);
         }
-      }
     }
   }
 
   // Emit aggregated inter-group edges
   for (const [key, count] of interGroupEdges) {
-    if (!key.startsWith("group:")) continue;
-    const [source, target] = key.split("→");
+    const [relationType, groupKey] = key.split("|", 2);
+    if (!groupKey?.startsWith("group:")) continue;
+    const [source, target] = groupKey.split("→");
+    const edgeColor = relationType === "route_invokes_job" ? "#ea580c" : AGGREGATE_EDGE_COLOR;
     edges.push({
       id: `agg:${key}`,
       source,
       target,
       type: PROJECT_EDGE_TYPE,
       animated: false,
-      label: count > 1 ? String(count) : undefined,
+      label: relationType === "route_invokes_job" ? (count > 1 ? `invokes Job ×${count}` : "invokes Job") : (count > 1 ? String(count) : undefined),
       labelStyle: { fill: "#475569", fontWeight: 700, fontSize: 11 },
       labelBgStyle: { fill: "#f1f5f9", fillOpacity: 0.95 },
       labelBgPadding: [6, 4] as [number, number],
       labelBgBorderRadius: 6,
-      style: { stroke: AGGREGATE_EDGE_COLOR, strokeWidth: 2.5 },
-      markerEnd: { type: "arrowclosed" as const, color: AGGREGATE_EDGE_COLOR, width: 20, height: 20 },
-      data: { edgeType: "calls", aggregated: true },
+      style: { stroke: edgeColor, strokeWidth: 2.5 },
+      markerEnd: { type: "arrowclosed" as const, color: edgeColor, width: 20, height: 20 },
+      data: { edgeType: relationType, aggregated: true },
     });
   }
 
@@ -992,6 +1130,8 @@ export function manifestToCollapsedFlow(
       contextCount: referencedContexts.size,
       edgeCount: edges.length,
       groupCount: groups.length,
+      routeCount: [...jobNames].filter((name) => (jobMetadata?.[name]?.artifact_kind || manifest.artifact_kinds?.[name]) === "route").length,
+      talendJobCount: [...jobNames].filter((name) => (jobMetadata?.[name]?.artifact_kind || manifest.artifact_kinds?.[name] || "job") === "job").length,
     },
   };
 }

@@ -1,8 +1,8 @@
-"""Tests for Talend ESB/Camel route classification.
+"""Tests for Talend ESB/Camel component classification.
 
-Talend serializes DI Jobs and ESB Routes into the same .item format; the only
-signal is c-prefixed Camel component usage. The scanner is the single source of
-truth for the is_esb_route / esb_component_types fields on ParsedJob.
+The repository directory (process/ versus routes/) is the canonical design
+taxonomy. The c-prefixed palette classifier remains useful additive evidence
+about Camel components, but does not override that repository identity.
 """
 
 import json
@@ -101,6 +101,7 @@ class TestTalendParserEsbIntegration:
         result = self.parser.parse(FIXTURES_DIR)
         route = next(j for j in result.jobs if j.name == "Webhook_Route")
         assert route.group == "Service"
+        assert route.artifact_kind == "route"
         assert route.is_esb_route is True
         assert route.esb_component_types == ["cHttp", "cTimer"]
 
@@ -108,9 +109,13 @@ class TestTalendParserEsbIntegration:
         result = self.parser.parse(FIXTURES_DIR)
         di_job = next(j for j in result.jobs if j.name == "Sample_DI_Job")
         assert di_job.group == "DI"
+        assert di_job.artifact_kind == "job"
         assert di_job.is_esb_route is False
         assert di_job.esb_component_types == []
 
     def test_both_process_and_routes_dirs_are_walked(self):
         result = self.parser.parse(FIXTURES_DIR)
         assert {j.name for j in result.jobs} == {"Webhook_Route", "Sample_DI_Job"}
+        assert result.stats["total_artifacts"] == 2
+        assert result.stats["job_count"] == 1
+        assert result.stats["route_count"] == 1

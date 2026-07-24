@@ -150,6 +150,27 @@ def _project_webhook_status(p: Project) -> str | None:
     return None
 
 
+def _project_artifact_counts(project_id: str, legacy_total: int) -> dict[str, int]:
+    """Read additive Talend taxonomy counts without a database migration."""
+    defaults = {"total_artifacts": legacy_total, "job_count": legacy_total, "route_count": 0}
+    try:
+        meta_path = config.intodoc_output_dir / project_id / "scan" / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        stats = meta.get("stats") if isinstance(meta, dict) else {}
+        if not isinstance(stats, dict):
+            return defaults
+        return {
+            "total_artifacts": int(stats.get("total_artifacts", legacy_total)),
+            "job_count": int(stats.get("job_count", legacy_total)),
+            "route_count": int(stats.get("route_count", 0)),
+            "joblet_count": int(stats.get("joblet_count", 0)),
+            "routelet_count": int(stats.get("routelet_count", 0)),
+            "empty_or_unparsed_count": int(stats.get("empty_or_unparsed_count", 0)),
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        return defaults
+
+
 def _project_to_response(p) -> ProjectResponse:
     webhook_status = _project_webhook_status(p)
     return ProjectResponse(
@@ -165,6 +186,7 @@ def _project_to_response(p) -> ProjectResponse:
         last_generate_at=p.last_generate_at,
         last_rag_push_at=p.last_rag_push_at,
         job_count=p.job_count,
+        artifact_counts=_project_artifact_counts(p.id, p.job_count),
         doc_count=p.doc_count,
         error_message=sanitize_git_error(p.error_message) if p.error_message else p.error_message,
         last_ingested_commit_sha=p.last_ingested_commit_sha,
@@ -3223,11 +3245,12 @@ async def get_project_graph(project_id: str, request: Request):
     job_external_systems: dict[str, list[str]] = manifest.get("job_external_systems", {})
     needs_runtime_derivation = not job_external_systems
 
-    # Build job_connections_used / connection_used_by from external systems
-    # if the manifest doesn't already have connection edges
+    # Merge coarse external-system participation with precise repository and
+    # Route-channel dependencies. A Talend Route can have both (for example a
+    # REST endpoint feeding a named JMS destination); choosing only one loses
+    # the architectural relationship the topology is meant to explain.
     job_connections_used: dict[str, list[str]] = manifest.get("job_connections_used", {})
     connection_used_by: dict[str, list[str]] = manifest.get("connection_used_by", {})
-    derive_edges = not job_connections_used
 
     # Load AI-generated summaries (empty dict if not yet generated)
     ai_summaries = SummaryService.load_summaries(project_id)
@@ -3290,11 +3313,17 @@ async def get_project_graph(project_id: str, request: Request):
             external_systems=ext_systems,
             summary=node_summary,
             direction=direction,
+            artifact_kind=(job_data or {}).get(
+                "artifact_kind", manifest.get("artifact_kinds", {}).get(job_name, "job"),
+            ),
+            artifact_role=(job_data or {}).get("artifact_role", "standalone"),
         )
 
-        # Synthesize connection edges from external systems
-        if derive_edges and ext_systems:
-            job_connections_used[job_name] = ext_systems
+        # Add external-system edges without replacing precise Route channels.
+        if ext_systems:
+            existing = set(job_connections_used.get(job_name, []))
+            existing.update(ext_systems)
+            job_connections_used[job_name] = sorted(existing)
             for sys_name in ext_systems:
                 all_system_names.add(sys_name)
                 if sys_name not in connection_used_by:
@@ -3302,11 +3331,12 @@ async def get_project_graph(project_id: str, request: Request):
                 if job_name not in connection_used_by[sys_name]:
                     connection_used_by[sys_name].append(job_name)
 
-    # If we derived edges, update manifest and add synthetic connection entries
-    if derive_edges and all_system_names:
-        manifest["job_connections_used"] = job_connections_used
-        manifest["connection_used_by"] = connection_used_by
+    # Publish the merged view and add synthetic connection metadata for coarse
+    # systems. Named channel nodes remain self-describing in the manifest.
+    manifest["job_connections_used"] = job_connections_used
+    manifest["connection_used_by"] = connection_used_by
 
+    if all_system_names:
         existing_conn_names = {c.name for c in connections}
         for sys_name in sorted(all_system_names):
             if sys_name not in existing_conn_names:
@@ -3315,11 +3345,25 @@ async def get_project_graph(project_id: str, request: Request):
                     connection_type="derived",
                 ))
 
+    artifact_kinds = manifest.get("artifact_kinds", {}) or {}
+    artifact_counts = {
+        "total_artifacts": len(job_groups),
+        "job_count": sum(kind == "job" for kind in artifact_kinds.values()),
+        "route_count": sum(kind == "route" for kind in artifact_kinds.values()),
+        "joblet_count": sum(kind == "joblet" for kind in artifact_kinds.values()),
+        "routelet_count": sum(kind == "routelet" for kind in artifact_kinds.values()),
+    }
+    # Historic manifests have no taxonomy. Their legacy designs remain Jobs
+    # rather than appearing as an unexplained zero-count project.
+    if not artifact_kinds:
+        artifact_counts["job_count"] = len(job_groups)
+
     return ProjectGraphResponse(
         project_id=project_id,
         manifest=manifest,
         connections=connections,
         job_metadata=job_metadata,
+        artifact_counts=artifact_counts,
     )
 
 
@@ -3642,6 +3686,7 @@ async def deep_dive_projects(request: Request):
                 display_name=p.display_name,
                 platform=p.platform,
                 job_count=p.job_count,
+                artifact_counts=_project_artifact_counts(p.id, p.job_count),
                 last_scan_at=p.last_scan_at,
             )
             for p in scanned

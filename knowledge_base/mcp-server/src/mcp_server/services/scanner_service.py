@@ -188,6 +188,21 @@ class ScannerService:
                 if not isinstance(data, dict) or not isinstance(data.get("jobs", []), list):
                     raise ValueError("scan_result.json must be an object with a jobs list")
                 job_count = len(data.get("jobs", []))
+                stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+                artifact_counts = {
+                    "total_artifacts": int(stats.get("total_artifacts", job_count)),
+                    "job_count": int(stats.get("job_count", sum(
+                        item.get("artifact_kind", "job") == "job"
+                        for item in data.get("jobs", []) if isinstance(item, dict)
+                    ))),
+                    "route_count": int(stats.get("route_count", sum(
+                        item.get("artifact_kind") == "route"
+                        for item in data.get("jobs", []) if isinstance(item, dict)
+                    ))),
+                    "joblet_count": int(stats.get("joblet_count", 0)),
+                    "routelet_count": int(stats.get("routelet_count", 0)),
+                    "empty_or_unparsed_count": int(stats.get("empty_or_unparsed_count", 0)),
+                }
                 # A Talend scan with no discovered roots/jobs is never a useful
                 # successful scan.  Previously this silently moved projects to
                 # ready with job_count=0, hiding nested-bundle failures.
@@ -219,15 +234,21 @@ class ScannerService:
                     "output_dir": str(out_dir),
                 }
 
-            logger.info(f"Scan completed: {job_count} jobs found")
+            scan_label = (
+                f"{artifact_counts['total_artifacts']} Talend designs "
+                f"({artifact_counts['job_count']} Jobs, {artifact_counts['route_count']} Routes)"
+                if platform.lower() == "talend" else f"{job_count} jobs found"
+            )
+            logger.info(f"Scan completed: {scan_label}")
             if self.log_manager:
                 await self.log_manager.emit(
-                    project_id, f"Scan completed: {job_count} jobs found", level="info",
+                    project_id, f"Scan completed: {scan_label}", level="info",
                 )
 
             return {
                 "success": True,
                 "job_count": job_count,
+                "artifact_counts": artifact_counts,
                 "scan_result_path": str(scan_result_path),
                 "output_dir": str(out_dir),
             }
@@ -802,6 +823,22 @@ class ScannerService:
                 k: v for k, v in manifest.get("job_support_roots", {}).items()
                 if k in job_names
             },
+            "artifact_kinds": {
+                k: v for k, v in manifest.get("artifact_kinds", {}).items()
+                if k in job_names
+            },
+            "artifact_relations": [
+                relation for relation in manifest.get("artifact_relations", [])
+                if isinstance(relation, dict) and relation.get("source") in job_names
+            ],
+            "artifact_channels": [
+                channel for channel in manifest.get("artifact_channels", [])
+                if isinstance(channel, dict) and channel.get("artifact") in job_names
+            ],
+            "artifact_endpoints": [
+                endpoint for endpoint in manifest.get("artifact_endpoints", [])
+                if isinstance(endpoint, dict) and endpoint.get("artifact") in job_names
+            ],
         }
 
     @staticmethod

@@ -117,6 +117,13 @@ def scan(
             raise click.exceptions.Exit(2)
 
     _save_scan_result(scan_result, config.output_dir)
+    if scan_result.platform == "talend":
+        console.print(
+            "[green]Talend designs: "
+            f"{scan_result.stats.get('total_artifacts', len(scan_result.jobs))} "
+            f"({scan_result.stats.get('job_count', len(scan_result.jobs))} Jobs · "
+            f"{scan_result.stats.get('route_count', 0)} Routes)[/green]"
+        )
     console.print(f"[green]Scan saved to {config.output_dir / 'scan_result.json'}[/green]")
 
     # Deterministic lineage pass (S4): tMap expression tokenizer + Var
@@ -168,7 +175,15 @@ def _do_scan(config: IntodocConfig):
     result = plugin.parse_project(config.repo_path, cred_filter)
 
     elapsed = time.monotonic() - t0
-    console.print(f"[green]Scan complete in {elapsed:.1f}s.[/green] {len(result.jobs)} jobs, {len(result.files)} files found.")
+    if result.platform == "talend":
+        design_summary = (
+            f"{result.stats.get('total_artifacts', len(result.jobs))} Talend designs "
+            f"({result.stats.get('job_count', len(result.jobs))} Jobs · "
+            f"{result.stats.get('route_count', 0)} Routes)"
+        )
+    else:
+        design_summary = f"{len(result.jobs)} jobs"
+    console.print(f"[green]Scan complete in {elapsed:.1f}s.[/green] {design_summary}, {len(result.files)} files found.")
     console.print(f"  Metadata connections: {len(result.metadata_connections)}")
     console.print(f"  Context groups: {len(result.context_groups)}")
     return result, cred_filter

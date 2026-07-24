@@ -13,6 +13,7 @@ interface GraphLegendProps {
   groupColorMap: Record<string, GroupColor>;
   collapsedMode?: boolean;
   showHealth?: boolean;
+  showArtifactTaxonomy?: boolean;
 }
 
 const HEALTH_LEGEND_ORDER: EffectiveStatus[] = [
@@ -24,7 +25,12 @@ const HEALTH_LEGEND_ORDER: EffectiveStatus[] = [
   "unknown",
 ];
 
-export function GraphLegend({ groupColorMap, collapsedMode, showHealth }: GraphLegendProps) {
+export function GraphLegend({
+  groupColorMap,
+  collapsedMode,
+  showHealth,
+  showArtifactTaxonomy = false,
+}: GraphLegendProps) {
   const groups = Object.entries(groupColorMap);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -89,8 +95,18 @@ export function GraphLegend({ groupColorMap, collapsedMode, showHealth }: GraphL
           <div className="w-8 h-0 border-t-[2px] border-slate-400 relative">
             <div className="absolute -right-0.5 -top-[3px] w-0 h-0 border-l-[4px] border-l-slate-400 border-y-[3px] border-y-transparent" />
           </div>
-          <span className="text-slate-500">Component orchestration</span>
+          <span className="text-slate-500">
+            {showArtifactTaxonomy ? "Job calls Job" : "Component orchestration"}
+          </span>
         </div>
+        {showArtifactTaxonomy && (
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-0 border-t-[2px] border-orange-600 relative">
+              <div className="absolute -right-0.5 -top-[3px] w-0 h-0 border-l-[4px] border-l-orange-600 border-y-[3px] border-y-transparent" />
+            </div>
+            <span className="text-slate-500">Route invokes Job</span>
+          </div>
+        )}
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-0 border-t-[1.5px] border-dashed" style={{ borderColor: "#c4b5fd" }} />
           <span className="text-slate-500">Connection usage</span>
@@ -109,8 +125,16 @@ export function GraphLegend({ groupColorMap, collapsedMode, showHealth }: GraphL
           <div className="w-4 h-3 rounded border border-slate-200 bg-white overflow-hidden flex shadow-sm">
             <div className="w-[3px] h-full bg-blue-500" />
           </div>
-          <span className="text-slate-500">Component</span>
+          <span className="text-slate-500">{showArtifactTaxonomy ? "Talend Job" : "Component"}</span>
         </div>
+        {showArtifactTaxonomy && (
+          <div className="flex items-center gap-2.5">
+            <div className="w-4 h-3 rounded border border-orange-200 bg-white overflow-hidden flex shadow-sm">
+              <div className="w-[3px] h-full bg-orange-600" />
+            </div>
+            <span className="text-slate-500">Talend Route</span>
+          </div>
+        )}
         <div className="flex items-center gap-2.5">
           <div className="w-4 h-3 rounded border border-slate-200 bg-white shadow-sm flex items-center justify-center">
             <div className="w-1.5 h-1.5 rounded-full bg-purple-400" />

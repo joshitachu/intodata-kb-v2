@@ -33,13 +33,19 @@ async def test_run_scan_success(scanner, monkeypatch, tmp_path):
     out_dir = tmp_path / "output"
     out_dir.mkdir()
     scan_result = out_dir / "scan_result.json"
-    scan_result.write_text(json.dumps({"jobs": [{"name": "j1"}, {"name": "j2"}]}))
+    scan_result.write_text(json.dumps({
+        "jobs": [{"name": "j1", "artifact_kind": "job"}, {"name": "r1", "artifact_kind": "route"}],
+        "stats": {"total_artifacts": 2, "job_count": 1, "route_count": 1},
+    }))
 
     mock_proc = MagicMock()
     mock_proc.stdout.readline = MagicMock(return_value="")
     mock_proc.stderr.readline = MagicMock(return_value="")
     def _wait_success():
-        scan_result.write_text(json.dumps({"jobs": [{"name": "j1"}, {"name": "j2"}]}))
+        scan_result.write_text(json.dumps({
+            "jobs": [{"name": "j1", "artifact_kind": "job"}, {"name": "r1", "artifact_kind": "route"}],
+            "stats": {"total_artifacts": 2, "job_count": 1, "route_count": 1},
+        }))
         return 0
     mock_proc.wait.side_effect = _wait_success
 
@@ -49,6 +55,10 @@ async def test_run_scan_success(scanner, monkeypatch, tmp_path):
 
     assert result["success"] is True
     assert result["job_count"] == 2
+    assert result["artifact_counts"] == {
+        "total_artifacts": 2, "job_count": 1, "route_count": 1,
+        "joblet_count": 0, "routelet_count": 0, "empty_or_unparsed_count": 0,
+    }
 
 
 async def test_run_scan_rejects_zero_job_talend_result(scanner, monkeypatch, tmp_path):

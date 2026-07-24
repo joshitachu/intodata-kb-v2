@@ -56,6 +56,9 @@ _TALEND_NOISE_PARAMS: frozenset[str] = frozenset({
 })
 
 _WORKATO_DATAPILL_RE = re.compile(r"#\{_\('([^']+)'\)([^}]*)\}")
+_DESIGN_HEADING_RE = re.compile(
+    r"^## (?:(?:Talend )?(?:Job|Route)|Artifact):\s*(.+?)\s*$",
+)
 
 
 def _render_component(comp: dict, platform: str, parts: list[str]) -> None:
@@ -327,12 +330,34 @@ class DocGenerationCoordinator:
                 job_id = job.get("job_id") or job.get("name", "unknown")
                 display_name = job.get("name", "unknown")
                 source_root = job.get("source_root", "")
-                heading = f"\n---\n## Job: {job_id}\n"
+                artifact_kind = str(job.get("artifact_kind") or "job")
+                is_talend = platform.lower() == "talend"
+                artifact_label = (
+                    "Talend Route"
+                    if artifact_kind == "route"
+                    else "Talend Job"
+                )
+                section_label = artifact_label if is_talend else "Job"
+                heading = (
+                    f"\n---\n## {section_label}: {job_id}\n"
+                    f"\n- Artifact type: **{artifact_label if is_talend else 'Executable unit'}**\n"
+                )
                 if job_id != display_name or source_root:
                     heading += f"\n- Display name: `{display_name}`\n"
                     if source_root:
                         heading += f"- Source root: `{source_root}`\n"
                 parts.append(heading)
+
+                if artifact_kind == "route":
+                    parts.append(
+                        "- Analyze as message mediation: triggers/endpoints, channels, "
+                        "Camel patterns, invoked Jobs, and error paths.\n"
+                    )
+                else:
+                    parts.append(
+                        "- Analyze as data processing: inputs, transformations, business "
+                        "rules, outputs, and callers.\n"
+                    )
 
                 components = job.get("components", [])
                 if components:
@@ -507,16 +532,20 @@ class DocGenerationCoordinator:
                         continue
                     slice_jobs = sum(c["job_count"] for c in slice_chunks)
 
-                    # Compact job inventory at top — always fits in first ~2KB so truncation
-                    # in _safe_read never hides the complete job list from the LLM.
+                    # Compact design inventory at top — always fits in first
+                    # ~2KB so truncation never hides the complete unit list.
                     all_job_names: list[str] = []
                     for c in slice_chunks:
                         all_job_names.extend(c.get("job_names", []))
+                    is_talend = platform.lower() == "talend"
+                    unit_plural = "Talend designs" if is_talend else "jobs"
+                    inventory_title = "Talend Design Inventory" if is_talend else "Job Inventory"
+                    column_title = "Design ID" if is_talend else "Job Name"
                     inventory_lines = [
                         f"# Pre-processed Scan Data: {slice_name}\n",
-                        f"Chunks: {len(slice_chunks)} | Jobs: {slice_jobs}\n\n",
-                        f"## Job Inventory ({slice_jobs} jobs)\n\n",
-                        "| Job Name | Components |\n",
+                        f"Chunks: {len(slice_chunks)} | {unit_plural}: {slice_jobs}\n\n",
+                        f"## {inventory_title} ({slice_jobs} {unit_plural})\n\n",
+                        f"| {column_title} | Components |\n",
                         "|----------|------------|\n",
                     ]
                     for jn in all_job_names:
@@ -759,9 +788,11 @@ class DocGenerationCoordinator:
                     continue
 
                 for line in content.splitlines():
-                    # Track current job
-                    if line.startswith("## Job:"):
-                        current_job = line[7:].strip()
+                    # Track the current executable design without conflating a
+                    # Talend Route with a Talend Job.
+                    heading_match = _DESIGN_HEADING_RE.match(line)
+                    if heading_match:
+                        current_job = heading_match.group(1).strip()
                         job_component_counts.setdefault(current_job, 0)
                         job_tmap_counts.setdefault(current_job, 0)
                         job_error_handler.setdefault(current_job, False)

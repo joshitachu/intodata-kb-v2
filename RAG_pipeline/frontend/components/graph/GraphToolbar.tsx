@@ -10,6 +10,8 @@ interface GraphToolbarProps {
     contextCount: number;
     edgeCount: number;
     groupCount: number;
+    routeCount: number;
+    talendJobCount: number;
   };
   onToggleDirection: () => void;
   onToggleConnections: () => void;
@@ -40,6 +42,9 @@ interface GraphToolbarProps {
   focusJobName: string | null;
   focusHops: number;
   onClearFocus: () => void;
+  artifactFilter: "all" | "route" | "job";
+  onArtifactFilterChange: (filter: "all" | "route" | "job") => void;
+  showArtifactTaxonomy?: boolean;
 }
 
 function ToolbarButton({
@@ -98,6 +103,9 @@ export function GraphToolbar({
   focusJobName,
   focusHops,
   onClearFocus,
+  artifactFilter,
+  onArtifactFilterChange,
+  showArtifactTaxonomy = false,
 }: GraphToolbarProps) {
   return (
     <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 bg-white/80 backdrop-blur-sm flex-wrap">
@@ -297,6 +305,22 @@ export function GraphToolbar({
       <div className="w-px h-5 bg-slate-200" />
 
       {/* Search */}
+      {showArtifactTaxonomy && (
+        <div className="flex rounded-lg border border-slate-200 p-0.5 text-[10px] font-semibold">
+          {(["all", "route", "job"] as const).map((filter) => (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => onArtifactFilterChange(filter)}
+              className={`rounded px-2 py-1 ${artifactFilter === filter ? "bg-slate-800 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              aria-pressed={artifactFilter === filter}
+            >
+              {filter === "all" ? "All" : filter === "route" ? "Routes" : "Jobs"}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="relative">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-300 pointer-events-none" />
         <input
@@ -318,7 +342,14 @@ export function GraphToolbar({
 
       {/* Stats */}
       <div className="flex items-center gap-2.5 text-[11px] text-slate-400 ml-auto font-medium">
-        <span>{stats.jobCount} <span className="text-slate-300">components</span></span>
+        <span>{stats.jobCount} <span className="text-slate-300">{showArtifactTaxonomy ? "designs" : "components"}</span></span>
+        {showArtifactTaxonomy && (
+          <>
+            <span className="text-slate-200">|</span>
+            <span>{stats.talendJobCount} <span className="text-blue-500">Jobs</span></span>
+            <span>{stats.routeCount} <span className="text-orange-500">Routes</span></span>
+          </>
+        )}
         <span className="text-slate-200">|</span>
         <span>{stats.connectionCount} <span className="text-slate-300">conn</span></span>
         {stats.contextCount > 0 && (
